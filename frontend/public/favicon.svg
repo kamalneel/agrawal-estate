@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#E8D48A"/>
+      <stop offset="50%" style="stop-color:#C9A227"/>
+      <stop offset="100%" style="stop-color:#96772B"/>
+    </linearGradient>
+    <linearGradient id="navy" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#2A3A5C"/>
+      <stop offset="100%" style="stop-color:#1A2744"/>
+    </linearGradient>
+  </defs>
+  <!-- Shield shape -->
+  <path d="M16 1 L30 5 L30 14 C30 22 24 28 16 31 C8 28 2 22 2 14 L2 5 Z" fill="url(#gold)"/>
+  <path d="M16 3 L28 6.5 L28 14 C28 21 23 26.5 16 29 C9 26.5 4 21 4 14 L4 6.5 Z" fill="url(#navy)"/>
+  <!-- AFT monogram -->
+  <text x="16" y="20" font-family="Georgia, serif" font-size="11" font-weight="bold" fill="url(#gold)" text-anchor="middle">AFT</text>
+</svg>

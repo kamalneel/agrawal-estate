@@ -1,0 +1,774 @@
+/* Tax Center Page Styles */
+
+.page {
+  min-height: 100vh;
+  padding: 2rem;
+  background: linear-gradient(180deg, #0a0a0a 0%, #111111 100%);
+}
+
+/* Hero Section */
+.hero {
+  background: linear-gradient(135deg, rgba(0, 163, 255, 0.1) 0%, rgba(0, 163, 255, 0.02) 100%);
+  border: 1px solid rgba(0, 163, 255, 0.15);
+  border-radius: 20px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+  position: relative;
+}
+
+.heroContent {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.heroLabel {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #00A3FF;
+  font-weight: 500;
+}
+
+.heroValue {
+  font-size: 3rem;
+  font-weight: 700;
+  color: #FFFFFF;
+  letter-spacing: -0.02em;
+}
+
+.heroStats {
+  display: flex;
+  gap: 2rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.heroStat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.heroStatLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+}
+
+.heroStatValue {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #FFFFFF;
+}
+
+.heroStatValue.federal {
+  color: #00A3FF;
+}
+
+.heroStatValue.state {
+  color: #FFB800;
+}
+
+.heroStatValue.other {
+  color: #10B981;
+}
+
+.heroRefresh {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: #737373;
+  padding: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.heroRefresh:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #FFFFFF;
+}
+
+/* Chart Section */
+.chartSection {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 20px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.chartHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.chartHeader h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0;
+}
+
+.chartLegend {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: #737373;
+}
+
+.legendDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legendDot.federal {
+  background: #00A3FF;
+}
+
+.legendDot.state {
+  background: #FFB800;
+}
+
+.legendDot.other {
+  background: #10B981;
+}
+
+.chartContainer {
+  height: 350px;
+}
+
+/* Chart Tooltip */
+.chartTooltip {
+  background: rgba(20, 20, 20, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.tooltipYear {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tooltipRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  margin-bottom: 0.25rem;
+}
+
+.tooltipLabel {
+  color: #737373;
+  font-size: 0.75rem;
+}
+
+.tooltipValue {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.tooltipValue.federal {
+  color: #00A3FF;
+}
+
+.tooltipValue.state {
+  color: #FFB800;
+}
+
+.tooltipValue.other {
+  color: #10B981;
+}
+
+.tooltipValue.total {
+  color: #FFFFFF;
+}
+
+/* Years Section */
+.yearsSection {
+  margin-bottom: 2rem;
+}
+
+.yearsSection h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0 0 1rem 0;
+}
+
+.yearsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+/* Year Card */
+.yearCard {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 1.25rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  animation: fadeIn 0.3s ease backwards;
+  text-align: left;
+  width: 100%;
+}
+
+.yearCard:hover {
+  border-color: rgba(0, 163, 255, 0.3);
+  transform: translateY(-2px);
+}
+
+.yearCard.selected {
+  border-color: #00A3FF;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.yearCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.yearLabel {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.yearBadge {
+  font-size: 0.65rem;
+  padding: 0.25rem 0.5rem;
+  background: rgba(0, 163, 255, 0.15);
+  color: #00A3FF;
+  border-radius: 20px;
+  font-weight: 500;
+}
+
+.yearAgi {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  margin-bottom: 0.5rem;
+}
+
+.agiLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+}
+
+.agiValue {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #a3a3a3;
+}
+
+.yearTotalTax {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #FFFFFF;
+  margin-bottom: 0.75rem;
+}
+
+.yearBreakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-bottom: 0.75rem;
+}
+
+.breakdownRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.breakdownLabel {
+  font-size: 0.75rem;
+  color: #737373;
+  width: 60px;
+}
+
+.breakdownValue {
+  font-size: 0.85rem;
+  font-weight: 500;
+  flex: 1;
+}
+
+.breakdownValue.federal {
+  color: #00A3FF;
+}
+
+.breakdownValue.state {
+  color: #FFB800;
+}
+
+.breakdownValue.other {
+  color: #10B981;
+}
+
+.breakdownRate {
+  font-size: 0.7rem;
+  color: #737373;
+  width: 40px;
+  text-align: right;
+}
+
+.viewDetails {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: #00A3FF;
+  margin-top: 0.5rem;
+}
+
+/* Detail View */
+.backButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  color: #737373;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 1.5rem;
+  transition: color 0.2s ease;
+}
+
+.backButton:hover {
+  color: #FFFFFF;
+}
+
+.detailHeader {
+  background: linear-gradient(135deg, rgba(0, 163, 255, 0.1) 0%, rgba(0, 163, 255, 0.02) 100%);
+  border: 1px solid rgba(0, 163, 255, 0.15);
+  border-radius: 20px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+.detailHeaderTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1.5rem;
+}
+
+.detailYear {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.detailYear span {
+  font-size: 1rem;
+  font-weight: 400;
+  color: #737373;
+  margin-left: 0.5rem;
+}
+
+.detailTotalTax {
+  text-align: right;
+}
+
+.detailTotalLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+  margin-bottom: 0.25rem;
+}
+
+.detailTotalValue {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.taxBreakdown {
+  margin-bottom: 1.5rem;
+}
+
+.breakdownBar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+  margin-bottom: 0.75rem;
+}
+
+.breakdownBarFederal {
+  background: #00A3FF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  color: white;
+  font-weight: 600;
+}
+
+.breakdownBarState {
+  background: #FFB800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.breakdownLabels {
+  display: flex;
+  gap: 2rem;
+}
+
+.breakdownLabelItem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: #e5e5e5;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot.federal {
+  background: #00A3FF;
+}
+
+.dot.state {
+  background: #FFB800;
+}
+
+.detailStatsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1rem;
+}
+
+.detailStat {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.detailStatLabel {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+  margin-bottom: 0.25rem;
+}
+
+.detailStatValue {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #FFFFFF;
+}
+
+/* Detail Sections */
+.detailSection {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.detailSection h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0 0 1rem 0;
+}
+
+.detailSection h3 svg {
+  color: #00A3FF;
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.detailItem {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.detailItemLabel {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+  margin-bottom: 0.25rem;
+}
+
+.detailItemValue {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #FFFFFF;
+}
+
+.detailItemValue.federal {
+  color: #00A3FF;
+}
+
+.detailItemValue.state {
+  color: #FFB800;
+}
+
+.detailItemValue.positive {
+  color: #10B981;
+}
+
+.detailItemValue.negative {
+  color: #EF4444;
+}
+
+/* Employer Table */
+.employerTable {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.employerHeader {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+}
+
+.employerRow {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  font-size: 0.85rem;
+  color: #e5e5e5;
+}
+
+.employerName {
+  color: #FFFFFF;
+  font-weight: 500;
+}
+
+/* Property Card */
+.propertyCard {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.propertyCard:last-child {
+  margin-bottom: 0;
+}
+
+.propertyAddress {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #FFFFFF;
+  margin-bottom: 0.75rem;
+}
+
+/* Loading State */
+.loadingState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  gap: 1rem;
+  color: #737373;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Error State */
+.errorState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  text-align: center;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.errorState svg {
+  color: #EF4444;
+}
+
+.errorState h3 {
+  color: #FFFFFF;
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+.errorState p {
+  color: #737373;
+  margin: 0;
+}
+
+/* Empty State */
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  text-align: center;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.emptyState svg {
+  color: #737373;
+}
+
+.emptyState h3 {
+  color: #FFFFFF;
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+.emptyState p {
+  color: #737373;
+  margin: 0;
+  max-width: 400px;
+}
+
+.refreshButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  background: #00A3FF;
+  color: #FFFFFF;
+  border: none;
+  border-radius: 8px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.refreshButton:hover {
+  background: #0092E6;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .page {
+    padding: 1rem;
+  }
+  
+  .heroValue {
+    font-size: 2rem;
+  }
+  
+  .heroStats {
+    gap: 1rem;
+  }
+  
+  .chartLegend {
+    display: none;
+  }
+  
+  .yearsGrid {
+    grid-template-columns: 1fr;
+  }
+  
+  .detailHeaderTop {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .detailTotalTax {
+    text-align: left;
+  }
+  
+  .employerHeader,
+  .employerRow {
+    grid-template-columns: 1fr 1fr;
+  }
+  
+  .employerHeader span:nth-child(3),
+  .employerHeader span:nth-child(4),
+  .employerRow span:nth-child(3),
+  .employerRow span:nth-child(4) {
+    display: none;
+  }
+}
+
+
+

@@ -1,0 +1,500 @@
+/* Tax Planning Page Styles */
+
+.page {
+  min-height: 100vh;
+  padding: 2rem;
+  background: linear-gradient(180deg, #0a0a0a 0%, #111111 100%);
+}
+
+/* Back Button */
+.backButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  color: #737373;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 1.5rem;
+  transition: color 0.2s ease;
+}
+
+.backButton:hover {
+  color: #FFFFFF;
+}
+
+/* Hero Section */
+.hero {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(139, 92, 246, 0.02) 100%);
+  border: 1px solid rgba(139, 92, 246, 0.15);
+  border-radius: 20px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+.heroContent {
+  margin-bottom: 1.5rem;
+}
+
+.heroLabel {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8B5CF6;
+  font-weight: 500;
+}
+
+.heroTitle {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #FFFFFF;
+  margin: 0.5rem 0;
+}
+
+.heroSubtitle {
+  color: #737373;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.summaryCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.summaryCard {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 12px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.summaryLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+}
+
+.summaryValue {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.summaryValue.savings {
+  color: #10B981;
+}
+
+/* Section */
+.section {
+  margin-bottom: 2rem;
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0 0 1rem 0;
+}
+
+.sectionTitle svg {
+  color: #8B5CF6;
+}
+
+/* Recommendations Grid */
+.recommendationsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.recommendationCard {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 1.25rem;
+  transition: all 0.3s ease;
+}
+
+.recommendationCard:hover {
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.recommendationHeader {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.priorityBadge {
+  font-size: 0.65rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 20px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.priorityHigh {
+  background: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+}
+
+.priorityMedium {
+  background: rgba(245, 158, 11, 0.15);
+  color: #F59E0B;
+}
+
+.priorityLow {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+}
+
+.categoryBadge {
+  font-size: 0.65rem;
+  padding: 0.2rem 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #737373;
+  border-radius: 20px;
+}
+
+.recommendationTitle {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0 0 0.5rem 0;
+}
+
+.recommendationDesc {
+  font-size: 0.85rem;
+  color: #a3a3a3;
+  margin: 0 0 0.75rem 0;
+  line-height: 1.5;
+}
+
+.savingsIndicator {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: #10B981;
+  font-weight: 500;
+}
+
+/* Areas Grid */
+.areasGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.areaCard {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.areaCard:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.areaCard.expanded {
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+.areaHeader {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.25rem;
+  cursor: pointer;
+}
+
+.areaIcon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+
+.areaInfo {
+  flex: 1;
+}
+
+.areaTitle {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0 0 0.25rem 0;
+}
+
+.areaDesc {
+  font-size: 0.8rem;
+  color: #737373;
+  margin: 0;
+}
+
+.areaTrend {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+
+.trendUp {
+  color: #10B981;
+}
+
+.trendDown {
+  color: #EF4444;
+}
+
+.trendStable {
+  color: #737373;
+}
+
+.areaAvg {
+  font-size: 0.75rem;
+  color: #737373;
+}
+
+.expandIcon {
+  color: #737373;
+  transition: transform 0.3s ease;
+}
+
+.expandIcon.rotated {
+  transform: rotate(90deg);
+}
+
+.areaContent {
+  padding: 0 1.25rem 1.25rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.areaChart {
+  margin-bottom: 1rem;
+  padding-top: 1rem;
+}
+
+.areaInsights,
+.areaRecommendations {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.areaInsights:last-child,
+.areaRecommendations:last-child {
+  margin-bottom: 0;
+}
+
+.areaInsights h4,
+.areaRecommendations h4 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+  margin: 0 0 0.5rem 0;
+}
+
+.areaInsights ul,
+.areaRecommendations ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.areaInsights li,
+.areaRecommendations li {
+  font-size: 0.85rem;
+  color: #e5e5e5;
+  margin-bottom: 0.25rem;
+}
+
+.areaInsights li:last-child,
+.areaRecommendations li:last-child {
+  margin-bottom: 0;
+}
+
+/* All Recommendations List */
+.allRecommendations {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.recommendationRow {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.recommendationRow:last-child {
+  border-bottom: none;
+}
+
+.priorityDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.priorityDot.priorityHigh {
+  background: #EF4444;
+}
+
+.priorityDot.priorityMedium {
+  background: #F59E0B;
+}
+
+.priorityDot.priorityLow {
+  background: #10B981;
+}
+
+.recommendationRowContent {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.recommendationRowCategory {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #737373;
+}
+
+.recommendationRowTitle {
+  font-size: 0.9rem;
+  color: #e5e5e5;
+}
+
+.recommendationRowSavings {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #10B981;
+}
+
+/* Loading State */
+.loadingState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  gap: 1rem;
+  color: #737373;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Error State */
+.errorState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  text-align: center;
+  gap: 1rem;
+  padding: 2rem;
+}
+
+.errorState svg {
+  color: #EF4444;
+}
+
+.errorState h3 {
+  color: #FFFFFF;
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+.errorState p {
+  color: #737373;
+  margin: 0;
+}
+
+.retryButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  background: #8B5CF6;
+  color: #FFFFFF;
+  border: none;
+  border-radius: 8px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.retryButton:hover {
+  background: #7C3AED;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .page {
+    padding: 1rem;
+  }
+  
+  .heroTitle {
+    font-size: 1.5rem;
+  }
+  
+  .summaryCards {
+    grid-template-columns: 1fr 1fr;
+  }
+  
+  .recommendationsGrid {
+    grid-template-columns: 1fr;
+  }
+  
+  .areaHeader {
+    flex-wrap: wrap;
+  }
+  
+  .areaTrend {
+    order: 3;
+    flex-basis: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding-left: 3.5rem;
+  }
+}
+
+
+

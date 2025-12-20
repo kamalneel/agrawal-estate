@@ -1,0 +1,416 @@
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.modal {
+  background: #1a1a2e;
+  border-radius: 16px;
+  width: 90%;
+  max-width: 700px;
+  max-height: 90vh;
+  overflow: hidden;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.headerTitle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #fff;
+}
+
+.headerTitle h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.headerTitle svg {
+  color: #60a5fa;
+}
+
+.closeButton {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.closeButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.content {
+  padding: 24px;
+  overflow-y: auto;
+  max-height: calc(90vh - 80px);
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  color: #9ca3af;
+  gap: 16px;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: #f87171;
+}
+
+.error button {
+  margin-left: auto;
+  padding: 6px 12px;
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  color: #f87171;
+  cursor: pointer;
+}
+
+.section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.section h3 {
+  margin: 0 0 16px 0;
+  color: #e5e7eb;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label {
+  color: #9ca3af;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.value {
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.trend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bullish {
+  color: #10b981;
+}
+
+.bearish {
+  color: #ef4444;
+}
+
+.neutral {
+  color: #9ca3af;
+}
+
+/* RSI */
+.rsiContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rsiBar {
+  height: 24px;
+  background: linear-gradient(to right, #10b981 0%, #10b981 30%, #9ca3af 30%, #9ca3af 70%, #ef4444 70%, #ef4444 100%);
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.rsiIndicator {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 4px;
+  background: #fff;
+  border-radius: 2px;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+  transform: translateX(-50%);
+}
+
+.rsiZones {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 8px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  align-items: center;
+  pointer-events: none;
+}
+
+.rsiZones span {
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.7;
+}
+
+.oversoldZone {
+  color: #fff;
+}
+
+.neutralZone {
+  color: #1a1a2e;
+}
+
+.overboughtZone {
+  color: #fff;
+}
+
+.rsiValue {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rsiNumber {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.overbought {
+  color: #ef4444;
+}
+
+.oversold {
+  color: #10b981;
+}
+
+/* Bollinger Bands */
+.bollingerContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bollingerBand {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+}
+
+.bollingerBand.middle {
+  background: rgba(96, 165, 250, 0.2);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+
+.bandLabel {
+  color: #9ca3af;
+  font-size: 0.875rem;
+}
+
+.bandValue {
+  color: #fff;
+  font-weight: 600;
+}
+
+.bbPosition {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.875rem;
+  margin-top: 8px;
+}
+
+.bbPosition strong {
+  color: #60a5fa;
+}
+
+/* Probability Ranges */
+.probabilityContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.probabilityRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+}
+
+.probLabel {
+  color: #9ca3af;
+  font-size: 0.875rem;
+}
+
+.probRange {
+  color: #fff;
+  font-weight: 600;
+  font-family: monospace;
+}
+
+/* Support & Resistance */
+.levelsContainer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.levelGroup h4 {
+  margin: 0 0 12px 0;
+  color: #9ca3af;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.level {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.875rem;
+}
+
+.level span:first-child {
+  color: #9ca3af;
+  width: 24px;
+}
+
+.level span:nth-child(2) {
+  color: #fff;
+  font-weight: 600;
+}
+
+.pctAway {
+  color: #60a5fa;
+  font-size: 0.75rem;
+}
+
+.noLevels {
+  color: #6b7280;
+  font-style: italic;
+  font-size: 0.875rem;
+}
+
+/* Earnings Warning */
+.section.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.warningIcon {
+  color: #fbbf24;
+}
+
+.warningText {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+/* Footer */
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  margin-top: 8px;
+}
+
+.timestamp {
+  color: #6b7280;
+  font-size: 0.75rem;
+}
+
+.refreshButton {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(96, 165, 250, 0.1);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 6px;
+  color: #60a5fa;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.refreshButton:hover {
+  background: rgba(96, 165, 250, 0.2);
+}
+
+
