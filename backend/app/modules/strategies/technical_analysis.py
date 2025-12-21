@@ -20,6 +20,9 @@ from dataclasses import dataclass, asdict
 from functools import lru_cache
 import time
 
+# V2.2 Refactoring: Use centralized utility functions
+from app.modules.strategies.utils.option_calculations import calculate_itm_status
+
 logger = logging.getLogger(__name__)
 
 # Cache for API results to avoid rate limiting
@@ -837,13 +840,9 @@ class TechnicalAnalysisService:
             "itm_amount": abs(indicators.current_price - strike_price)
         }
         
-        # For calls, ITM means price is ABOVE strike
-        if option_type.lower() == "call":
-            itm_pct = (indicators.current_price - strike_price) / strike_price * 100
-        else:  # put
-            itm_pct = (strike_price - indicators.current_price) / strike_price * 100
-        
-        analysis["itm_percent"] = itm_pct
+        # V2.2: Use centralized ITM calculation
+        itm_calc = calculate_itm_status(indicators.current_price, strike_price, option_type)
+        analysis["itm_percent"] = itm_calc['itm_pct'] if itm_calc['is_itm'] else -itm_calc['otm_pct']
         
         # Check for reversal signals
         reversal_signals = []

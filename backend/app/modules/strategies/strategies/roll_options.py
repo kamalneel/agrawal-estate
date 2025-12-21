@@ -46,20 +46,19 @@ from app.modules.strategies.algorithm_config import (
     is_feature_enabled,
     ALGORITHM_VERSION,
 )
+# V2.2 Refactoring: Use centralized utility functions
+from app.modules.strategies.utils.option_calculations import (
+    calculate_itm_status,
+    check_itm_thresholds,
+    check_roll_economics,
+    validate_roll_options as validate_roll_options_util,
+    would_be_itm,
+)
 
 logger = logging.getLogger(__name__)
 
 # Load config
 _config = get_config()
-
-# V2.1: ITM Close Thresholds
-CATASTROPHIC_ITM_PCT = _config.get("itm_roll", {}).get("catastrophic_itm_pct", 20.0)
-DEEP_ITM_PCT = _config.get("itm_roll", {}).get("deep_itm_pct", 10.0)
-NORMAL_CLOSE_THRESHOLD_PCT = _config.get("itm_roll", {}).get("normal_close_threshold_pct", 5.0)
-TRIPLE_WITCHING_CLOSE_THRESHOLD_PCT = _config.get("itm_roll", {}).get("triple_witching_close_threshold_pct", 3.0)
-MIN_ROLL_SAVINGS_DOLLARS = _config.get("itm_roll", {}).get("min_roll_savings_dollars", 50)
-MIN_ROLL_SAVINGS_PERCENT = _config.get("itm_roll", {}).get("min_roll_savings_percent", 10)
-MIN_STRIKE_VARIATION_PCT = _config.get("itm_roll", {}).get("min_strike_variation_pct", 2.0)
 
 
 def should_close_itm_position_by_threshold(
@@ -70,134 +69,23 @@ def should_close_itm_position_by_threshold(
     is_triple_witching_day: bool = False
 ) -> Dict[str, Any]:
     """
-    V2.1: Determine if ITM position exceeds thresholds and should be closed instead of rolled.
+    V2.2: Wrapper for centralized ITM threshold check.
     
-    This check happens BEFORE calling the roll optimizer.
+    Delegates to utils.option_calculations.check_itm_thresholds() for
+    consistent threshold enforcement across all strategies.
     
     Thresholds:
     - CATASTROPHIC (>20% ITM): Never roll, close immediately
     - DEEP (>10% ITM): Too deep to roll effectively
     - NORMAL (>5% ITM): Close on normal days
     - TRIPLE WITCHING (>3% ITM): Close on Triple Witching days
-    
-    Args:
-        symbol: Stock symbol
-        strike: Option strike price
-        option_type: 'call' or 'put'
-        current_price: Current stock price
-        is_triple_witching_day: Whether today is Triple Witching
-        
-    Returns:
-        dict with 'should_close' (bool), 'reason' (str), and other metadata
     """
-    # Calculate ITM amount and percentage
-    if option_type.lower() == "put":
-        if current_price < strike:
-            itm_amount = strike - current_price
-            itm_pct = (itm_amount / strike) * 100
-            is_itm = True
-            intrinsic_value = itm_amount
-        else:
-            is_itm = False
-            itm_pct = 0
-            intrinsic_value = 0
-    else:  # call
-        if current_price > strike:
-            itm_amount = current_price - strike
-            itm_pct = (itm_amount / strike) * 100
-            is_itm = True
-            intrinsic_value = itm_amount
-        else:
-            is_itm = False
-            itm_pct = 0
-            intrinsic_value = 0
-    
-    if not is_itm:
-        return {
-            'should_close': False, 
-            'reason': 'Position is OTM',
-            'itm_pct': 0,
-            'can_roll': True
-        }
-    
-    # Check thresholds from most severe to least
-    
-    if itm_pct >= CATASTROPHIC_ITM_PCT:
-        return {
-            'should_close': True,
-            'reason': f'CATASTROPHIC: {itm_pct:.1f}% ITM (threshold: {CATASTROPHIC_ITM_PCT}%)',
-            'urgency': 'CRITICAL',
-            'show_roll_options': False,
-            'recommendation': 'CLOSE_IMMEDIATELY',
-            'itm_pct': round(itm_pct, 1),
-            'intrinsic_value': round(intrinsic_value, 2),
-            'explanation': [
-                f'Position is {itm_pct:.1f}% ITM - this is a disaster',
-                'Rolling will not fix this - only delay the inevitable loss',
-                'Close immediately and redeploy capital to recover faster',
-                'This position has fundamentally failed'
-            ]
-        }
-    
-    if itm_pct >= DEEP_ITM_PCT:
-        return {
-            'should_close': True,
-            'reason': f'DEEP ITM: {itm_pct:.1f}% ITM (threshold: {DEEP_ITM_PCT}%)',
-            'urgency': 'urgent',
-            'show_roll_options': False,
-            'recommendation': 'CLOSE_DONT_ROLL',
-            'itm_pct': round(itm_pct, 1),
-            'intrinsic_value': round(intrinsic_value, 2),
-            'explanation': [
-                f'Position is {itm_pct:.1f}% ITM - beyond effective rolling range',
-                'Rolls at this depth have poor economics',
-                'Better to close and redeploy capital'
-            ]
-        }
-    
-    if is_triple_witching_day and itm_pct >= TRIPLE_WITCHING_CLOSE_THRESHOLD_PCT:
-        return {
-            'should_close': True,
-            'reason': f'TRIPLE WITCHING: {itm_pct:.1f}% ITM (threshold: {TRIPLE_WITCHING_CLOSE_THRESHOLD_PCT}%)',
-            'urgency': 'high',
-            'show_roll_options': False,
-            'recommendation': 'CLOSE_DONT_ROLL',
-            'itm_pct': round(itm_pct, 1),
-            'intrinsic_value': round(intrinsic_value, 2),
-            'is_triple_witching': True,
-            'triple_witching_note': 'Stricter threshold on Triple Witching Day due to execution quality',
-            'explanation': [
-                f'Position is {itm_pct:.1f}% ITM on Triple Witching Day',
-                f'Triple Witching threshold is {TRIPLE_WITCHING_CLOSE_THRESHOLD_PCT}% (vs normal {NORMAL_CLOSE_THRESHOLD_PCT}%)',
-                'Poor execution quality today makes rolling unwise',
-                'Close in 10:30 AM - 2:30 PM ET window'
-            ]
-        }
-    
-    if itm_pct >= NORMAL_CLOSE_THRESHOLD_PCT:
-        return {
-            'should_close': True,
-            'reason': f'EXCEEDS THRESHOLD: {itm_pct:.1f}% ITM (threshold: {NORMAL_CLOSE_THRESHOLD_PCT}%)',
-            'urgency': 'high',
-            'show_roll_options': False,
-            'recommendation': 'CLOSE_DONT_ROLL',
-            'itm_pct': round(itm_pct, 1),
-            'intrinsic_value': round(intrinsic_value, 2),
-            'explanation': [
-                f'Position is {itm_pct:.1f}% ITM - exceeds {NORMAL_CLOSE_THRESHOLD_PCT}% rolling threshold',
-                'Beyond this threshold, rolling economics are poor',
-                'Recommended: Close and redeploy capital'
-            ]
-        }
-    
-    # Less than all thresholds - rolling may be acceptable
-    return {
-        'should_close': False,
-        'itm_pct': round(itm_pct, 1),
-        'intrinsic_value': round(intrinsic_value, 2),
-        'can_roll': True,
-        'reason': f'{itm_pct:.1f}% ITM - within rolling range'
-    }
+    return check_itm_thresholds(
+        current_price=current_price,
+        strike=strike,
+        option_type=option_type,
+        is_triple_witching=is_triple_witching_day
+    )
 
 
 def evaluate_roll_economics(
@@ -209,223 +97,37 @@ def evaluate_roll_economics(
     contracts: int = 1
 ) -> Dict[str, Any]:
     """
-    V2.1: Check if rolling makes economic sense vs closing.
+    V2.2: Wrapper for centralized roll economics check.
+    
+    Delegates to utils.option_calculations.check_roll_economics() for
+    consistent economic validation across all strategies.
     
     Economic checks:
     1. Don't pay more/same to roll than to close
     2. Savings must be meaningful ($50+ or 10%+)
     3. Don't roll INTO another ITM position
-    
-    Args:
-        current_close_cost: Cost to close the position now
-        roll_options: List of roll options from optimizer
-        symbol: Stock symbol
-        option_type: 'call' or 'put'
-        current_price: Current stock price
-        contracts: Number of contracts
-        
-    Returns:
-        dict with 'economically_sound' (bool) and analysis
     """
-    if not roll_options or len(roll_options) == 0:
-        return {
-            'economically_sound': False,
-            'reason': 'No valid roll options available',
-            'recommendation': 'CLOSE'
-        }
-    
-    # Find best (lowest cost) roll option
-    # Roll options have 'net_cost' where positive = debit, negative = credit
-    # Total cost = buy_back_cost + net_cost (positive means pay to roll)
-    best_roll = None
-    best_roll_total_cost = float('inf')
-    
-    for opt in roll_options:
-        net_cost = opt.get('net_cost', float('inf'))
-        # Total roll cost = close cost + net (if net is debit) or close cost - net (if credit)
-        # Actually, net_cost already incorporates close - new, so total = close_cost + net_cost means nothing
-        # Let's think: net_cost = buy_back - new_premium
-        # So if net_cost is positive, we PAY to roll
-        # If we just close, we pay buy_back (which equals current_close_cost)
-        # If we roll, we pay net_cost (which is buy_back - new_premium)
-        # To compare: is net_cost < close_cost? If close_cost = buy_back, then net_cost < buy_back
-        # That means: buy_back - new_premium < buy_back → -new_premium < 0 → always true if new_premium > 0
-        # That's not right...
-        
-        # Actually the comparison should be:
-        # Close now: pay current_close_cost, done
-        # Roll: pay net_cost (which is buy_back - new_premium), then position continues
-        # If net_cost >= current_close_cost, rolling costs MORE or SAME as just closing
-        
-        if net_cost < best_roll_total_cost:
-            best_roll_total_cost = net_cost
-            best_roll = opt
-    
-    if best_roll is None:
-        return {
-            'economically_sound': False,
-            'reason': 'No valid roll options found',
-            'recommendation': 'CLOSE'
-        }
-    
-    # Economic Check #1: Don't pay more/same to roll than to close
-    # If net_cost >= close_cost, rolling costs same or more than just closing
-    if best_roll_total_cost >= current_close_cost:
-        return {
-            'economically_sound': False,
-            'reason': f'Roll cost ${best_roll_total_cost:.2f} ≥ close cost ${current_close_cost:.2f}',
-            'recommendation': 'CLOSE',
-            'analysis': {
-                'close_cost': round(current_close_cost, 2),
-                'roll_cost': round(best_roll_total_cost, 2),
-                'difference': round(best_roll_total_cost - current_close_cost, 2),
-                'conclusion': 'Rolling costs same or more than closing - no economic benefit'
-            }
-        }
-    
-    # Economic Check #2: Savings must be meaningful
-    savings = current_close_cost - best_roll_total_cost
-    savings_pct = (savings / current_close_cost) * 100 if current_close_cost > 0 else 0
-    savings_per_contract = savings * 100  # Per 100 shares
-    
-    if savings_per_contract < MIN_ROLL_SAVINGS_DOLLARS and savings_pct < MIN_ROLL_SAVINGS_PERCENT:
-        return {
-            'economically_sound': False,
-            'reason': f'Minimal savings: ${savings_per_contract:.0f}/contract ({savings_pct:.1f}%)',
-            'recommendation': 'CLOSE',
-            'analysis': {
-                'close_cost': round(current_close_cost, 2),
-                'roll_cost': round(best_roll_total_cost, 2),
-                'savings_per_share': round(savings, 2),
-                'savings_per_contract': round(savings_per_contract, 0),
-                'savings_pct': round(savings_pct, 1),
-                'conclusion': f'Saving ${savings_per_contract:.0f} is not worth the complexity and ongoing risk'
-            }
-        }
-    
-    # Economic Check #3: Don't roll INTO another ITM position
-    new_strike = best_roll.get('strike')
-    
-    if new_strike is not None:
-        if option_type.lower() == "put":
-            new_would_be_itm = current_price < new_strike
-            if new_would_be_itm:
-                new_itm_amount = new_strike - current_price
-                new_itm_pct = (new_itm_amount / new_strike) * 100
-                return {
-                    'economically_sound': False,
-                    'reason': f'New position would be {new_itm_pct:.1f}% ITM (strike ${new_strike} vs stock ${current_price:.0f})',
-                    'recommendation': 'CLOSE',
-                    'analysis': {
-                        'new_strike': new_strike,
-                        'current_stock': round(current_price, 2),
-                        'new_itm_pct': round(new_itm_pct, 1),
-                        'conclusion': 'Rolling into another ITM position - problem not solved'
-                    }
-                }
-        else:  # call
-            new_would_be_itm = current_price > new_strike
-            if new_would_be_itm:
-                new_itm_amount = current_price - new_strike
-                new_itm_pct = (new_itm_amount / new_strike) * 100
-                return {
-                    'economically_sound': False,
-                    'reason': f'New position would be {new_itm_pct:.1f}% ITM (strike ${new_strike} vs stock ${current_price:.0f})',
-                    'recommendation': 'CLOSE',
-                    'analysis': {
-                        'new_strike': new_strike,
-                        'current_stock': round(current_price, 2),
-                        'new_itm_pct': round(new_itm_pct, 1),
-                        'conclusion': 'Rolling into another ITM position - problem not solved'
-                    }
-                }
-    
-    # All checks passed
-    return {
-        'economically_sound': True,
-        'savings_per_share': round(savings, 2),
-        'savings_per_contract': round(savings_per_contract, 0),
-        'savings_pct': round(savings_pct, 1),
-        'recommendation': 'ROLL',
-        'best_roll': best_roll,
-        'analysis': {
-            'close_cost': round(current_close_cost, 2),
-            'roll_cost': round(best_roll_total_cost, 2),
-            'savings_per_share': round(savings, 2),
-            'new_strike': new_strike,
-            'new_status': 'OTM',
-            'conclusion': f'Roll economics acceptable - saves ${savings_per_contract:.0f}/contract'
-        }
-    }
+    return check_roll_economics(
+        close_cost=current_close_cost,
+        roll_options=roll_options,
+        current_price=current_price,
+        option_type=option_type
+    )
 
 
 def validate_roll_options(roll_options: List[Dict]) -> Dict[str, Any]:
     """
-    V2.1: Ensure roll optimizer returned valid, distinct options.
+    V2.2: Wrapper for centralized roll option validation.
+    
+    Delegates to utils.option_calculations.validate_roll_options() for
+    consistent validation across all strategies.
     
     Validation checks:
     1. Must have 3 options (Conservative/Moderate/Aggressive)
     2. All strikes must not be identical
     3. Strikes should differ by at least MIN_STRIKE_VARIATION_PCT
-    
-    Args:
-        roll_options: List of dicts with 'label', 'strike', 'net_cost', etc.
-        
-    Returns:
-        dict with 'valid' (bool) and 'error' (str if invalid)
     """
-    if not roll_options:
-        return {
-            'valid': False,
-            'error': 'No roll options provided'
-        }
-    
-    if len(roll_options) < 3:
-        return {
-            'valid': False,
-            'error': f'Expected 3 options (Conservative/Moderate/Aggressive), got {len(roll_options)}'
-        }
-    
-    # Extract strikes
-    strikes = [opt.get('strike') for opt in roll_options if opt.get('strike') is not None]
-    
-    if len(strikes) < 3:
-        return {
-            'valid': False,
-            'error': f'Only {len(strikes)} options have valid strikes'
-        }
-    
-    # Check if all strikes are identical
-    unique_strikes = set(strikes)
-    if len(unique_strikes) == 1:
-        return {
-            'valid': False,
-            'error': f'All options have identical strike ${strikes[0]:.0f} - optimizer failed',
-            'strikes': strikes
-        }
-    
-    # Check if strikes differ by at least MIN_STRIKE_VARIATION_PCT
-    min_strike = min(strikes)
-    max_strike = max(strikes)
-    strike_range_pct = ((max_strike - min_strike) / min_strike) * 100 if min_strike > 0 else 0
-    
-    if strike_range_pct < MIN_STRIKE_VARIATION_PCT:
-        return {
-            'valid': False,
-            'error': f'Strike range only {strike_range_pct:.1f}% - options too similar (need {MIN_STRIKE_VARIATION_PCT}%+)',
-            'strikes': strikes,
-            'min_strike': min_strike,
-            'max_strike': max_strike,
-            'range_pct': round(strike_range_pct, 1)
-        }
-    
-    # Validation passed
-    return {
-        'valid': True,
-        'strikes': strikes,
-        'strike_range': max_strike - min_strike,
-        'range_pct': round(strike_range_pct, 1)
-    }
+    return validate_roll_options_util(roll_options)
 
 
 def generate_close_recommendation(
@@ -624,13 +326,10 @@ class RollOptionsStrategy(BaseStrategy):
                 if is_earnings_week:
                     logger.info(f"EARNINGS ALERT: {position.symbol} has earnings on {earnings_date}")
                 
-                # Determine if ITM
-                if position.option_type.lower() == "call":
-                    is_itm = current_price > strike
-                    itm_pct = (current_price - strike) / strike * 100 if is_itm else 0
-                else:
-                    is_itm = current_price < strike
-                    itm_pct = (strike - current_price) / strike * 100 if is_itm else 0
+                # V2.2: Use centralized ITM calculation
+                itm_status = calculate_itm_status(current_price, strike, position.option_type)
+                is_itm = itm_status['is_itm']
+                itm_pct = itm_status['itm_pct']
                 
                 days_to_expiry = (position.expiration_date - today).days
                 expires_this_week = days_to_expiry <= 2
@@ -1465,12 +1164,10 @@ class RollOptionsStrategy(BaseStrategy):
         else:
             priority = "high"
         
-        # Calculate actual ITM status for display
+        # V2.2: Use centralized ITM calculation for display
         current_price = roll_analysis.current_price
-        if position.option_type.lower() == "call":
-            intrinsic_value = max(0, current_price - position.strike_price)
-        else:  # put
-            intrinsic_value = max(0, position.strike_price - current_price)
+        itm_calc = calculate_itm_status(current_price, position.strike_price, position.option_type)
+        intrinsic_value = itm_calc['intrinsic_value']
         
         itm_status = f"{itm_pct:.1f}% ITM (${intrinsic_value:.2f} intrinsic)"
         

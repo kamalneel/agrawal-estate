@@ -1,9 +1,7 @@
 """
 New Covered Call Opportunity Strategy
 
-ALGORITHM VERSION AWARE:
-- V1: Basic TA-based wait/sell decision
-- V2: Enhanced with strategic timing optimization (Friday → Monday, VIX, FOMC)
+V3.0 - Simplified: Technical analysis based wait/sell decision only.
 
 When shares are uncovered (just closed an option for profit), determine
 whether to sell a new call immediately or wait.
@@ -12,56 +10,43 @@ The stock dropped (that's why the option was profitable), so:
 - If CORRECTING (was overbought, moving to middle): Safe to sell now
 - If BOUNCING (oversold, at support): Wait for bounce before selling
 
-V2 ADDITIONS:
-- Friday afternoon → suggest wait for Monday IV bump
-- Low VIX → suggest wait for IV expansion
-- Pre-FOMC → suggest wait for IV spike
+V3 CHANGES:
+- Removed timing optimization (Friday → Monday, VIX, FOMC predictions)
+- Only use real price-based technical analysis (RSI, support levels)
+- Simple: Check TA → Wait or Sell
 """
 
-from typing import List, Dict, Any, Optional, Set
-from datetime import datetime, date, timedelta, time
+from typing import List, Dict, Any, Optional
+from datetime import datetime, date, timedelta
 import logging
 
 from sqlalchemy import text
 from app.modules.strategies.strategy_base import BaseStrategy
 from app.modules.strategies.recommendations import StrategyRecommendation
-from app.modules.strategies.option_monitor import get_positions_from_db
 from app.modules.strategies.technical_analysis import get_technical_analysis_service
 from app.modules.strategies.services import get_sold_options_by_account
-from app.modules.strategies.algorithm_config import (
-    get_config,
-    is_feature_enabled,
-    ALGORITHM_VERSION,
-)
 
 logger = logging.getLogger(__name__)
-
-# Load config
-_config = get_config()
 
 
 class NewCoveredCallStrategy(BaseStrategy):
     """
     Strategy for selling new covered calls on uncovered shares.
     
-    ALGORITHM VERSION AWARE:
-    - V1: Basic TA-based wait/sell decision
-    - V2: Enhanced with strategic timing optimization
+    V3.0 - Simplified: Only uses technical analysis, no timing predictions.
     
     Uses technical analysis to determine:
     - SELL NOW: Stock correcting from overbought (safe to sell)
     - WAIT: Stock oversold/at support (will likely bounce)
-    - V2: Also considers Friday timing, VIX levels, FOMC dates
     """
     
     strategy_type = "new_covered_call"
     name = "New Call"
-    description = f"[{ALGORITHM_VERSION.upper()}] Identifies when to sell new covered calls with TA guidance"
+    description = "Identifies when to sell new covered calls with TA guidance"
     category = "income_generation"
     default_parameters = {
         "min_contracts_uncovered": 1,  # Minimum uncovered contracts to alert
         "expiration_weeks": 1,  # Default weeks until expiration
-        "enable_timing_optimization": _config["timing"]["enable_timing_optimization"],
     }
     
     def generate_recommendations(self, params: Dict[str, Any]) -> List[StrategyRecommendation]:
@@ -133,57 +118,20 @@ class NewCoveredCallStrategy(BaseStrategy):
         
         return recommendations
     
-    def _check_strategic_timing(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        V2 ONLY: Check if strategic timing suggests waiting for better premium.
-        
-        Returns timing recommendation or None if should sell now.
-        """
-        if not self.get_parameter("enable_timing_optimization", False):
-            return None
-        
-        timing_config = _config.get("timing", {})
-        current_time = datetime.now()
-        day_of_week = current_time.strftime('%A')
-        time_of_day = current_time.time()
-        
-        # Case 1: Friday afternoon - wait for Monday
-        friday_cutoff = timing_config.get("friday_cutoff_time", "14:00")
-        cutoff_hour, cutoff_min = map(int, friday_cutoff.split(":"))
-        
-        if day_of_week == 'Friday' and time_of_day > time(cutoff_hour, cutoff_min):
-            return {
-                'should_wait': True,
-                'reason': 'Friday afternoon - wait for Monday IV bump',
-                'wait_until': 'Monday 10-11am',
-                'expected_benefit': '+5-10% premium',
-                'priority': 'low',
-            }
-        
-        # Case 2: Low VIX (if we had VIX data)
-        # For now, skip this check as it requires additional data source
-        
-        return None
-    
     def _analyze_uncovered_position(
         self,
         position: Dict[str, Any],
         ta_service
     ) -> Optional[StrategyRecommendation]:
-        """Analyze whether to sell a call on uncovered shares."""
+        """
+        Analyze whether to sell a call on uncovered shares.
         
+        V3: Only uses technical analysis - no timing predictions.
+        """
         symbol = position["symbol"]
         
-        # V2: Check strategic timing first
-        timing_check = self._check_strategic_timing(symbol)
-        if timing_check and timing_check.get('should_wait'):
-            # Override with timing-based wait
-            should_wait = True
-            reason = timing_check['reason']
-            analysis = timing_check
-        else:
-            # Check if we should wait based on TA
-            should_wait, reason, analysis = ta_service.should_wait_to_sell(symbol)
+        # V3: Only check technical analysis for wait/sell decision
+        should_wait, reason, analysis = ta_service.should_wait_to_sell(symbol)
         
         # Get full indicators for context
         indicators = ta_service.get_technical_indicators(symbol)

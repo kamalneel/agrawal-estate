@@ -28,6 +28,8 @@ import pytz
 
 from app.modules.strategies.strategy_base import BaseStrategy
 from app.modules.strategies.recommendations import StrategyRecommendation
+# V2.2 Refactoring: Use centralized utility functions
+from app.modules.strategies.utils.option_calculations import calculate_itm_status
 
 logger = logging.getLogger(__name__)
 
@@ -249,25 +251,13 @@ def analyze_expiring_position_on_triple_witching(
     option_type = position.option_type.lower()
     expires_today = position.expiration_date == date.today()
     
-    # Calculate ITM/OTM percentage
-    if option_type == "call":
-        if stock_price > strike:
-            itm_pct = (stock_price - strike) / strike * 100
-            is_itm = True
-            itm_otm_pct = -itm_pct  # Negative for ITM
-        else:
-            otm_pct = (strike - stock_price) / stock_price * 100
-            is_itm = False
-            itm_otm_pct = otm_pct
-    else:  # put
-        if stock_price < strike:
-            itm_pct = (strike - stock_price) / strike * 100
-            is_itm = True
-            itm_otm_pct = -itm_pct
-        else:
-            otm_pct = (stock_price - strike) / stock_price * 100
-            is_itm = False
-            itm_otm_pct = otm_pct
+    # V2.2: Use centralized ITM calculation
+    itm_calc = calculate_itm_status(stock_price, strike, option_type)
+    is_itm = itm_calc['is_itm']
+    itm_pct = itm_calc['itm_pct']
+    otm_pct = itm_calc['otm_pct']
+    # itm_otm_pct: negative for ITM, positive for OTM
+    itm_otm_pct = -itm_pct if is_itm else otm_pct
     
     # Base analysis structure
     base = {
@@ -630,10 +620,10 @@ def apply_triple_witching_overrides(
         option_type = recommendation.get('context', {}).get('option_type', 'call')
         
         if stock_price and strike:
-            if option_type == 'call':
-                itm_pct = max(0, (stock_price - strike) / strike * 100)
-            else:
-                itm_pct = max(0, (strike - stock_price) / strike * 100)
+            # V2.2: Use centralized ITM calculation
+            itm_calc = calculate_itm_status(stock_price, strike, option_type)
+            itm_pct = itm_calc['itm_pct']
+            intrinsic_value = itm_calc['intrinsic_value']
             
             if itm_pct > SHALLOW_ITM_THRESHOLD_WITCHING:
                 # Get symbol info for title
@@ -643,12 +633,6 @@ def apply_triple_witching_overrides(
                 
                 recommendation['action'] = 'CLOSE_DONT_ROLL'
                 recommendation['title'] = f"🔴 TRIPLE WITCHING: CLOSE {symbol} - {itm_pct:.1f}% ITM (Don't roll today)"
-                
-                # Calculate intrinsic value for display
-                if option_type.lower() == 'call':
-                    intrinsic_value = max(0, stock_price - strike)
-                else:  # put
-                    intrinsic_value = max(0, strike - stock_price)
                 
                 recommendation['triple_witching_override'] = {
                     'original_action': 'roll',

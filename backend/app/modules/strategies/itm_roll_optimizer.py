@@ -16,6 +16,9 @@ from datetime import datetime, date, timedelta
 import logging
 import numpy as np
 
+# V2.2 Refactoring: Use centralized utility functions
+from app.modules.strategies.utils.option_calculations import calculate_itm_status
+
 logger = logging.getLogger(__name__)
 
 
@@ -135,24 +138,16 @@ class ITMRollOptimizer:
             
             current_price = indicators.current_price
             
-            # Calculate ITM percentage
-            if option_type.lower() == "call":
-                is_itm = current_price > current_strike
-                itm_pct = ((current_price - current_strike) / current_strike * 100) if is_itm else 0
-            else:
-                is_itm = current_price < current_strike
-                itm_pct = ((current_strike - current_price) / current_strike * 100) if is_itm else 0
+            # V2.2: Use centralized ITM calculation
+            itm_calc = calculate_itm_status(current_price, current_strike, option_type)
+            is_itm = itm_calc['is_itm']
+            itm_pct = itm_calc['itm_pct']
+            intrinsic_value = itm_calc['intrinsic_value']
             
             # Get current option price (buy-back cost)
             current_option_price = self._get_current_option_price(
                 symbol, current_strike, option_type, current_expiration
             )
-            
-            # Calculate intrinsic value - this is the MINIMUM cost to close an ITM position
-            if option_type.lower() == "call":
-                intrinsic_value = max(0, current_price - current_strike)
-            else:  # put
-                intrinsic_value = max(0, current_strike - current_price)
             
             # Calculate time value estimate
             days_left = (current_expiration - date.today()).days

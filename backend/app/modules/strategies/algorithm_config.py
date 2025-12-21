@@ -88,12 +88,6 @@ V1_CONFIG: Dict[str, Any] = {
         "enabled": False,
     },
     
-    # Performance Tracking (Not in V1)
-    "performance": {
-        "track_recommendations": False,
-        "generate_weekly_report": False,
-    },
-    
     # Triple Witching (Not in V1)
     "triple_witching": {
         "enabled": False,
@@ -217,13 +211,6 @@ V2_CONFIG: Dict[str, Any] = {
         "min_dividend_pct_for_risk": 0.002,    # 0.2% of stock price
     },
     
-    # Performance Tracking - NEW in V2
-    "performance": {
-        "track_recommendations": True,
-        "generate_weekly_report": True,
-        "min_execution_rate_warning": 0.50,
-    },
-    
     # Triple Witching - NEW in V2
     "triple_witching": {
         "enabled": True,
@@ -248,11 +235,112 @@ V2_CONFIG: Dict[str, Any] = {
 }
 
 # =============================================================================
+# V3 CONFIGURATION (Simplified Strategy-Aligned - December 2024)
+# Documentation: docs/OPTIONS-NOTIFICATION-ALGORITHM-V3.md
+# =============================================================================
+V3_CONFIG: Dict[str, Any] = {
+    "version": "v3",
+    "description": "Simplified algorithm: 3 states, 12 params, strategy-aligned",
+    
+    # ===== CORE THRESHOLDS =====
+    "profit_threshold": 0.60,      # Roll weekly when 60%+ profit captured
+    "max_debit_pct": 0.20,         # Maximum acceptable debit = 20% of original premium
+    "max_roll_months": 12,         # Never roll beyond 12 months (52 weeks)
+    
+    # ===== STRIKE SELECTION =====
+    "strike_selection": {
+        "weekly_delta_target": 0.90,      # Delta 10 for weekly income rolls (90% OTM)
+        "itm_escape_delta_target": 0.70,  # Delta 30 for ITM escapes (70% OTM)
+        "pullback_delta_target": 0.70,    # Delta 30 for pull-backs (70% OTM)
+    },
+    
+    # ===== PULL-BACK =====
+    "min_weeks_for_pullback": 1,   # Check pull-back for positions >1 week out
+    
+    # ===== RISK MANAGEMENT =====
+    "earnings_lookback_days": 5,   # Alert if earnings within 5 trading days
+    "dividend_lookback_days": 7,   # Alert if ex-dividend within 7 days
+    "excessive_earnings_threshold": 10,  # Warn if 10+ earnings per quarter
+    
+    # ===== LIQUIDITY =====
+    "liquidity": {
+        "enable_liquidity_check": True,
+        "min_open_interest": 50,
+        "max_spread_pct": 0.10,    # 10% max spread
+    },
+    
+    # ===== SCAN SCHEDULE (Pacific Time) =====
+    "scan_times": {
+        "main": "06:00",           # Comprehensive daily scan
+        "post_open": "08:00",      # Urgent state changes
+        "midday": "12:00",         # Pull-backs and opportunities
+        "pre_close": "12:45",      # Last chance actions
+        "evening": "20:00",        # Next day planning
+    },
+    
+    # ===== URGENCY THRESHOLDS =====
+    "urgent_deepening_threshold": 10,  # Alert at 8 AM if position >10% deeper ITM
+    
+    # ===== SPECIAL DATES =====
+    "triple_witching_months": [3, 6, 9, 12],  # March, June, September, December
+    
+    # ===== FEATURES (V3 removes many V2 features) =====
+    "timing": {
+        "enable_timing_optimization": False,  # REMOVED in V3
+    },
+    
+    # Keep these for backwards compatibility with shared code
+    "early_roll": {
+        "profit_threshold": 0.60,
+        "earnings_week_profit_threshold": 0.60,  # Same as normal in V3
+        "short_dte_threshold": 0.60,             # Same as normal in V3
+    },
+    
+    "roll_options": {
+        "enable_end_of_week_roll": False,
+        "max_roll_weeks": 52,  # Up to 12 months
+    },
+    
+    "itm_roll": {
+        "itm_threshold_percent": 0.0,  # No minimum - any ITM triggers escape
+        # V3 REMOVES all threshold percentages
+        # "catastrophic_itm_pct": REMOVED
+        # "deep_itm_pct": REMOVED
+        # "normal_close_threshold_pct": REMOVED
+    },
+    
+    "preemptive_roll": {
+        "enabled": False,  # REMOVED in V3 - merged into position evaluator
+    },
+    
+    "dividend": {
+        "enabled": True,
+        "days_before_exdiv_alert": 7,
+    },
+    
+    "triple_witching": {
+        "enabled": True,
+        "alert_days_before": 1,
+    },
+    
+    "earnings": {
+        "days_before_alert": 5,
+    },
+    
+    "execution": {
+        "enable_execution_guidance": True,  # Keep execution guidance
+    },
+    
+    "min_weekly_income": 50,
+}
+
+# =============================================================================
 # VERSION REGISTRY
 # =============================================================================
 VERSIONS: Dict[str, Dict[str, Any]] = {
     "v1": V1_CONFIG,
     "v2": V2_CONFIG,
+    "v3": V3_CONFIG,
 }
 
 # =============================================================================
@@ -324,7 +412,6 @@ def is_feature_enabled(feature: str, version: str = None) -> bool:
         "liquidity": ("liquidity", "enable_liquidity_check"),
         "execution": ("execution", "enable_execution_guidance"),
         "timing": ("timing", "enable_timing_optimization"),
-        "performance": ("performance", "track_recommendations"),
         "end_of_week_roll": ("roll_options", "enable_end_of_week_roll"),
         "triple_witching": ("triple_witching", "enabled"),
     }

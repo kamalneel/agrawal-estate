@@ -1,6 +1,6 @@
 # Options Notification & Recommendation Algorithm (V2)
 
-**Version:** V2.2 - Enhanced Algorithm  
+**Version:** V2.3 - Refactored Algorithm  
 **Status:** Active  
 **Last Updated:** December 19, 2024
 
@@ -13,8 +13,9 @@
 - Enhanced cost sensitivity evaluation
 - Added liquidity and execution quality checks
 - Added execution guidance system
+- **V2.2:** ITM threshold enforcement, economic sanity checks, roll validation
+- **V2.3:** Code de-duplication via centralized utility module
 - Added dividend/ex-dividend tracking
-- Added performance tracking and analytics
 - **NEW:** Added Triple Witching Day special handling with comprehensive execution guidance
 - **V2.1:** Fixed ITM/OTM status display (shows actual ITM% with intrinsic value)
 - **V2.1:** Fixed ITM PUT roll strike selection (now rolls DOWN properly)
@@ -49,7 +50,6 @@ This system monitors sold options positions and generates actionable notificatio
 - **Market Data**: Yahoo Finance API (stock prices, option chains, liquidity metrics)
 - **Technical Analysis**: Calculated from price history
 - **Corporate Actions**: Dividend dates and amounts
-- **Performance Metrics**: Historical recommendation outcomes
 
 ---
 
@@ -1092,265 +1092,7 @@ def adjust_for_market_conditions(base_guidance, symbol):
 
 ---
 
-### 2.9 Performance Tracking System (NEW - `performance_tracker.py`)
-
-**Purpose**: Track recommendation accuracy and portfolio performance to validate algorithm effectiveness.
-
-**Data Captured**:
-```python
-# When recommendation generated:
-recommendation_record = {
-    'id': f'{strategy}_{symbol}_{strike}_{date}_{account}',
-    'timestamp': datetime.now(),
-    'strategy_type': 'early_roll',
-    'symbol': 'AAPL',
-    'strike': 180.0,
-    'expiration': '2024-12-20',
-    
-    # Predictions
-    'predicted_buyback_cost': 0.15,
-    'predicted_new_premium': 0.50,
-    'predicted_net': 0.35,  # Credit
-    'predicted_profit_pct': 0.65,
-    
-    # Recommendation
-    'recommendation_action': 'ROLL',
-    'recommended_strike': 185.0,
-    'recommended_expiration': '2024-12-27',
-    'priority': 'high',
-    
-    # Status
-    'status': 'pending',  # pending, executed, ignored, skipped
-    'user_action': None,
-    'execution_timestamp': None
-}
-
-# When user executes (or ignores):
-execution_record = {
-    'recommendation_id': 'early_roll_AAPL_180_2024-12-18_...',
-    'user_action': 'executed',  # executed, ignored, modified
-    'execution_timestamp': datetime.now(),
-    
-    # Actual results
-    'actual_buyback_cost': 0.16,  # vs predicted 0.15
-    'actual_new_premium': 0.48,   # vs predicted 0.50
-    'actual_net': 0.32,           # vs predicted 0.35
-    
-    # Execution quality
-    'buyback_slippage': 0.01,     # Paid $0.01 more than predicted
-    'sell_slippage': -0.02,       # Got $0.02 less than predicted
-    'total_slippage': -0.01,      # Net $0.01 worse
-    'slippage_pct': -2.9,         # 2.9% worse than predicted
-    
-    # Time metrics
-    'time_to_execute': 300,       # 5 minutes (seconds)
-    'fills_required': 2,          # Number of order modifications
-    
-    # Outcome
-    'outcome': 'success',         # success, partial_success, failure
-    'actual_profit': 0.32,
-    'vs_prediction': -0.03,       # $0.03 worse than predicted
-    'accuracy_pct': 91.4          # 91.4% of predicted
-}
-```
-
-**Analytics Generated**:
-```python
-def generate_performance_report(timeframe='week'):
-    """
-    Generate comprehensive performance analytics.
-    """
-    
-    recommendations = get_recommendations(timeframe)
-    
-    # Overall metrics
-    total_recs = len(recommendations)
-    executed = [r for r in recommendations if r.status == 'executed']
-    ignored = [r for r in recommendations if r.status == 'ignored']
-    
-    execution_rate = len(executed) / total_recs * 100
-    
-    # Financial metrics
-    total_premium_collected = sum(r.actual_new_premium for r in executed)
-    total_buyback_cost = sum(r.actual_buyback_cost for r in executed)
-    net_profit = total_premium_collected - total_buyback_cost
-    
-    # Win rate
-    profitable = [r for r in executed if r.actual_profit > 0]
-    win_rate = len(profitable) / len(executed) * 100 if executed else 0
-    
-    # Prediction accuracy
-    avg_prediction_error = np.mean([
-        abs(r.actual_net - r.predicted_net) / r.predicted_net * 100
-        for r in executed if r.predicted_net != 0
-    ])
-    
-    # Slippage analysis
-    avg_slippage = np.mean([r.total_slippage for r in executed])
-    avg_slippage_pct = np.mean([r.slippage_pct for r in executed])
-    
-    # Strategy breakdown
-    strategy_breakdown = {}
-    for strategy_type in ['early_roll', 'itm_roll', 'preemptive_roll', 'new_sell']:
-        strategy_recs = [r for r in executed if r.strategy_type == strategy_type]
-        if strategy_recs:
-            strategy_breakdown[strategy_type] = {
-                'count': len(strategy_recs),
-                'avg_profit': np.mean([r.actual_profit for r in strategy_recs]),
-                'win_rate': len([r for r in strategy_recs if r.actual_profit > 0]) / len(strategy_recs) * 100,
-                'total_profit': sum(r.actual_profit for r in strategy_recs)
-            }
-    
-    # Top performers (symbols)
-    symbol_performance = {}
-    for symbol in set(r.symbol for r in executed):
-        symbol_recs = [r for r in executed if r.symbol == symbol]
-        symbol_performance[symbol] = {
-            'trades': len(symbol_recs),
-            'total_profit': sum(r.actual_profit for r in symbol_recs),
-            'avg_profit': np.mean([r.actual_profit for r in symbol_recs]),
-            'win_rate': len([r for r in symbol_recs if r.actual_profit > 0]) / len(symbol_recs) * 100
-        }
-    
-    top_symbols = sorted(
-        symbol_performance.items(),
-        key=lambda x: x[1]['total_profit'],
-        reverse=True
-    )[:5]
-    
-    # Warnings and alerts
-    warnings = []
-    
-    # Check for frequent assignments
-    assignments = get_assignments(timeframe)
-    for symbol in set(a.symbol for a in assignments):
-        symbol_assigns = [a for a in assignments if a.symbol == symbol]
-        if len(symbol_assigns) >= 2:
-            warnings.append({
-                'type': 'frequent_assignment',
-                'symbol': symbol,
-                'count': len(symbol_assigns),
-                'message': f'{symbol}: {len(symbol_assigns)} assignments - consider wider strikes'
-            })
-    
-    # Check for low execution rate on specific strategies
-    for strategy_type in strategy_breakdown:
-        strategy_all = [r for r in recommendations if r.strategy_type == strategy_type]
-        strategy_exec = [r for r in executed if r.strategy_type == strategy_type]
-        exec_rate = len(strategy_exec) / len(strategy_all) * 100 if strategy_all else 0
-        
-        if exec_rate < 50:
-            warnings.append({
-                'type': 'low_execution_rate',
-                'strategy': strategy_type,
-                'rate': exec_rate,
-                'message': f'{strategy_type}: Only {exec_rate:.0f}% executed - review recommendations'
-            })
-    
-    return {
-        'timeframe': timeframe,
-        'summary': {
-            'total_recommendations': total_recs,
-            'executed': len(executed),
-            'ignored': len(ignored),
-            'execution_rate': execution_rate,
-            'win_rate': win_rate
-        },
-        'financial': {
-            'total_premium_collected': total_premium_collected,
-            'total_buyback_cost': total_buyback_cost,
-            'net_profit': net_profit,
-            'avg_profit_per_trade': net_profit / len(executed) if executed else 0
-        },
-        'accuracy': {
-            'avg_prediction_error_pct': avg_prediction_error,
-            'avg_slippage': avg_slippage,
-            'avg_slippage_pct': avg_slippage_pct
-        },
-        'by_strategy': strategy_breakdown,
-        'top_symbols': top_symbols,
-        'warnings': warnings
-    }
-```
-
-**Report Format** (sent weekly):
-```
-📊 WEEKLY PERFORMANCE REPORT
-Week of Dec 11-18, 2024
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SUMMARY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Recommendations: 12 total
-  • Executed: 9 (75%)
-  • Ignored: 2 (17%)
-  • Skipped (liquidity): 1 (8%)
-
-Financial Results:
-  • Premium collected: $1,240
-  • Buyback costs: $180
-  • Net profit: $1,060
-  • Avg per trade: $118
-  
-Win rate: 100% (9/9 profitable)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ALGORITHM ACCURACY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Prediction accuracy: +3%
-  (Actual results 3% better than predicted)
-  
-Execution quality:
-  • Avg slippage: -$0.02/contract (-2%)
-  • Better than expected!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BY STRATEGY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Early Rolls: 6 trades
-  • Avg profit: $0.45/share
-  • Win rate: 100%
-  • Total: $270
-
-Preemptive Rolls: 2 trades
-  • Avg profit: $0.30/share
-  • Avoided ITM: 2 times
-  • Saved est: $340
-
-New Sells: 1 trade
-  • Premium: $0.85/share
-  • Total: $85
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TOP PERFORMERS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. AAPL: $320 profit (4 trades, 100% win rate)
-2. MSFT: $180 profit (2 trades, 100% win rate)
-3. TSLA: $140 profit (3 trades, 100% win rate)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ ALERTS & INSIGHTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• TSLA: 2 preemptive rolls in 7 days
-  → High volatility detected
-  → Consider: Wider Delta 10 strikes or reduce position
-  
-• Friday timing optimization: 2 recommendations to wait for Monday
-  → Both resulted in +$0.05-0.08 better premiums
-  → Keep using this feature!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NEXT WEEK OUTLOOK
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Upcoming events:
-  • Dec 20: 3 positions expiring
-  • Dec 22 (ex-div): MSFT dividend alert
-  • Holiday week: Lower volume expected (consider multi-week)
-```
-
----
-
-### 2.10 Triple Witching Day Strategy (NEW - `triple_witching_handler.py`)
+### 2.9 Triple Witching Day Strategy (NEW - `triple_witching_handler.py`)
 
 **Purpose**: Special handling for quarterly options expiration days when stock options, index options, and stock index futures all expire simultaneously.
 
@@ -1785,13 +1527,6 @@ HIGH_ASSIGNMENT_RISK_THRESHOLD = 0.80   # 80% probability (NEW)
 MIN_DIVIDEND_PCT_FOR_RISK = 0.2        # 0.2% of stock price (NEW)
 ```
 
-### Performance Tracking Parameters
-```python
-TRACK_RECOMMENDATIONS = True            # Enable tracking (NEW)
-GENERATE_WEEKLY_REPORT = True          # Weekly analytics (NEW)
-MIN_EXECUTION_RATE_WARNING = 0.50      # Warn if <50% executed (NEW)
-```
-
 ### Earnings & Events
 ```python
 DAYS_BEFORE_EARNINGS_ALERT = 5         # (unchanged)
@@ -1873,7 +1608,6 @@ else:
 ### Daily Scan Process:
 ```
 1. Morning Scan (9:00 AM before market open)
-   → Performance report (if Monday)
    → Dividend alerts (check all positions)
    → Earnings alerts (within 5 days)
    → Strategic timing opportunities (Friday positions)
@@ -1892,7 +1626,6 @@ else:
    → Expiring positions (assign or roll decisions)
 
 5. After Market Close (4:15 PM)
-   → Performance tracking updates
    → Next day preparation
 ```
 
@@ -1907,7 +1640,6 @@ else:
 5. **Dividend Data Accuracy**: Ex-dates may change; verify on brokerage platform
 6. **Execution Timing**: Guidance assumes normal market conditions; adjust for news/events
 7. **Multi-Week Analysis**: Limited to 3 weeks for standard rolls (data availability)
-8. **Performance Tracking**: Requires manual confirmation of executed trades
 
 ---
 
@@ -2090,13 +1822,13 @@ if itm_pct > 10 and net_cost <= 0:
 | `backend/app/modules/strategies/strategies/dividend_alert.py` | **NEW** - Dividend/ex-div tracking |
 | `backend/app/modules/strategies/strategies/approaching_strike_alert.py` | **NEW** - Preemptive roll alerts |
 | `backend/app/modules/strategies/strategies/triple_witching_handler.py` | **NEW** - Triple Witching Day handling - **V2.1: Enhanced execution guidance** |
+| `backend/app/modules/strategies/utils/option_calculations.py` | **V2.3** - Centralized ITM/threshold/economics calculations |
 | `backend/app/modules/strategies/technical_analysis.py` | TA calculations + momentum |
 | `backend/app/modules/strategies/itm_roll_optimizer.py` | ITM roll optimization - **V2.1: PUT strike selection fix, cost validation** |
 | `backend/app/modules/strategies/multi_week_optimizer.py` | **NEW** - Multi-week expiration analysis |
 | `backend/app/modules/strategies/liquidity_checker.py` | **NEW** - Liquidity evaluation |
 | `backend/app/modules/strategies/execution_advisor.py` | **NEW** - Execution guidance |
 | `backend/app/modules/strategies/timing_optimizer.py` | **NEW** - Strategic timing (IV, Monday bump) |
-| `backend/app/modules/strategies/performance_tracker.py` | **NEW** - Performance analytics |
 | `backend/app/modules/strategies/recommendations.py` | Save to database |
 | `backend/app/shared/services/notifications.py` | Telegram formatting |
 
@@ -2114,7 +1846,7 @@ if itm_pct > 10 and net_cost <= 0:
 | Version | Date | Changes |
 |---------|------|---------|
 | V1 | Dec 2024 | Initial algorithm with 5 core strategies |
-| V2 | Dec 18, 2024 | Lowered thresholds, preemptive rolls, multi-week, liquidity, execution guidance, dividends, performance tracking |
+| V2 | Dec 18, 2024 | Lowered thresholds, preemptive rolls, multi-week, liquidity, execution guidance, dividends |
 | V2.1 | Dec 19, 2024 | Bug fixes for ITM display, PUT roll strikes, cost validation, Triple Witching UX |
 | V2.2 | Dec 19, 2024 | ITM threshold enforcement, economic sanity checks, roll validation, prevent rolling into ITM |
 
@@ -2197,6 +1929,37 @@ if itm_pct > 10 and net_cost <= 0:
 - Added `renderTripleWitchingGuidance()` function
 - Added CSS styles for Triple Witching section (`.tripleWitchingSection`, window badges, etc.)
 
+### V2.3 Changes Summary (December 19, 2024) - Code Refactoring
+
+**De-duplication Refactoring:**
+- Created centralized utility module: `utils/option_calculations.py`
+- Eliminated 19 duplicate ITM calculations across codebase
+- Eliminated 13 duplicate intrinsic value calculations
+- Added 43 comprehensive unit tests for calculation logic
+- Single source of truth for ITM thresholds and economic checks
+
+**New Utility Functions:**
+| Function | Purpose |
+|----------|---------|
+| `calculate_itm_status()` | ITM%, intrinsic value, OTM% for any option |
+| `check_itm_thresholds()` | 20%/10%/5%/3% threshold decisions |
+| `check_roll_economics()` | Savings validation, roll-into-ITM check |
+| `would_be_itm()` | Quick ITM check for new strikes |
+| `validate_roll_options()` | Optimizer output validation |
+
+**Files Updated:**
+- `roll_options.py` - Uses utility for all ITM checks
+- `itm_roll_optimizer.py` - Uses utility for ITM calculations
+- `triple_witching_handler.py` - Uses utility for ITM calculations
+- `earnings_alert.py` - Uses utility for ITM calculations
+- `technical_analysis.py` - Uses utility for ITM calculations
+
+**Benefits:**
+- Reduced bug surface area (single calculation logic)
+- Easier testing and maintenance
+- Consistent behavior across all strategies
+- Better code organization
+
 ### V2.0 Changes Summary (December 18, 2024)
 - Lowered profit thresholds: 80% → 60%, with earnings/DTE adjustments
 - Removed end-of-week auto-roll logic (Scenario B deleted)
@@ -2207,7 +1970,6 @@ if itm_pct > 10 and net_cost <= 0:
 - Added liquidity screening and quality checks
 - Added comprehensive execution guidance system
 - Added dividend/ex-dividend tracking and alerts
-- Added performance tracking and analytics
 - Updated priority levels and notification formats
 - Added 8 new configuration parameters sections
 - Added 7 new Python modules

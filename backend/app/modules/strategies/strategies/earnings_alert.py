@@ -27,6 +27,8 @@ from app.modules.strategies.recommendations import StrategyRecommendation
 from app.modules.strategies.option_monitor import get_positions_from_db, OptionRollMonitor
 from app.modules.strategies.technical_analysis import get_technical_analysis_service
 from app.modules.strategies.algorithm_config import get_config, ALGORITHM_VERSION
+# V2.2 Refactoring: Use centralized utility functions
+from app.modules.strategies.utils.option_calculations import calculate_itm_status
 
 logger = logging.getLogger(__name__)
 
@@ -156,15 +158,11 @@ class EarningsAlertStrategy(BaseStrategy):
         strike = position.strike_price
         earnings_date = indicators.earnings_date
         
-        # Determine ITM status
-        if position.option_type.lower() == "call":
-            is_itm = current_price > strike
-            itm_pct = (current_price - strike) / strike * 100 if is_itm else 0
-            otm_pct = (strike - current_price) / strike * 100 if not is_itm else 0
-        else:
-            is_itm = current_price < strike
-            itm_pct = (strike - current_price) / strike * 100 if is_itm else 0
-            otm_pct = (current_price - strike) / strike * 100 if not is_itm else 0
+        # V2.2: Use centralized ITM calculation
+        itm_calc = calculate_itm_status(current_price, strike, position.option_type)
+        is_itm = itm_calc['is_itm']
+        itm_pct = itm_calc['itm_pct']
+        otm_pct = itm_calc['otm_pct']
         
         # Check profit status
         alert = monitor.check_position(position)
