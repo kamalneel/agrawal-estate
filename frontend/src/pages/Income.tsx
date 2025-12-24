@@ -2891,7 +2891,11 @@ export function Income() {
       {/* Account Breakdown */}
       {filteredAccounts.length > 0 && (
         <section className={styles.accountsSection}>
-          <h2>By Account {mainSelectedYear === 'all' ? '(All Time)' : `(${mainSelectedYear})`}</h2>
+          <h2>By Account {mainSelectedYear === 'all' 
+            ? '(All Time)' 
+            : mainSelectedMonth !== null && mainSelectedYear === currentYear
+              ? `(${new Date(currentYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
+              : `(${mainSelectedYear})`}</h2>
           <div className={styles.accountsGrid}>
             {filteredAccounts.map((account, index) => {
               const colors = ['#00D632', '#00A3FF', '#A855F7', '#FFB800']

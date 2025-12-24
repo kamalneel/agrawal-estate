@@ -12,9 +12,33 @@ import logging
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.ingestion.services import save_records
+from app.ingestion.services import save_records, create_ingestion_log, complete_ingestion_log
+import hashlib
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_file_hash(file_path: Path) -> str:
+    """Compute SHA256 hash of file contents for tracking."""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
+def _get_module_from_folder(folder_path: Path) -> str:
+    """Determine module name from folder path."""
+    folder_str = str(folder_path).lower()
+    if "investment" in folder_str or "robinhood" in folder_str or "schwab" in folder_str or "fidelity" in folder_str:
+        return "investments"
+    elif "cash" in folder_str or "chase" in folder_str or "bank" in folder_str:
+        return "cash"
+    elif "income" in folder_str or "salary" in folder_str:
+        return "income"
+    elif "tax" in folder_str:
+        return "tax"
+    return "other"
 
 router = APIRouter()
 
@@ -41,6 +65,7 @@ async def trigger_inbox_scan(db: Session = Depends(get_db)):
     """
     Trigger a scan of all inbox folders.
     Processes any new files found.
+    Creates ingestion logs for tracking and debugging.
     """
     parsers = get_all_parsers()
     
@@ -65,6 +90,7 @@ async def trigger_inbox_scan(db: Session = Depends(get_db)):
             continue
             
         folders_scanned.append(str(folder))
+        module = _get_module_from_folder(folder)
         
         # Get all files (not hidden, not directories)
         files = [f for f in folder.iterdir() if f.is_file() and not f.name.startswith('.')]
@@ -73,14 +99,40 @@ async def trigger_inbox_scan(db: Session = Depends(get_db)):
         for file_path in files:
             # Try each parser
             parsed = False
+            ingestion_log = None
+            
             for parser in parsers:
                 try:
                     if parser.can_parse(file_path):
+                        # Create ingestion log BEFORE processing
+                        file_hash = _compute_file_hash(file_path)
+                        ingestion_log = create_ingestion_log(
+                            db=db,
+                            file_name=file_path.name,
+                            file_path=str(file_path),
+                            source=parser.source_name,
+                            module=module,
+                        )
+                        ingestion_log.file_hash = file_hash
+                        db.flush()
+                        
                         result = parser.parse(file_path)
+                        ingestion_log.records_in_file = len(result.records) if result.records else 0
                         
                         if result.success and result.records:
-                            # Save records to database
-                            save_result = save_records(db, result.records)
+                            # Save records to database with ingestion_id for provenance
+                            save_result = save_records(db, result.records, ingestion_log.id)
+                            
+                            # Update ingestion log with results
+                            complete_ingestion_log(
+                                db=db,
+                                log=ingestion_log,
+                                status="success",
+                                records_created=save_result.get("created", 0),
+                                records_updated=save_result.get("updated", 0),
+                                records_skipped=save_result.get("skipped", 0),
+                            )
+                            
                             db.commit()
                             
                             # Move file to processed folder
@@ -93,24 +145,50 @@ async def trigger_inbox_scan(db: Session = Depends(get_db)):
                                 "file": file_path.name,
                                 "parser": parser.source_name,
                                 "status": "success",
+                                "ingestion_id": ingestion_log.id,
                                 "records": save_result
                             })
+                            logger.info(f"Processed {file_path.name}: created={save_result.get('created', 0)}, skipped={save_result.get('skipped', 0)}")
                             parsed = True
                             break
                         elif result.errors:
+                            # Log parsing errors
+                            error_msg = "; ".join(result.errors[:5])  # First 5 errors
+                            complete_ingestion_log(
+                                db=db,
+                                log=ingestion_log,
+                                status="failed",
+                                error_message=error_msg,
+                            )
+                            db.commit()
+                            
                             results.append({
                                 "file": file_path.name,
                                 "parser": parser.source_name,
                                 "status": "error",
+                                "ingestion_id": ingestion_log.id,
                                 "errors": result.errors
                             })
+                            logger.warning(f"Parse errors for {file_path.name}: {error_msg}")
                 except Exception as e:
+                    # Log exception
+                    error_msg = str(e)
+                    if ingestion_log:
+                        complete_ingestion_log(
+                            db=db,
+                            log=ingestion_log,
+                            status="failed",
+                            error_message=error_msg,
+                        )
+                        db.commit()
+                    
                     results.append({
                         "file": file_path.name,
                         "parser": parser.source_name if parser else "unknown",
                         "status": "exception",
-                        "error": str(e)
+                        "error": error_msg
                     })
+                    logger.error(f"Exception processing {file_path.name}: {error_msg}")
             
             if not parsed:
                 files_failed += 1
@@ -147,20 +225,77 @@ async def get_ingestion_history(
     Get history of file ingestions.
     Filter by module (investments, tax, etc.), source (robinhood, schwab, etc.), or status.
     """
+    from app.shared.models.ingestion import IngestionLog
+    
+    query = db.query(IngestionLog)
+    
+    if module:
+        query = query.filter(IngestionLog.module == module)
+    if source:
+        query = query.filter(IngestionLog.source == source)
+    if status:
+        query = query.filter(IngestionLog.status == status)
+    
+    # Get total count before limit
+    total = query.count()
+    
+    # Get results ordered by most recent first
+    logs = query.order_by(IngestionLog.started_at.desc()).limit(limit).all()
+    
+    ingestions = []
+    for log in logs:
+        ingestions.append({
+            "id": log.id,
+            "file_name": log.file_name,
+            "file_path": log.file_path,
+            "file_hash": log.file_hash,
+            "source": log.source,
+            "module": log.module,
+            "status": log.status,
+            "records_in_file": log.records_in_file,
+            "records_created": log.records_created,
+            "records_updated": log.records_updated,
+            "records_skipped": log.records_skipped,
+            "error_message": log.error_message,
+            "started_at": log.started_at.isoformat() if log.started_at else None,
+            "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+        })
+    
     return {
-        "ingestions": [],
-        "total": 0
+        "ingestions": ingestions,
+        "total": total
     }
 
 
 @router.get("/history/{ingestion_id}")
 async def get_ingestion_details(ingestion_id: int, db: Session = Depends(get_db)):
     """Get detailed results for a specific ingestion."""
+    from app.shared.models.ingestion import IngestionLog
+    
+    log = db.query(IngestionLog).filter(IngestionLog.id == ingestion_id).first()
+    
+    if not log:
+        raise HTTPException(status_code=404, detail=f"Ingestion {ingestion_id} not found")
+    
     return {
-        "ingestion": None,
-        "records_created": [],
-        "records_updated": [],
-        "errors": []
+        "ingestion": {
+            "id": log.id,
+            "file_name": log.file_name,
+            "file_path": log.file_path,
+            "file_hash": log.file_hash,
+            "source": log.source,
+            "module": log.module,
+            "status": log.status,
+            "records_in_file": log.records_in_file,
+            "records_created": log.records_created,
+            "records_updated": log.records_updated,
+            "records_skipped": log.records_skipped,
+            "error_message": log.error_message,
+            "warnings": log.warnings,
+            "started_at": log.started_at.isoformat() if log.started_at else None,
+            "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+        },
+        "errors": [log.error_message] if log.error_message else []
     }
 
 
@@ -197,6 +332,7 @@ async def process_all_inbox_files(db: Session = Depends(get_db)):
     """
     Process all files in all inbox folders.
     Returns result in format expected by frontend.
+    Creates ingestion logs for each file for tracking and debugging.
     """
     parsers = get_all_parsers()
     
@@ -216,10 +352,13 @@ async def process_all_inbox_files(db: Session = Depends(get_db)):
     records_imported = 0
     errors = []
     details = []
+    ingestion_ids = []
     
     for folder_name, folder_path in inbox_folders:
         if not folder_path.exists():
             continue
+        
+        module = _get_module_from_folder(folder_path)
         
         # Get all files (not hidden, not directories)
         files = [f for f in folder_path.iterdir() if f.is_file() and not f.name.startswith('.')]
@@ -233,17 +372,44 @@ async def process_all_inbox_files(db: Session = Depends(get_db)):
         for file_path in files:
             # Try each parser
             parsed = False
+            ingestion_log = None
+            
             for parser in parsers:
                 try:
                     if parser.can_parse(file_path):
+                        # Create ingestion log BEFORE processing
+                        file_hash = _compute_file_hash(file_path)
+                        ingestion_log = create_ingestion_log(
+                            db=db,
+                            file_name=file_path.name,
+                            file_path=str(file_path),
+                            source=parser.source_name,
+                            module=module,
+                        )
+                        ingestion_log.file_hash = file_hash
+                        db.flush()
+                        
                         result = parser.parse(file_path)
+                        ingestion_log.records_in_file = len(result.records) if result.records else 0
                         
                         if result.success and result.records:
-                            # Save records to database
-                            save_result = save_records(db, result.records)
+                            # Save records to database with ingestion_id for provenance
+                            save_result = save_records(db, result.records, ingestion_log.id)
+                            
+                            # Update ingestion log with results
+                            complete_ingestion_log(
+                                db=db,
+                                log=ingestion_log,
+                                status="success",
+                                records_created=save_result.get("created", 0),
+                                records_updated=save_result.get("updated", 0),
+                                records_skipped=save_result.get("skipped", 0),
+                            )
+                            
+                            # Commit AFTER updating the log to ensure atomicity
                             db.commit()
                             
-                            # Move file to processed folder
+                            # Move file to processed folder AFTER successful commit
                             processed_dir = settings.PROCESSED_DIR / folder_path.relative_to(settings.INBOX_DIR)
                             processed_dir.mkdir(parents=True, exist_ok=True)
                             shutil.move(str(file_path), str(processed_dir / file_path.name))
@@ -252,12 +418,47 @@ async def process_all_inbox_files(db: Session = Depends(get_db)):
                             folder_files.append(file_path.name)
                             folder_records += save_result.get("created", 0) + save_result.get("updated", 0)
                             records_imported += save_result.get("created", 0) + save_result.get("updated", 0)
+                            ingestion_ids.append(ingestion_log.id)
+                            
+                            logger.info(
+                                f"Processed {file_path.name} (ingestion_id={ingestion_log.id}): "
+                                f"created={save_result.get('created', 0)}, "
+                                f"updated={save_result.get('updated', 0)}, "
+                                f"skipped={save_result.get('skipped', 0)}"
+                            )
                             parsed = True
                             break
                         elif result.errors:
+                            # Log parsing errors
+                            error_msg = "; ".join(result.errors[:5])
+                            complete_ingestion_log(
+                                db=db,
+                                log=ingestion_log,
+                                status="failed",
+                                error_message=error_msg,
+                            )
+                            db.commit()
+                            
                             errors.extend([f"{file_path.name}: {e}" for e in result.errors])
+                            ingestion_ids.append(ingestion_log.id)
+                            logger.warning(f"Parse errors for {file_path.name}: {error_msg}")
                 except Exception as e:
-                    errors.append(f"{file_path.name}: {str(e)}")
+                    error_msg = str(e)
+                    if ingestion_log:
+                        complete_ingestion_log(
+                            db=db,
+                            log=ingestion_log,
+                            status="failed",
+                            error_message=error_msg,
+                        )
+                        try:
+                            db.commit()
+                        except Exception:
+                            db.rollback()
+                        ingestion_ids.append(ingestion_log.id)
+                    
+                    errors.append(f"{file_path.name}: {error_msg}")
+                    logger.error(f"Exception processing {file_path.name}: {error_msg}", exc_info=True)
             
             if not parsed and not any(file_path.name in e for e in errors):
                 errors.append(f"{file_path.name}: No compatible parser found")
@@ -274,7 +475,8 @@ async def process_all_inbox_files(db: Session = Depends(get_db)):
         "files_processed": files_processed,
         "records_imported": records_imported,
         "errors": errors,
-        "details": details
+        "details": details,
+        "ingestion_ids": ingestion_ids
     }
 
 
