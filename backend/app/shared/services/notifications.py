@@ -8,11 +8,15 @@ Supports multiple notification channels:
 - Console (for testing)
 
 Configure via environment variables.
+
+Telegram Feedback Integration:
+- Tracks sent message IDs for reply correlation
+- See telegram_webhook.py for incoming reply handling
 """
 
 import os
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 from pathlib import Path
 import requests
@@ -76,17 +80,19 @@ class NotificationService:
     def send_recommendation_notification(
         self,
         recommendations: List[Dict[str, Any]],
-        priority_filter: Optional[str] = None
-    ) -> Dict[str, bool]:
+        priority_filter: Optional[str] = None,
+        db_session=None
+    ) -> Dict[str, Any]:
         """
         Send notification about new recommendations.
         
         Args:
             recommendations: List of recommendation dicts
             priority_filter: Only notify for this priority or higher (e.g., "high")
+            db_session: Optional database session for tracking Telegram messages
         
         Returns:
-            Dict of channel -> success status
+            Dict of channel -> success status (with telegram_message_id if applicable)
         """
         # Filter by priority if specified
         priority_order = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
@@ -105,11 +111,29 @@ class NotificationService:
         # Format message
         message = self._format_recommendations_message(filtered)
         
+        # Extract recommendation IDs for tracking
+        recommendation_ids = [
+            r.get("id") or r.get("recommendation_id") 
+            for r in filtered 
+            if r.get("id") or r.get("recommendation_id")
+        ]
+        
         # Send to all enabled channels
         results = {}
         
         if self.telegram_enabled:
-            results["telegram"] = self._send_telegram(message)
+            success, message_id = self._send_telegram(message)
+            results["telegram"] = success
+            results["telegram_message_id"] = message_id
+            
+            # Track Telegram message for reply correlation
+            if success and message_id and db_session and recommendation_ids:
+                self._track_telegram_message(
+                    db_session=db_session,
+                    message_id=message_id,
+                    recommendation_ids=recommendation_ids,
+                    message_text=message
+                )
         
         if self.email_enabled:
             results["email"] = self._send_email(
@@ -122,12 +146,52 @@ class NotificationService:
         
         return results
     
+    def _track_telegram_message(
+        self,
+        db_session,
+        message_id: int,
+        recommendation_ids: List[str],
+        message_text: str
+    ):
+        """
+        Track a Telegram message for reply correlation.
+        
+        This stores the message_id and associated recommendation_ids so that
+        when a user replies to the message, we can correlate it with the
+        original recommendations.
+        """
+        try:
+            from app.modules.strategies.models import TelegramMessageTracking
+            
+            chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
+            
+            tracking = TelegramMessageTracking(
+                telegram_message_id=message_id,
+                telegram_chat_id=chat_id,
+                recommendation_ids=recommendation_ids,
+                message_text=message_text[:5000] if message_text else None,  # Limit size
+                sent_at=datetime.utcnow()
+            )
+            
+            db_session.add(tracking)
+            db_session.commit()
+            
+            logger.info(f"Tracked Telegram message {message_id} with {len(recommendation_ids)} recommendations")
+            
+        except Exception as e:
+            logger.error(f"Failed to track Telegram message: {e}")
+            # Don't fail the notification if tracking fails
+            try:
+                db_session.rollback()
+            except:
+                pass
+    
     def send_alert(
         self,
         title: str,
         message: str,
         priority: str = "medium"
-    ) -> Dict[str, bool]:
+    ) -> Dict[str, Any]:
         """
         Send a simple alert notification.
         
@@ -144,7 +208,9 @@ class NotificationService:
         results = {}
         
         if self.telegram_enabled:
-            results["telegram"] = self._send_telegram(formatted)
+            success, message_id = self._send_telegram(formatted)
+            results["telegram"] = success
+            results["telegram_message_id"] = message_id
         
         if self.email_enabled:
             results["email"] = self._send_email(
@@ -159,257 +225,43 @@ class NotificationService:
     
     def _format_recommendations_message(self, recommendations: List[Dict[str, Any]]) -> str:
         """
-        Format recommendations into SHORT, actionable messages for Telegram.
+        Format recommendations into organized, actionable messages for Telegram.
         
-        Format hierarchy (most important first):
-        1. Action type (Close/Roll)
-        2. Contract count  
-        3. Symbol + Strike
-        4. Price to close at
-        5. Profit %
-        6. Account name
-        7. Why (brief reasoning)
+        Features (V3 Enhanced):
+        1. Groups recommendations by individual account (Brokerage, IRA, Retirement for each owner)
+        2. Adds estimated premium/income for SELL recommendations
+        3. Sorts by estimated profit within each account
+        4. Clean, readable format
+        
+        Example output:
+        ```
+        *Neel's Brokerage - 3 Recommendations:*
+        • SELL: 1 IBIT $53 calls Dec 26 · Stock $51 ($338/wk)
+        • SELL: 1 NVDA $195 calls Dec 26 · Stock $183 ($220/wk)
+        • SELL: 1 MSFT $509 calls Dec 26 · Stock $484 ($180/wk)
+        
+        *Neel's IRA - 2 Recommendations:*
+        • SELL: 1 MU $100 calls Dec 26 · Stock $95 ($150)
+        • ROLL: TSM 1x $200 → $205 Dec 26
+        
+        *Jaya's Brokerage - 2 Recommendations:*
+        • SELL: 1 NVDA $195 calls Dec 26 · Stock $183 ($220/wk)
+        • ROLL: AVGO 2x $362.5 put → $350 Jan 2 · Stock $340
+        
+        7:12 AM
+        ```
         """
-        from datetime import datetime
+        from app.shared.services.notification_organizer import organize_and_format
         
-        lines = []
-        
-        # Group by priority
-        by_priority = {"urgent": [], "high": [], "medium": [], "low": []}
-        for rec in recommendations:
-            priority = rec.get("priority", "low")
-            by_priority[priority].append(rec)
-        
-        # Process urgent/high first
-        for priority in ["urgent", "high", "medium", "low"]:
-            recs = by_priority[priority]
-            if not recs:
-                continue
-            
-            # Show ALL recommendations - no truncation
-            for rec in recs:
-                rec_type = rec.get("type", "")
-                context = rec.get("context", {})
-                
-                # Extract common fields
-                symbol = context.get("symbol", "")
-                strike = context.get("strike_price", "")
-                opt_type = context.get("option_type", "call")
-                contracts = context.get("contracts", 1)
-                account = rec.get("account_name") or context.get("account_name") or context.get("account", "")
-                current_premium = context.get("current_premium", 0)
-                profit_pct = context.get("profit_percent", 0)
-                
-                # Account tag (short)
-                account_short = ""
-                if account:
-                    # Shorten account name: "Neel's Brokerage" -> "Neel"
-                    account_short = account.split("'")[0] if "'" in account else account[:10]
-                
-                if rec_type == "close_early_opportunity":
-                    # CLOSE: 3 TSLA $490 calls @ $0.15 (91%) [Neel]
-                    # Why: RSI overbought
-                    price_str = f"@ ${current_premium:.2f}" if current_premium else ""
-                    line = f"*CLOSE:* {contracts} {symbol} ${strike} {opt_type} {price_str} ({profit_pct:.0f}%)"
-                    if account_short:
-                        line += f" [{account_short}]"
-                    lines.append(line)
-                    
-                    # Add brief reason if available
-                    risk_factors = context.get("risk_factors", [])
-                    if risk_factors:
-                        # Shorten the reason
-                        reason = risk_factors[0]
-                        if "RSI" in reason:
-                            reason = "RSI overbought"
-                        elif "Bollinger" in reason:
-                            reason = "Near upper Bollinger band"
-                        lines.append(f"  ↳ {reason}")
-                
-                elif rec_type == "early_roll_opportunity":
-                    # ROLL: TSLA 3x $490 Dec 19 → $505 Dec 26 · Stock $450 (91% profit) [Neel]
-                    days_left = context.get("days_remaining", 0)
-                    current_exp = context.get("expiration_date", "")
-                    new_exp = context.get("new_expiration", "")
-                    new_strike = context.get("new_strike", strike)
-                    current_price = context.get("current_price", 0)
-                    
-                    # Format dates
-                    current_exp_str = ""
-                    new_exp_str = ""
-                    try:
-                        from datetime import datetime as dt
-                        if current_exp:
-                            exp_dt = dt.fromisoformat(current_exp.replace('Z', '+00:00')) if 'T' in current_exp else dt.strptime(current_exp, '%Y-%m-%d')
-                            current_exp_str = exp_dt.strftime('%b %d')
-                        if new_exp:
-                            new_exp_dt = dt.fromisoformat(new_exp.replace('Z', '+00:00')) if 'T' in new_exp else dt.strptime(new_exp, '%Y-%m-%d')
-                            new_exp_str = new_exp_dt.strftime('%b %d')
-                    except:
-                        pass
-                    
-                    line = f"*ROLL:* {symbol} {contracts}x ${strike}"
-                    if current_exp_str:
-                        line += f" {current_exp_str}"
-                    line += f" → ${new_strike:.0f}"
-                    if new_exp_str:
-                        line += f" {new_exp_str}"
-                    if current_price:
-                        line += f" · Stock ${current_price:.0f}"
-                    line += f" ({profit_pct:.0f}% profit)"
-                    if account_short:
-                        line += f" [{account_short}]"
-                    lines.append(line)
-                
-                elif rec_type == "roll_options":
-                    # ITM or standard roll
-                    old_strike = context.get("old_strike", context.get("current_strike", strike))
-                    current_exp = context.get("current_expiration", "")
-                    current_price = context.get("current_price", 0)
-                    scenario = context.get("scenario", "")
-                    
-                    # Format current expiration date
-                    current_exp_str = ""
-                    if current_exp:
-                        try:
-                            from datetime import datetime as dt
-                            exp_date = dt.fromisoformat(current_exp.replace('Z', '+00:00')) if 'T' in current_exp else dt.strptime(current_exp, '%Y-%m-%d')
-                            current_exp_str = exp_date.strftime('%b %d')
-                        except:
-                            current_exp_str = current_exp[5:10] if len(current_exp) >= 10 else current_exp
-                    
-                    if scenario == "C_itm_optimized" and context.get("roll_options"):
-                        # ITM Roll with options
-                        roll_options = context.get("roll_options", [])
-                        rec_opt = context.get("recommended_option", "Moderate")
-                        for opt in roll_options:
-                            if opt.get("label") == rec_opt:
-                                net_cost = opt.get("net_cost", 0)
-                                new_strike = opt.get("strike", 0)
-                                exp_display = opt.get("expiration_display", "")
-                                
-                                cost_str = f"+${abs(net_cost):.2f}" if net_cost < 0 else f"-${net_cost:.2f}"
-                                # Format: ROLL: FIG 1x $60 Jan 16 → $60 Dec 26 · Stock $36 [Neel]
-                                line = f"*ROLL:* {symbol} {contracts}x ${old_strike} {current_exp_str} → ${new_strike:.0f} {exp_display}"
-                                if current_price:
-                                    line += f" · Stock ${current_price:.0f}"
-                                line += f" ({cost_str})"
-                                if account_short:
-                                    line += f" [{account_short}]"
-                                lines.append(line)
-                                break
-                    else:
-                        # Standard roll
-                        new_strike = context.get("new_strike", "")
-                        new_exp = context.get("new_expiration", "")
-                        if new_strike and new_exp:
-                            try:
-                                from datetime import datetime as dt
-                                new_exp_date = dt.fromisoformat(new_exp.replace('Z', '+00:00')) if 'T' in new_exp else dt.strptime(new_exp, '%Y-%m-%d')
-                                new_exp_str = new_exp_date.strftime('%b %d')
-                            except:
-                                new_exp_str = new_exp[5:10] if len(new_exp) >= 10 else new_exp
-                            line = f"*ROLL:* {symbol} {contracts}x ${old_strike} {current_exp_str} → ${new_strike} {new_exp_str}"
-                            if current_price:
-                                line += f" · Stock ${current_price:.0f}"
-                        else:
-                            line = f"*ROLL:* {symbol} {contracts}x ${old_strike} {opt_type}"
-                            if current_price:
-                                line += f" · Stock ${current_price:.0f}"
-                        if account_short:
-                            line += f" [{account_short}]"
-                        lines.append(line)
-                
-                elif rec_type == "new_covered_call":
-                    # SELL: 5 AAPL $290 calls Dec 20 · Stock $248 [Neel]
-                    uncovered = context.get("uncovered_contracts", contracts)
-                    rec_strike = context.get("recommended_strike", strike)
-                    current_price = context.get("current_price", 0)
-                    exp_date = context.get("expiration_date", "")
-                    
-                    # Format expiration
-                    exp_str = ""
-                    if exp_date:
-                        try:
-                            from datetime import datetime as dt
-                            exp_dt = dt.fromisoformat(exp_date.replace('Z', '+00:00')) if 'T' in exp_date else dt.strptime(exp_date, '%Y-%m-%d')
-                            exp_str = exp_dt.strftime('%b %d')
-                        except:
-                            exp_str = exp_date[5:10] if len(exp_date) >= 10 else exp_date
-                    
-                    line = f"*SELL:* {uncovered} {symbol} ${rec_strike:.0f} calls"
-                    if exp_str:
-                        line += f" {exp_str}"
-                    if current_price:
-                        line += f" · Stock ${current_price:.0f}"
-                    if account_short:
-                        line += f" [{account_short}]"
-                    lines.append(line)
-                
-                elif rec_type == "bull_put_spread":
-                    # BULL PUT PORTFOLIO: AAPL $280/$270 ($1.50 credit)
-                    sell_strike = context.get("sell_strike", "")
-                    buy_strike = context.get("buy_strike", "")
-                    credit = context.get("net_credit", 0)
-                    if sell_strike and buy_strike:
-                        lines.append(f"*BULL PUT PORTFOLIO:* {symbol} ${sell_strike:.0f}/${buy_strike:.0f} (${credit:.2f} cr)")
-                
-                elif rec_type == "mega_cap_bull_put":
-                    # BULL PUT NOT IN PORTFOLIO: CSCO $79/$74 ($1.60 credit)
-                    sell_strike = context.get("sell_strike", "")
-                    buy_strike = context.get("buy_strike", "")
-                    credit = context.get("net_credit", 0)
-                    if sell_strike and buy_strike:
-                        lines.append(f"*BULL PUT NOT IN PORTFOLIO:* {symbol} ${sell_strike:.0f}/${buy_strike:.0f} (${credit:.2f} cr)")
-                
-                elif rec_type == "sell_unsold_contracts":
-                    # SELL: 18 AAPL $288 calls Dec 20 · Stock $248 ($844/wk)
-                    unsold = context.get("unsold_contracts", 0)
-                    weekly = context.get("weekly_income", 0)
-                    rec_strike = context.get("strike_price", 0)
-                    current_price = context.get("current_price", 0)
-                    
-                    # Calculate next Friday for expiration
-                    from datetime import date as d, timedelta
-                    today = d.today()
-                    days_ahead = 4 - today.weekday()
-                    if days_ahead <= 0:
-                        days_ahead += 7
-                    next_friday = today + timedelta(days=days_ahead)
-                    exp_str = next_friday.strftime('%b %d')
-                    
-                    if rec_strike:
-                        strike_str = f"${rec_strike:.0f}" if rec_strike >= 100 else f"${rec_strike:.2f}"
-                        line = f"*SELL:* {unsold} {symbol} {strike_str} calls {exp_str}"
-                    else:
-                        line = f"*SELL:* {unsold} {symbol} calls {exp_str}"
-                    
-                    if current_price:
-                        line += f" · Stock ${current_price:.0f}"
-                    line += f" (${weekly:.0f}/wk)"
-                    lines.append(line)
-                
-                else:
-                    # Default - use title (already optimized in strategy)
-                    lines.append(f"• {rec.get('title', '')}")
-            
-            lines.append("")  # Blank line between priorities
-        
-        # Remove trailing empty lines
-        while lines and lines[-1] == "":
-            lines.pop()
-        
-        # Show ALL recommendations - no truncation message needed
-        
-        # Short timestamp in local time
-        now = datetime.now()
-        time_str = now.strftime("%I:%M %p").lstrip('0')
-        lines.append(f"_{time_str}_")
-        
-        return "\n".join(lines)
+        return organize_and_format(recommendations, group_threshold=3)
     
-    def _send_telegram(self, message: str) -> bool:
-        """Send message via Telegram bot."""
+    def _send_telegram(self, message: str) -> Tuple[bool, Optional[int]]:
+        """
+        Send message via Telegram bot.
+        
+        Returns:
+            Tuple of (success, message_id) where message_id is used for reply tracking
+        """
         try:
             bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
             chat_id = os.getenv('TELEGRAM_CHAT_ID')
@@ -424,12 +276,16 @@ class NotificationService:
             response = requests.post(url, json=data, timeout=10)
             response.raise_for_status()
             
-            logger.info("Telegram notification sent successfully")
-            return True
+            # Extract message_id from response for reply tracking
+            result = response.json()
+            message_id = result.get("result", {}).get("message_id")
+            
+            logger.info(f"Telegram notification sent successfully (message_id: {message_id})")
+            return True, message_id
             
         except Exception as e:
             logger.error(f"Failed to send Telegram notification: {e}")
-            return False
+            return False, None
     
     def _send_email(self, subject: str, body: str) -> bool:
         """Send email notification."""

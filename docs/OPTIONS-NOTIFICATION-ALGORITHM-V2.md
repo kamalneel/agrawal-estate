@@ -1,8 +1,11 @@
 # Options Notification & Recommendation Algorithm (V2)
 
 **Version:** V2.3 - Refactored Algorithm  
-**Status:** Active  
-**Last Updated:** December 19, 2024
+**Status:** ⚠️ DEPRECATED - Superseded by V3.0  
+**Last Updated:** December 19, 2024  
+**Deprecated:** December 21, 2024
+
+> **Note:** This algorithm has been replaced by V3.0. See [V3 Algorithm](./OPTIONS-NOTIFICATION-ALGORITHM-V3.md) for the current implementation.
 
 **Changes from V1:**
 - Lowered profit thresholds (80% → 60%)

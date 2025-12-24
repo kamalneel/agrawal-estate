@@ -2,7 +2,7 @@
 Options Notification Algorithm Configuration
 
 This module defines algorithm versions (V1, V2, etc.) with all configurable parameters.
-Switch versions via ALGORITHM_VERSION environment variable.
+Switch versions via ALGORITHM_VERSION environment variable or .env file.
 
 Usage:
     from app.modules.strategies.algorithm_config import get_config, ALGORITHM_VERSION
@@ -12,6 +12,7 @@ Usage:
 """
 
 import os
+from pathlib import Path
 from typing import Dict, Any
 import logging
 
@@ -20,8 +21,33 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # VERSION SELECTION
 # =============================================================================
-# Set via environment variable: ALGORITHM_VERSION=v1 or ALGORITHM_VERSION=v2
-ALGORITHM_VERSION = os.getenv("ALGORITHM_VERSION", "v2").lower()
+# Load .env file if it exists (for ALGORITHM_VERSION)
+def _load_algorithm_version() -> str:
+    """Load ALGORITHM_VERSION from environment or .env file."""
+    # First check environment variable
+    version = os.getenv("ALGORITHM_VERSION")
+    if version:
+        return version.lower()
+    
+    # Try to load from .env file
+    try:
+        env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+        if env_path.exists():
+            with open(env_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('ALGORITHM_VERSION='):
+                        version = line.split('=', 1)[1].strip().strip('"').strip("'")
+                        logger.info(f"Loaded ALGORITHM_VERSION={version} from .env file")
+                        return version.lower()
+    except Exception as e:
+        logger.warning(f"Error reading .env file: {e}")
+    
+    # Default to v2
+    return "v2"
+
+ALGORITHM_VERSION = _load_algorithm_version()
+logger.info(f"Algorithm version: {ALGORITHM_VERSION}")
 
 # =============================================================================
 # V1 CONFIGURATION (Original - December 2024)
@@ -332,6 +358,18 @@ V3_CONFIG: Dict[str, Any] = {
     },
     
     "min_weekly_income": 50,
+    
+    # ===== SMART ASSIGNMENT (V3 - IRA ONLY) =====
+    "smart_assignment": {
+        "enabled": True,
+        "accounts": ["IRA", "ROTH_IRA", "ROTH IRA"],  # Only these account types
+        "max_itm_pct": 2.0,          # Maximum 2% ITM to consider
+        "min_itm_pct": 0.1,          # Minimum 0.1% ITM (truly borderline)
+        "min_roll_weeks": 2,         # Only if roll would be 2+ weeks
+        "min_roll_debit": 15,        # OR roll debit >$15/contract
+        "monday_skip_threshold": 3.0, # Skip buyback if >3% above assignment
+        "monday_wait_threshold": 1.0, # Suggest waiting if 1-3% above
+    },
 }
 
 # =============================================================================

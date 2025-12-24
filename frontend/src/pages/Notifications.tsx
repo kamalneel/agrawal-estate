@@ -16,6 +16,13 @@ import {
   Eye,
   Check,
   XCircle,
+  DollarSign,
+  MoreVertical,
+  MessageSquare,
+  ThumbsDown,
+  BarChart3,
+  Lightbulb,
+  History,
 } from 'lucide-react';
 import TechnicalAnalysisModal from '../components/TechnicalAnalysisModal';
 import styles from './Notifications.module.css';
@@ -95,6 +102,43 @@ interface DataFreshness {
   } | null;
 }
 
+interface FeedbackItem {
+  id: number;
+  recommendation_id: string;
+  source: string;
+  raw_feedback: string;
+  reason_code: string | null;
+  reason_detail: string | null;
+  threshold_hint: number | null;
+  symbol: string | null;
+  account_name: string | null;
+  sentiment: string | null;
+  actionable_insight: string | null;
+  created_at: string;
+}
+
+interface FeedbackInsights {
+  period_days: number;
+  total_feedback: number;
+  patterns: {
+    type: string;
+    reason_code?: string;
+    count?: number;
+    percentage?: number;
+    description?: string;
+    average_mentioned?: number;
+    symbol?: string;
+    skip_count?: number;
+  }[];
+  suggestions: {
+    finding: string;
+    suggestion: string;
+    config_key: string;
+    suggested_value: any;
+  }[];
+  generated_at: string;
+}
+
 export default function Notifications() {
   // State for recommendations
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
@@ -120,6 +164,23 @@ export default function Notifications() {
   const [taModalOpen, setTaModalOpen] = useState(false);
   const [taSymbol, setTaSymbol] = useState<string | null>(null);
   
+  // Feedback Modal
+  const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
+  const [feedbackRecId, setFeedbackRecId] = useState<string | null>(null);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackSuccess, setFeedbackSuccess] = useState<string | null>(null);
+  
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'recommendations' | 'feedback'>('recommendations');
+  
+  // Feedback History state
+  const [feedbackHistory, setFeedbackHistory] = useState<FeedbackItem[]>([]);
+  const [feedbackInsights, setFeedbackInsights] = useState<FeedbackInsights | null>(null);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [telegramPolling, setTelegramPolling] = useState(false);
+  const [telegramPollResult, setTelegramPollResult] = useState<string | null>(null);
+  
   // Helper function to fetch history from DB
   // Always fetches all data (365 days) - filtering happens in frontend via filteredRecommendations
   const fetchHistoryFromDB = async (): Promise<Recommendation[]> => {
@@ -138,6 +199,76 @@ export default function Notifications() {
     }
     return [];
   };
+  
+  // Fetch feedback history
+  const fetchFeedbackHistory = async () => {
+    setFeedbackLoading(true);
+    try {
+      const [historyRes, insightsRes] = await Promise.all([
+        fetch('/api/v1/strategies/feedback/history?days_back=90&limit=100', {
+          headers: getAuthHeaders()
+        }),
+        fetch('/api/v1/strategies/feedback/insights?days_back=30&min_occurrences=2', {
+          headers: getAuthHeaders()
+        })
+      ]);
+      
+      if (historyRes.ok) {
+        const historyData = await historyRes.json();
+        setFeedbackHistory(historyData.feedback || []);
+      }
+      
+      if (insightsRes.ok) {
+        const insightsData = await insightsRes.json();
+        setFeedbackInsights(insightsData);
+      }
+    } catch (err) {
+      console.error('Failed to fetch feedback:', err);
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+  
+  // Poll Telegram for replies
+  const pollTelegramReplies = async () => {
+    setTelegramPolling(true);
+    setTelegramPollResult(null);
+    try {
+      const response = await fetch('/api/v1/strategies/telegram/poll-replies', {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        if (result.feedback_saved > 0) {
+          setTelegramPollResult(`✅ Found ${result.feedback_saved} new Telegram replies!`);
+          // Refresh the feedback list
+          fetchFeedbackHistory();
+        } else if (result.status === 'no_updates') {
+          setTelegramPollResult('No new Telegram replies');
+        } else {
+          setTelegramPollResult(`Checked ${result.updates_received || 0} updates`);
+        }
+      } else {
+        setTelegramPollResult('Failed to poll Telegram');
+      }
+    } catch (err) {
+      console.error('Failed to poll Telegram:', err);
+      setTelegramPollResult('Error polling Telegram');
+    } finally {
+      setTelegramPolling(false);
+      // Clear message after 5 seconds
+      setTimeout(() => setTelegramPollResult(null), 5000);
+    }
+  };
+  
+  // Load feedback when tab changes
+  useEffect(() => {
+    if (activeTab === 'feedback' && feedbackHistory.length === 0) {
+      fetchFeedbackHistory();
+    }
+  }, [activeTab]);
 
   // On mount: Show localStorage cache instantly, then fetch from DB for consistency
   useEffect(() => {
@@ -367,6 +498,56 @@ export default function Notifications() {
   const openTechnicalAnalysis = (symbol: string) => {
     setTaSymbol(symbol);
     setTaModalOpen(true);
+  };
+  
+  // Feedback functions
+  const openFeedbackModal = (recId: string) => {
+    setFeedbackRecId(recId);
+    setFeedbackText('');
+    setFeedbackSuccess(null);
+    setFeedbackModalOpen(true);
+  };
+  
+  const closeFeedbackModal = () => {
+    setFeedbackModalOpen(false);
+    setFeedbackRecId(null);
+    setFeedbackText('');
+    setFeedbackSuccess(null);
+  };
+  
+  const submitFeedback = async () => {
+    if (!feedbackRecId || !feedbackText.trim()) return;
+    
+    setFeedbackSubmitting(true);
+    try {
+      const params = new URLSearchParams({
+        feedback: feedbackText.trim(),
+        source: 'web'
+      });
+      
+      const response = await fetch(
+        `/api/v1/strategies/notifications/${feedbackRecId}/feedback?${params}`,
+        { 
+          method: 'POST',
+          headers: getAuthHeaders()
+        }
+      );
+      
+      if (response.ok) {
+        const result = await response.json();
+        setFeedbackSuccess(result.parsed?.reason_code || 'Feedback recorded');
+        // Auto-close after 2 seconds
+        setTimeout(() => {
+          closeFeedbackModal();
+        }, 2000);
+      } else {
+        console.error('Failed to submit feedback');
+      }
+    } catch (err) {
+      console.error('Error submitting feedback:', err);
+    } finally {
+      setFeedbackSubmitting(false);
+    }
   };
   
   // Filter recommendations
@@ -824,6 +1005,33 @@ export default function Notifications() {
         </div>
       </header>
       
+      {/* Tab Navigation */}
+      <div className={styles.tabBar}>
+        <button 
+          className={`${styles.tab} ${activeTab === 'recommendations' ? styles.activeTab : ''}`}
+          onClick={() => setActiveTab('recommendations')}
+        >
+          <Bell size={16} />
+          Recommendations
+          {recommendations.length > 0 && (
+            <span className={styles.tabBadge}>{recommendations.length}</span>
+          )}
+        </button>
+        <button 
+          className={`${styles.tab} ${activeTab === 'feedback' ? styles.activeTab : ''}`}
+          onClick={() => setActiveTab('feedback')}
+        >
+          <History size={16} />
+          Feedback History
+          {feedbackHistory.length > 0 && (
+            <span className={styles.tabBadge}>{feedbackHistory.length}</span>
+          )}
+        </button>
+      </div>
+      
+      {/* Recommendations Tab Content */}
+      {activeTab === 'recommendations' && (
+        <>
       {/* Filters Panel */}
       {showFilters && (
         <div className={styles.filtersPanel}>
@@ -979,12 +1187,29 @@ export default function Notifications() {
                         </div>
                         
                         <div className={styles.notificationActions}>
-                          {rec.potential_income && rec.potential_income > 0 && (
+                          {/* Premium display - prefer real-time per-contract from context */}
+                          {rec.context?.premium_per_contract && rec.context.premium_per_contract > 0 ? (
+                            <span className={styles.incomeTag}>
+                              <DollarSign size={12} />
+                              {rec.context.unsold_contracts > 1 ? (
+                                <>
+                                  ${rec.context.premium_per_contract.toLocaleString()}/ct
+                                  {rec.context.total_premium && (
+                                    <span style={{ opacity: 0.7, marginLeft: 4 }}>
+                                      (${rec.context.total_premium.toLocaleString()} total)
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                `$${rec.context.premium_per_contract.toLocaleString()}`
+                              )}
+                            </span>
+                          ) : rec.potential_income && rec.potential_income > 0 ? (
                             <span className={styles.incomeTag}>
                               <TrendingUp size={12} />
-                              ${rec.potential_income.toLocaleString()}/yr
+                              ${rec.potential_income.toLocaleString()}
                             </span>
-                          )}
+                          ) : null}
                           <span className={styles.expandIcon}>
                             {expandedIds.has(rec.id) ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
                           </span>
@@ -1063,6 +1288,14 @@ export default function Notifications() {
                                 Dismiss
                               </button>
                             )}
+                            <button 
+                              className={styles.feedbackButton}
+                              onClick={() => openFeedbackModal(rec.id)}
+                              title="Give feedback to improve algorithm"
+                            >
+                              <MessageSquare size={14} />
+                              Feedback
+                            </button>
                             {rec.status === 'acted' && (
                               <span className={styles.statusBadge} style={{color: '#10b981'}}>
                                 <CheckCircle size={14} /> Acted Upon
@@ -1084,6 +1317,164 @@ export default function Notifications() {
           </div>
         )}
       </div>
+        </>
+      )}
+      
+      {/* Feedback History Tab Content */}
+      {activeTab === 'feedback' && (
+        <div className={styles.feedbackHistoryContainer}>
+          {feedbackLoading ? (
+            <div className={styles.loading}>
+              <RefreshCw size={24} className={styles.spinning} />
+              <span>Loading feedback history...</span>
+            </div>
+          ) : (
+            <>
+              {/* V4 Insights Section */}
+              {feedbackInsights && feedbackInsights.suggestions.length > 0 && (
+                <div className={styles.insightsSection}>
+                  <h3><Lightbulb size={20} /> V4 Algorithm Insights</h3>
+                  <p className={styles.insightsSubtitle}>
+                    Based on your {feedbackInsights.total_feedback} feedback items in the last {feedbackInsights.period_days} days
+                  </p>
+                  
+                  <div className={styles.suggestionsList}>
+                    {feedbackInsights.suggestions.map((suggestion, idx) => (
+                      <div key={idx} className={styles.suggestionCard}>
+                        <div className={styles.suggestionFinding}>
+                          <BarChart3 size={16} />
+                          {suggestion.finding}
+                        </div>
+                        <div className={styles.suggestionAction}>
+                          <ArrowRight size={14} />
+                          {suggestion.suggestion}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Patterns Section */}
+              {feedbackInsights && feedbackInsights.patterns.length > 0 && (
+                <div className={styles.patternsSection}>
+                  <h3><TrendingUp size={20} /> Feedback Patterns</h3>
+                  <div className={styles.patternsList}>
+                    {feedbackInsights.patterns.slice(0, 5).map((pattern, idx) => (
+                      <div key={idx} className={styles.patternChip}>
+                        <span className={styles.patternLabel}>
+                          {pattern.reason_code || pattern.type}
+                        </span>
+                        <span className={styles.patternCount}>
+                          {pattern.count || pattern.skip_count}x
+                        </span>
+                        {pattern.percentage && (
+                          <span className={styles.patternPct}>({pattern.percentage}%)</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Feedback History List */}
+              <div className={styles.feedbackListSection}>
+                <div className={styles.feedbackListHeader}>
+                  <h3><MessageSquare size={20} /> All Feedback</h3>
+                  <div className={styles.feedbackActions}>
+                    <button 
+                      onClick={pollTelegramReplies}
+                      className={styles.telegramPollButton}
+                      disabled={telegramPolling}
+                      title="Check for new Telegram replies"
+                    >
+                      📱 {telegramPolling ? 'Checking...' : 'Poll Telegram'}
+                    </button>
+                    <button 
+                      onClick={fetchFeedbackHistory}
+                      className={styles.refreshSmall}
+                      disabled={feedbackLoading}
+                    >
+                      <RefreshCw size={14} />
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+                {telegramPollResult && (
+                  <div className={styles.pollResult}>
+                    {telegramPollResult}
+                  </div>
+                )}
+                
+                {feedbackHistory.length === 0 ? (
+                  <div className={styles.emptyFeedback}>
+                    <MessageSquare size={48} />
+                    <p>No feedback yet</p>
+                    <span>Click the "Feedback" button on any recommendation to provide feedback</span>
+                  </div>
+                ) : (
+                  <div className={styles.feedbackList}>
+                    {feedbackHistory.map(fb => (
+                      <div key={fb.id} className={styles.feedbackItem}>
+                        <div className={styles.feedbackHeader}>
+                          <span className={styles.feedbackSource}>
+                            {fb.source === 'web' ? '🖥️ Web' : fb.source === 'telegram' ? '📱 Telegram' : '🔌 API'}
+                          </span>
+                          <span className={styles.feedbackTime}>
+                            {new Date(fb.created_at).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              hour12: true
+                            })}
+                          </span>
+                        </div>
+                        
+                        <div className={styles.feedbackContent}>
+                          <p className={styles.feedbackRaw}>{fb.raw_feedback}</p>
+                        </div>
+                        
+                        <div className={styles.feedbackMeta}>
+                          {fb.reason_code && (
+                            <span className={styles.reasonBadge}>
+                              {fb.reason_code.replace(/_/g, ' ')}
+                            </span>
+                          )}
+                          {fb.threshold_hint && (
+                            <span className={styles.thresholdBadge}>
+                              💰 ${fb.threshold_hint}
+                            </span>
+                          )}
+                          {fb.symbol && (
+                            <span className={styles.symbolBadge}>
+                              📈 {fb.symbol}
+                            </span>
+                          )}
+                          {fb.sentiment && fb.sentiment !== 'neutral' && (
+                            <span className={`${styles.sentimentBadge} ${
+                              fb.sentiment === 'frustrated' ? styles.negative : styles.positive
+                            }`}>
+                              {fb.sentiment === 'frustrated' ? '😤' : '😊'} {fb.sentiment}
+                            </span>
+                          )}
+                        </div>
+                        
+                        {fb.actionable_insight && (
+                          <div className={styles.actionableInsight}>
+                            <Lightbulb size={14} />
+                            <span>{fb.actionable_insight}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
       
       {/* Technical Analysis Modal */}
       {taSymbol && (
@@ -1095,6 +1486,63 @@ export default function Notifications() {
             setTaSymbol(null);
           }}
         />
+      )}
+      
+      {/* Feedback Modal */}
+      {feedbackModalOpen && (
+        <div className={styles.feedbackModalOverlay} onClick={closeFeedbackModal}>
+          <div className={styles.feedbackModal} onClick={e => e.stopPropagation()}>
+            <div className={styles.feedbackModalHeader}>
+              <h3><MessageSquare size={20} /> Give Feedback</h3>
+              <button onClick={closeFeedbackModal} className={styles.closeButton}>
+                <X size={20} />
+              </button>
+            </div>
+            
+            {feedbackSuccess ? (
+              <div className={styles.feedbackSuccess}>
+                <CheckCircle size={32} />
+                <p>Thank you! Your feedback helps improve the algorithm.</p>
+                <span className={styles.reasonCode}>Detected: {feedbackSuccess}</span>
+              </div>
+            ) : (
+              <>
+                <div className={styles.feedbackModalBody}>
+                  <p className={styles.feedbackHint}>
+                    Tell us why you're skipping this recommendation. Be natural - our AI will understand!
+                  </p>
+                  <p className={styles.feedbackExamples}>
+                    Examples: "premium is too small", "don't want to cap NVDA upside", "market is too volatile today"
+                  </p>
+                  <textarea
+                    className={styles.feedbackTextarea}
+                    placeholder="Enter your feedback..."
+                    value={feedbackText}
+                    onChange={e => setFeedbackText(e.target.value)}
+                    rows={4}
+                    autoFocus
+                  />
+                </div>
+                <div className={styles.feedbackModalFooter}>
+                  <button 
+                    onClick={closeFeedbackModal} 
+                    className={styles.cancelButton}
+                    disabled={feedbackSubmitting}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={submitFeedback}
+                    className={styles.submitButton}
+                    disabled={feedbackSubmitting || !feedbackText.trim()}
+                  >
+                    {feedbackSubmitting ? 'Submitting...' : 'Submit Feedback'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

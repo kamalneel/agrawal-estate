@@ -1,13 +1,18 @@
 """
 ITM Roll Optimizer
 
-When a position goes In The Money (ITM), this optimizer analyzes all possible
-roll combinations to find the optimal balance of:
-1. Net Cost (minimize debit, ideally achieve credit)
-2. Time (prefer shorter duration, less capital tied up)
-3. Safety (higher probability of staying OTM)
+V3.0 ENHANCED: Find zero-cost roll within 52 weeks.
 
-Presents top 3 options: Conservative, Moderate, Aggressive
+When a position goes In The Money (ITM), this optimizer:
+1. Scans expirations from 1 week to 52 weeks
+2. Finds SHORTEST duration achieving zero-cost (≤20% of original premium)
+3. Uses Delta 30 (70% OTM probability) for ITM escapes per V3 Addendum
+4. Returns top 3 options: Conservative, Moderate, Aggressive
+
+V3 Changes:
+- Increased max_weeks_out from 6 to 52 (1 year)
+- Uses Delta 30 instead of Delta 10 for ITM escapes
+- Simplified cost rule: max debit = 20% of original premium
 """
 
 from typing import List, Dict, Any, Optional, Tuple
@@ -78,6 +83,12 @@ class ITMRollAnalysis:
     # Technical analysis context
     technical_signals: Dict[str, Any]
     recommendation_summary: str
+    
+    # V3.1 FIX: Track whether OTM escape is achievable
+    can_escape_to_otm: bool = False  # True if any option achieves OTM (>50% prob OTM)
+    is_catastrophic: bool = False  # True if no viable escape to OTM within 52 weeks
+    best_otm_option: Optional[RollOption] = None  # Best OTM option (even if expensive)
+    min_debit_for_otm: Optional[float] = None  # Minimum debit required to reach OTM
 
 
 class ITMRollOptimizer:
@@ -110,11 +121,18 @@ class ITMRollOptimizer:
         current_expiration: date,
         contracts: int = 1,
         account_name: Optional[str] = None,
-        max_weeks_out: int = 6,
-        max_net_debit: float = 5.0  # Maximum acceptable per-share debit
+        max_weeks_out: int = 52,  # V3: Up to 52 weeks (1 year)
+        max_net_debit: float = 5.0,  # V3: Should be 20% of original premium
+        delta_target: float = 0.70  # V3 Addendum: Delta 30 for ITM escapes
     ) -> Optional[ITMRollAnalysis]:
         """
-        Analyze an ITM position and generate roll options.
+        V3 ENHANCED: Analyze an ITM position and generate roll options.
+        
+        V3 Strategy:
+        - Scan up to 52 weeks (not just 6) to find zero-cost escape
+        - Use max_net_debit = 20% of original premium
+        - Use Delta 30 (probability_target=0.70) for ITM escapes
+        - Return SHORTEST duration achieving zero-cost
         
         Args:
             symbol: Stock symbol
@@ -123,11 +141,14 @@ class ITMRollOptimizer:
             current_expiration: Current option expiration date
             contracts: Number of contracts
             account_name: Account name for context
-            max_weeks_out: Maximum weeks to consider for roll
-            max_net_debit: Maximum acceptable net debit per share
+            max_weeks_out: Maximum weeks to consider (V3 default: 52)
+            max_net_debit: Maximum acceptable net debit per share (V3: 20% of original premium)
+            delta_target: V3 Addendum - probability OTM target
+                          0.70 (Delta 30) for ITM escapes
+                          0.90 (Delta 10) for weekly rolls
             
         Returns:
-            ITMRollAnalysis with top 3 roll options
+            ITMRollAnalysis with top 3 roll options, or None if no viable rolls
         """
         try:
             # Get technical indicators
@@ -191,18 +212,66 @@ class ITMRollOptimizer:
                 indicators=indicators,
                 max_weeks_out=max_weeks_out,
                 max_net_debit=effective_max_debit,  # Use adjusted debit limit for deep ITM
-                current_expiration=current_expiration  # Pass current expiration to skip same-week rolls
+                current_expiration=current_expiration,  # Pass current expiration to skip same-week rolls
+                delta_target=delta_target  # V3 Addendum: Use specified delta target
             )
             
             if not roll_options:
                 logger.warning(f"No valid roll options found for {symbol}")
                 return None
             
+            # V3.1 FIX: Analyze whether OTM escape is achievable
+            # OTM = probability_otm > 50% (more likely to stay OTM than go ITM)
+            otm_options = [opt for opt in roll_options if opt.probability_otm > 50]
+            can_escape_to_otm = len(otm_options) > 0
+            
+            # Find the best OTM option (highest probability OTM within cost constraints)
+            best_otm_option = None
+            if otm_options:
+                best_otm_option = max(otm_options, key=lambda x: x.probability_otm)
+            
+            # Calculate minimum debit required to reach any OTM strike
+            # Look at ALL options, even those filtered out for cost
+            min_debit_for_otm = None
+            if option_type.lower() == 'call':
+                # For calls, OTM means strike > current_price
+                otm_threshold = current_price
+            else:
+                # For puts, OTM means strike < current_price
+                otm_threshold = current_price
+            
+            for opt in roll_options:
+                is_otm = (option_type.lower() == 'call' and opt.new_strike > current_price) or \
+                         (option_type.lower() == 'put' and opt.new_strike < current_price)
+                if is_otm:
+                    if min_debit_for_otm is None or opt.net_cost < min_debit_for_otm:
+                        min_debit_for_otm = opt.net_cost
+            
+            # V3.1 FIX: Determine if position is CATASTROPHIC
+            # Catastrophic = deep ITM (>15%) AND cannot escape to OTM within cost constraints
+            is_catastrophic = False
+            if itm_pct > 15 and not can_escape_to_otm:
+                is_catastrophic = True
+                logger.warning(
+                    f"[CATASTROPHIC] {symbol}: {itm_pct:.1f}% ITM, no OTM escape possible. "
+                    f"Best probability OTM: {max(opt.probability_otm for opt in roll_options):.0f}%"
+                )
+            
             # Score and categorize options
             self._score_options(roll_options, indicators)
             
             # Select top 3 by category
             conservative, moderate, aggressive = self._select_top_options(roll_options)
+            
+            # V3.1 FIX: If catastrophic, override the recommendation
+            if is_catastrophic:
+                # For catastrophic positions, prioritize the option with highest probability OTM
+                # even if it's still <50% probability
+                by_prob_otm = sorted(roll_options, key=lambda x: -x.probability_otm)
+                if by_prob_otm:
+                    # Use the highest prob OTM as conservative (might still be ITM but best we can do)
+                    conservative = by_prob_otm[0]
+                    conservative.category = 'conservative'
             
             # Build technical signals summary
             tech_signals = self._summarize_technical_signals(indicators, itm_pct)
@@ -212,6 +281,14 @@ class ITMRollOptimizer:
                 conservative, moderate, aggressive, 
                 itm_pct, buy_back_cost, tech_signals
             )
+            
+            # V3.1 FIX: Add catastrophic warning to summary
+            if is_catastrophic:
+                summary = (
+                    f"⚠️ CATASTROPHIC: Position is {itm_pct:.1f}% ITM. "
+                    f"No OTM escape possible within cost constraints. "
+                    f"Consider CLOSING position. " + summary
+                )
             
             return ITMRollAnalysis(
                 symbol=symbol,
@@ -229,7 +306,11 @@ class ITMRollOptimizer:
                 moderate=moderate,
                 aggressive=aggressive,
                 technical_signals=tech_signals,
-                recommendation_summary=summary
+                recommendation_summary=summary,
+                can_escape_to_otm=can_escape_to_otm,
+                is_catastrophic=is_catastrophic,
+                best_otm_option=best_otm_option,
+                min_debit_for_otm=min_debit_for_otm
             )
             
         except Exception as e:
@@ -291,22 +372,51 @@ class ITMRollOptimizer:
         indicators,
         max_weeks_out: int,
         max_net_debit: float,
-        current_expiration: date = None
+        current_expiration: date = None,
+        delta_target: float = 0.70  # V3 Addendum: Delta 30 for ITM escapes
     ) -> List[RollOption]:
-        """Scan multiple expirations and strikes for roll options."""
+        """
+        V3.1 FIX: Scan for ITM escape options, prioritizing OTM strikes.
+        
+        FIXED: Now anchors to CURRENT STOCK PRICE, not current strike.
+        The goal is to ESCAPE ITM by reaching an OTM strike (Delta 30).
+        
+        Algorithm:
+        1. Calculate the Delta 30 target strike (should be OTM)
+        2. For each expiration, check if we can afford to reach OTM
+        3. Include both OTM and improved-ITM options for comparison
+        4. Flag whether OTM escape is achievable
+        
+        Scans in batches for efficiency when searching up to 52 weeks:
+        - Weeks 1-4: Check every week
+        - Weeks 6-12: Check every 2 weeks  
+        - Weeks 16-52: Check every 4 weeks
+        """
         roll_options = []
         
         today = date.today()
         
-        # Scan 1 to max_weeks_out
-        for weeks in range(1, max_weeks_out + 1):
+        # V3: Scan schedule for efficiency (up to 52 weeks)
+        scan_weeks = [1, 2, 3, 4]
+        if max_weeks_out > 4:
+            scan_weeks.extend([6, 8])
+        if max_weeks_out > 8:
+            scan_weeks.extend([12])
+        if max_weeks_out > 12:
+            scan_weeks.extend([16, 24])
+        if max_weeks_out > 24:
+            scan_weeks.extend([36, 52])
+        
+        # Filter to max_weeks_out
+        scan_weeks = [w for w in scan_weeks if w <= max_weeks_out]
+        
+        for weeks in scan_weeks:
             # Find Friday of that week
             target_date = today + timedelta(weeks=weeks)
             days_ahead = (4 - target_date.weekday()) % 7
             expiration = target_date + timedelta(days=days_ahead)
             
             # Skip if this expiration is same as or before current expiration
-            # (rolling to same week doesn't make sense)
             if current_expiration and expiration <= current_expiration:
                 logger.debug(f"Skipping expiration {expiration} - same as or before current {current_expiration}")
                 continue
@@ -323,26 +433,44 @@ class ITMRollOptimizer:
                 if options_df is None or options_df.empty:
                     continue
                 
-                # Calculate strike range to scan
-                # For ITM positions, we need to roll to strikes that get us OTM or closer to ATM
-                # For calls: from current strike UP (higher strikes = more OTM)
-                # For puts: from current price DOWN (lower strikes = more OTM)
-                if option_type.lower() == 'call':
-                    min_strike = current_strike  # At least current strike
-                    max_strike = current_price * 1.15  # Up to 15% above current price
+                # V3.1 FIX: Calculate target strike based on CURRENT STOCK PRICE
+                # The goal is to reach an OTM strike, not just improve slightly
+                strike_rec = self.ta_service.recommend_strike_price(
+                    symbol=symbol,
+                    option_type=option_type,
+                    expiration_weeks=weeks,
+                    probability_target=delta_target
+                )
+                
+                if strike_rec:
+                    target_strike = strike_rec.recommended_strike
                 else:
-                    # For PUTS: Roll DOWN to get OTM
-                    # If deep ITM, we need to go significantly lower
-                    # Target: ATM or slightly OTM (5-15% below current stock price)
-                    min_strike = current_price * 0.85  # Down to 15% below current price
-                    # IMPORTANT: For meaningful rolls, max strike should be BELOW current price
-                    # to get at least ATM, not at current strike which keeps us ITM
-                    max_strike = min(current_strike, current_price * 1.02)  # At most 2% above current price (slightly OTM)
+                    # Fallback: estimate Delta 30 strike based on stock price
+                    # For CALLS: Delta 30 = strike ~3-5% ABOVE current price
+                    # For PUTS: Delta 30 = strike ~3-5% BELOW current price
+                    if option_type.lower() == 'call':
+                        target_strike = current_price * 1.04  # ~4% OTM
+                    else:
+                        target_strike = current_price * 0.96  # ~4% OTM
+                
+                # V3.1 FIX: Strike range now anchored to CURRENT STOCK PRICE
+                # We want to find strikes from current price outward to OTM
+                if option_type.lower() == 'call':
+                    # For CALLS: Look at strikes from ATM to well OTM
+                    # We'll include some ITM strikes too to show the cost difference
+                    min_strike = current_price * 0.95  # Slightly ITM for comparison
+                    max_strike = current_price * 1.15  # Well OTM
                     
-                    # If stock is DEEP below strike (>10% ITM), force rolling to OTM strikes
-                    itm_amount = (current_strike - current_price) / current_strike
-                    if itm_amount > 0.10:  # >10% ITM
-                        max_strike = current_price * 0.98  # Force below current price (OTM territory)
+                    # Log the target for debugging
+                    logger.info(
+                        f"[ITM_FIX] {symbol}: Stock ${current_price:.0f}, "
+                        f"Target OTM strike: ${target_strike:.0f}, "
+                        f"Scanning range: ${min_strike:.0f}-${max_strike:.0f}"
+                    )
+                else:
+                    # For PUTS: Look at strikes from ATM to well OTM (below price)
+                    min_strike = current_price * 0.85  # Well OTM
+                    max_strike = current_price * 1.05  # Slightly ITM for comparison
                 
                 # Filter strikes in range
                 valid_strikes = options_df[

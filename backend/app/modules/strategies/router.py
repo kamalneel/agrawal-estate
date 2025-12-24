@@ -3,7 +3,7 @@ Strategies API routes.
 Handles Buy/Borrow/Die and other wealth strategies.
 """
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func, extract
 from typing import Optional, List, Dict, Any
@@ -2685,4 +2685,477 @@ async def clear_yahoo_cache(
         "message": f"Cleared cache for {symbol if symbol else 'all symbols'}",
         "cache_stats": get_cache_stats()
     }
+
+
+# ============================================================================
+# FEEDBACK ENDPOINTS (V4 Learning)
+# ============================================================================
+
+@router.post("/notifications/{recommendation_id}/feedback")
+async def submit_feedback(
+    recommendation_id: str,
+    feedback: str = Query(..., description="Natural language feedback from user"),
+    source: str = Query("web", description="Source: web, telegram, api"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Submit feedback on a recommendation for V4 learning.
+    
+    Accepts natural language feedback like:
+    - "premium is too small, only $8"
+    - "I don't want to cap NVDA upside right now"
+    - "8 weeks is too long to lock up capital"
+    
+    The feedback is parsed by AI to extract structured insights.
+    """
+    from app.modules.strategies.feedback_service import (
+        parse_feedback_with_ai,
+        save_feedback,
+        get_recommendation_by_id
+    )
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Ensure feedback table exists (auto-create if not)
+        _ensure_feedback_table_exists(db)
+        
+        # Get recommendation context
+        recommendation_context = get_recommendation_by_id(db, recommendation_id)
+        
+        if not recommendation_context:
+            # Still save feedback even if we can't find the recommendation
+            logger.warning(f"Recommendation {recommendation_id} not found, saving feedback anyway")
+            recommendation_context = {"id": recommendation_id}
+        
+        # Parse feedback with AI (gracefully handle failures)
+        parsed = None
+        try:
+            parsed = await parse_feedback_with_ai(recommendation_context, feedback)
+        except Exception as e:
+            logger.warning(f"AI parsing failed (will save raw feedback): {e}")
+            # Use fallback parsing
+            from app.modules.strategies.feedback_service import _fallback_parse
+            parsed = _fallback_parse(feedback)
+        
+        # Save to database
+        feedback_record = save_feedback(
+            db=db,
+            recommendation_id=recommendation_id,
+            raw_feedback=feedback,
+            source=source,
+            parsed_feedback=parsed,
+            recommendation_context=recommendation_context
+        )
+        
+        return {
+            "success": True,
+            "feedback_id": feedback_record.id,
+            "recommendation_id": recommendation_id,
+            "parsed": {
+                "reason_code": feedback_record.reason_code,
+                "reason_detail": feedback_record.reason_detail,
+                "threshold_hint": float(feedback_record.threshold_hint) if feedback_record.threshold_hint else None,
+                "actionable_insight": feedback_record.actionable_insight,
+            } if parsed else None,
+            "message": "Feedback recorded. Thank you for helping improve the algorithm!"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error saving feedback: {e}", exc_info=True)
+        # Return error but don't crash
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save feedback: {str(e)}. Please try again or contact support."
+        )
+
+
+def _ensure_feedback_table_exists(db: Session):
+    """
+    Ensure the recommendation_feedback table exists.
+    Creates it if not present (for dev convenience).
+    """
+    from sqlalchemy import inspect
+    from app.modules.strategies.models import RecommendationFeedback
+    from app.core.database import engine
+    
+    inspector = inspect(engine)
+    if 'recommendation_feedback' not in inspector.get_table_names():
+        # Create the table
+        RecommendationFeedback.__table__.create(engine, checkfirst=True)
+        import logging
+        logging.getLogger(__name__).info("Created recommendation_feedback table")
+
+
+@router.get("/feedback/insights")
+async def get_feedback_insights_endpoint(
+    days_back: int = Query(30, description="Days of feedback to analyze"),
+    min_occurrences: int = Query(3, description="Minimum occurrences to report a pattern"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get insights from collected feedback for V4 algorithm improvements.
+    
+    Analyzes patterns in user feedback and suggests algorithm adjustments.
+    """
+    from app.modules.strategies.feedback_service import get_feedback_insights
+    
+    insights = get_feedback_insights(
+        db=db,
+        days_back=days_back,
+        min_occurrences=min_occurrences
+    )
+    
+    return insights
+
+
+@router.get("/feedback/history")
+async def get_feedback_history(
+    days_back: int = Query(30, description="Days of feedback to retrieve"),
+    reason_code: Optional[str] = Query(None, description="Filter by reason code"),
+    symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    limit: int = Query(100, description="Maximum records to return"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get history of user feedback on recommendations.
+    """
+    from app.modules.strategies.models import RecommendationFeedback
+    from datetime import timedelta
+    
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    
+    query = db.query(RecommendationFeedback).filter(
+        RecommendationFeedback.created_at >= cutoff
+    )
+    
+    if reason_code:
+        query = query.filter(RecommendationFeedback.reason_code == reason_code)
+    if symbol:
+        query = query.filter(RecommendationFeedback.symbol == symbol.upper())
+    
+    records = query.order_by(RecommendationFeedback.created_at.desc()).limit(limit).all()
+    
+    return {
+        "feedback": [
+            {
+                "id": r.id,
+                "recommendation_id": r.recommendation_id,
+                "source": r.source,
+                "raw_feedback": r.raw_feedback,
+                "reason_code": r.reason_code,
+                "reason_detail": r.reason_detail,
+                "threshold_hint": float(r.threshold_hint) if r.threshold_hint else None,
+                "symbol": r.symbol,
+                "account_name": r.account_name,
+                "sentiment": r.sentiment,
+                "actionable_insight": r.actionable_insight,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in records
+        ],
+        "count": len(records),
+        "filters": {
+            "days_back": days_back,
+            "reason_code": reason_code,
+            "symbol": symbol
+        }
+    }
+
+
+# ============================================================================
+# TELEGRAM WEBHOOK ENDPOINTS (for reply-based feedback)
+# ============================================================================
+
+@router.post("/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Webhook endpoint for Telegram to send message updates.
+    
+    When a user replies to a recommendation notification, Telegram sends
+    the reply here, and we process it as feedback.
+    
+    Setup (one-time):
+    1. Set TELEGRAM_WEBHOOK_SECRET in your environment
+    2. Call POST /telegram/setup-webhook with your public HTTPS URL
+    
+    Security:
+    - Verifies X-Telegram-Bot-Api-Secret-Token header
+    """
+    import os
+    from app.shared.services.telegram_webhook import (
+        verify_telegram_webhook,
+        extract_reply_info,
+        process_telegram_reply,
+        send_telegram_acknowledgment
+    )
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    # Verify the request is from Telegram
+    secret = os.getenv('TELEGRAM_WEBHOOK_SECRET', '')
+    provided_token = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+    
+    if not verify_telegram_webhook(secret, provided_token):
+        logger.warning("Invalid Telegram webhook secret")
+        return {"ok": False, "error": "Invalid secret token"}
+    
+    try:
+        # Parse the update from Telegram
+        update = await request.json()
+        logger.info(f"Received Telegram update: {update.get('update_id', 'unknown')}")
+        
+        # Extract reply information
+        reply_info = extract_reply_info(update)
+        
+        if not reply_info:
+            # Not a reply or not relevant - just acknowledge
+            return {"ok": True, "message": "Update received (not a reply)"}
+        
+        logger.info(f"Processing reply to message {reply_info.get('original_message_id')}")
+        
+        # Process the reply as feedback
+        result = await process_telegram_reply(db, reply_info)
+        
+        # Send acknowledgment back to user
+        await send_telegram_acknowledgment(
+            chat_id=reply_info.get("chat_id"),
+            result=result,
+            reply_to_message_id=reply_info.get("message_id")
+        )
+        
+        return {"ok": True, "result": result}
+        
+    except Exception as e:
+        logger.error(f"Error processing Telegram webhook: {e}", exc_info=True)
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/telegram/setup-webhook")
+async def setup_telegram_webhook(
+    webhook_url: str = Query(..., description="Full HTTPS URL for the webhook (e.g., https://yourdomain.com/api/v1/strategies/telegram/webhook)"),
+    secret_token: Optional[str] = Query(None, description="Secret token for webhook verification (optional but recommended)"),
+    user=Depends(get_current_user)
+):
+    """
+    Set up the Telegram webhook for reply-based feedback.
+    
+    Requirements:
+    - webhook_url must be HTTPS
+    - webhook_url must be publicly accessible
+    
+    Example:
+        POST /telegram/setup-webhook?webhook_url=https://myserver.com/api/v1/strategies/telegram/webhook&secret_token=my_secret
+    
+    After setup, when users reply to recommendation notifications on Telegram,
+    their replies will be processed as feedback.
+    """
+    import os
+    from app.shared.services.telegram_webhook import set_telegram_webhook
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    if not webhook_url.startswith("https://"):
+        return {
+            "success": False,
+            "error": "Webhook URL must use HTTPS"
+        }
+    
+    # Use provided secret or generate from env
+    secret = secret_token or os.getenv('TELEGRAM_WEBHOOK_SECRET')
+    
+    result = set_telegram_webhook(webhook_url, secret)
+    
+    if result.get("ok"):
+        logger.info(f"Telegram webhook set to: {webhook_url}")
+        return {
+            "success": True,
+            "message": "Webhook configured successfully",
+            "webhook_url": webhook_url,
+            "secret_configured": bool(secret),
+            "telegram_response": result
+        }
+    else:
+        return {
+            "success": False,
+            "error": result.get("error") or result.get("description", "Unknown error"),
+            "telegram_response": result
+        }
+
+
+@router.get("/telegram/webhook-info")
+async def get_telegram_webhook_info_endpoint(
+    user=Depends(get_current_user)
+):
+    """
+    Get current Telegram webhook configuration.
+    
+    Shows:
+    - Current webhook URL
+    - Pending updates
+    - Last error (if any)
+    """
+    from app.shared.services.telegram_webhook import get_telegram_webhook_info
+    
+    info = get_telegram_webhook_info()
+    
+    if info.get("error"):
+        return {
+            "success": False,
+            "error": info["error"]
+        }
+    
+    result = info.get("result", {})
+    return {
+        "success": True,
+        "webhook_url": result.get("url", ""),
+        "has_custom_certificate": result.get("has_custom_certificate", False),
+        "pending_update_count": result.get("pending_update_count", 0),
+        "last_error_date": result.get("last_error_date"),
+        "last_error_message": result.get("last_error_message"),
+        "max_connections": result.get("max_connections"),
+        "allowed_updates": result.get("allowed_updates", []),
+    }
+
+
+@router.delete("/telegram/webhook")
+async def delete_telegram_webhook_endpoint(
+    user=Depends(get_current_user)
+):
+    """
+    Delete the Telegram webhook.
+    
+    This switches Telegram back to polling mode.
+    Use this if you want to disable reply-based feedback.
+    """
+    from app.shared.services.telegram_webhook import delete_telegram_webhook
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    result = delete_telegram_webhook()
+    
+    if result.get("ok"):
+        logger.info("Telegram webhook deleted")
+        return {
+            "success": True,
+            "message": "Webhook deleted successfully"
+        }
+    else:
+        return {
+            "success": False,
+            "error": result.get("error") or result.get("description", "Unknown error")
+        }
+
+
+@router.get("/telegram/feedback-tracking")
+async def get_telegram_feedback_tracking(
+    days_back: int = Query(7, description="Days of tracking data to retrieve"),
+    include_processed: bool = Query(True, description="Include already-processed messages"),
+    limit: int = Query(50, description="Maximum records to return"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get Telegram message tracking data.
+    
+    Shows which Telegram messages have been sent and whether
+    they've received replies/feedback.
+    """
+    from datetime import timedelta
+    from app.modules.strategies.models import TelegramMessageTracking
+    
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    
+    query = db.query(TelegramMessageTracking).filter(
+        TelegramMessageTracking.sent_at >= cutoff
+    )
+    
+    if not include_processed:
+        query = query.filter(TelegramMessageTracking.feedback_processed == False)
+    
+    records = query.order_by(TelegramMessageTracking.sent_at.desc()).limit(limit).all()
+    
+    return {
+        "tracking_data": [
+            {
+                "id": r.id,
+                "telegram_message_id": r.telegram_message_id,
+                "recommendation_count": len(r.recommendation_ids) if r.recommendation_ids else 0,
+                "recommendation_ids": r.recommendation_ids,
+                "sent_at": r.sent_at.isoformat() if r.sent_at else None,
+                "reply_received": r.reply_received,
+                "reply_text": r.reply_text,
+                "reply_received_at": r.reply_received_at.isoformat() if r.reply_received_at else None,
+                "feedback_processed": r.feedback_processed,
+            }
+            for r in records
+        ],
+        "count": len(records),
+        "days_back": days_back
+    }
+
+
+@router.post("/telegram/poll-replies")
+async def poll_telegram_replies(
+    user=Depends(get_current_user)
+):
+    """
+    Manually poll Telegram for new reply feedback.
+    
+    Use this when webhook is not configured (localhost development).
+    Checks for new replies to notification messages and processes them as feedback.
+    
+    Returns:
+        - status: 'success', 'no_updates', or 'error'
+        - updates_received: Number of Telegram updates found
+        - feedback_saved: Number of feedback records created
+    """
+    from app.shared.services.telegram_poller import poll_and_process_replies
+    
+    result = await poll_and_process_replies()
+    return result
+
+
+@router.get("/telegram/pending-updates")
+async def get_pending_telegram_updates(
+    user=Depends(get_current_user)
+):
+    """
+    Check how many Telegram updates are pending (not yet processed).
+    
+    Useful for debugging and monitoring the Telegram integration.
+    """
+    import requests
+    from app.core.config import settings
+    
+    bot_token = settings.TELEGRAM_BOT_TOKEN
+    if not bot_token:
+        raise HTTPException(status_code=500, detail="TELEGRAM_BOT_TOKEN not configured")
+    
+    try:
+        resp = requests.get(f"https://api.telegram.org/bot{bot_token}/getWebhookInfo")
+        webhook_info = resp.json()
+        
+        resp2 = requests.get(f"https://api.telegram.org/bot{bot_token}/getUpdates?limit=0")
+        updates_info = resp2.json()
+        
+        return {
+            "webhook_configured": bool(webhook_info.get("result", {}).get("url")),
+            "webhook_url": webhook_info.get("result", {}).get("url", ""),
+            "pending_update_count": webhook_info.get("result", {}).get("pending_update_count", 0),
+            "updates_available": len(updates_info.get("result", [])),
+            "message": "Use POST /telegram/poll-replies to process pending updates"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check Telegram status: {str(e)}")
 

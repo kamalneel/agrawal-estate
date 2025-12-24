@@ -214,3 +214,90 @@ class WeeklyRecommendationTracking(Base):
     __table_args__ = (
         Index('idx_weekly_rec_week_strategy', 'week_start_date', 'strategy_type'),
     )
+
+
+class RecommendationFeedback(Base):
+    """
+    Stores user feedback on recommendations for V4 learning.
+    
+    Captures natural language feedback and AI-parsed structured insights.
+    Used to learn user preferences and improve algorithm over time.
+    """
+    __tablename__ = 'recommendation_feedback'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    recommendation_id = Column(String(100), nullable=True)  # Links to StrategyRecommendationRecord (nullable for Telegram)
+    
+    # Source of feedback
+    source = Column(String(20), nullable=False)  # 'web', 'telegram', 'api'
+    
+    # Raw user input
+    raw_feedback = Column(Text, nullable=False)  # Natural language feedback from user
+    
+    # AI-parsed structured feedback
+    reason_code = Column(String(50), nullable=True)  # 'premium_small', 'timing_bad', 'stock_preference', etc.
+    reason_detail = Column(Text, nullable=True)  # AI's interpretation of the feedback
+    threshold_hint = Column(Numeric(10, 2), nullable=True)  # If user mentioned a number (e.g., "$8 is too small")
+    symbol_specific = Column(Boolean, nullable=True)  # Is this feedback specific to this symbol?
+    sentiment = Column(String(20), nullable=True)  # 'neutral', 'frustrated', 'positive'
+    actionable_insight = Column(Text, nullable=True)  # What the algorithm should learn
+    
+    # Context snapshot (what was the recommendation about)
+    recommendation_type = Column(String(50), nullable=True)
+    symbol = Column(String(20), nullable=True)
+    account_name = Column(String(200), nullable=True)
+    context_snapshot = Column(JSON, nullable=True)  # Full recommendation context at time of feedback
+    
+    # Parsing status
+    parsing_status = Column(String(20), default='pending')  # 'pending', 'parsed', 'failed'
+    parsing_error = Column(Text, nullable=True)
+    parsed_at = Column(DateTime, nullable=True)
+    
+    # Metadata
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_feedback_recommendation_id', 'recommendation_id'),
+        Index('idx_feedback_reason_code', 'reason_code'),
+        Index('idx_feedback_symbol', 'symbol'),
+        Index('idx_feedback_created_at', 'created_at'),
+    )
+
+
+class TelegramMessageTracking(Base):
+    """
+    Tracks Telegram messages sent for recommendation notifications.
+    
+    Used to correlate user replies with the original recommendations
+    so feedback can be processed correctly.
+    """
+    __tablename__ = 'telegram_message_tracking'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # Telegram message info
+    telegram_message_id = Column(Integer, nullable=False)  # Telegram's message_id
+    telegram_chat_id = Column(String(50), nullable=False)  # Chat ID where message was sent
+    
+    # What recommendations were in this message
+    recommendation_ids = Column(JSON, nullable=False)  # List of recommendation_id strings
+    
+    # Message content snapshot
+    message_text = Column(Text, nullable=True)  # The formatted message that was sent
+    
+    # Timing
+    sent_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Reply tracking
+    reply_received = Column(Boolean, default=False)
+    reply_text = Column(Text, nullable=True)
+    reply_received_at = Column(DateTime, nullable=True)
+    feedback_processed = Column(Boolean, default=False)
+    
+    # Metadata
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_telegram_message_id', 'telegram_message_id', 'telegram_chat_id'),
+        Index('idx_telegram_sent_at', 'sent_at'),
+    )

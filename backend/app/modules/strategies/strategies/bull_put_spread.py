@@ -109,14 +109,14 @@ class BullPutSpreadStrategy(BaseStrategy):
         params: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Analyze a symbol for bull put spread opportunities."""
-        from app.modules.strategies.yahoo_cache import (
-            get_ticker_info,
+        from app.modules.strategies.option_data_service import (
+            get_stock_info,
             get_option_expirations
         )
         
         try:
-            # Get current stock price (cached)
-            stock_info = get_ticker_info(symbol)
+            # Get current stock price (Schwab preferred, Yahoo fallback)
+            stock_info = get_stock_info(symbol)
             if not stock_info:
                 logger.warning(f"Could not get info for {symbol}")
                 return None
@@ -127,7 +127,7 @@ class BullPutSpreadStrategy(BaseStrategy):
                 # Skip stocks under $10 (too risky for spreads)
                 return None
             
-            # Get available expirations (cached)
+            # Get available expirations (Schwab preferred, Yahoo fallback)
             available_expirations = get_option_expirations(symbol)
             if not available_expirations:
                 return None

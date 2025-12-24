@@ -15,8 +15,6 @@ import {
 } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import {
-  AreaChart,
-  Area,
   BarChart,
   Bar,
   XAxis,
@@ -242,6 +240,7 @@ interface AccountOptionsDetailData {
 
 // Helper functions
 const formatCurrency = (value: number) => {
+  if (value === undefined || value === null || isNaN(value)) return '$0'
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -251,6 +250,7 @@ const formatCurrency = (value: number) => {
 }
 
 const formatCurrencyPrecise = (value: number) => {
+  if (value === undefined || value === null || isNaN(value)) return '$0.00'
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -705,13 +705,7 @@ function DividendsDetail({ data, chartData, onBack }: DividendsDetailProps) {
 
         <div className={styles.chartContainer}>
           <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-              <defs>
-                <linearGradient id="dividendGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#00A3FF" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#00A3FF" stopOpacity={0} />
-                </linearGradient>
-              </defs>
+            <BarChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
               <XAxis
                 dataKey="formatted"
@@ -729,14 +723,12 @@ function DividendsDetail({ data, chartData, onBack }: DividendsDetailProps) {
                 width={60}
               />
               <Tooltip content={<ChartTooltip />} />
-              <Area
-                type="monotone"
+              <Bar
                 dataKey="value"
-                stroke="#00A3FF"
-                strokeWidth={2}
-                fill="url(#dividendGradient)"
+                fill="#00A3FF"
+                radius={[4, 4, 0, 0]}
               />
-            </AreaChart>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </section>
@@ -875,13 +867,7 @@ function InterestDetail({ data, chartData, onBack }: InterestDetailProps) {
 
         <div className={styles.chartContainer}>
           <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-              <defs>
-                <linearGradient id="interestGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#FFB800" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#FFB800" stopOpacity={0} />
-                </linearGradient>
-              </defs>
+            <BarChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
               <XAxis
                 dataKey="formatted"
@@ -899,14 +885,12 @@ function InterestDetail({ data, chartData, onBack }: InterestDetailProps) {
                 width={60}
               />
               <Tooltip content={<ChartTooltip />} />
-              <Area
-                type="monotone"
+              <Bar
                 dataKey="value"
-                stroke="#FFB800"
-                strokeWidth={2}
-                fill="url(#interestGradient)"
+                fill="#FFB800"
+                radius={[4, 4, 0, 0]}
               />
-            </AreaChart>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </section>
@@ -1796,13 +1780,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
           {filteredDividends.length > 0 ? (
             <div className={styles.chartContainer}>
               <ResponsiveContainer width="100%" height={250}>
-                <AreaChart data={filteredDividends} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <defs>
-                    <linearGradient id="acctDivGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#00A3FF" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#00A3FF" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+                <BarChart data={filteredDividends} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <XAxis
                     dataKey="formatted"
@@ -1819,14 +1797,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
                     width={50}
                   />
                   <Tooltip content={<ChartTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    stroke="#00A3FF"
-                    strokeWidth={2}
-                    fill="url(#acctDivGradient)"
-                  />
-                </AreaChart>
+                  <Bar dataKey="value" fill="#00A3FF" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           ) : (
@@ -1846,13 +1818,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
           {filteredInterest.length > 0 ? (
             <div className={styles.chartContainer}>
               <ResponsiveContainer width="100%" height={250}>
-                <AreaChart data={filteredInterest} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <defs>
-                    <linearGradient id="acctIntGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#FFB800" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#FFB800" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+                <BarChart data={filteredInterest} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <XAxis
                     dataKey="formatted"
@@ -1869,14 +1835,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
                     width={50}
                   />
                   <Tooltip content={<ChartTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    stroke="#FFB800"
-                    strokeWidth={2}
-                    fill="url(#acctIntGradient)"
-                  />
-                </AreaChart>
+                  <Bar dataKey="value" fill="#FFB800" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           ) : (
@@ -2788,16 +2748,10 @@ export function Income() {
           {mainFilteredDividendChart.length > 0 ? (
             <div className={styles.chartContainer}>
               <ResponsiveContainer width="100%" height={250}>
-                <AreaChart
+                <BarChart
                   data={mainFilteredDividendChart}
                   margin={{ top: 20, right: 20, left: 10, bottom: 20 }}
                 >
-                  <defs>
-                    <linearGradient id="divGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#00A3FF" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#00A3FF" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <XAxis
                     dataKey="formatted"
@@ -2814,14 +2768,8 @@ export function Income() {
                     width={50}
                   />
                   <Tooltip content={<ChartTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    stroke="#00A3FF"
-                    strokeWidth={2}
-                    fill="url(#divGradient)"
-                  />
-                </AreaChart>
+                  <Bar dataKey="value" fill="#00A3FF" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           ) : (
@@ -2849,16 +2797,10 @@ export function Income() {
           {mainFilteredInterestChart.length > 0 ? (
             <div className={styles.chartContainer}>
               <ResponsiveContainer width="100%" height={250}>
-                <AreaChart
+                <BarChart
                   data={mainFilteredInterestChart}
                   margin={{ top: 20, right: 20, left: 10, bottom: 20 }}
                 >
-                  <defs>
-                    <linearGradient id="intGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#FFB800" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#FFB800" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <XAxis
                     dataKey="formatted"
@@ -2875,14 +2817,8 @@ export function Income() {
                     width={50}
                   />
                   <Tooltip content={<ChartTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    stroke="#FFB800"
-                    strokeWidth={2}
-                    fill="url(#intGradient)"
-                  />
-                </AreaChart>
+                  <Bar dataKey="value" fill="#FFB800" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           ) : (

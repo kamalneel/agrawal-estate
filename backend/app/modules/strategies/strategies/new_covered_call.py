@@ -25,8 +25,19 @@ from app.modules.strategies.strategy_base import BaseStrategy
 from app.modules.strategies.recommendations import StrategyRecommendation
 from app.modules.strategies.technical_analysis import get_technical_analysis_service
 from app.modules.strategies.services import get_sold_options_by_account
+from app.modules.strategies.option_monitor import OptionChainFetcher
 
 logger = logging.getLogger(__name__)
+
+# Global option chain fetcher for real-time premiums
+_option_chain_fetcher = None
+
+def _get_option_chain_fetcher():
+    """Get or create the global option chain fetcher."""
+    global _option_chain_fetcher
+    if _option_chain_fetcher is None:
+        _option_chain_fetcher = OptionChainFetcher()
+    return _option_chain_fetcher
 
 
 class NewCoveredCallStrategy(BaseStrategy):
@@ -207,10 +218,39 @@ class NewCoveredCallStrategy(BaseStrategy):
             )
         else:
             # SELL NOW recommendation
-            # Estimate premium (rough: 0.3-0.5% of stock price for weekly OTM)
-            estimated_premium = indicators.current_price * 0.004 * position["uncovered"] * 100
+            # Try to get real premium from options chain
+            option_fetcher = _get_option_chain_fetcher()
+            real_premium_per_contract = None
             
-            title = f"SELL {position['uncovered']} {symbol} ${strike_rec.recommended_strike:.0f} call for {next_friday.strftime('%b %d')} · Stock ${indicators.current_price:.0f}"
+            try:
+                option_quote = option_fetcher.get_option_quote(
+                    symbol=symbol,
+                    expiration_date=next_friday,
+                    strike=strike_rec.recommended_strike,
+                    option_type='call'
+                )
+                if option_quote:
+                    # Use bid price for selling (more conservative/realistic)
+                    if option_quote.bid and option_quote.bid > 0:
+                        real_premium_per_contract = option_quote.bid * 100
+                    elif option_quote.last_price and option_quote.last_price > 0:
+                        real_premium_per_contract = option_quote.last_price * 100
+                    logger.debug(f"Real premium for {symbol} ${strike_rec.recommended_strike:.0f}: ${real_premium_per_contract:.2f}/contract")
+            except Exception as e:
+                logger.warning(f"Could not fetch real premium for {symbol}: {e}")
+            
+            # Fallback to estimate if real premium not available
+            if real_premium_per_contract is None:
+                real_premium_per_contract = indicators.current_price * 0.004 * 100  # 0.4% estimate per contract
+            
+            total_premium = real_premium_per_contract * position["uncovered"]
+            
+            # Add premium to context for frontend
+            context["premium_per_contract"] = round(real_premium_per_contract, 2)
+            context["total_premium"] = round(total_premium, 2)
+            
+            # Include premium in title and description
+            title = f"SELL {position['uncovered']} {symbol} ${strike_rec.recommended_strike:.0f} call for {next_friday.strftime('%b %d')} · Stock ${indicators.current_price:.0f} and earn ${total_premium:.2f}"
             
             return StrategyRecommendation(
                 id=f"new_call_sell_{symbol}_{position['account_name']}_{date.today().isoformat()}",
@@ -220,7 +260,7 @@ class NewCoveredCallStrategy(BaseStrategy):
                 title=title,
                 description=(
                     f"Sell {position['uncovered']} {symbol} covered call(s) at ${strike_rec.recommended_strike:.0f} "
-                    f"expiring {next_friday.strftime('%b %d')} in {position['account_name']}"
+                    f"expiring {next_friday.strftime('%b %d')} in {position['account_name']} and earn ${total_premium:.2f}"
                 ),
                 rationale=reason + " " + strike_rec.rationale,
                 action=(
@@ -228,7 +268,7 @@ class NewCoveredCallStrategy(BaseStrategy):
                     f"expiring {next_friday.strftime('%b %d')}"
                 ),
                 action_type="sell",
-                potential_income=round(estimated_premium, 2),
+                potential_income=round(total_premium, 2),
                 potential_risk="low",
                 time_horizon="this_week",
                 symbol=symbol,

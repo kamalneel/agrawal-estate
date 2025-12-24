@@ -46,13 +46,15 @@ from app.modules.strategies.algorithm_config import (
     is_feature_enabled,
     ALGORITHM_VERSION,
 )
-# V2.2 Refactoring: Use centralized utility functions
+# V3: Simplified utility functions
 from app.modules.strategies.utils.option_calculations import (
     calculate_itm_status,
-    check_itm_thresholds,
-    check_roll_economics,
-    validate_roll_options as validate_roll_options_util,
-    would_be_itm,
+    is_acceptable_cost,
+)
+# V3: Zero-cost finder (replaces multi-week optimizer scoring)
+from app.modules.strategies.zero_cost_finder import (
+    find_zero_cost_roll,
+    ZeroCostRollResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,126 +63,37 @@ logger = logging.getLogger(__name__)
 _config = get_config()
 
 
-def should_close_itm_position_by_threshold(
-    symbol: str,
-    strike: float,
-    option_type: str,
-    current_price: float,
-    is_triple_witching_day: bool = False
-) -> Dict[str, Any]:
-    """
-    V2.2: Wrapper for centralized ITM threshold check.
-    
-    Delegates to utils.option_calculations.check_itm_thresholds() for
-    consistent threshold enforcement across all strategies.
-    
-    Thresholds:
-    - CATASTROPHIC (>20% ITM): Never roll, close immediately
-    - DEEP (>10% ITM): Too deep to roll effectively
-    - NORMAL (>5% ITM): Close on normal days
-    - TRIPLE WITCHING (>3% ITM): Close on Triple Witching days
-    """
-    return check_itm_thresholds(
-        current_price=current_price,
-        strike=strike,
-        option_type=option_type,
-        is_triple_witching=is_triple_witching_day
-    )
-
-
-def evaluate_roll_economics(
-    current_close_cost: float,
-    roll_options: List[Dict],
-    symbol: str,
-    option_type: str,
-    current_price: float,
-    contracts: int = 1
-) -> Dict[str, Any]:
-    """
-    V2.2: Wrapper for centralized roll economics check.
-    
-    Delegates to utils.option_calculations.check_roll_economics() for
-    consistent economic validation across all strategies.
-    
-    Economic checks:
-    1. Don't pay more/same to roll than to close
-    2. Savings must be meaningful ($50+ or 10%+)
-    3. Don't roll INTO another ITM position
-    """
-    return check_roll_economics(
-        close_cost=current_close_cost,
-        roll_options=roll_options,
-        current_price=current_price,
-        option_type=option_type
-    )
-
-
-def validate_roll_options(roll_options: List[Dict]) -> Dict[str, Any]:
-    """
-    V2.2: Wrapper for centralized roll option validation.
-    
-    Delegates to utils.option_calculations.validate_roll_options() for
-    consistent validation across all strategies.
-    
-    Validation checks:
-    1. Must have 3 options (Conservative/Moderate/Aggressive)
-    2. All strikes must not be identical
-    3. Strikes should differ by at least MIN_STRIKE_VARIATION_PCT
-    """
-    return validate_roll_options_util(roll_options)
-
-
 def generate_close_recommendation(
     position,
-    threshold_result: Dict[str, Any],
-    is_triple_witching: bool = False
+    reason: str = "Cannot find zero-cost roll within 52 weeks",
+    itm_pct: float = 0,
+    intrinsic_value: float = 0
 ) -> 'StrategyRecommendation':
     """
-    V2.1: Generate a CLOSE recommendation when ITM thresholds are exceeded.
+    V3 SIMPLIFIED: Generate a CLOSE recommendation.
     
-    This is called instead of a roll recommendation when:
-    - ITM% exceeds threshold (5% normal, 3% Triple Witching, 10% deep, 20% catastrophic)
-    - Roll economics don't make sense
-    - Roll optimizer validation fails
+    V3 Strategy: Only close when cannot find zero-cost roll within 52 weeks.
+    This is the ONLY reason to close in V3 - no ITM thresholds.
     
     Args:
         position: The option position
-        threshold_result: Result from should_close_itm_position_by_threshold() or evaluate_roll_economics()
-        is_triple_witching: Whether today is Triple Witching
+        reason: Why we're recommending close
+        itm_pct: Current ITM percentage
+        intrinsic_value: Current intrinsic value
         
     Returns:
         StrategyRecommendation with CLOSE action
     """
-    from app.modules.strategies.strategies.triple_witching_handler import (
-        is_triple_witching as check_triple_witching,
-        get_triple_witching_execution_guidance
-    )
-    
-    itm_pct = threshold_result.get('itm_pct', 0)
-    intrinsic_value = threshold_result.get('intrinsic_value', 0)
-    urgency = threshold_result.get('urgency', 'high')
-    recommendation = threshold_result.get('recommendation', 'CLOSE_DONT_ROLL')
-    reason = threshold_result.get('reason', 'Exceeds ITM threshold')
-    explanation = threshold_result.get('explanation', [])
-    
     # Estimate close cost
     close_cost_per_share = intrinsic_value * 1.05  # Add 5% for time value/slippage
     close_cost_total = close_cost_per_share * 100 * position.contracts
     
-    # Build title based on severity
-    if threshold_result.get('urgency') == 'CRITICAL':
-        title_prefix = "🚨 CRITICAL"
-    elif is_triple_witching or threshold_result.get('is_triple_witching'):
-        title_prefix = "🔴 TRIPLE WITCHING"
-    else:
-        title_prefix = "⚠️"
-    
-    title = f"{title_prefix}: CLOSE {position.symbol} ${position.strike_price} {position.option_type.upper()} - {itm_pct:.1f}% ITM"
+    title = f"🚨 CLOSE {position.symbol} ${position.strike_price} {position.option_type.upper()} - Cannot escape within 52 weeks"
     
     # Build context
     context = {
         "symbol": position.symbol,
-        "scenario": "C_itm_close",
+        "scenario": "C_itm_catastrophic_close",
         "current_strike": position.strike_price,
         "option_type": position.option_type,
         "contracts": position.contracts,
@@ -189,57 +102,21 @@ def generate_close_recommendation(
         "intrinsic_value": round(intrinsic_value, 2),
         "close_cost_per_share": round(close_cost_per_share, 2),
         "close_cost_total": round(close_cost_total, 2),
-        "recommendation": recommendation,
         "reason": reason,
-        "explanation": explanation,
-        # Hide roll options since we're recommending close
-        "hide_roll_options": True,
-        "show_close_guidance": True,
+        "v3_note": "V3: Only close when cannot find zero-cost roll within 52 weeks",
     }
     
-    # Add Triple Witching guidance if applicable
-    if is_triple_witching or threshold_result.get('is_triple_witching'):
-        context["is_triple_witching"] = True
-        try:
-            tw_guidance = get_triple_witching_execution_guidance('close', position)
-            context["triple_witching_execution"] = {
-                'is_triple_witching': True,
-                'best_window': '10:30 AM - 2:30 PM ET',
-                'avoid_windows': [
-                    '6:30-7:00 AM ET (opening chaos)',
-                    '3:00-4:00 PM ET (final hour - extreme pinning)'
-                ],
-                'expected_slippage': '$50-150 per contract',
-                'execution_strategy': [
-                    'Use LIMIT orders only - NEVER market orders',
-                    'Start at mid price, be prepared to adjust',
-                    'Wait 3-5 minutes between price adjustments',
-                    'Accept some slippage to get filled'
-                ],
-                'timing_rationale': 'Close today, redeploy Monday for better execution',
-            }
-        except Exception as e:
-            logger.warning(f"Failed to get Triple Witching guidance: {e}")
+    description = (
+        f"{position.contracts}x {position.symbol} ${position.strike_price} {position.option_type}\n"
+        f"Currently {itm_pct:.1f}% ITM (${intrinsic_value:.2f} intrinsic)\n\n"
+        f"CATASTROPHIC: {reason}\n"
+        f"Estimated close cost: ${close_cost_per_share:.2f}/share (${close_cost_total:.0f} total)"
+    )
     
-    # Build description
-    description_parts = [
-        f"{position.contracts}x {position.symbol} ${position.strike_price} {position.option_type}",
-        f"Currently {itm_pct:.1f}% ITM (${intrinsic_value:.2f} intrinsic)",
-        "",
-        f"RECOMMENDED: {recommendation}",
-        f"Estimated close cost: ${close_cost_per_share:.2f}/share (${close_cost_total:.0f} total)",
-    ]
-    
-    if explanation:
-        description_parts.append("")
-        description_parts.append("Why close:")
-        for exp in explanation[:3]:  # Limit to 3 lines
-            description_parts.append(f"  • {exp}")
-    
-    description = "\n".join(description_parts)
-    
-    # Build rationale
-    rationale = f"Position is {itm_pct:.1f}% ITM. {reason}. " + " ".join(explanation[:2]) if explanation else reason
+    rationale = (
+        f"Position is {itm_pct:.1f}% ITM. Searched up to 52 weeks but cannot find "
+        f"a roll within 20% of original premium. Close and redeploy capital."
+    )
     
     account_slug = (position.account_name or "unknown").replace(" ", "_").replace("'", "")
     
@@ -247,14 +124,14 @@ def generate_close_recommendation(
         id=f"roll_itm_close_{position.symbol}_{position.strike_price}_{date.today().isoformat()}_{account_slug}",
         type="roll_options",
         category="optimization",
-        priority=urgency,
+        priority="urgent",
         title=title,
         description=description,
         rationale=rationale,
         action=f"Close {position.contracts}x {position.symbol} ${position.strike_price} {position.option_type} at approximately ${close_cost_per_share:.2f}/share",
         action_type="close",
         potential_income=None,
-        potential_risk="high" if urgency == "CRITICAL" else "medium",
+        potential_risk="high",
         time_horizon="immediate",
         symbol=position.symbol,
         account_name=position.account_name,
@@ -854,60 +731,23 @@ class RollOptionsStrategy(BaseStrategy):
         earnings_date: Optional[date] = None
     ) -> Optional[StrategyRecommendation]:
         """
-        Scenario C: In The Money - analyze whether to wait, roll, or CLOSE.
+        V3 SIMPLIFIED: Scenario C - In The Money handling.
         
-        V2.1 ENHANCED: Now checks ITM thresholds FIRST before roll analysis.
+        V3 Strategy:
+        1. Check if TA suggests waiting (can be overridden for earnings)
+        2. Find zero-cost roll using ITM optimizer (up to 52 weeks)
+        3. If found: recommend roll
+        4. If not found within 52 weeks: recommend CLOSE (catastrophic)
         
-        Decision flow:
-        1. Check ITM thresholds (FIRST) - positions exceeding 5%/10%/20% should CLOSE
-        2. Check if TA suggests waiting (if not beyond threshold)
-        3. Run roll optimizer (if rolling is appropriate)
-        4. Validate optimizer output
-        5. Check roll economics
-        6. Return appropriate recommendation
-        
-        Uses ITM Roll Optimizer to find optimal balance of:
-        - Net Cost (minimize debit, ideally achieve credit)
-        - Time (prefer shorter duration)
-        - Safety (higher probability OTM)
-        
-        Presents top 3 options: Conservative, Moderate, Aggressive
-        
-        EARNINGS AWARENESS:
-        - During earnings week, NEVER wait - always recommend rolling
-        - Binary earnings events can gap the stock 5-15%, making ITM worse
+        NO THRESHOLD CHECKS - any ITM% can be rolled if we can find zero-cost.
+        Uses Delta 30 (70% OTM probability) for ITM escapes per V3 Addendum.
         """
         from app.modules.strategies.itm_roll_optimizer import get_itm_roll_optimizer
-        from app.modules.strategies.strategies.triple_witching_handler import is_triple_witching
         
         current_price = indicators.current_price
-        is_triple_witching_day = is_triple_witching()
         
         # ====================================================================
-        # V2.1: STEP 1 - Check ITM Thresholds FIRST (before any roll analysis)
-        # ====================================================================
-        threshold_check = should_close_itm_position_by_threshold(
-            symbol=position.symbol,
-            strike=position.strike_price,
-            option_type=position.option_type,
-            current_price=current_price,
-            is_triple_witching_day=is_triple_witching_day
-        )
-        
-        if threshold_check.get('should_close'):
-            # Position exceeds ITM threshold - recommend CLOSE, skip roll optimizer
-            logger.info(
-                f"ITM THRESHOLD EXCEEDED: {position.symbol} ${position.strike_price} {position.option_type} - "
-                f"{threshold_check.get('reason')} - Recommending CLOSE"
-            )
-            return generate_close_recommendation(
-                position=position,
-                threshold_result=threshold_check,
-                is_triple_witching=is_triple_witching_day
-            )
-        
-        # ====================================================================
-        # STEP 2: Check if TA suggests waiting (but override during earnings week)
+        # STEP 1: Check if TA suggests waiting (but override during earnings)
         # ====================================================================
         action, reason, analysis = ta_service.analyze_itm_position(
             symbol=position.symbol,
@@ -921,8 +761,7 @@ class RollOptionsStrategy(BaseStrategy):
             action = "roll"
             reason = (
                 f"⚠️ EARNINGS on {earnings_date.strftime('%b %d') if earnings_date else 'this week'}! "
-                f"Overriding 'wait' recommendation. Binary earnings events can gap 5-15%. "
-                f"Original TA suggested waiting due to: {reason}"
+                f"Binary earnings events can gap 5-15%."
             )
         
         if action == "wait":
@@ -962,8 +801,13 @@ class RollOptionsStrategy(BaseStrategy):
             )
         
         # ====================================================================
-        # STEP 3: Use ITM Roll Optimizer to analyze all roll combinations
+        # STEP 2: V3 - Use ITM Roll Optimizer with 20% cost rule
         # ====================================================================
+        # V3: Calculate max acceptable debit (20% of original premium)
+        # Note: We need original_premium from position
+        original_premium = getattr(position, 'original_premium', 1.0)  # Default $1 if not available
+        max_debit = original_premium * 0.20
+        
         optimizer = get_itm_roll_optimizer()
         roll_analysis = optimizer.analyze_itm_position(
             symbol=position.symbol,
@@ -972,32 +816,42 @@ class RollOptionsStrategy(BaseStrategy):
             current_expiration=position.expiration_date,
             contracts=position.contracts,
             account_name=position.account_name,
-            max_weeks_out=6,
-            max_net_debit=10.0  # Allow up to $10/share debit
+            max_weeks_out=52,  # V3: Up to 52 weeks (1 year)
+            max_net_debit=max_debit,  # V3: Use 20% rule
+            delta_target=0.70  # V3 Addendum: Delta 30 for ITM escapes
         )
         
         if not roll_analysis:
-            # Optimizer failed - recommend CLOSE with explanation
-            logger.warning(f"ITM Roll Optimizer failed for {position.symbol} - falling back to CLOSE recommendation")
+            # Cannot find zero-cost roll within 52 weeks - CATASTROPHIC
+            logger.warning(f"Cannot find zero-cost roll for {position.symbol} within 52 weeks - recommending CLOSE")
+            itm_calc = calculate_itm_status(current_price, position.strike_price, position.option_type)
             return generate_close_recommendation(
                 position=position,
-                threshold_result={
-                    'should_close': True,
-                    'reason': 'Roll optimizer failed - no valid roll options',
-                    'urgency': 'high',
-                    'recommendation': 'CLOSE_DONT_ROLL',
-                    'itm_pct': round(itm_pct, 1),
-                    'intrinsic_value': threshold_check.get('intrinsic_value', 0),
-                    'explanation': [
-                        f'Position is {itm_pct:.1f}% ITM',
-                        'Roll optimizer could not find viable roll options',
-                        'Recommending close as safest action'
-                    ]
-                },
-                is_triple_witching=is_triple_witching_day
+                reason="Cannot find zero-cost roll within 52 weeks",
+                itm_pct=itm_pct,
+                intrinsic_value=itm_calc['intrinsic_value']
             )
         
-        # Build context with all three options
+        # ====================================================================
+        # V3.1 FIX: Check if position is CATASTROPHIC (cannot escape to OTM)
+        # ====================================================================
+        if roll_analysis.is_catastrophic:
+            logger.warning(
+                f"[CATASTROPHIC] {position.symbol}: {itm_pct:.1f}% ITM, "
+                f"cannot escape to OTM within cost constraints - recommending CLOSE"
+            )
+            itm_calc = calculate_itm_status(current_price, position.strike_price, position.option_type)
+            return generate_close_recommendation(
+                position=position,
+                reason=f"Cannot escape ITM ({itm_pct:.1f}%). All roll options remain deeply ITM.",
+                itm_pct=itm_pct,
+                intrinsic_value=itm_calc['intrinsic_value']
+            )
+        
+        # ====================================================================
+        # STEP 3: V3 - Return roll recommendation (no additional validation)
+        # ====================================================================
+        # Build context with roll options
         conservative = roll_analysis.conservative
         moderate = roll_analysis.moderate
         aggressive = roll_analysis.aggressive
@@ -1022,91 +876,41 @@ class RollOptionsStrategy(BaseStrategy):
                     "days_to_expiry": opt.days_to_expiry,
                 })
         
-        # ====================================================================
-        # V2.1 STEP 4: Validate Roll Options
-        # ====================================================================
-        validation = validate_roll_options(roll_options_data)
-        
-        if not validation.get('valid'):
-            logger.warning(
-                f"Roll options validation failed for {position.symbol}: {validation.get('error')} - "
-                f"Recommending CLOSE"
-            )
-            return generate_close_recommendation(
-                position=position,
-                threshold_result={
-                    'should_close': True,
-                    'reason': f'Roll optimizer error: {validation.get("error")}',
-                    'urgency': 'high',
-                    'recommendation': 'CLOSE_DONT_ROLL',
-                    'itm_pct': round(itm_pct, 1),
-                    'intrinsic_value': threshold_check.get('intrinsic_value', 0),
-                    'explanation': [
-                        f'Position is {itm_pct:.1f}% ITM',
-                        f'Optimizer validation failed: {validation.get("error")}',
-                        'Roll options are not valid - recommending close'
-                    ]
-                },
-                is_triple_witching=is_triple_witching_day
-            )
-        
-        # ====================================================================
-        # V2.1 STEP 5: Economic Sanity Check
-        # ====================================================================
-        economic_check = evaluate_roll_economics(
-            current_close_cost=roll_analysis.buy_back_cost,
-            roll_options=roll_options_data,
-            symbol=position.symbol,
-            option_type=position.option_type,
-            current_price=current_price,
-            contracts=position.contracts
-        )
-        
-        if not economic_check.get('economically_sound'):
-            logger.info(
-                f"Roll economics failed for {position.symbol}: {economic_check.get('reason')} - "
-                f"Recommending CLOSE"
-            )
-            return generate_close_recommendation(
-                position=position,
-                threshold_result={
-                    'should_close': True,
-                    'reason': economic_check.get('reason'),
-                    'urgency': 'high',
-                    'recommendation': 'CLOSE_DONT_ROLL',
-                    'itm_pct': round(itm_pct, 1),
-                    'intrinsic_value': threshold_check.get('intrinsic_value', 0),
-                    'explanation': [
-                        f'Position is {itm_pct:.1f}% ITM',
-                        economic_check.get('reason'),
-                        economic_check.get('analysis', {}).get('conclusion', 'Rolling is not economically sound')
-                    ]
-                },
-                is_triple_witching=is_triple_witching_day
-            )
-        
-        # ====================================================================
-        # STEP 6: All checks passed - proceed with roll recommendation
-        # ====================================================================
-        
         # Determine recommended option (moderate by default)
         recommended = moderate or conservative or aggressive
         if not recommended:
-            return None
+            itm_calc = calculate_itm_status(current_price, position.strike_price, position.option_type)
+            return generate_close_recommendation(
+                position=position,
+                reason="No valid roll options found",
+                itm_pct=itm_pct,
+                intrinsic_value=itm_calc['intrinsic_value']
+            )
         
         context = {
             "symbol": position.symbol,
-            "scenario": "C_itm_optimized",
+            "scenario": "C_itm_v3_zero_cost",
             "current_strike": position.strike_price,
             "current_price": roll_analysis.current_price,
             "itm_percent": round(itm_pct, 1),
             "current_expiration": position.expiration_date.isoformat(),
             "contracts": position.contracts,
             "account": position.account_name,
+            "account_name": position.account_name,  # Also include as account_name for notification organizer
             "option_type": position.option_type,
+            # V3.1 FIX: Include new strike and expiration for proper notification formatting
+            "new_strike": recommended.new_strike,
+            "new_expiration": recommended.expiration_date.isoformat(),
+            "weeks_out": recommended.expiration_weeks,
             # Cost analysis
             "buy_back_cost": round(roll_analysis.buy_back_cost, 2),
             "buy_back_total": round(roll_analysis.buy_back_total, 2),
+            "max_debit_allowed": round(max_debit, 2),
+            "net_cost": round(recommended.net_cost, 2),
+            "net_cost_total": round(recommended.net_cost_total, 2),
+            "is_credit": recommended.net_cost < 0,
+            "new_premium": round(recommended.new_premium, 2),
+            "probability_otm": round(recommended.probability_otm, 0),
             # Roll options
             "roll_options": roll_options_data,
             "recommended_option": "Moderate" if moderate else ("Conservative" if conservative else "Aggressive"),
@@ -1116,13 +920,13 @@ class RollOptionsStrategy(BaseStrategy):
             # Earnings awareness
             "is_earnings_week": is_earnings_week,
             "earnings_date": earnings_date.isoformat() if earnings_date else None,
+            # V3 info
+            "v3_note": "V3: Using 20% cost rule, searching up to 52 weeks",
         }
         
-        # Build title and description for recommended option
+        # Build title
         rec_net_str = f"${abs(recommended.net_cost):.2f} {'credit' if recommended.net_cost < 0 else 'debit'}"
-        current_price = roll_analysis.current_price
         
-        # Include earnings alert in title if applicable
         if is_earnings_week:
             title = (
                 f"📊 EARNINGS: ROLL ITM {position.symbol} ${position.strike_price}→${recommended.new_strike:.0f} "
@@ -1134,12 +938,16 @@ class RollOptionsStrategy(BaseStrategy):
                 f"({recommended.expiration_weeks}wk, {rec_net_str}) · Stock ${current_price:.0f}"
             )
         
-        # Build executive summary for rationale
+        # Build rationale
+        itm_calc = calculate_itm_status(current_price, position.strike_price, position.option_type)
+        intrinsic_value = itm_calc['intrinsic_value']
+        itm_status = f"{itm_pct:.1f}% ITM (${intrinsic_value:.2f} intrinsic)"
+        
         rationale_parts = [
             f"**Position**: {position.symbol} ${position.strike_price} {position.option_type} is {itm_pct:.1f}% ITM",
-            f"**Buy-back cost**: ${roll_analysis.buy_back_cost:.2f}/share (${roll_analysis.buy_back_total:.0f} total)",
+            f"**V3 Strategy**: Find shortest zero-cost roll (max debit ${max_debit:.2f})",
             "",
-            "**Roll Options Analyzed**:",
+            "**Roll Options**:",
         ]
         
         for opt_data in roll_options_data:
@@ -1148,30 +956,19 @@ class RollOptionsStrategy(BaseStrategy):
                 f"{opt_data['net_cost_display']}/share, {opt_data['probability_otm']:.0f}% prob OTM"
             )
         
-        rationale_parts.extend([
-            "",
-            f"**Technical Signal**: {roll_analysis.technical_signals.get('ta_recommendation', 'N/A')}",
-            f"**Recommendation**: {roll_analysis.recommendation_summary}",
-        ])
-        
         rationale = "\n".join(rationale_parts)
         
-        # Earnings week is always urgent
+        # Priority - earnings week is urgent, otherwise based on ITM%
         if is_earnings_week:
             priority = "urgent"
-        elif itm_pct >= 5:
+        elif itm_pct >= 10:
             priority = "urgent"
-        else:
+        elif itm_pct >= 5:
             priority = "high"
+        else:
+            priority = "medium"
         
-        # V2.2: Use centralized ITM calculation for display
-        current_price = roll_analysis.current_price
-        itm_calc = calculate_itm_status(current_price, position.strike_price, position.option_type)
-        intrinsic_value = itm_calc['intrinsic_value']
-        
-        itm_status = f"{itm_pct:.1f}% ITM (${intrinsic_value:.2f} intrinsic)"
-        
-        # Description includes earnings alert if applicable
+        # Description
         if is_earnings_week:
             description = (
                 f"📊 EARNINGS on {earnings_date.strftime('%b %d') if earnings_date else 'this week'}! "
@@ -1199,7 +996,7 @@ class RollOptionsStrategy(BaseStrategy):
             action=(
                 f"Roll {position.contracts}x {position.symbol} ${position.strike_price} {position.option_type} "
                 f"to {recommended.expiration_date.strftime('%b %d')} ${recommended.new_strike:.0f} "
-                f"(Moderate option - {rec_net_str}/share)"
+                f"({rec_net_str}/share)"
             ),
             action_type="roll",
             potential_income=None if recommended.net_cost > 0 else abs(recommended.net_cost) * 100 * position.contracts,

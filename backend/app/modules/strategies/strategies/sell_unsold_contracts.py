@@ -19,8 +19,19 @@ from app.modules.strategies.services import get_sold_options_by_account
 from app.modules.strategies.models import OptionPremiumSetting
 from app.modules.strategies.technical_analysis import get_technical_analysis_service
 from app.modules.strategies.algorithm_config import get_config, ALGORITHM_VERSION
+from app.modules.strategies.option_monitor import OptionChainFetcher
 
 logger = logging.getLogger(__name__)
+
+# Global option chain fetcher for real-time premiums
+_option_chain_fetcher = None
+
+def _get_option_chain_fetcher():
+    """Get or create the global option chain fetcher."""
+    global _option_chain_fetcher
+    if _option_chain_fetcher is None:
+        _option_chain_fetcher = OptionChainFetcher()
+    return _option_chain_fetcher
 
 # Load config
 _config = get_config()
@@ -126,21 +137,17 @@ class SellUnsoldContractsStrategy(BaseStrategy):
         # Get technical analysis service for strike recommendations
         ta_service = get_technical_analysis_service()
         
+        # Get option chain fetcher for real-time premiums
+        option_fetcher = _get_option_chain_fetcher()
+        
         # Generate recommendations for each account/symbol with unsold contracts
         for (account_name, symbol), data in account_symbol_data.items():
             unsold = data["total_options"] - data["total_sold"]
             
             if unsold > 0:
-                premium = get_premium(symbol)
-                weekly_income = unsold * premium
+                logger.info(f"[SELL_DEBUG] Processing {symbol} with {unsold} unsold contracts")
                 
-                # Skip if below minimum income threshold
-                if weekly_income < min_weekly_income:
-                    continue
-                
-                yearly_income = weekly_income * 50  # 50 weeks/year
-                
-                # Calculate Delta 10 strike price
+                # Calculate Delta 10 strike price FIRST (needed for premium lookup)
                 strike_recommendation = ta_service.recommend_strike_price(
                     symbol=symbol,
                     option_type="call",
@@ -158,23 +165,74 @@ class SellUnsoldContractsStrategy(BaseStrategy):
                     strike_str = f"${strike:.0f}" if strike >= 100 else f"${strike:.2f}"
                     strike_rationale = strike_recommendation.rationale
                     strike_source = getattr(strike_recommendation, 'source', 'unknown')
+                    
+                    # Calculate actual % OTM for logging
+                    pct_otm = ((strike / current_price) - 1) * 100 if current_price else 0
+                    logger.info(f"[SELL_DEBUG] {symbol}: FINAL STRIKE=${strike:.2f} ({pct_otm:.1f}% OTM), source={strike_source}, current_price=${current_price:.2f}")
+                    logger.info(f"[SELL_DEBUG] {symbol}: rationale={strike_rationale[:100]}...")
                 else:
                     strike = None
                     strike_str = "delta 10"
                     strike_rationale = "Strike calculation unavailable - use Robinhood's 90% probability strike"
                     strike_source = "unavailable"
-                
-                # Determine priority based on potential income
-                if yearly_income > 10000:
-                    priority = "high"
-                elif yearly_income > 5000:
-                    priority = "medium"
-                else:
-                    priority = "low"
+                    logger.warning(f"[SELL_DEBUG] {symbol}: NO STRIKE RECOMMENDATION - using fallback text")
                 
                 # Build context with actual numbers
                 next_friday = _get_next_friday()
                 exp_str = next_friday.strftime('%b %d')
+                
+                # ================================================================
+                # GET REAL-TIME PREMIUM FROM OPTIONS CHAIN
+                # ================================================================
+                real_premium_per_contract = None
+                premium_source = "estimated"
+                
+                if strike:
+                    try:
+                        logger.info(f"[SELL_DEBUG] {symbol}: Fetching premium for strike=${strike}, expiration={next_friday}")
+                        option_quote = option_fetcher.get_option_quote(
+                            symbol=symbol,
+                            strike_price=strike,
+                            option_type="call",
+                            expiration_date=next_friday
+                        )
+                        if option_quote:
+                            # Use bid price (what you'd actually get when selling)
+                            # Multiply by 100 for per-contract amount
+                            logger.info(f"[SELL_DEBUG] {symbol}: Got quote - bid=${option_quote.bid}, ask={option_quote.ask}, last={option_quote.last_price}")
+                            if option_quote.bid and option_quote.bid > 0:
+                                real_premium_per_contract = option_quote.bid * 100
+                                premium_source = "live_bid"
+                            elif option_quote.last_price and option_quote.last_price > 0:
+                                real_premium_per_contract = option_quote.last_price * 100
+                                premium_source = "last_price"
+                            logger.info(f"[SELL_DEBUG] {symbol}: Premium=${real_premium_per_contract:.2f}/contract, source={premium_source}")
+                        else:
+                            logger.warning(f"[SELL_DEBUG] {symbol}: No option quote returned for ${strike}")
+                    except Exception as e:
+                        logger.warning(f"[SELL_DEBUG] {symbol}: Could not fetch premium: {e}")
+                
+                # Fallback to table-based estimate if no real data
+                if real_premium_per_contract is None:
+                    fallback_premium = get_premium(symbol)
+                    real_premium_per_contract = fallback_premium
+                    premium_source = "estimated"
+                    logger.debug(f"Using fallback premium for {symbol}: ${fallback_premium:.2f}/contract")
+                
+                # Calculate total premium for all contracts
+                total_premium = real_premium_per_contract * unsold
+                
+                # Skip if below minimum income threshold (using per-contract amount)
+                if total_premium < min_weekly_income:
+                    continue
+                
+                # Determine priority based on total potential income
+                if total_premium > 500:
+                    priority = "high"
+                elif total_premium > 200:
+                    priority = "medium"
+                else:
+                    priority = "low"
                 
                 # Title includes strike, expiration, and current stock price
                 if current_price:
@@ -182,10 +240,17 @@ class SellUnsoldContractsStrategy(BaseStrategy):
                 else:
                     title = f"Sell {unsold} {symbol} call(s) at {strike_str} for {exp_str}"
                 
-                description = (
-                    f"You have {unsold} unsold contract(s) for {symbol} that could generate "
-                    f"${weekly_income:.0f}/week (${yearly_income:.0f}/year) in additional income."
-                )
+                # Description now shows per-contract and total premium (not weekly/yearly)
+                if unsold == 1:
+                    description = (
+                        f"You have {unsold} unsold contract for {symbol}. "
+                        f"Est. Premium: ${real_premium_per_contract:.0f}"
+                    )
+                else:
+                    description = (
+                        f"You have {unsold} unsold contracts for {symbol}. "
+                        f"Est. Premium: ${real_premium_per_contract:.0f}/contract (${total_premium:.0f} total)"
+                    )
                 
                 rationale_parts = [
                     f"Delta 10 strike at {strike_str} = 90% probability of staying OTM",
@@ -208,7 +273,7 @@ class SellUnsoldContractsStrategy(BaseStrategy):
                     rationale=". ".join(rationale_parts),
                     action=f"Sell {unsold} {symbol} covered call(s) at {strike_str} strike expiring {exp_str}",
                     action_type="sell",
-                    potential_income=weekly_income,
+                    potential_income=total_premium,
                     potential_risk="low",
                     time_horizon="this_week",
                     symbol=symbol,
@@ -219,9 +284,9 @@ class SellUnsoldContractsStrategy(BaseStrategy):
                         "unsold_contracts": unsold,
                         "total_options": data["total_options"],
                         "sold_contracts": data["total_sold"],
-                        "premium_per_contract": premium,
-                        "weekly_income": weekly_income,
-                        "yearly_income": yearly_income,
+                        "premium_per_contract": real_premium_per_contract,
+                        "total_premium": total_premium,
+                        "premium_source": premium_source,  # "live_bid", "last_price", or "estimated"
                         "strike_price": strike,
                         "current_price": current_price,
                         "strike_rationale": strike_rationale,

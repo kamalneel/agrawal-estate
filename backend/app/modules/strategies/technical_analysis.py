@@ -532,22 +532,42 @@ class TechnicalAnalysisService:
             Tuple of (strike, actual_delta, probability_otm) or None
         """
         try:
-            from app.modules.strategies.yahoo_cache import get_option_chain
+            from app.modules.strategies.option_monitor import OptionChainFetcher
+            from datetime import datetime
             
-            chain = get_option_chain(symbol, expiration_date)
+            logger.info(f"[STRIKE_DEBUG] {symbol}: Requesting chain for expiration={expiration_date}, target_delta={target_delta}, current_price=${current_price}")
+            
+            # Use OptionChainFetcher which prefers Schwab over Yahoo
+            fetcher = OptionChainFetcher()
+            exp_date = datetime.strptime(expiration_date, "%Y-%m-%d").date()
+            chain = fetcher.get_option_chain(symbol, exp_date)
+            
             if chain is None:
-                logger.warning(f"Could not fetch options chain for {symbol} {expiration_date}")
+                logger.warning(f"[STRIKE_DEBUG] {symbol}: Chain returned None for {expiration_date}")
                 return None
+            
+            # Log the chain source
+            logger.info(f"[STRIKE_DEBUG] {symbol}: Got chain from Schwab/Yahoo")
             
             # Get the right side of the chain
             if option_type.lower() == "call":
-                options_df = chain.calls
+                options_df = chain['calls']
             else:
-                options_df = chain.puts
+                options_df = chain['puts']
             
             if options_df is None or len(options_df) == 0:
-                logger.warning(f"No {option_type}s in chain for {symbol}")
+                logger.warning(f"[STRIKE_DEBUG] {symbol}: No {option_type}s in chain")
                 return None
+            
+            # Log available columns and sample data
+            logger.info(f"[STRIKE_DEBUG] {symbol}: Chain has {len(options_df)} {option_type}s, columns: {list(options_df.columns)}")
+            
+            # Check if delta column exists and has data
+            has_delta_col = 'delta' in options_df.columns
+            delta_non_null_count = 0
+            if has_delta_col:
+                delta_non_null_count = options_df['delta'].notna().sum()
+            logger.info(f"[STRIKE_DEBUG] {symbol}: has_delta_column={has_delta_col}, non_null_deltas={delta_non_null_count}/{len(options_df)}")
             
             # Filter to OTM options only
             if current_price:
@@ -559,8 +579,10 @@ class TechnicalAnalysisService:
                     options_df = options_df[options_df['strike'] < current_price]
             
             if len(options_df) == 0:
-                logger.warning(f"No OTM {option_type}s for {symbol}")
+                logger.warning(f"[STRIKE_DEBUG] {symbol}: No OTM {option_type}s after filtering (current_price=${current_price})")
                 return None
+            
+            logger.info(f"[STRIKE_DEBUG] {symbol}: After OTM filter: {len(options_df)} strikes")
             
             # Find the strike closest to target delta
             # For calls: delta is positive and decreases as strike increases
@@ -568,17 +590,28 @@ class TechnicalAnalysisService:
             best_strike = None
             best_delta = None
             best_diff = float('inf')
+            strikes_with_delta = 0
+            
+            # Log first few strikes with their deltas for debugging
+            sample_strikes = []
             
             for _, row in options_df.iterrows():
                 strike = row['strike']
                 delta = row.get('delta')
+                bid = row.get('bid', 0)
                 
                 # Skip if no delta data
                 if delta is None or (isinstance(delta, float) and np.isnan(delta)):
                     continue
                 
+                strikes_with_delta += 1
+                
                 # Use absolute delta for comparison
                 abs_delta = abs(delta)
+                
+                # Collect sample for logging
+                if len(sample_strikes) < 10:
+                    sample_strikes.append(f"${strike}:d={abs_delta:.3f}:bid=${bid}")
                 
                 # Find closest to target
                 diff = abs(abs_delta - target_delta)
@@ -587,15 +620,21 @@ class TechnicalAnalysisService:
                     best_strike = strike
                     best_delta = abs_delta
             
+            logger.info(f"[STRIKE_DEBUG] {symbol}: Found {strikes_with_delta} strikes with delta data")
+            if sample_strikes:
+                logger.info(f"[STRIKE_DEBUG] {symbol}: Sample strikes: {', '.join(sample_strikes)}")
+            
             if best_strike is not None:
                 probability_otm = (1 - best_delta) * 100
-                logger.info(f"{symbol} options chain: Found strike ${best_strike} with delta {best_delta:.3f} ({probability_otm:.1f}% OTM)")
+                pct_otm = ((best_strike / current_price) - 1) * 100 if current_price and option_type.lower() == "call" else 0
+                logger.info(f"[STRIKE_DEBUG] {symbol}: SELECTED strike=${best_strike} (delta={best_delta:.3f}, {pct_otm:.1f}% OTM, prob_otm={probability_otm:.1f}%)")
                 return (best_strike, best_delta, probability_otm)
             
+            logger.warning(f"[STRIKE_DEBUG] {symbol}: No strike found with valid delta data!")
             return None
             
         except Exception as e:
-            logger.warning(f"Error fetching options chain for {symbol}: {e}")
+            logger.warning(f"[STRIKE_DEBUG] {symbol}: Error fetching options chain: {e}")
             return None
     
     def _get_next_friday(self, weeks_out: int = 1) -> str:
@@ -647,8 +686,11 @@ class TechnicalAnalysisService:
         current_price = indicators.current_price
         target_delta = 1.0 - probability_target  # 90% OTM = delta 0.10
         
+        logger.info(f"[STRIKE_DEBUG] {symbol}: recommend_strike_price called - current_price=${current_price:.2f}, target_delta={target_delta:.2f}, weeks={expiration_weeks}")
+        
         # ===== PRIORITY 1: Try to get REAL delta from options chain =====
         expiration_date = self._get_next_friday(expiration_weeks)
+        logger.info(f"[STRIKE_DEBUG] {symbol}: Calculated expiration_date={expiration_date}")
         chain_result = self._get_strike_from_options_chain(
             symbol=symbol,
             option_type=option_type,
@@ -685,7 +727,7 @@ class TechnicalAnalysisService:
             )
         
         # ===== PRIORITY 2: Fall back to hardcoded volatility estimates =====
-        logger.info(f"{symbol}: Options chain unavailable, using volatility estimate")
+        logger.info(f"[STRIKE_DEBUG] {symbol}: Options chain returned None - USING FALLBACK volatility estimate")
         
         # Hardcoded volatility buckets (fallback only)
         very_high_iv_stocks = {
@@ -842,7 +884,8 @@ class TechnicalAnalysisService:
         
         # V2.2: Use centralized ITM calculation
         itm_calc = calculate_itm_status(indicators.current_price, strike_price, option_type)
-        analysis["itm_percent"] = itm_calc['itm_pct'] if itm_calc['is_itm'] else -itm_calc['otm_pct']
+        itm_pct = itm_calc['itm_pct'] if itm_calc['is_itm'] else 0  # Used in logic below
+        analysis["itm_percent"] = itm_pct if itm_calc['is_itm'] else -itm_calc['otm_pct']
         
         # Check for reversal signals
         reversal_signals = []

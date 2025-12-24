@@ -1,9 +1,12 @@
 """
 Test Suite for Option Calculations Utility Module
 
-This test suite serves two purposes:
-1. Unit tests for the new utility functions
-2. Regression tests to ensure refactoring doesn't change behavior
+V3.0 UPDATED: Tests for V3 simplified logic.
+
+V3 Changes:
+- Threshold checks ALWAYS return can_roll=True (no ITM% limits)
+- Economic checks ALWAYS return economically_sound=True (use is_acceptable_cost)
+- Only close when cannot find zero-cost roll within 52 weeks
 
 Run with: pytest tests/test_option_calculations.py -v
 """
@@ -42,34 +45,28 @@ ITM_CALCULATION_SCENARIOS = [
     ("AVGO deep ITM", 336.0, 362.5, "put", True, 7.31, 26.5),  # V2.2 test case
 ]
 
-THRESHOLD_SCENARIOS = [
-    # (itm_pct, is_triple_witching, expected_should_close, expected_recommendation)
-    
-    # Normal day
-    ("Normal: 2% ITM", 2.0, False, False, None),
-    ("Normal: 4% ITM", 4.0, False, False, None),
-    ("Normal: 5% ITM (threshold)", 5.0, False, True, "CLOSE_DONT_ROLL"),
-    ("Normal: 7% ITM", 7.0, False, True, "CLOSE_DONT_ROLL"),
-    ("Normal: 10% ITM (deep)", 10.0, False, True, "CLOSE_DONT_ROLL"),
-    ("Normal: 15% ITM", 15.0, False, True, "CLOSE_DONT_ROLL"),
-    ("Normal: 20% ITM (catastrophic)", 20.0, False, True, "CLOSE_IMMEDIATELY"),
-    ("Normal: 35% ITM (disaster)", 35.0, False, True, "CLOSE_IMMEDIATELY"),
-    
-    # Triple Witching day (stricter)
-    ("TW: 2% ITM", 2.0, True, False, None),
-    ("TW: 3% ITM (threshold)", 3.0, True, True, "CLOSE_DONT_ROLL"),
-    ("TW: 5% ITM", 5.0, True, True, "CLOSE_DONT_ROLL"),
-    ("TW: 7.3% ITM (AVGO case)", 7.31, True, True, "CLOSE_DONT_ROLL"),
+# V3: Thresholds are REMOVED - all positions should return should_close=False
+THRESHOLD_SCENARIOS_V3 = [
+    # V3: ALL positions return should_close=False, can_roll=True
+    # (itm_pct, is_triple_witching, expected_should_close)
+    ("V3: 2% ITM", 2.0, False, False),
+    ("V3: 5% ITM", 5.0, False, False),
+    ("V3: 10% ITM", 10.0, False, False),
+    ("V3: 20% ITM", 20.0, False, False),
+    ("V3: 35% ITM (FIG)", 35.0, False, False),
+    ("V3: Triple Witching 3%", 3.0, True, False),
+    ("V3: Triple Witching 7%", 7.0, True, False),
 ]
 
-ECONOMIC_SANITY_SCENARIOS = [
-    # (close_cost, best_roll_cost, expected_economically_sound, reason)
-    
-    ("Roll costs MORE", 5.00, 6.00, False, "Roll cost >= close cost"),
-    ("Roll costs SAME", 5.00, 5.00, False, "Roll cost >= close cost"),
-    ("Roll saves $10 (not enough $)", 5.00, 4.90, False, "Minimal savings"),
-    ("Roll saves $0.50 (10% - threshold)", 5.00, 4.50, True, "Acceptable"),
-    ("Roll saves $1.00 (20%)", 5.00, 4.00, True, "Good savings"),
+# V3: 20% cost rule tests
+COST_RULE_SCENARIOS_V3 = [
+    # (net_cost, original_premium, expected_acceptable, reason)
+    ("Credit always OK", -1.00, 2.00, True, "Any credit is acceptable"),
+    ("Exact 20% threshold", 0.40, 2.00, True, "At threshold"),
+    ("Just under 20%", 0.39, 2.00, True, "Under threshold"),
+    ("Just over 20%", 0.41, 2.00, False, "Over threshold"),
+    ("Large debit", 1.00, 2.00, False, "Way over"),
+    ("Zero cost", 0.00, 2.00, True, "Zero is acceptable"),
 ]
 
 ROLL_INTO_ITM_SCENARIOS = [
@@ -115,53 +112,93 @@ class TestITMCalculations:
 
 
 # =============================================================================
-# TESTS - Threshold Enforcement
+# TESTS - Threshold Enforcement (V3: REMOVED)
 # =============================================================================
 
 class TestThresholdEnforcement:
-    """Test ITM threshold logic for CLOSE vs ROLL decisions."""
+    """V3: Test that threshold checks NEVER recommend close."""
     
     @pytest.mark.parametrize(
-        "name,itm_pct,is_triple_witching,expected_should_close,expected_recommendation",
-        THRESHOLD_SCENARIOS
+        "name,itm_pct,is_triple_witching,expected_should_close",
+        THRESHOLD_SCENARIOS_V3
     )
-    def test_threshold_check(
-        self, name, itm_pct, is_triple_witching, 
-        expected_should_close, expected_recommendation
+    def test_v3_no_threshold_closes(
+        self, name, itm_pct, is_triple_witching, expected_should_close
     ):
-        """Test that threshold checks return correct decisions."""
+        """V3: All ITM positions should be rollable (no threshold closes)."""
         from app.modules.strategies.utils.option_calculations import check_itm_thresholds
         
-        result = check_itm_thresholds(itm_pct, is_triple_witching)
+        result = check_itm_thresholds(
+            current_price=100.0,  # Dummy values - V3 ignores these for threshold decision
+            strike=100.0 * (1 + itm_pct/100),  # Create ITM scenario
+            option_type="call",
+            is_triple_witching=is_triple_witching
+        )
         
-        assert result['should_close'] == expected_should_close, f"{name}: should_close mismatch"
-        
-        if expected_recommendation:
-            assert result.get('recommendation') == expected_recommendation, f"{name}: recommendation mismatch"
+        # V3: should_close is ALWAYS False
+        assert result['should_close'] == False, f"{name}: V3 should never auto-close based on ITM%"
+        assert result.get('can_roll') == True, f"{name}: V3 should always allow rolling"
 
 
 # =============================================================================
-# TESTS - Economic Sanity
+# TESTS - V3 Cost Rule (20% rule)
+# =============================================================================
+
+class TestV3CostRule:
+    """Test V3's simple 20% cost rule."""
+    
+    @pytest.mark.parametrize(
+        "name,net_cost,original_premium,expected_acceptable,reason",
+        COST_RULE_SCENARIOS_V3
+    )
+    def test_v3_cost_rule(self, name, net_cost, original_premium, expected_acceptable, reason):
+        """Test V3's simple 20% cost rule."""
+        from app.modules.strategies.utils.option_calculations import is_acceptable_cost
+        
+        result = is_acceptable_cost(net_cost=net_cost, original_premium=original_premium)
+        
+        assert result['acceptable'] == expected_acceptable, f"{name}: {reason}"
+    
+    def test_credit_always_acceptable(self):
+        """Any credit should be acceptable."""
+        from app.modules.strategies.utils.option_calculations import is_acceptable_cost
+        
+        result = is_acceptable_cost(net_cost=-5.00, original_premium=1.00)
+        assert result['acceptable'] == True
+        assert result['is_credit'] == True
+    
+    def test_20_percent_boundary(self):
+        """Test the 20% boundary exactly."""
+        from app.modules.strategies.utils.option_calculations import is_acceptable_cost
+        
+        # Original premium $5.00, max debit = $1.00
+        exactly_20 = is_acceptable_cost(net_cost=1.00, original_premium=5.00)
+        assert exactly_20['acceptable'] == True, "Exactly 20% should be acceptable"
+        
+        over_20 = is_acceptable_cost(net_cost=1.01, original_premium=5.00)
+        assert over_20['acceptable'] == False, "Over 20% should be rejected"
+
+
+# =============================================================================
+# TESTS - Economic Sanity (V3: DEPRECATED - Always True)
 # =============================================================================
 
 class TestEconomicSanity:
-    """Test economic viability checks for rolls."""
+    """V3: Economic checks are deprecated - always return True."""
     
-    @pytest.mark.parametrize(
-        "name,close_cost,roll_cost,expected_sound,reason",
-        ECONOMIC_SANITY_SCENARIOS
-    )
-    def test_economic_check(self, name, close_cost, roll_cost, expected_sound, reason):
-        """Test that economic checks catch bad rolls."""
+    def test_v3_always_economically_sound(self):
+        """V3: check_roll_economics always returns True."""
         from app.modules.strategies.utils.option_calculations import check_roll_economics
         
+        # Even "bad" economics should return True in V3
         result = check_roll_economics(
-            close_cost=close_cost,
-            roll_cost=roll_cost,
-            contracts=1
+            close_cost=5.00,
+            roll_options=[],
+            current_price=100.0,
+            option_type="call"
         )
         
-        assert result['economically_sound'] == expected_sound, f"{name}: {reason}"
+        assert result['economically_sound'] == True, "V3 deprecated - should always be True"
 
 
 # =============================================================================
@@ -185,14 +222,14 @@ class TestRollIntoITMPrevention:
 
 
 # =============================================================================
-# REGRESSION TESTS - V2.1/V2.2 Bug Fixes
+# V3 TESTS - New Behavior
 # =============================================================================
 
-class TestV2Regressions:
-    """Ensure V2.1 and V2.2 bug fixes still work."""
+class TestV3Behavior:
+    """V3 specific behavior tests."""
     
-    def test_fig_35_percent_itm_should_close(self):
-        """FIG at 35% ITM should recommend CLOSE IMMEDIATELY, not ROLL."""
+    def test_fig_35_percent_itm_can_roll(self):
+        """V3: FIG at 35% ITM should still try to find zero-cost roll."""
         from app.modules.strategies.utils.option_calculations import (
             calculate_itm_status,
             check_itm_thresholds
@@ -204,13 +241,17 @@ class TestV2Regressions:
         assert status['is_itm'] == True
         assert status['itm_pct'] >= 35.0  # Should be exactly 35%
         
-        threshold = check_itm_thresholds(status['itm_pct'], is_triple_witching=False)
+        # V3: No threshold closes - should still try to roll
+        threshold = check_itm_thresholds(
+            current_price=39.0, strike=60.0, option_type="put"
+        )
         
-        assert threshold['should_close'] == True
-        assert threshold['recommendation'] == 'CLOSE_IMMEDIATELY'
+        # V3: should_close is ALWAYS False
+        assert threshold['should_close'] == False, "V3: Never auto-close based on ITM%"
+        assert threshold['can_roll'] == True, "V3: Always try to find zero-cost roll"
     
-    def test_avgo_7pct_itm_triple_witching_should_close(self):
-        """AVGO at 7.3% ITM on Triple Witching should recommend CLOSE."""
+    def test_avgo_triple_witching_can_roll(self):
+        """V3: AVGO on Triple Witching should still try to roll."""
         from app.modules.strategies.utils.option_calculations import (
             calculate_itm_status,
             check_itm_thresholds
@@ -220,33 +261,34 @@ class TestV2Regressions:
         status = calculate_itm_status(current_price=336.0, strike=362.5, option_type="put")
         
         assert status['is_itm'] == True
-        assert abs(status['itm_pct'] - 7.31) < 0.5  # ~7.3%
         
-        # On Triple Witching, threshold is 3%
-        threshold = check_itm_thresholds(status['itm_pct'], is_triple_witching=True)
+        # V3: No special Triple Witching threshold
+        threshold = check_itm_thresholds(
+            current_price=336.0, strike=362.5, option_type="put",
+            is_triple_witching=True
+        )
         
-        assert threshold['should_close'] == True
-        assert threshold['recommendation'] == 'CLOSE_DONT_ROLL'
+        # V3: should_close is ALWAYS False
+        assert threshold['should_close'] == False, "V3: No Triple Witching thresholds"
     
-    def test_roll_into_itm_blocked(self):
-        """Rolling into another ITM position should be blocked."""
+    def test_would_be_itm_still_works(self):
+        """would_be_itm helper still correctly identifies ITM positions."""
         from app.modules.strategies.utils.option_calculations import would_be_itm
         
-        # FIG scenario: stock at $39, trying to roll to $36 strike
-        # For a PUT, strike $36 with stock $39 = OTM (stock > strike)
-        # But strike $42 with stock $39 = ITM (stock < strike)
-        
-        assert would_be_itm(39.0, 42.0, "put") == True, "Should block roll to $42 (ITM)"
-        assert would_be_itm(39.0, 35.0, "put") == False, "Should allow roll to $35 (OTM)"
+        # FIG scenario: stock at $39
+        assert would_be_itm(39.0, 42.0, "put") == True, "$42 strike would be ITM"
+        assert would_be_itm(39.0, 35.0, "put") == False, "$35 strike would be OTM"
     
-    def test_minimal_savings_blocked(self):
-        """Roll with minimal savings should recommend CLOSE instead."""
-        from app.modules.strategies.utils.option_calculations import check_roll_economics
+    def test_v3_20_percent_rule(self):
+        """V3: Use is_acceptable_cost for 20% rule."""
+        from app.modules.strategies.utils.option_calculations import is_acceptable_cost
         
-        # Saving only $4 on a $100 position (4%) - should block
-        result = check_roll_economics(close_cost=10.0, roll_cost=9.96, contracts=1)
+        # Original premium $2.00, max debit = $0.40
+        under = is_acceptable_cost(net_cost=0.30, original_premium=2.00)
+        assert under['acceptable'] == True, "Under 20% should be acceptable"
         
-        assert result['economically_sound'] == False, "Should block minimal savings"
+        over = is_acceptable_cost(net_cost=0.50, original_premium=2.00)
+        assert over['acceptable'] == False, "Over 20% should be rejected"
 
 
 # =============================================================================

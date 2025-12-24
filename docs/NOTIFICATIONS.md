@@ -11,9 +11,10 @@ This document covers the notification system setup, configuration, scheduling st
 
 1. [Quick Start - Telegram](#quick-start---telegram)
 2. [Notification Options](#notification-options)
-3. [Scheduling Strategy](#scheduling-strategy)
-4. [Configuration](#configuration)
-5. [Testing](#testing)
+3. [Telegram Reply Feedback](#telegram-reply-feedback)
+4. [Scheduling Strategy](#scheduling-strategy)
+5. [Configuration](#configuration)
+6. [Testing](#testing)
 
 ---
 
@@ -115,6 +116,134 @@ One-time $5 purchase (lifetime)
 ### Alternative: Discord Webhook
 
 Free, good for rich formatting
+
+---
+
+## Telegram Reply Feedback
+
+The system supports **reply-based feedback** on Telegram - you can reply directly to a recommendation notification with your feedback, and it will be processed automatically.
+
+### How It Works
+
+1. You receive a recommendation notification on Telegram
+2. **Swipe left** on the message (or long-press and tap "Reply")
+3. Type your feedback naturally, e.g.:
+   - "premium is too small, only $8"
+   - "don't want to cap NVDA upside"
+   - "8 weeks is too long"
+4. The system processes your feedback and sends a confirmation
+5. Feedback is analyzed to improve future recommendations
+
+### Setup Requirements
+
+**For reply-based feedback to work, you need:**
+
+1. **A publicly accessible HTTPS URL** for your server
+2. **Configure the Telegram webhook** (one-time setup)
+
+#### Option 1: Using ngrok (for local development/testing)
+
+```bash
+# 1. Install ngrok
+brew install ngrok  # or download from ngrok.com
+
+# 2. Start ngrok tunnel
+ngrok http 8000
+
+# 3. Copy the HTTPS URL (e.g., https://abc123.ngrok.io)
+```
+
+#### Option 2: Production Server with Domain
+
+Your server needs:
+- A domain name with HTTPS (Let's Encrypt works great)
+- Port 443 or reverse proxy (nginx/caddy)
+
+### Webhook Setup (One-Time)
+
+**Using the API:**
+
+```bash
+# Get auth token
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password": "your_password"}' | \
+  python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+
+# Set up webhook with your public URL
+curl -X POST "http://localhost:8000/api/v1/strategies/telegram/setup-webhook?webhook_url=https://your-domain.com/api/v1/strategies/telegram/webhook&secret_token=your_secret_here" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Or using curl directly to Telegram:**
+
+```bash
+curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-domain.com/api/v1/strategies/telegram/webhook&secret_token=your_secret"
+```
+
+### Environment Variables
+
+Add to your `.env`:
+
+```bash
+# Required for webhook verification (recommended but optional)
+TELEGRAM_WEBHOOK_SECRET=your_random_secret_string
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/strategies/telegram/webhook` | POST | Receives updates from Telegram (called by Telegram) |
+| `/api/v1/strategies/telegram/setup-webhook` | POST | Configure the webhook URL |
+| `/api/v1/strategies/telegram/webhook-info` | GET | View current webhook configuration |
+| `/api/v1/strategies/telegram/webhook` | DELETE | Remove the webhook (disable reply feedback) |
+| `/api/v1/strategies/telegram/feedback-tracking` | GET | View sent messages and their feedback status |
+
+### Check Webhook Status
+
+```bash
+curl "http://localhost:8000/api/v1/strategies/telegram/webhook-info" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response shows:
+- Current webhook URL
+- Pending updates
+- Last error (if any)
+
+### Troubleshooting Reply Feedback
+
+1. **Replies not being processed:**
+   - Check webhook is set: `GET /telegram/webhook-info`
+   - Check webhook URL is publicly accessible
+   - Check server logs for errors
+
+2. **"Could not find recommendations" error:**
+   - Make sure you're replying to a recent recommendation notification
+   - Message tracking is kept for 30 days
+
+3. **Webhook not receiving updates:**
+   ```bash
+   # Check for pending updates
+   curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
+   ```
+
+4. **SSL/HTTPS issues:**
+   - Telegram requires valid SSL certificate
+   - Use Let's Encrypt or ngrok for testing
+
+### View Feedback History
+
+```bash
+# See all feedback (including from Telegram replies)
+curl "http://localhost:8000/api/v1/strategies/feedback/history?days_back=7" \
+  -H "Authorization: Bearer $TOKEN"
+
+# See V4 improvement insights from feedback patterns
+curl "http://localhost:8000/api/v1/strategies/feedback/insights" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
 ---
 

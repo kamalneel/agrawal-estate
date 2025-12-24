@@ -34,30 +34,47 @@ class RecommendationScheduler:
         logger.info("Recommendation scheduler started")
     
     def setup_schedules(self):
-        """Set up all scheduled jobs."""
-        # New schedule:
-        # 1. First run: 6:30 AM (with technical analysis)
-        # 2. Second run: 8:00 AM
-        # 3. Third run: 11:30 AM
-        # 4. Fourth run: 12:30 PM
-        # 5. After hours: Every 2 hours (2 PM, 4 PM, 6 PM, 8 PM, 10 PM, 12 AM)
-        # 6. Weekends: Every 4 hours (12 AM, 4 AM, 8 AM, 12 PM, 4 PM, 8 PM)
+        """
+        Set up scheduled jobs per V3 Algorithm Specification.
         
-        # Daily full technical analysis at 6:30 AM PT (first run of the day)
+        V3 Schedule (Pacific Time, Weekdays Only):
+        ============================================
+        Scan 1: 6:00 AM  - Main Daily Scan (comprehensive + technical analysis)
+        Scan 2: 8:00 AM  - Post-Opening Urgent (state changes from market open)
+        Scan 3: 12:00 PM - Midday Opportunities (intraday changes)
+        Scan 4: 12:45 PM - Pre-Close Urgent (expiring today, smart assignment)
+        Scan 5: 8:00 PM  - Evening Planning (next day preparation)
+        
+        NO after-hours notifications between 1 PM and 8 PM.
+        NO weekend notifications (market closed).
+        """
+        
+        # =================================================================
+        # SCAN 1: 6:00 AM - Main Daily Scan (with technical analysis)
+        # =================================================================
+        # Purpose: Comprehensive evaluation before user wakes up
+        # Evaluates: All positions, pull-backs, ITM escapes, weekly rolls,
+        #           earnings/dividend alerts, new sell opportunities
+        #           Monday only: Buy-back reminders
         self.scheduler.add_job(
             self.run_full_technical_analysis,
             trigger=CronTrigger(
                 hour=6,
-                minute=30,
+                minute=0,
                 day_of_week='mon-fri',
                 timezone=PT
             ),
-            id='daily_technical_analysis',
-            name='Daily full technical analysis (6:30 AM PT)',
+            id='scan_1_main_daily',
+            name='V3 Scan 1: Main Daily Scan (6:00 AM PT)',
             replace_existing=True
         )
         
-        # Second run: 8:00 AM PT (weekdays)
+        # =================================================================
+        # SCAN 2: 8:00 AM - Post-Opening Urgent
+        # =================================================================
+        # Purpose: Catch urgent state changes from market open volatility
+        # Evaluates: Newly ITM positions, new pull-back opportunities,
+        #           earnings TODAY, positions >10% deeper ITM, expiring TODAY
         self.scheduler.add_job(
             self.check_and_notify,
             trigger=CronTrigger(
@@ -66,68 +83,73 @@ class RecommendationScheduler:
                 day_of_week='mon-fri',
                 timezone=PT
             ),
-            id='check_8am',
-            name='Check recommendations at 8:00 AM PT',
+            id='scan_2_post_open',
+            name='V3 Scan 2: Post-Opening Urgent (8:00 AM PT)',
             replace_existing=True
         )
         
-        # Third run: 11:30 AM PT (weekdays)
-        self.scheduler.add_job(
-            self.check_and_notify,
-            trigger=CronTrigger(
-                hour=11,
-                minute=30,
-                day_of_week='mon-fri',
-                timezone=PT
-            ),
-            id='check_1130am',
-            name='Check recommendations at 11:30 AM PT',
-            replace_existing=True
-        )
-        
-        # Fourth run: 12:30 PM PT (weekdays)
+        # =================================================================
+        # SCAN 3: 12:00 PM - Midday Opportunities
+        # =================================================================
+        # Purpose: Check for intraday opportunities
+        # Evaluates: Pull-back opportunities, significant moves (>10% since morning)
         self.scheduler.add_job(
             self.check_and_notify,
             trigger=CronTrigger(
                 hour=12,
-                minute=30,
+                minute=0,
                 day_of_week='mon-fri',
                 timezone=PT
             ),
-            id='check_1230pm',
-            name='Check recommendations at 12:30 PM PT',
+            id='scan_3_midday',
+            name='V3 Scan 3: Midday Opportunities (12:00 PM PT)',
             replace_existing=True
         )
         
-        # After hours (after 2 PM PT): Check every 2 hours (2 PM, 4 PM, 6 PM, 8 PM, 10 PM, 12 AM)
+        # =================================================================
+        # SCAN 4: 12:45 PM - Pre-Close Urgent
+        # =================================================================
+        # Purpose: Last 15 minutes before market close (1:00 PM PT)
+        # Evaluates: Expiring TODAY, Smart Assignment (IRA), Triple Witching
         self.scheduler.add_job(
             self.check_and_notify,
             trigger=CronTrigger(
-                hour='14,16,18,20,22,0',  # 2 PM, 4 PM, 6 PM, 8 PM, 10 PM, 12 AM
-                minute='0',
+                hour=12,
+                minute=45,
                 day_of_week='mon-fri',
                 timezone=PT
             ),
-            id='check_after_hours',
-            name='Check recommendations after hours (every 2 hours)',
+            id='scan_4_pre_close',
+            name='V3 Scan 4: Pre-Close Urgent (12:45 PM PT)',
             replace_existing=True
         )
         
-        # Weekends: Check every 4 hours (12 AM, 4 AM, 8 AM, 12 PM, 4 PM, 8 PM)
+        # =================================================================
+        # SCAN 5: 8:00 PM - Evening Planning
+        # =================================================================
+        # Purpose: Next day preparation (informational only)
+        # Evaluates: Earnings TOMORROW, Ex-dividend TOMORROW, 
+        #           Positions expiring TOMORROW
         self.scheduler.add_job(
             self.check_and_notify,
             trigger=CronTrigger(
-                hour='0,4,8,12,16,20',  # Every 4 hours
-                minute='0',
-                day_of_week='sat,sun',
+                hour=20,
+                minute=0,
+                day_of_week='mon-fri',
                 timezone=PT
             ),
-            id='check_weekends',
-            name='Check recommendations on weekends (every 4 hours)',
+            id='scan_5_evening',
+            name='V3 Scan 5: Evening Planning (8:00 PM PT)',
             replace_existing=True
         )
         
-        logger.info("Scheduled jobs configured")
+        # =================================================================
+        # NO AFTER-HOURS OR WEEKEND SCANS
+        # =================================================================
+        # Per V3 spec: Only 5 scans per weekday, no weekend notifications
+        # Market is closed, no action can be taken
+        
+        logger.info("V3 Schedule configured: 5 daily scans (6AM, 8AM, 12PM, 12:45PM, 8PM) weekdays only")
     
     def run_full_technical_analysis(self):
         """
@@ -321,71 +343,65 @@ class RecommendationScheduler:
         sent_count = 0
         sent_recommendations = []  # Track all recommendations that were actually sent
         
-        # Send bull put spread recommendations (if any passed weekly filter)
+        # ================================================================
+        # CONSOLIDATE ALL RECOMMENDATIONS INTO A SINGLE MESSAGE
+        # This ensures grouping by account works correctly
+        # ================================================================
+        all_to_send = []  # Collect all recommendations to send in one message
+        
+        # 1. Bull put spread recommendations (if any passed weekly filter)
         # Limit to top 5 to avoid overwhelming notifications
         if bull_put_to_send:
             # Sort by profit (descending) and take the top 5
             bull_put_to_send.sort(key=lambda x: x.get("context", {}).get("max_profit", 0), reverse=True)
             top_bull_puts = bull_put_to_send[:5]  # Limit to top 5
-            
-            results = notification_service.send_recommendation_notification(
-                top_bull_puts,
-                priority_filter="high"
-            )
-            self._record_notifications(db, top_bull_puts, results)
             for rec in top_bull_puts:
                 record_recommendation_sent(db, rec.get("type", "bull_put_spread"), rec)
-            sent_count += len(top_bull_puts)
-            sent_recommendations.extend(top_bull_puts)
-            logger.info(f"Sent {len(top_bull_puts)} bull put spread notification(s) (top {len(top_bull_puts)} of {len(bull_put_to_send)} found)")
+            all_to_send.extend(top_bull_puts)
+            logger.info(f"Queued {len(top_bull_puts)} bull put spread notification(s) (top {len(top_bull_puts)} of {len(bull_put_to_send)} found)")
         
-        # Always send urgent immediately
+        # 2. Always include urgent
         if urgent_recs:
             to_send = self._filter_new_or_escalated(db, urgent_recs)
             if to_send:
-                results = notification_service.send_recommendation_notification(
-                    to_send,
-                    priority_filter="urgent"
-                )
-                self._record_notifications(db, to_send, results)
-                sent_count += len(to_send)
-                sent_recommendations.extend(to_send)
-                logger.info(f"Sent {len(to_send)} urgent notification(s)")
+                all_to_send.extend(to_send)
+                logger.info(f"Queued {len(to_send)} urgent notification(s)")
         
-        # High priority: immediate during active hours (8 AM - 2 PM PT), send in quiet hours too
+        # 3. High priority: always send
         if high_recs:
             to_send = self._filter_new_or_escalated(db, high_recs)
             if to_send:
-                results = notification_service.send_recommendation_notification(
-                    to_send,
-                    priority_filter="high"
-                )
-                self._record_notifications(db, to_send, results)
-                sent_count += len(to_send)
-                sent_recommendations.extend(to_send)
+                all_to_send.extend(to_send)
                 if is_active_hours:
-                    logger.info(f"Sent {len(to_send)} high priority notification(s) (active hours)")
+                    logger.info(f"Queued {len(to_send)} high priority notification(s) (active hours)")
                 else:
-                    logger.info(f"Sent {len(to_send)} high priority notification(s) (quiet hours)")
+                    logger.info(f"Queued {len(to_send)} high priority notification(s) (quiet hours)")
         
-        # Medium/Low: Only send before 8 AM or after 2 PM PT (not during 8 AM - 2 PM)
+        # 4. Medium/Low: Only send before 8 AM or after 2 PM PT (not during 8 AM - 2 PM)
         if not is_active_hours:
             medium_low_recs = medium_recs + low_recs
             if medium_low_recs:
                 to_send = self._filter_new_or_escalated(db, medium_low_recs)
                 if to_send:
-                    results = notification_service.send_recommendation_notification(
-                        to_send,
-                        priority_filter="low"  # Include all medium/low
-                    )
-                    self._record_notifications(db, to_send, results)
-                    sent_count += len(to_send)
-                    sent_recommendations.extend(to_send)
-                    logger.info(f"Sent {len(to_send)} medium/low priority notification(s) (quiet hours)")
+                    all_to_send.extend(to_send)
+                    logger.info(f"Queued {len(to_send)} medium/low priority notification(s) (quiet hours)")
         else:
             # During active hours, skip medium/low
             if medium_recs or low_recs:
                 logger.info(f"Skipping {len(medium_recs) + len(low_recs)} medium/low priority recommendation(s) during active hours (8 AM - 2 PM PT)")
+        
+        # ================================================================
+        # SEND ALL RECOMMENDATIONS IN A SINGLE CONSOLIDATED MESSAGE
+        # ================================================================
+        if all_to_send:
+            results = notification_service.send_recommendation_notification(
+                all_to_send,
+                priority_filter=None  # Already filtered above
+            )
+            self._record_notifications(db, all_to_send, results)
+            sent_count = len(all_to_send)
+            sent_recommendations.extend(all_to_send)
+            logger.info(f"Sent consolidated notification with {sent_count} recommendation(s) grouped by account")
         
         if sent_count > 0:
             logger.info(f"Total notifications sent: {sent_count}")

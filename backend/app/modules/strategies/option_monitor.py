@@ -10,12 +10,13 @@ Strategy Background:
 - If stock drops/stagnates, option premium decays faster
 - When 80%+ profit achieved early (e.g., Tuesday/Wednesday), roll early
 - This captures more premium over time by redeploying capital
+
+Data Source: Charles Schwab API (preferred for reliable option prices with Greeks)
 """
 
-import yfinance as yf
 from datetime import datetime, date, timedelta
 from decimal import Decimal
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 import logging
 
@@ -65,65 +66,37 @@ class RollAlert:
 
 class OptionChainFetcher:
     """
-    Fetches option chain data from Yahoo Finance with intelligent caching.
+    Fetches option chain data using the modular provider system.
     
-    Uses the yahoo_cache module for:
-    - 5 minute cache during market hours
-    - 30 minute cache outside market hours
-    - 60 minute cache on weekends
+    This is a backwards-compatible wrapper around OptionDataService.
     
-    This prevents 429 rate limiting errors from Yahoo Finance.
+    Providers are tried in priority order:
+    1. Schwab (priority 10) - Real-time, has Greeks
+    2. Yahoo (priority 50) - Fallback, delayed quotes
+    
+    To add/remove providers, edit:
+    app/modules/strategies/option_providers/service.py
     """
     
     def __init__(self):
-        # Legacy cache removed - using yahoo_cache module
-        pass
+        from app.modules.strategies.option_providers import get_option_service
+        self._service = get_option_service()
+        
+        # Log which provider is primary
+        primary = self._service.get_primary_provider()
+        if primary:
+            logger.info(f"OptionChainFetcher: Using {primary.name} as primary provider")
+        else:
+            logger.warning("OptionChainFetcher: No providers available!")
     
     def get_option_chain(self, symbol: str, expiration_date: date) -> Optional[Dict]:
         """
         Fetch option chain for a symbol and expiration date.
         
         Returns dict with 'calls' and 'puts' DataFrames.
-        Uses cached data when available to avoid rate limiting.
+        Uses modular provider system with automatic fallback.
         """
-        from app.modules.strategies.yahoo_cache import (
-            get_option_expirations,
-            get_option_chain as cached_get_option_chain
-        )
-        
-        try:
-            # Get available expirations (cached)
-            available_expirations = get_option_expirations(symbol)
-            if not available_expirations:
-                logger.warning(f"No options available for {symbol}")
-                return None
-            
-            # Find matching expiration
-            exp_str = expiration_date.strftime("%Y-%m-%d")
-            if exp_str not in available_expirations:
-                # Find closest expiration
-                closest = min(available_expirations, 
-                             key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - expiration_date).days))
-                logger.info(f"Exact expiration {exp_str} not found for {symbol}, using {closest}")
-                exp_str = closest
-            
-            # Fetch option chain (cached)
-            opt_chain = cached_get_option_chain(symbol, exp_str)
-            
-            if opt_chain is None:
-                return None
-            
-            result = {
-                'expiration': exp_str,
-                'calls': opt_chain.calls,
-                'puts': opt_chain.puts
-            }
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error fetching option chain for {symbol}: {e}")
-            return None
+        return self._service.get_option_chain_legacy(symbol, expiration_date)
     
     def get_option_quote(
         self, 
@@ -135,39 +108,13 @@ class OptionChainFetcher:
         """
         Get current quote for a specific option contract.
         """
-        chain = self.get_option_chain(symbol, expiration_date)
-        if not chain:
-            return None
-        
-        # Select calls or puts
-        options_df = chain['calls'] if option_type.lower() == 'call' else chain['puts']
-        
-        if options_df.empty:
-            return None
-        
-        # Find the option with matching strike
-        # Use a small tolerance for float comparison
-        matching = options_df[abs(options_df['strike'] - strike_price) < 0.01]
-        
-        if matching.empty:
-            # Try to find closest strike
-            closest_idx = (abs(options_df['strike'] - strike_price)).idxmin()
-            matching = options_df.loc[[closest_idx]]
-            logger.info(f"Exact strike {strike_price} not found, using {matching.iloc[0]['strike']}")
-        
-        row = matching.iloc[0]
-        
-        return OptionQuote(
-            contract_symbol=row['contractSymbol'],
-            strike=row['strike'],
-            bid=row['bid'] if row['bid'] else 0,
-            ask=row['ask'] if row['ask'] else 0,
-            last_price=row['lastPrice'] if row['lastPrice'] else 0,
-            volume=int(row['volume']) if row['volume'] else 0,
-            open_interest=int(row['openInterest']) if row['openInterest'] else 0,
-            implied_volatility=row['impliedVolatility'] if row['impliedVolatility'] else 0,
-            in_the_money=row['inTheMoney']
+        return self._service.get_option_quote_legacy(
+            symbol, strike_price, option_type, expiration_date
         )
+    
+    def get_provider_status(self) -> List[Dict]:
+        """Get status of all registered providers."""
+        return self._service.get_provider_status()
 
 
 class OptionRollMonitor:
