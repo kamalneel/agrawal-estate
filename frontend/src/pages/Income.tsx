@@ -1623,6 +1623,17 @@ interface AccountDetailProps {
 
 function AccountDetail({ accountName, optionsData, dividendData, interestData, onBack, onOptionsClick }: AccountDetailProps) {
   const [selectedYear, setSelectedYear] = useState(2025)
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(null) // null = Full Year
+  
+  const currentYear = new Date().getFullYear()
+  
+  // Reset month when year changes (unless selecting current year)
+  const handleYearChange = (year: number) => {
+    setSelectedYear(year)
+    if (year !== currentYear) {
+      setSelectedMonth(null)
+    }
+  }
   
   // Get account-specific data
   const accountOptions = optionsData?.by_account[accountName]
@@ -1665,21 +1676,38 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
   ])
   const years = [...allYears].sort((a, b) => b - a)
   
-  // Filter by selected year
-  const filteredOptions = optionsChartData.filter(d => d.year === selectedYear)
-  const filteredDividends = dividendChartData.filter(d => d.year === selectedYear)
-  const filteredInterest = interestChartData.filter(d => d.year === selectedYear)
+  // Helper to filter by year and optionally month
+  const filterByYearAndMonth = (data: MonthlyData[]) => {
+    let filtered = data.filter(d => d.year === selectedYear)
+    if (selectedMonth !== null && selectedYear === currentYear) {
+      filtered = filtered.filter(d => {
+        const monthNum = parseInt(d.month.split('-')[1], 10)
+        return monthNum === selectedMonth
+      })
+    }
+    return filtered
+  }
   
-  // Calculate year-specific totals
+  // Filter by selected year and month
+  const filteredOptions = filterByYearAndMonth(optionsChartData)
+  const filteredDividends = filterByYearAndMonth(dividendChartData)
+  const filteredInterest = filterByYearAndMonth(interestChartData)
+  
+  // Calculate period-specific totals
   const yearOptionsTotal = filteredOptions.reduce((sum, d) => sum + d.value, 0)
   const yearDividendsTotal = filteredDividends.reduce((sum, d) => sum + d.value, 0)
   const yearInterestTotal = filteredInterest.reduce((sum, d) => sum + d.value, 0)
   const yearTotalIncome = yearOptionsTotal + yearDividendsTotal + yearInterestTotal
   
-  // Count transactions for selected year (approximate from monthly data)
+  // Count months with income for selected period
   const yearOptionsMonths = filteredOptions.filter(d => d.value !== 0).length
   const yearDividendsMonths = filteredDividends.filter(d => d.value !== 0).length
   const yearInterestMonths = filteredInterest.filter(d => d.value !== 0).length
+  
+  // Period label for display
+  const periodLabel = selectedMonth !== null && selectedYear === currentYear
+    ? `${new Date(currentYear, selectedMonth - 1).toLocaleString('default', { month: 'long' })} ${selectedYear}`
+    : `${selectedYear}`
   
   const owner = accountOptions?.owner || accountDividends?.owner || accountInterest?.owner || 'Unknown'
   const accountType = accountOptions?.account_type || accountDividends?.account_type || accountInterest?.account_type || 'individual'
@@ -1709,20 +1737,41 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
         </div>
         <div className={styles.detailValue}>
           <div className={styles.detailAmount}>{formatCurrency(yearTotalIncome)}</div>
-          <span className={styles.detailType}>{selectedYear} Total</span>
+          <span className={styles.detailType}>{periodLabel} Total</span>
         </div>
       </div>
 
       {/* Year Selector */}
       {years.length > 0 && (
-        <div className={styles.yearSelector} style={{ marginBottom: 'var(--space-6)' }}>
+        <div className={styles.yearSelector} style={{ marginBottom: 'var(--space-4)' }}>
           {years.map(year => (
             <button
               key={year}
               className={clsx(styles.yearButton, selectedYear === year && styles.active)}
-              onClick={() => setSelectedYear(year)}
+              onClick={() => handleYearChange(year)}
             >
               {year}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Month Selector - only show for current year */}
+      {selectedYear === currentYear && (
+        <div className={styles.monthSelectorRow} style={{ marginBottom: 'var(--space-6)' }}>
+          <button
+            className={clsx(styles.monthPill, selectedMonth === null && styles.active)}
+            onClick={() => setSelectedMonth(null)}
+          >
+            Full Year
+          </button>
+          {[12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map(month => (
+            <button
+              key={month}
+              className={clsx(styles.monthPill, selectedMonth === month && styles.active)}
+              onClick={() => setSelectedMonth(month)}
+            >
+              {new Date(currentYear, month - 1).toLocaleString('default', { month: 'short' })}
             </button>
           ))}
         </div>
@@ -1764,7 +1813,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
               </ResponsiveContainer>
             </div>
           ) : (
-            <div className={styles.chartEmpty}>No options data for {selectedYear}</div>
+            <div className={styles.chartEmpty}>No options data for {periodLabel}</div>
           )}
         </section>
 
@@ -1802,7 +1851,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
               </ResponsiveContainer>
             </div>
           ) : (
-            <div className={styles.chartEmpty}>No dividend data for {selectedYear}</div>
+            <div className={styles.chartEmpty}>No dividend data for {periodLabel}</div>
           )}
         </section>
 
@@ -1840,14 +1889,14 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
               </ResponsiveContainer>
             </div>
           ) : (
-            <div className={styles.chartEmpty}>No interest data for {selectedYear}</div>
+            <div className={styles.chartEmpty}>No interest data for {periodLabel}</div>
           )}
         </section>
       </div>
 
       {/* Income Summary Cards */}
       <section className={styles.accountsSection}>
-        <h2>{selectedYear} Income Breakdown</h2>
+        <h2>{periodLabel} Income Breakdown</h2>
         <div className={styles.accountsGrid} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
           <button 
             className={styles.accountCard} 
@@ -1865,7 +1914,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             </div>
             <div className={styles.accountStats}>
               <div className={styles.accountStat}>
-                <span className={styles.accountStatLabel}>{selectedYear} Total</span>
+                <span className={styles.accountStatLabel}>{periodLabel} Total</span>
                 <span className={styles.accountStatValue}>{formatCurrency(yearOptionsTotal)}</span>
               </div>
             </div>
@@ -1888,7 +1937,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             </div>
             <div className={styles.accountStats}>
               <div className={styles.accountStat}>
-                <span className={styles.accountStatLabel}>{selectedYear} Total</span>
+                <span className={styles.accountStatLabel}>{periodLabel} Total</span>
                 <span className={styles.accountStatValue} style={{ color: '#00A3FF' }}>{formatCurrency(yearDividendsTotal)}</span>
               </div>
             </div>
@@ -1906,7 +1955,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             </div>
             <div className={styles.accountStats}>
               <div className={styles.accountStat}>
-                <span className={styles.accountStatLabel}>{selectedYear} Total</span>
+                <span className={styles.accountStatLabel}>{periodLabel} Total</span>
                 <span className={styles.accountStatValue} style={{ color: '#FFB800' }}>{formatCurrency(yearInterestTotal)}</span>
               </div>
             </div>
