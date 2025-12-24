@@ -2680,9 +2680,9 @@ export function Income() {
 
           {/* Month Selector - only show for current year */}
           {mainSelectedYear === currentYear && (
-            <div className={styles.monthSelector}>
+            <div className={styles.monthSelectorRow}>
               <button
-                className={clsx(styles.monthButton, mainSelectedMonth === null && styles.active)}
+                className={clsx(styles.monthPill, mainSelectedMonth === null && styles.active)}
                 onClick={() => setMainSelectedMonth(null)}
               >
                 Full Year
@@ -2690,7 +2690,7 @@ export function Income() {
               {[12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map(month => (
                 <button
                   key={month}
-                  className={clsx(styles.monthButton, mainSelectedMonth === month && styles.active)}
+                  className={clsx(styles.monthPill, mainSelectedMonth === month && styles.active)}
                   onClick={() => setMainSelectedMonth(month)}
                 >
                   {new Date(currentYear, month - 1).toLocaleString('default', { month: 'short' })}

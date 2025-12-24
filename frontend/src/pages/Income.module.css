@@ -369,35 +369,68 @@
   color: var(--color-text-inverse);
 }
 
-/* Month Selector - more subtle than year selector */
+/* Month Selector - horizontal row below year selector */
+.monthSelectorRow {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.monthPill {
+  display: inline-block;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  white-space: nowrap;
+  width: auto;
+}
+
+.monthPill:hover {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border-hover);
+}
+
+.monthPill.active {
+  background: rgba(0, 214, 50, 0.15);
+  border-color: rgba(0, 214, 50, 0.4);
+  color: #00D632;
+}
+
+/* Legacy month selector for other sections */
 .monthSelector {
   display: flex;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
+  flex-direction: row;
   flex-wrap: wrap;
-  justify-content: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .monthButton {
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   background: transparent;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border);
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-default);
-  min-width: 44px;
 }
 
 .monthButton:hover {
   color: var(--color-text-secondary);
-  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--color-border-hover);
 }
 
 .monthButton.active {
   background: rgba(0, 214, 50, 0.15);
-  border-color: rgba(0, 214, 50, 0.3);
+  border-color: rgba(0, 214, 50, 0.4);
   color: #00D632;
 }
 
