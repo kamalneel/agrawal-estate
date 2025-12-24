@@ -2251,7 +2251,11 @@ export function Income() {
       filtered = filtered.filter(d => d.year === mainSelectedYear)
     }
     if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
-      filtered = filtered.filter(d => d.month === mainSelectedMonth)
+      // d.month is a string like "2025-12", extract the month number
+      filtered = filtered.filter(d => {
+        const monthNum = parseInt(d.month.split('-')[1], 10)
+        return monthNum === mainSelectedMonth
+      })
     }
     return filtered
   }
