@@ -2266,31 +2266,37 @@ export function Income() {
   const filteredInterestTotal = filterChartData(interestChartData).reduce((sum, d) => sum + d.value, 0)
 
   // Note: filteredRentalData is calculated later, so we compute rental separately here
-  // Rental data doesn't have monthly breakdown, so we can only filter by year
+  // Rental data doesn't have monthly breakdown - prorate by dividing by 12 for single month
   const filteredRentalTotal = (() => {
     if (!rentalData?.properties) return 0
     let filteredProperties = mainSelectedYear === 'all'
       ? rentalData.properties
       : rentalData.properties.filter(p => p.year === mainSelectedYear)
-    // If filtering by month, we need to prorate the rental income (rental is typically yearly)
-    // For simplicity, show the full year amount when a specific month is selected
-    // (rental income doesn't have monthly granularity in the current data structure)
-    return filteredProperties.reduce((sum, p) => sum + p.net_income, 0)
+    const yearlyTotal = filteredProperties.reduce((sum, p) => sum + p.net_income, 0)
+    // If filtering by a specific month, prorate by dividing by 12
+    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+      return yearlyTotal / 12
+    }
+    return yearlyTotal
   })()
 
   // Compute salary total separately as well
   // Use GROSS income to match what the salary source cards display
-  // Salary data doesn't have monthly breakdown, so we can only filter by year
+  // Salary data doesn't have monthly breakdown - prorate by dividing by 12 for single month
   const computedSalaryTotal = (() => {
     if (!salaryData?.employees) return 0
-    return salaryData.employees.reduce((total, emp) => {
+    const yearlyTotal = salaryData.employees.reduce((total, emp) => {
       if (mainSelectedYear === 'all') {
         return total + emp.total_gross
       }
       const yearData = emp.yearly_data.find(y => y.year === mainSelectedYear)
-      // Salary doesn't have monthly granularity - show full year amount
       return total + (yearData?.gross || 0)
     }, 0)
+    // If filtering by a specific month, prorate by dividing by 12
+    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+      return yearlyTotal / 12
+    }
+    return yearlyTotal
   })()
 
   const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal
@@ -2395,30 +2401,56 @@ export function Income() {
   
   const filteredSalaryTotal = getYearFilteredSalaryTotal()
 
-  // Get Jaya's salary data for specific year
+  // Get Jaya's salary data for specific year (prorated if month selected)
   const getJayaSalary = () => {
     const jaya = salaryData?.employees.find(e => e.name.toLowerCase().includes('jaya'))
     if (!jaya) return null
     
+    let net: number, gross: number
     if (mainSelectedYear === 'all') {
-      return { net: jaya.total_net, gross: jaya.total_gross, employer: jaya.employer }
+      net = jaya.total_net
+      gross = jaya.total_gross
+    } else {
+      const yearData = jaya.yearly_data.find(y => y.year === mainSelectedYear)
+      if (!yearData) return null
+      net = yearData.net
+      gross = yearData.gross
     }
-    const yearData = jaya.yearly_data.find(y => y.year === mainSelectedYear)
-    return yearData ? { net: yearData.net, gross: yearData.gross, employer: jaya.employer } : null
+    
+    // Prorate by month if a specific month is selected
+    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+      net = net / 12
+      gross = gross / 12
+    }
+    
+    return { net, gross, employer: jaya.employer }
   }
   
   const jayaSalary = getJayaSalary()
 
-  // Get Neel's salary data for specific year
+  // Get Neel's salary data for specific year (prorated if month selected)
   const getNeelSalary = () => {
     const neel = salaryData?.employees.find(e => e.name.toLowerCase().includes('neel'))
     if (!neel) return null
     
+    let net: number, gross: number
     if (mainSelectedYear === 'all') {
-      return { net: neel.total_net, gross: neel.total_gross, employer: neel.employer }
+      net = neel.total_net
+      gross = neel.total_gross
+    } else {
+      const yearData = neel.yearly_data.find(y => y.year === mainSelectedYear)
+      if (!yearData) return null
+      net = yearData.net
+      gross = yearData.gross
     }
-    const yearData = neel.yearly_data.find(y => y.year === mainSelectedYear)
-    return yearData ? { net: yearData.net, gross: yearData.gross, employer: neel.employer } : null
+    
+    // Prorate by month if a specific month is selected
+    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+      net = net / 12
+      gross = gross / 12
+    }
+    
+    return { net, gross, employer: neel.employer }
   }
   
   const neelSalary = getNeelSalary()
@@ -2454,7 +2486,7 @@ export function Income() {
       name: 'Rental Income',
       type: 'rental',
       status: filteredRentalData && filteredRentalData.property_count > 0 ? 'active' : 'pending_upload',
-      value: filteredRentalData?.total_net_income || 0,
+      value: filteredRentalTotal, // Use prorated value when month is selected
       description: filteredRentalData 
         ? `${filteredRentalData.property_count} property • Net of taxes, HOA, maintenance`
         : 'Property rental income (net of taxes, HOA, maintenance)',
