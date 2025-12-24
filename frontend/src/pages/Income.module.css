@@ -369,6 +369,38 @@
   color: var(--color-text-inverse);
 }
 
+/* Month Selector - more subtle than year selector */
+.monthSelector {
+  display: flex;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.monthButton {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  min-width: 44px;
+}
+
+.monthButton:hover {
+  color: var(--color-text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.monthButton.active {
+  background: rgba(0, 214, 50, 0.15);
+  border-color: rgba(0, 214, 50, 0.3);
+  color: #00D632;
+}
+
 /* Chart Tooltip */
 .chartTooltip {
   background: var(--color-bg-elevated);
