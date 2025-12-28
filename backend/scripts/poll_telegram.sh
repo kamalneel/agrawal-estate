@@ -12,3 +12,4 @@ python -m app.shared.services.telegram_poller
 
 echo "$(date): Done"
 
+

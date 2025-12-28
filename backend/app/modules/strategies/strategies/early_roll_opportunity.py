@@ -103,6 +103,19 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
             
             is_earnings_week, earnings_date, cached_indicators = earnings_cache.get(pos.symbol, (False, None, None))
             
+            # V3 FIX: Skip ITM positions - let roll_options strategy handle them
+            # with proper cost-neutral V3 logic (ITMRollOptimizer)
+            if cached_indicators:
+                current_price = cached_indicators.current_price
+                if pos.option_type.lower() == 'call' and current_price > pos.strike_price:
+                    itm_pct = ((current_price - pos.strike_price) / pos.strike_price) * 100
+                    logger.info(f"Early Roll: Skipping {pos.symbol} ${pos.strike_price} - position is {itm_pct:.1f}% ITM (will be handled by roll_options)")
+                    continue
+                elif pos.option_type.lower() == 'put' and current_price < pos.strike_price:
+                    itm_pct = ((pos.strike_price - current_price) / pos.strike_price) * 100
+                    logger.info(f"Early Roll: Skipping {pos.symbol} ${pos.strike_price} - position is {itm_pct:.1f}% ITM (will be handled by roll_options)")
+                    continue
+            
             # Calculate days to expiration for short DTE threshold (V2 feature)
             days_to_exp = (pos.expiration_date - date.today()).days if pos.expiration_date else None
             
@@ -208,16 +221,50 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
             strike_source = "fallback_current_strike"
             logger.warning(f"{pos.symbol} roll: TA unavailable, using current strike ${new_strike}")
         
-        # Estimate new premium based on the strike distance from current price
-        if current_price and new_strike > pos.strike_price:
-            premium_factor = 0.75  # Rolling UP - expect slightly lower premium
-        elif current_price and new_strike < pos.strike_price:
-            premium_factor = 0.90  # Rolling DOWN - expect slightly higher premium
-        else:
-            premium_factor = 0.80  # Same strike or unknown
+        # Get ACTUAL bid price for the new strike from the options chain
+        # This is critical for accurate income/cost calculation!
+        actual_new_premium = None
+        try:
+            from app.modules.strategies.option_monitor import OptionChainFetcher
+            fetcher = OptionChainFetcher()
+            new_quote = fetcher.get_option_quote(
+                symbol=pos.symbol,
+                strike_price=new_strike,
+                option_type=pos.option_type,
+                expiration_date=next_friday
+            )
+            if new_quote and new_quote.bid > 0:
+                actual_new_premium = new_quote.bid
+                logger.info(f"{pos.symbol}: Got ACTUAL bid ${actual_new_premium:.2f} for {new_strike} {pos.option_type} {next_friday}")
+        except Exception as e:
+            logger.warning(f"{pos.symbol}: Could not get actual premium for new strike: {e}")
         
-        estimated_new_premium = pos.original_premium * premium_factor
-        estimated_total_income = estimated_new_premium * pos.contracts * 100
+        # Use actual premium if available, otherwise estimate (fallback)
+        if actual_new_premium is not None:
+            estimated_new_premium = actual_new_premium
+        else:
+            # Fallback estimation (less accurate)
+            if current_price and new_strike > pos.strike_price:
+                premium_factor = 0.75  # Rolling UP - expect lower premium
+            elif current_price and new_strike < pos.strike_price:
+                premium_factor = 0.90  # Rolling DOWN - expect higher premium
+            else:
+                premium_factor = 0.80
+            estimated_new_premium = pos.original_premium * premium_factor
+            logger.warning(f"{pos.symbol}: Using ESTIMATED premium ${estimated_new_premium:.2f} (no live quote)")
+        
+        # Calculate the ROLL economics correctly:
+        # - Cost to close current position (debit)
+        # - Premium from new position (credit)
+        # - Net = credit - debit (positive = net credit, negative = net debit)
+        cost_to_close = alert.current_premium * pos.contracts * 100
+        new_premium_income = estimated_new_premium * pos.contracts * 100
+        net_roll_cash_flow = new_premium_income - cost_to_close  # Negative = you pay
+        
+        # The PROFIT is what you keep from the original trade
+        locked_in_profit = alert.profit_amount * pos.contracts * 100
+        
+        logger.info(f"{pos.symbol} ROLL ECONOMICS: close=${cost_to_close:.0f}, new=${new_premium_income:.0f}, net=${net_roll_cash_flow:.0f}, profit_locked=${locked_in_profit:.0f}")
         
         # Format dates as MM/DD
         current_exp_str = current_expiry.strftime("%-m/%d")
@@ -229,6 +276,12 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
         
         # V2: Adjust title/description based on whether we should wait for bounce
         price_info = f" Current price: ${current_price:.2f}." if current_price else ""
+        
+        # Format the roll economics for display
+        if net_roll_cash_flow >= 0:
+            roll_cash_str = f"Net credit: ${net_roll_cash_flow:.0f}"
+        else:
+            roll_cash_str = f"Net debit: ${abs(net_roll_cash_flow):.0f}"
         
         if should_wait_for_bounce:
             # CLOSE + WAIT recommendation (stock is oversold)
@@ -253,17 +306,18 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
             # Earnings week - standard roll but with warning
             title = (
                 f"📊 EARNINGS: Roll {pos.contracts} {pos.symbol} {old_strike_str} ({current_exp_str}) → "
-                f"{new_strike_str} ({new_exp_str}) - Earn ~${estimated_total_income:.0f}"
+                f"{new_strike_str} ({new_exp_str}) - Lock ${locked_in_profit:.0f} profit"
             )
             description = (
                 f"📊 EARNINGS on {earnings_date.strftime('%b %d') if earnings_date else 'this week'}! "
-                f"{profit_pct}% profit captured (using {int(profit_threshold*100)}% earnings threshold).{price_info} "
-                f"Lock in profits before binary event."
+                f"{profit_pct}% profit captured.{price_info} "
+                f"Close at ${alert.current_premium:.2f}, sell {new_strike_str} for ${estimated_new_premium:.2f}. {roll_cash_str}."
             )
             rationale_parts = [
-                f"⚠️ EARNINGS on {earnings_date} - using conservative threshold to lock in profits.",
-                f"You've captured {profit_pct}% of the premium with {alert.days_to_expiry} days remaining.",
-                f"Roll to {new_strike_str} for {new_exp_str} to collect ~${estimated_new_premium:.2f}/contract.",
+                f"⚠️ EARNINGS on {earnings_date} - lock in profits before binary event.",
+                f"You've captured {profit_pct}% (${locked_in_profit:.0f} profit) with {alert.days_to_expiry} days remaining.",
+                f"Roll to {new_strike_str} for {new_exp_str}: sell for ${estimated_new_premium:.2f}/contract.",
+                f"Roll transaction: Pay ${cost_to_close:.0f} to close, receive ${new_premium_income:.0f} from new sale. {roll_cash_str}.",
                 strike_rationale
             ]
             action = f"Buy to close {old_strike_str} at ${alert.current_premium:.2f}, sell {new_strike_str} {pos.option_type} for {new_exp_str}"
@@ -271,13 +325,16 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
         else:
             # Standard roll recommendation
             title = (
-                f"Roll {pos.contracts} {pos.symbol} {old_strike_str} ({current_exp_str}) → "
-                f"{new_strike_str} ({new_exp_str}) - Earn ~${estimated_total_income:.0f}"
+                f"Close & Roll {pos.contracts} {pos.symbol} {old_strike_str} ({current_exp_str}) → "
+                f"{new_strike_str} ({new_exp_str}) - Lock ~${locked_in_profit:.0f} profit"
             )
-            description = f"{profit_pct}% profit captured with {alert.days_to_expiry} days left.{price_info} Roll to collect new premium."
+            description = (
+                f"Close at ${alert.current_premium:.2f} to lock {profit_pct}% profit, roll to {new_strike_str} for {new_exp_str}.{price_info}"
+            )
             rationale_parts = [
-                f"You've captured {profit_pct}% of the premium with {alert.days_to_expiry} days remaining.",
-                f"Roll to {new_strike_str} for {new_exp_str} to collect ~${estimated_new_premium:.2f}/contract.",
+                f"You've captured {profit_pct}% of the premium (${locked_in_profit:.0f} profit).",
+                f"Roll to {new_strike_str} for {new_exp_str}: new premium ${estimated_new_premium:.2f}/contract.",
+                f"Roll transaction: Pay ${cost_to_close:.0f} to close, receive ${new_premium_income:.0f}. {roll_cash_str}.",
                 strike_rationale
             ]
             action = f"Buy to close {old_strike_str} at ${alert.current_premium:.2f}, sell {new_strike_str} {pos.option_type} for {new_exp_str}"
@@ -303,7 +360,7 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
             rationale=rationale,
             action=action,
             action_type=action_type,
-            potential_income=estimated_total_income,
+            potential_income=new_premium_income,  # Income from the NEW position
             potential_risk="low",
             time_horizon="immediate" if alert.days_to_expiry <= 2 or is_earnings_week else "this_week",
             symbol=pos.symbol,
@@ -325,7 +382,10 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
                 "old_strike": pos.strike_price,
                 "new_expiration": next_friday.isoformat(),
                 "estimated_new_premium": estimated_new_premium,
-                "estimated_total_income": estimated_total_income,
+                "new_premium_income": new_premium_income,
+                "cost_to_close": cost_to_close,
+                "net_roll_cash_flow": net_roll_cash_flow,  # Positive = credit, negative = debit
+                "locked_in_profit": locked_in_profit,
                 # Technical analysis context
                 "current_price": current_price,
                 "strike_rationale": strike_rationale,

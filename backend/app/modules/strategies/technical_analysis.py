@@ -175,20 +175,20 @@ class TechnicalAnalysisService:
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         }
     
-    def _fetch_yahoo_data(
+    def _fetch_historical_data(
         self,
         symbol: str,
         range_period: str = "3mo"
     ) -> Optional[Dict]:
         """
-        Fetch historical data from Yahoo Finance.
+        Fetch historical data - tries Schwab first, then Yahoo as fallback.
         
         Args:
             symbol: Stock symbol
             range_period: Period to fetch ("1mo", "3mo", "6mo", "1y")
         
         Returns:
-            Dict with price data or None if failed
+            Dict with price data (Yahoo-compatible format) or None if failed
         """
         cache_key = f"{symbol}_{range_period}"
         
@@ -199,6 +199,92 @@ class TechnicalAnalysisService:
             if (datetime.now() - cached_time).total_seconds() < cache_ttl:
                 return cached_data
         
+        # Convert range_period to days
+        period_to_days = {
+            "1mo": 30,
+            "3mo": 90,
+            "6mo": 180,
+            "1y": 365
+        }
+        period_days = period_to_days.get(range_period, 90)
+        
+        # TRY SCHWAB FIRST (no rate limiting issues)
+        result = self._fetch_schwab_history(symbol, period_days)
+        if result:
+            _price_cache[cache_key] = (datetime.now(), result)
+            return result
+        
+        # FALLBACK TO YAHOO if Schwab unavailable
+        result = self._fetch_yahoo_data(symbol, range_period)
+        if result:
+            _price_cache[cache_key] = (datetime.now(), result)
+            return result
+        
+        return None
+    
+    def _fetch_schwab_history(
+        self,
+        symbol: str,
+        period_days: int = 90
+    ) -> Optional[Dict]:
+        """
+        Fetch historical data from Schwab API.
+        
+        Returns data in Yahoo-compatible format for easy integration.
+        """
+        try:
+            from app.modules.strategies.schwab_service import get_price_history_schwab
+            
+            history = get_price_history_schwab(symbol, period_days=period_days)
+            
+            if not history or not history.get("candles"):
+                return None
+            
+            candles = history["candles"]
+            
+            # Convert to Yahoo-compatible format
+            timestamps = [int(c["datetime"].timestamp()) for c in candles]
+            closes = [c["close"] for c in candles]
+            highs = [c["high"] for c in candles]
+            lows = [c["low"] for c in candles]
+            opens = [c["open"] for c in candles]
+            volumes = [c["volume"] for c in candles]
+            
+            current_price = closes[-1] if closes else None
+            
+            result = {
+                "meta": {
+                    "symbol": symbol,
+                    "regularMarketPrice": current_price,
+                    "_source": "schwab"
+                },
+                "timestamp": timestamps,
+                "indicators": {
+                    "quote": [{
+                        "close": closes,
+                        "high": highs,
+                        "low": lows,
+                        "open": opens,
+                        "volume": volumes
+                    }]
+                }
+            }
+            
+            logger.info(f"[SCHWAB] Got {len(candles)} days of history for {symbol}")
+            return result
+            
+        except Exception as e:
+            logger.debug(f"[SCHWAB] Could not get history for {symbol}: {e}")
+            return None
+    
+    def _fetch_yahoo_data(
+        self,
+        symbol: str,
+        range_period: str = "3mo"
+    ) -> Optional[Dict]:
+        """
+        Fetch historical data from Yahoo Finance (fallback).
+        """
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
             params = {
@@ -212,10 +298,7 @@ class TechnicalAnalysisService:
                 data = response.json()
                 if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
                     result = data['chart']['result'][0]
-                    
-                    # Cache the result
-                    _price_cache[cache_key] = (datetime.now(), result)
-                    
+                    logger.debug(f"[YAHOO] Got history for {symbol}")
                     return result
             else:
                 logger.warning(f"Yahoo API returned {response.status_code} for {symbol}")
@@ -249,9 +332,9 @@ class TechnicalAnalysisService:
         Returns:
             TechnicalIndicators object or None if data unavailable
         """
-        # Fetch 3-month and 1-year data
-        data_3m = self._fetch_yahoo_data(symbol, "3mo")
-        data_1y = self._fetch_yahoo_data(symbol, "1y")
+        # Fetch 3-month and 1-year data (Schwab first, Yahoo fallback)
+        data_3m = self._fetch_historical_data(symbol, "3mo")
+        data_1y = self._fetch_historical_data(symbol, "1y")
         
         if not data_3m:
             logger.warning(f"Could not fetch data for {symbol}")

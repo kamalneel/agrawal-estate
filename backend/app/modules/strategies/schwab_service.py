@@ -277,11 +277,12 @@ def get_options_chain_schwab(
         
         logger.info(f"[SCHWAB] Got {len(result['calls'])} calls, {len(result['puts'])} puts for {symbol}")
         
-        # Log sample delta values for debugging
+        # Log sample delta values AND BID prices for debugging (critical for price accuracy)
         if result['calls']:
-            sample = result['calls'][:3]
-            sample_str = ", ".join([f"${c['strike']}:d={c['delta']}" for c in sample if c['delta'] is not None])
-            logger.info(f"[SCHWAB] Sample calls: {sample_str}")
+            # Sort by strike and show first 5 with bid prices
+            sorted_calls = sorted(result['calls'], key=lambda x: x['strike'])
+            sample_str = ", ".join([f"${c['strike']}:bid=${c['bid']}:d={c.get('delta', 'N/A')}" for c in sorted_calls[:5]])
+            logger.info(f"[SCHWAB] Sample calls (sorted by strike): {sample_str}")
         
         return result
         
@@ -388,6 +389,266 @@ def get_option_expirations_schwab(symbol: str) -> List[str]:
     result = sorted(list(expirations))
     logger.info(f"[SCHWAB] Got {len(result)} expirations for {symbol}")
     return result
+
+
+def get_stock_quote_schwab(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Get real-time stock quote from Schwab API.
+    
+    Args:
+        symbol: Stock symbol (e.g., "AAPL")
+    
+    Returns:
+        Dict with price info or None:
+        - symbol: Stock symbol
+        - currentPrice: Current/last price
+        - bid: Bid price
+        - ask: Ask price
+        - volume: Trading volume
+        - change: Price change
+        - changePercent: Percent change
+    """
+    client = get_schwab_client()
+    
+    if client is None:
+        logger.debug(f"[SCHWAB] Client not available for quote {symbol}")
+        return None
+    
+    try:
+        logger.debug(f"[SCHWAB] Fetching quote for {symbol}")
+        response = client.get_quote(symbol)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Parse the response - structure varies by security type
+        quote_data = data.get(symbol, {}).get("quote", {})
+        
+        if not quote_data:
+            # Try alternate structure
+            quote_data = data.get(symbol, {})
+        
+        if quote_data:
+            result = {
+                "symbol": symbol,
+                "currentPrice": quote_data.get("lastPrice") or quote_data.get("mark"),
+                "regularMarketPrice": quote_data.get("lastPrice") or quote_data.get("mark"),
+                "bid": quote_data.get("bidPrice"),
+                "ask": quote_data.get("askPrice"),
+                "volume": quote_data.get("totalVolume"),
+                "change": quote_data.get("netChange"),
+                "changePercent": quote_data.get("netPercentChange"),
+                "high": quote_data.get("highPrice"),
+                "low": quote_data.get("lowPrice"),
+                "previousClose": quote_data.get("closePrice"),
+                "_source": "schwab"
+            }
+            
+            if result["currentPrice"]:
+                logger.debug(f"[SCHWAB] {symbol}: ${result['currentPrice']}")
+                return result
+        
+        logger.warning(f"[SCHWAB] No quote data for {symbol}")
+        return None
+        
+    except Exception as e:
+        logger.warning(f"[SCHWAB] Failed to get quote for {symbol}: {e}")
+        return None
+
+
+def get_stock_quotes_batch_schwab(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Get real-time quotes for multiple symbols in one API call.
+    
+    Args:
+        symbols: List of stock symbols
+    
+    Returns:
+        Dict mapping symbol to quote data
+    """
+    client = get_schwab_client()
+    
+    if client is None:
+        logger.debug("[SCHWAB] Client not available for batch quotes")
+        return {}
+    
+    try:
+        logger.info(f"[SCHWAB] Fetching batch quotes for {len(symbols)} symbols")
+        response = client.get_quotes(symbols)
+        response.raise_for_status()
+        data = response.json()
+        
+        results = {}
+        for symbol in symbols:
+            quote_data = data.get(symbol, {}).get("quote", {})
+            if not quote_data:
+                quote_data = data.get(symbol, {})
+            
+            if quote_data and (quote_data.get("lastPrice") or quote_data.get("mark")):
+                results[symbol] = {
+                    "symbol": symbol,
+                    "currentPrice": quote_data.get("lastPrice") or quote_data.get("mark"),
+                    "regularMarketPrice": quote_data.get("lastPrice") or quote_data.get("mark"),
+                    "bid": quote_data.get("bidPrice"),
+                    "ask": quote_data.get("askPrice"),
+                    "volume": quote_data.get("totalVolume"),
+                    "change": quote_data.get("netChange"),
+                    "changePercent": quote_data.get("netPercentChange"),
+                    "_source": "schwab"
+                }
+        
+        logger.info(f"[SCHWAB] Got quotes for {len(results)}/{len(symbols)} symbols")
+        return results
+        
+    except Exception as e:
+        logger.warning(f"[SCHWAB] Failed to get batch quotes: {e}")
+        return {}
+
+
+def get_price_history_schwab(
+    symbol: str,
+    period_days: int = 90,
+    frequency: str = "daily"
+) -> Optional[Dict[str, Any]]:
+    """
+    Get historical price data from Schwab API.
+    
+    This replaces Yahoo Finance for historical data, eliminating rate limit issues.
+    
+    Args:
+        symbol: Stock symbol (e.g., "AAPL")
+        period_days: Number of days of history (default 90)
+        frequency: "daily", "weekly", or "minute" (minute = 1-min bars, max 48 days)
+    
+    Returns:
+        Dict with:
+        - symbol: Stock symbol
+        - candles: List of OHLCV candles with 'open', 'high', 'low', 'close', 'volume', 'datetime'
+        - current_price: Most recent close price
+    """
+    client = get_schwab_client()
+    
+    if client is None:
+        logger.debug(f"[SCHWAB] Client not available for price history {symbol}")
+        return None
+    
+    try:
+        from schwab.client import Client
+        
+        # Build request based on frequency
+        if frequency == "minute":
+            # Minute data - max 48 days
+            logger.info(f"[SCHWAB] Fetching minute price history for {symbol} ({min(period_days, 48)} days)")
+            response = client.get_price_history_every_minute(
+                symbol,
+                start_datetime=datetime.now() - timedelta(days=min(period_days, 48)),
+                end_datetime=datetime.now(),
+                need_extended_hours_data=False
+            )
+        elif frequency == "weekly":
+            # Weekly data
+            logger.info(f"[SCHWAB] Fetching weekly price history for {symbol}")
+            response = client.get_price_history_every_week(
+                symbol,
+                start_datetime=datetime.now() - timedelta(days=period_days),
+                end_datetime=datetime.now(),
+                need_extended_hours_data=False
+            )
+        else:
+            # Daily data (default) - up to 20 years available
+            logger.info(f"[SCHWAB] Fetching daily price history for {symbol} ({period_days} days)")
+            response = client.get_price_history_every_day(
+                symbol,
+                start_datetime=datetime.now() - timedelta(days=period_days),
+                end_datetime=datetime.now(),
+                need_extended_hours_data=False
+            )
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        candles_raw = data.get("candles", [])
+        
+        if not candles_raw:
+            logger.warning(f"[SCHWAB] No price history data for {symbol}")
+            return None
+        
+        # Convert to standardized format
+        candles = []
+        for c in candles_raw:
+            candles.append({
+                "datetime": datetime.fromtimestamp(c["datetime"] / 1000),  # Schwab uses milliseconds
+                "open": c.get("open"),
+                "high": c.get("high"),
+                "low": c.get("low"),
+                "close": c.get("close"),
+                "volume": c.get("volume"),
+            })
+        
+        # Get the most recent close price
+        current_price = candles[-1]["close"] if candles else None
+        
+        logger.info(f"[SCHWAB] Got {len(candles)} {frequency} candles for {symbol}, current: ${current_price}")
+        
+        return {
+            "symbol": symbol,
+            "candles": candles,
+            "current_price": current_price,
+            "period_days": period_days,
+            "frequency": frequency,
+            "_source": "schwab"
+        }
+        
+    except Exception as e:
+        logger.warning(f"[SCHWAB] Failed to get price history for {symbol}: {e}")
+        return None
+
+
+def get_price_history_dataframe_schwab(
+    symbol: str,
+    period_days: int = 90
+) -> Optional[Any]:
+    """
+    Get historical price data as a pandas DataFrame (compatible with yfinance format).
+    
+    This is a drop-in replacement for yfinance history() calls.
+    
+    Args:
+        symbol: Stock symbol
+        period_days: Number of days of history
+    
+    Returns:
+        pandas DataFrame with columns: Open, High, Low, Close, Volume
+        Index is DatetimeIndex
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        logger.error("pandas not available for DataFrame conversion")
+        return None
+    
+    history = get_price_history_schwab(symbol, period_days=period_days, frequency="daily")
+    
+    if history is None or not history.get("candles"):
+        return None
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(history["candles"])
+    
+    # Set datetime as index
+    df.set_index("datetime", inplace=True)
+    
+    # Rename columns to match yfinance format
+    df.rename(columns={
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "volume": "Volume"
+    }, inplace=True)
+    
+    logger.info(f"[SCHWAB] Created DataFrame with {len(df)} rows for {symbol}")
+    
+    return df
 
 
 def get_schwab_status() -> Dict[str, Any]:

@@ -1,11 +1,12 @@
 """
 Options & Stock Data Cache
 
-SIMPLIFIED ARCHITECTURE:
-- Options Data: Schwab API ONLY (reliable delta data)
-- Stock Prices: Direct Yahoo API (free, simple)
+SIMPLIFIED ARCHITECTURE - SCHWAB ONLY:
+- Options Data: Schwab API (reliable delta data)
+- Stock Prices: Schwab API (reliable, no rate limits)
+- Earnings Dates: yfinance fallback (cached 24h, optional)
 
-No more fallback chains that give bad data. If Schwab fails, we fail clearly.
+No more Yahoo Finance for critical data. Schwab is the source of truth.
 
 Cache TTL varies based on market hours:
 - During market hours: 5-15 minutes
@@ -152,14 +153,40 @@ def get_data_freshness_info() -> Dict[str, Any]:
 
 
 # =============================================================================
-# STOCK PRICES - Direct Yahoo API (simple, free)
+# STOCK PRICES - Schwab API (primary) with Yahoo fallback
 # =============================================================================
 
-def _fetch_price_direct_api(symbol: str) -> Optional[Dict]:
+def _fetch_price_schwab(symbol: str) -> Optional[Dict]:
     """
-    Fetch stock price from direct Yahoo API.
+    Fetch stock price from Schwab API.
     
-    This is simple and reliable for stock prices.
+    This is the primary source - reliable and no rate limits.
+    """
+    try:
+        from app.modules.strategies.schwab_service import get_stock_quote_schwab, is_schwab_configured
+        
+        if not is_schwab_configured():
+            logger.debug(f"[PRICE] Schwab not configured for {symbol}")
+            return None
+        
+        result = get_stock_quote_schwab(symbol)
+        if result and result.get('currentPrice'):
+            logger.debug(f"[PRICE] Got {symbol} ${result['currentPrice']} from Schwab")
+            return result
+            
+    except ImportError:
+        logger.debug("[PRICE] Schwab service not available")
+    except Exception as e:
+        logger.warning(f"[PRICE] Schwab failed for {symbol}: {e}")
+    
+    return None
+
+
+def _fetch_price_yahoo_fallback(symbol: str) -> Optional[Dict]:
+    """
+    Fetch stock price from Yahoo API (fallback only).
+    
+    Only used if Schwab is not available.
     """
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
@@ -182,15 +209,15 @@ def _fetch_price_direct_api(symbol: str) -> Optional[Dict]:
                     'regularMarketVolume': meta.get('regularMarketVolume'),
                     'currency': meta.get('currency'),
                     'exchangeName': meta.get('exchangeName'),
-                    '_source': 'yahoo_direct'
+                    '_source': 'yahoo_fallback'
                 }
                 
                 if info['currentPrice']:
-                    logger.debug(f"Got {symbol} price ${info['currentPrice']} from Yahoo API")
+                    logger.debug(f"[PRICE] Got {symbol} ${info['currentPrice']} from Yahoo (fallback)")
                     return info
                     
     except Exception as e:
-        logger.warning(f"Yahoo API failed for {symbol}: {e}")
+        logger.warning(f"[PRICE] Yahoo fallback failed for {symbol}: {e}")
     
     return None
 
@@ -199,7 +226,7 @@ def get_ticker_info(symbol: str, force_refresh: bool = False) -> Optional[Dict]:
     """
     Get stock price info with caching.
     
-    Uses direct Yahoo API (simple and reliable for prices).
+    Uses Schwab API as primary source, Yahoo as fallback.
     """
     cache_key = symbol.upper()
     now = datetime.now()
@@ -212,12 +239,20 @@ def get_ticker_info(symbol: str, force_refresh: bool = False) -> Optional[Dict]:
             logger.debug(f"Cache hit for {symbol} ticker info")
             return cached_data
     
-    # Fetch from Yahoo API
-    result = _fetch_price_direct_api(symbol)
+    # Try Schwab first (primary source)
+    result = _fetch_price_schwab(symbol)
     if result:
         _ticker_info_cache[cache_key] = (now, result)
         _last_fetch_times["prices"] = now
-        _data_sources["prices"] = "yahoo_direct"
+        _data_sources["prices"] = "schwab"
+        return result
+    
+    # Fall back to Yahoo if Schwab fails
+    result = _fetch_price_yahoo_fallback(symbol)
+    if result:
+        _ticker_info_cache[cache_key] = (now, result)
+        _last_fetch_times["prices"] = now
+        _data_sources["prices"] = "yahoo_fallback"
         return result
     
     # Return stale cache if available
@@ -396,16 +431,26 @@ def get_option_chain(
 
 
 # =============================================================================
-# OTHER DATA (using yfinance for non-critical data)
+# EARNINGS DATES - yfinance (cached 24h, non-critical)
 # =============================================================================
+# Note: Schwab API doesn't provide earnings calendar data.
+# We use yfinance for this, but it's optional - the system works without it.
+# Earnings dates are only used to adjust profit thresholds (60% vs 80%).
 
 def get_earnings_date(symbol: str, force_refresh: bool = False) -> Optional[date]:
-    """Get earnings date with caching (24hr TTL)."""
+    """Get earnings date with caching (24hr TTL).
+    
+    Note: Uses yfinance which can hit rate limits. If rate limited,
+    we cache a None result to avoid hammering the API.
+    
+    This is non-critical data - the system works fine without earnings dates.
+    """
     import yfinance as yf
     
     cache_key = symbol.upper()
     now = datetime.now()
     EARNINGS_TTL = 86400  # 24 hours
+    RATE_LIMIT_TTL = 3600  # 1 hour cache on rate limit errors
     
     if not force_refresh and cache_key in _earnings_date_cache:
         cached_time, cached_data = _earnings_date_cache[cache_key]
@@ -431,7 +476,13 @@ def get_earnings_date(symbol: str, force_refresh: bool = False) -> Optional[date
             return result
             
     except Exception as e:
-        logger.debug(f"[EARNINGS] {symbol}: Error - {e}")
+        error_str = str(e)
+        if "429" in error_str or "Too Many Requests" in error_str:
+            # Rate limited - cache None for 1 hour to avoid hammering the API
+            logger.warning(f"[EARNINGS] {symbol}: Rate limited, caching None for 1 hour")
+            _earnings_date_cache[cache_key] = (now, None)
+        else:
+            logger.debug(f"[EARNINGS] {symbol}: Error - {e}")
     
     _earnings_date_cache[cache_key] = (now, None)
     return None

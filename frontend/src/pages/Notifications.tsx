@@ -379,7 +379,7 @@ export default function Notifications() {
       
       try {
         const liveResponse = await fetch(
-          `/api/v1/strategies/options-selling/recommendations?default_premium=60&profit_threshold=0.80&send_notification=true&notification_priority=high&_t=${timestamp}`,
+          `/api/v1/strategies/options-selling/recommendations?default_premium=60&profit_threshold=0.80&send_notification=true&notification_priority=high&force_refresh=true&_t=${timestamp}`,
           { 
             headers: getAuthHeaders(),
             signal: liveController.signal,

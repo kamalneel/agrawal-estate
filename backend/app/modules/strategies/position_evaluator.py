@@ -453,12 +453,22 @@ class PositionEvaluator:
         return f"{position.symbol}_{position.strike_price}_{position.expiration_date.isoformat()}"
 
 
+# Module-level singleton for SmartScanFilter (persists across requests)
+_scan_filter_instance: Optional[SmartScanFilter] = None
+
+
 def get_position_evaluator(ta_service=None, option_fetcher=None) -> PositionEvaluator:
     """Factory function to get a PositionEvaluator instance."""
     return PositionEvaluator(ta_service, option_fetcher)
 
 
 def get_scan_filter() -> SmartScanFilter:
-    """Factory function to get a SmartScanFilter instance."""
-    return SmartScanFilter()
+    """
+    Factory function to get the singleton SmartScanFilter instance.
+    Persists across requests to prevent duplicate notifications within same day.
+    """
+    global _scan_filter_instance
+    if _scan_filter_instance is None:
+        _scan_filter_instance = SmartScanFilter()
+    return _scan_filter_instance
 

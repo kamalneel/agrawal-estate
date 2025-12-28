@@ -138,24 +138,39 @@ class OptionRollMonitor:
         self.profit_threshold = profit_threshold
         self.fetcher = OptionChainFetcher()
     
-    def check_position(self, position: OptionPosition) -> Optional[RollAlert]:
+    def check_position(self, position: OptionPosition, force_live_quote: bool = False) -> Optional[RollAlert]:
         """
         Check a single position for early roll opportunity.
         
         Returns RollAlert if threshold met, None otherwise.
         
+        Args:
+            position: The option position to check
+            force_live_quote: If True, always fetch live quote (for expiring/stale positions)
+        
         OPTIMIZATION: Uses stored current_premium from Robinhood paste when available,
         avoiding expensive API calls. Only falls back to API if no stored data.
+        
+        For positions expiring today or tomorrow, we recommend using force_live_quote=True
+        to get accurate current prices.
         """
         current_premium = None
+        days_to_expiry = (position.expiration_date - date.today()).days
+        
+        # For positions expiring soon (0-1 days), ALWAYS use live quote for accuracy
+        should_use_live = force_live_quote or days_to_expiry <= 1
         
         # PRIORITY 1: Use stored premium from Robinhood paste (NO API CALL!)
-        if position.current_premium is not None and position.current_premium > 0:
+        # Unless position is expiring very soon - then we need live data
+        if not should_use_live and position.current_premium is not None and position.current_premium > 0:
             current_premium = position.current_premium
             logger.debug(f"{position.symbol}: Using stored premium ${current_premium:.2f} from paste")
         
-        # PRIORITY 2: Fall back to API only if no stored data
+        # PRIORITY 2: Fetch live quote (for expiring positions or when no stored data)
         if current_premium is None:
+            if should_use_live:
+                logger.info(f"{position.symbol} ${position.strike_price}: Fetching LIVE Schwab quote (expires in {days_to_expiry} day(s))")
+            
             quote = self.fetcher.get_option_quote(
                 symbol=position.symbol,
                 strike_price=position.strike_price,
@@ -164,11 +179,17 @@ class OptionRollMonitor:
             )
             
             if not quote:
-                logger.warning(f"Could not get quote for {position.symbol} {position.strike_price} {position.option_type}")
-                return None
-            
-            # Use mid-price or bid for current value
-            current_premium = quote.bid if quote.bid > 0 else quote.last_price
+                # If live quote fails, fall back to stored data for expiring positions
+                if should_use_live and position.current_premium is not None and position.current_premium > 0:
+                    current_premium = position.current_premium
+                    logger.warning(f"{position.symbol} ${position.strike_price}: LIVE QUOTE FAILED! Falling back to stored premium ${current_premium:.2f}")
+                else:
+                    logger.warning(f"Could not get quote for {position.symbol} {position.strike_price} {position.option_type}")
+                    return None
+            else:
+                # Use bid for current value (what you'd pay to close)
+                current_premium = quote.bid if quote.bid > 0 else quote.last_price
+                logger.info(f"{position.symbol} ${position.strike_price}: LIVE Schwab quote - bid=${quote.bid:.2f}, ask=${quote.ask:.2f}, last=${quote.last_price:.2f}, using=${current_premium:.2f}")
         
         if current_premium is None or current_premium <= 0:
             logger.warning(f"Invalid current premium for {position.symbol}: {current_premium}")
@@ -316,11 +337,20 @@ def get_positions_from_db(db_session) -> List[OptionPosition]:
             original_premium = float(opt.original_premium)
         
         # Priority 2: Calculate from gain/loss % and current premium
+        # Robinhood shows gain_loss as: (original - current) / original * 100
+        # For gain_loss < 100: original = current / (1 - gain_loss / 100)
+        # For gain_loss >= 100: Use alternative formula: original = current * (1 + gain_loss / 100)
+        #   This handles cases where the option has decayed significantly (>100% gain)
         elif opt.premium_per_contract and opt.gain_loss_percent is not None:
             curr_premium = float(opt.premium_per_contract)
             gain_loss = float(opt.gain_loss_percent)
             
-            if gain_loss != 100:
+            if gain_loss >= 100:
+                # High profit case: Robinhood may be showing (original - current) / current * 100
+                # So: original = current * (1 + gain_loss / 100)
+                original_premium = curr_premium * (1 + gain_loss / 100)
+                logger.info(f"{opt.symbol}: HIGH PROFIT position - calculated original_premium=${original_premium:.2f} from current=${curr_premium:.2f}, gain/loss={gain_loss}%")
+            elif gain_loss != 100:
                 original_premium = curr_premium / (1 - gain_loss / 100)
                 logger.debug(f"{opt.symbol}: Calculated original_premium=${original_premium:.2f} from current=${curr_premium:.2f}, gain/loss={gain_loss}%")
         
@@ -329,8 +359,8 @@ def get_positions_from_db(db_session) -> List[OptionPosition]:
             original_premium = float(opt.premium_per_contract)
             logger.debug(f"{opt.symbol}: Using current premium as original (no gain/loss data)")
         
-        if original_premium is None:
-            logger.warning(f"Skipping {opt.symbol} ${opt.strike_price} - cannot determine original premium")
+        if original_premium is None or original_premium <= 0:
+            logger.warning(f"Skipping {opt.symbol} ${opt.strike_price} - invalid original premium: {original_premium}")
             continue
         
         account_name = opt.snapshot.account_name if opt.snapshot else None
@@ -399,6 +429,101 @@ def save_alerts_to_db(db_session, alerts: List[RollAlert]) -> int:
     
     db_session.commit()
     return count
+
+
+# =============================================================================
+# EARNINGS & DIVIDEND TRACKERS (V3 components)
+# =============================================================================
+
+class EarningsTracker:
+    """
+    Tracks earnings dates for stocks.
+    Used by V3 to skip earnings week for zero-cost rolls.
+    """
+    
+    def __init__(self):
+        pass
+    
+    def get_next_earnings_date(self, symbol: str) -> Optional[date]:
+        """
+        Get the next earnings date for a symbol.
+        
+        Args:
+            symbol: Stock ticker
+            
+        Returns:
+            Next earnings date or None if not available
+        """
+        try:
+            from app.modules.strategies.yahoo_cache import get_earnings_date
+            return get_earnings_date(symbol)
+        except Exception as e:
+            logger.debug(f"Could not get earnings date for {symbol}: {e}")
+            return None
+    
+    def get_earnings_schedule(self, symbol: str, weeks_ahead: int = 13) -> List[date]:
+        """
+        Get all earnings dates for next N weeks.
+        
+        Note: This is a simplified implementation that only returns
+        the next earnings date. For excessive earnings detection (V3 edge case),
+        this would need to query multiple future dates.
+        
+        Args:
+            symbol: Stock ticker
+            weeks_ahead: Number of weeks to look ahead
+            
+        Returns:
+            List of earnings dates (typically 0-1 dates)
+        """
+        next_date = self.get_next_earnings_date(symbol)
+        if next_date:
+            end_date = date.today() + timedelta(weeks=weeks_ahead)
+            if next_date <= end_date:
+                return [next_date]
+        return []
+
+
+class DividendTracker:
+    """
+    Tracks ex-dividend dates for stocks.
+    Used by V3 to skip ex-dividend week for zero-cost rolls.
+    """
+    
+    def __init__(self):
+        pass
+    
+    def get_next_ex_dividend_date(self, symbol: str) -> Optional[date]:
+        """
+        Get the next ex-dividend date for a symbol.
+        
+        Args:
+            symbol: Stock ticker
+            
+        Returns:
+            Next ex-dividend date or None if not available/no dividend
+        """
+        try:
+            # Try to get from yfinance
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            
+            # Get calendar info
+            calendar = ticker.calendar
+            if calendar is not None and not calendar.empty:
+                # Look for ex-dividend date
+                if 'Ex-Dividend Date' in calendar.index:
+                    ex_div = calendar.loc['Ex-Dividend Date']
+                    if hasattr(ex_div, 'date'):
+                        return ex_div.date()
+                    elif hasattr(ex_div, 'to_pydatetime'):
+                        return ex_div.to_pydatetime().date()
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Could not get ex-dividend date for {symbol}: {e}")
+            return None
 
 
 # For testing

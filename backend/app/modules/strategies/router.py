@@ -1908,6 +1908,7 @@ async def get_options_recommendations(
     send_notification: bool = Query(default=False, description="Send notification if recommendations found"),
     notification_priority: Optional[str] = Query(default="high", description="Minimum priority to notify (urgent, high, medium, low)"),
     strategy_filter: Optional[str] = Query(default=None, description="Filter by strategy type"),
+    force_refresh: bool = Query(default=False, description="Bypass cache and fetch fresh data from Schwab"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
@@ -1918,6 +1919,7 @@ async def get_options_recommendations(
     prioritized recommendations for actions you should take using enabled strategies.
     
     Set send_notification=true to automatically send notifications for new recommendations.
+    Set force_refresh=true to bypass the cache and fetch fresh live data from Schwab.
     """
     from app.modules.strategies.strategy_service import StrategyService
     import logging
@@ -1977,11 +1979,21 @@ async def get_options_recommendations(
             if symbol:
                 rec_dict["symbol"] = symbol
         
-        # Convert datetime to ISO string
+        # Convert datetime to ISO string with explicit UTC indicator
+        def to_utc_iso(dt):
+            if dt is None:
+                return None
+            iso = dt.isoformat()
+            # If timezone-aware, isoformat() already includes +00:00
+            # If naive (shouldn't happen, but safety), append Z
+            if dt.tzinfo is None and 'Z' not in iso and '+' not in iso:
+                return iso + 'Z'
+            return iso
+        
         if rec_dict.get("created_at"):
-            rec_dict["created_at"] = rec_dict["created_at"].isoformat()
+            rec_dict["created_at"] = to_utc_iso(rec_dict["created_at"])
         if rec_dict.get("expires_at"):
-            rec_dict["expires_at"] = rec_dict["expires_at"].isoformat()
+            rec_dict["expires_at"] = to_utc_iso(rec_dict["expires_at"])
         recommendations_data.append(rec_dict)
     
     # Send notifications if requested
@@ -2247,13 +2259,21 @@ async def test_strategy(
     recommendations = strategy.generate_recommendations(params)
     
     # Convert to dict
+    def to_utc_iso_single(dt):
+        if dt is None:
+            return None
+        iso = dt.isoformat()
+        if dt.tzinfo is None and 'Z' not in iso and '+' not in iso:
+            return iso + 'Z'
+        return iso
+    
     recommendations_data = []
     for rec in recommendations:
         rec_dict = rec.dict()
         if rec_dict.get("created_at"):
-            rec_dict["created_at"] = rec_dict["created_at"].isoformat()
+            rec_dict["created_at"] = to_utc_iso_single(rec_dict["created_at"])
         if rec_dict.get("expires_at"):
-            rec_dict["expires_at"] = rec_dict["expires_at"].isoformat()
+            rec_dict["expires_at"] = to_utc_iso_single(rec_dict["expires_at"])
         recommendations_data.append(rec_dict)
     
     return {
@@ -2485,6 +2505,17 @@ async def get_notification_history(
     
     # Convert to dict format
     history = []
+    # Helper to format naive datetime as UTC ISO string
+    def format_utc(dt):
+        """Format datetime as UTC ISO string with Z suffix for proper JS interpretation."""
+        if dt is None:
+            return None
+        # If naive, assume it's UTC and append Z
+        if dt.tzinfo is None:
+            return dt.isoformat() + 'Z'
+        # If already timezone-aware, convert to ISO
+        return dt.isoformat()
+    
     for rec in records:
         # Extract account_name from context_snapshot if not set in record
         account_name = rec.account_name
@@ -2515,13 +2546,13 @@ async def get_notification_history(
             "account_name": account_name,
             "status": rec.status,
             "context": rec.context_snapshot,
-            "created_at": rec.created_at.isoformat() if rec.created_at else None,
-            "expires_at": rec.expires_at.isoformat() if rec.expires_at else None,
-            "acknowledged_at": rec.acknowledged_at.isoformat() if rec.acknowledged_at else None,
-            "acted_at": rec.acted_at.isoformat() if rec.acted_at else None,
-            "dismissed_at": rec.dismissed_at.isoformat() if rec.dismissed_at else None,
+            "created_at": format_utc(rec.created_at),
+            "expires_at": format_utc(rec.expires_at),
+            "acknowledged_at": format_utc(rec.acknowledged_at),
+            "acted_at": format_utc(rec.acted_at),
+            "dismissed_at": format_utc(rec.dismissed_at),
             "notification_sent": rec.notification_sent,
-            "notification_sent_at": rec.notification_sent_at.isoformat() if rec.notification_sent_at else None,
+            "notification_sent_at": format_utc(rec.notification_sent_at),
         })
     
     return {

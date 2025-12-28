@@ -119,17 +119,27 @@ def cached_response(
     Note: When send_notification=True, cache is only bypassed if data is older than 
     force_refresh_threshold (default 15 minutes). This prevents API rate limiting while
     ensuring reasonably fresh data for notifications.
+    
+    Set force_refresh=True to completely bypass the cache and fetch fresh data.
     """
     def decorator(func: Callable):
         @wraps(func)
         async def wrapper(*args, **kwargs):
             # Generate cache key from function name and arguments
-            # Exclude 'db' and 'user' from cache key as they're request-specific
+            # Exclude 'db', 'user', and 'force_refresh' from cache key as they're request-specific
             cache_kwargs = {
                 k: v for k, v in kwargs.items() 
-                if k not in ('db', 'user')
+                if k not in ('db', 'user', 'force_refresh')
             }
             key = f"{key_prefix}{func.__name__}:{cache_key(*args, **cache_kwargs)}"
+            
+            # If force_refresh is True, bypass cache entirely
+            if kwargs.get('force_refresh', False):
+                logger.debug(f"Cache BYPASSED for {func.__name__} (force_refresh=True)")
+                result = await func(*args, **kwargs)
+                ttl = _get_cache_ttl_for_market_hours(base_ttl, extended_ttl)
+                set_cached(key, result, ttl)
+                return result
             
             # Special handling when send_notification is True
             if kwargs.get('send_notification', False):

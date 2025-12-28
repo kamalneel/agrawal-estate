@@ -43,8 +43,8 @@ def _load_algorithm_version() -> str:
     except Exception as e:
         logger.warning(f"Error reading .env file: {e}")
     
-    # Default to v2
-    return "v2"
+    # Default to V3 (unified position evaluator)
+    return "v3"
 
 ALGORITHM_VERSION = _load_algorithm_version()
 logger.info(f"Algorithm version: {ALGORITHM_VERSION}")
