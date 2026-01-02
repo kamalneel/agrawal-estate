@@ -24,6 +24,7 @@ from app.modules.real_estate.router import router as real_estate_router
 from app.modules.estate_planning.router import router as estate_planning_router
 from app.modules.reports.router import router as reports_router
 from app.modules.strategies.router import router as strategies_router
+from app.modules.strategies.learning_router import router as learning_router
 from app.modules.india_investments.router import router as india_investments_router
 from app.modules.india_investments.mf_research_router import router as mf_research_router
 from app.ingestion.router import router as ingestion_router
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(estate_planning_router, prefix="/api/v1/estate-planning", tags=["Estate Planning"])
     app.include_router(reports_router, prefix="/api/v1/reports", tags=["Reports"])
     app.include_router(strategies_router, prefix="/api/v1/strategies", tags=["Strategies"])
+    app.include_router(learning_router, prefix="/api/v1/strategies", tags=["Learning & RLHF"])
     app.include_router(india_investments_router, prefix="/api/v1/india-investments", tags=["India Investments"])
     app.include_router(mf_research_router, prefix="/api/v1/india-investments/mf-research", tags=["Mutual Fund Research"])
     app.include_router(ingestion_router, prefix="/api/v1/ingestion", tags=["Data Ingestion"])

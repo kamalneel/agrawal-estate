@@ -150,6 +150,57 @@ class RecommendationScheduler:
         # Market is closed, no action can be taken
         
         logger.info("V3 Schedule configured: 5 daily scans (6AM, 8AM, 12PM, 12:45PM, 8PM) weekdays only")
+        
+        # =================================================================
+        # RLHF LEARNING JOBS
+        # =================================================================
+        
+        # Daily Reconciliation: 9:00 PM PT (after market close)
+        # Matches today's recommendations to executions
+        self.scheduler.add_job(
+            self.run_daily_reconciliation,
+            trigger=CronTrigger(
+                hour=21,
+                minute=0,
+                day_of_week='mon-fri',
+                timezone=PT
+            ),
+            id='rlhf_daily_reconciliation',
+            name='RLHF: Daily Reconciliation (9:00 PM PT)',
+            replace_existing=True
+        )
+        
+        # Weekly Learning Summary: Saturday 9:00 AM PT
+        # Generates weekly analysis and patterns
+        self.scheduler.add_job(
+            self.run_weekly_learning_summary,
+            trigger=CronTrigger(
+                hour=9,
+                minute=0,
+                day_of_week='sat',
+                timezone=PT
+            ),
+            id='rlhf_weekly_summary',
+            name='RLHF: Weekly Learning Summary (Saturday 9:00 AM PT)',
+            replace_existing=True
+        )
+        
+        # Outcome Tracking: 10:00 PM PT daily
+        # Updates position outcomes for completed positions
+        self.scheduler.add_job(
+            self.run_outcome_tracking,
+            trigger=CronTrigger(
+                hour=22,
+                minute=0,
+                day_of_week='mon-fri',
+                timezone=PT
+            ),
+            id='rlhf_outcome_tracking',
+            name='RLHF: Outcome Tracking (10:00 PM PT)',
+            replace_existing=True
+        )
+        
+        logger.info("RLHF Learning jobs configured: daily reconciliation (9PM), weekly summary (Sat 9AM), outcome tracking (10PM)")
     
     def run_full_technical_analysis(self):
         """
@@ -494,6 +545,156 @@ class RecommendationScheduler:
             db.add(notification)
         
         db.commit()
+    
+    # =========================================================================
+    # RLHF LEARNING METHODS
+    # =========================================================================
+    
+    def run_daily_reconciliation(self):
+        """
+        Run daily reconciliation of recommendations to executions.
+        
+        Called at 9 PM PT after market close.
+        """
+        from datetime import date, timedelta
+        db: Session = SessionLocal()
+        try:
+            logger.info("Running daily RLHF reconciliation...")
+            
+            from app.modules.strategies.reconciliation_service import get_reconciliation_service
+            
+            service = get_reconciliation_service(db)
+            
+            # Reconcile today's activity
+            today = date.today()
+            result = service.reconcile_day(today)
+            
+            logger.info(f"Daily reconciliation complete: {result}")
+            
+            # Also check yesterday in case any were missed
+            yesterday = today - timedelta(days=1)
+            result_yesterday = service.reconcile_day(yesterday)
+            logger.info(f"Yesterday reconciliation complete: {result_yesterday}")
+            
+        except Exception as e:
+            logger.error(f"Error in daily reconciliation: {e}", exc_info=True)
+        finally:
+            db.close()
+    
+    def run_weekly_learning_summary(self):
+        """
+        Generate weekly learning summary.
+        
+        Called Saturday 9 AM PT.
+        Analyzes the past week's patterns and generates V4 candidates.
+        """
+        from datetime import date
+        db: Session = SessionLocal()
+        try:
+            logger.info("Generating weekly learning summary...")
+            
+            from app.modules.strategies.reconciliation_service import get_reconciliation_service
+            
+            service = get_reconciliation_service(db)
+            
+            # Get last week's ISO week number
+            today = date.today()
+            # Go back to get last week (since we're running on Saturday)
+            last_week = today - timedelta(days=7)
+            iso_cal = last_week.isocalendar()
+            
+            summary = service.generate_weekly_summary(iso_cal.year, iso_cal.week)
+            
+            logger.info(f"Weekly summary generated for {iso_cal.year}-W{iso_cal.week}")
+            
+            # Send notification if there are insights
+            if summary.patterns_observed or summary.v4_candidates:
+                self._send_weekly_learning_notification(summary)
+            
+        except Exception as e:
+            logger.error(f"Error in weekly learning summary: {e}", exc_info=True)
+        finally:
+            db.close()
+    
+    def run_outcome_tracking(self):
+        """
+        Track outcomes for completed positions.
+        
+        Called at 10 PM PT daily.
+        """
+        from datetime import date
+        db: Session = SessionLocal()
+        try:
+            logger.info("Running outcome tracking...")
+            
+            from app.modules.strategies.reconciliation_service import get_reconciliation_service
+            
+            service = get_reconciliation_service(db)
+            result = service.track_position_outcomes(date.today())
+            
+            logger.info(f"Outcome tracking complete: {result}")
+            
+        except Exception as e:
+            logger.error(f"Error in outcome tracking: {e}", exc_info=True)
+        finally:
+            db.close()
+    
+    def _send_weekly_learning_notification(self, summary):
+        """Send notification with weekly learning summary."""
+        try:
+            notification_service = get_notification_service()
+            
+            # Build notification message
+            msg_lines = [
+                f"📊 WEEKLY LEARNING SUMMARY ({summary.year}-W{summary.week_number})",
+                "",
+                f"RECOMMENDATIONS: {summary.total_recommendations}",
+                f"├─ ✅ Consent: {summary.consent_count}",
+                f"├─ ✏️ Modified: {summary.modify_count}",
+                f"├─ ❌ Rejected: {summary.reject_count}",
+                f"└─ 🆕 Independent: {summary.independent_count}",
+            ]
+            
+            if summary.actual_pnl is not None:
+                msg_lines.extend([
+                    "",
+                    f"P&L: ${float(summary.actual_pnl):,.2f}",
+                ])
+            
+            if summary.patterns_observed:
+                msg_lines.extend([
+                    "",
+                    f"PATTERNS DETECTED: {len(summary.patterns_observed)}",
+                ])
+                for p in summary.patterns_observed[:3]:
+                    msg_lines.append(f"• {p.get('description', 'Unknown pattern')}")
+            
+            if summary.v4_candidates:
+                msg_lines.extend([
+                    "",
+                    f"V4 CANDIDATES: {len(summary.v4_candidates)}",
+                ])
+                for c in summary.v4_candidates[:2]:
+                    msg_lines.append(f"• {c.get('description', 'Unknown change')}")
+            
+            msg_lines.extend([
+                "",
+                "Review in Learning tab for full details."
+            ])
+            
+            message = "\n".join(msg_lines)
+            
+            # Send via Telegram
+            notification_service.send_telegram_message(message)
+            
+            # Update summary to mark notification sent
+            summary.notification_sent = True
+            summary.notification_sent_at = datetime.utcnow()
+            
+            logger.info("Weekly learning notification sent")
+            
+        except Exception as e:
+            logger.error(f"Error sending weekly learning notification: {e}")
     
     def shutdown(self):
         """Shutdown the scheduler."""
