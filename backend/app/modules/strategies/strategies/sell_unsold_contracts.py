@@ -118,10 +118,14 @@ class SellUnsoldContractsStrategy(BaseStrategy):
             
             if key not in account_symbol_data:
                 # Count sold for this specific account
+                # Only count CALLS - puts don't require share backing (they're cash-secured)
                 account_sold = 0
                 if account_name in sold_by_account:
                     account_sold_opts = sold_by_account[account_name].get("by_symbol", {}).get(symbol, [])
-                    account_sold = sum(opt["contracts_sold"] for opt in account_sold_opts)
+                    account_sold = sum(
+                        opt["contracts_sold"] for opt in account_sold_opts
+                        if opt.get("option_type", "").lower() == "call"
+                    )
                 
                 account_symbol_data[key] = {
                     "symbol": symbol,

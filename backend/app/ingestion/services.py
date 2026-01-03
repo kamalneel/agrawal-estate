@@ -486,17 +486,12 @@ def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id:
             cross_account_existing.account_id = account_id_str
             db.flush()
             
-            # Also update holdings for this transaction
-            update_holding_from_transaction(
-                db=db,
-                account_id=account_id_str,
-                source=source,
-                symbol=symbol,
-                transaction_type=transaction_type,
-                quantity=quantity,
-                price_per_share=price_per_share,
-                transaction_date=transaction_date,
-            )
+            # NOTE: We intentionally DO NOT update holdings from transaction imports.
+            # Holdings should ONLY come from the Robinhood paste (copy-paste from web UI),
+            # which is the authoritative source for current positions.
+            # Transaction CSVs are for income/expense tracking, not position quantities.
+            # See: https://github.com/... (holdings duplication bug fix)
+            
             return "updated"
         return "skipped"
     
@@ -523,18 +518,12 @@ def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id:
         db.add(transaction)
         db.flush()  # Flush immediately to catch unique constraint violations
         
-        # UPDATE HOLDINGS based on this transaction
-        # This keeps holdings current throughout the month
-        update_holding_from_transaction(
-            db=db,
-            account_id=account_id_str,
-            source=source,
-            symbol=symbol,
-            transaction_type=transaction_type,
-            quantity=quantity,
-            price_per_share=price_per_share,
-            transaction_date=transaction_date,
-        )
+        # NOTE: We intentionally DO NOT update holdings from transaction imports.
+        # Holdings should ONLY come from the Robinhood paste (copy-paste from web UI),
+        # which is the authoritative source for current positions.
+        # Transaction CSVs are for income/expense tracking, not position quantities.
+        # This prevents duplicate holdings when account_id inference differs between
+        # paste and CSV import.
         
         return "created"
     except Exception as e:

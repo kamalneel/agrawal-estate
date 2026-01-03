@@ -1,0 +1,512 @@
+/* Plaid Integration Styles */
+
+.container {
+  padding: 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  color: #9CA3AF;
+}
+
+.loadingIcon {
+  animation: spin 1s linear infinite;
+  color: #10B981;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.headerContent {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.headerIcon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+}
+
+.title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #F9FAFB;
+  margin: 0;
+}
+
+.subtitle {
+  color: #9CA3AF;
+  margin: 0.25rem 0 0;
+  font-size: 0.95rem;
+}
+
+.headerActions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.connectButton {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.connectButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.connectButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.syncAllButton {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: rgba(59, 130, 246, 0.1);
+  color: #60A5FA;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.syncAllButton:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.syncAllButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Messages */
+.successMessage,
+.errorMessage {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  margin-bottom: 1.5rem;
+  font-weight: 500;
+}
+
+.successMessage {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34D399;
+}
+
+.errorMessage {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #F87171;
+}
+
+/* Main Content */
+.mainContent {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+/* Sections */
+.section {
+  background: rgba(31, 41, 55, 0.5);
+  border-radius: 16px;
+  padding: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #F9FAFB;
+  margin: 0 0 1rem;
+}
+
+.sectionTitle svg {
+  color: #10B981;
+}
+
+/* Empty State */
+.emptyState {
+  text-align: center;
+  padding: 3rem 2rem;
+  color: #9CA3AF;
+}
+
+.emptyState svg {
+  color: #4B5563;
+  margin-bottom: 1rem;
+}
+
+.emptyState h3 {
+  color: #F9FAFB;
+  margin: 0 0 0.5rem;
+}
+
+.emptyState p {
+  margin: 0 0 1.5rem;
+}
+
+/* Items List */
+.itemsList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.itemCard {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  background: rgba(17, 24, 39, 0.5);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.itemCard:hover {
+  background: rgba(17, 24, 39, 0.8);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.itemCard.selected {
+  border-color: #10B981;
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.itemInfo {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.institutionIcon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #374151 0%, #1F2937 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #10B981;
+}
+
+.itemInfo h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #F9FAFB;
+}
+
+.itemInfo p {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  color: #9CA3AF;
+}
+
+.itemMeta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.syncedTime {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8rem;
+  color: #6B7280;
+}
+
+.notSynced {
+  font-size: 0.8rem;
+  color: #F59E0B;
+}
+
+.chevron {
+  color: #4B5563;
+  transition: transform 0.2s ease;
+}
+
+.itemCard.selected .chevron {
+  transform: rotate(90deg);
+  color: #10B981;
+}
+
+/* Item Actions */
+.itemActions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.actionButton {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.875rem;
+  background: rgba(59, 130, 246, 0.1);
+  color: #60A5FA;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.actionButton:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.actionButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.actionButton.danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: #F87171;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.actionButton.danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+/* Accounts List */
+.accountsList {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.accountCard {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: rgba(17, 24, 39, 0.5);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.accountInfo {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.accountIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(16, 185, 129, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #10B981;
+}
+
+.accountInfo h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #F9FAFB;
+}
+
+.accountInfo p {
+  margin: 0.125rem 0 0;
+  font-size: 0.8rem;
+  color: #6B7280;
+  text-transform: capitalize;
+}
+
+.accountBalance {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #10B981;
+}
+
+/* Transactions */
+.emptyTransactions {
+  text-align: center;
+  padding: 2rem;
+  color: #6B7280;
+}
+
+.transactionsTable {
+  overflow-x: auto;
+}
+
+.transactionsTable table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.transactionsTable th,
+.transactionsTable td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.transactionsTable th {
+  color: #9CA3AF;
+  font-weight: 500;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.transactionsTable td {
+  color: #D1D5DB;
+  font-size: 0.9rem;
+}
+
+.transactionsTable tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ticker {
+  font-weight: 600;
+  color: #F9FAFB;
+}
+
+.description {
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optionBadge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.125rem 0.5rem;
+  background: rgba(139, 92, 246, 0.2);
+  color: #A78BFA;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.typeBadge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.typeBadge.buy {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34D399;
+}
+
+.typeBadge.sell {
+  background: rgba(239, 68, 68, 0.15);
+  color: #F87171;
+}
+
+.positive {
+  color: #34D399;
+}
+
+.negative {
+  color: #F87171;
+}
+
+/* Info Box */
+.infoBox {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  background: rgba(59, 130, 246, 0.05);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 12px;
+}
+
+.infoBox h3 {
+  margin: 0 0 1rem;
+  color: #60A5FA;
+  font-size: 1rem;
+}
+
+.infoBox ol {
+  margin: 0 0 1rem;
+  padding-left: 1.5rem;
+  color: #9CA3AF;
+}
+
+.infoBox li {
+  margin-bottom: 0.5rem;
+}
+
+.disclaimer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.85rem;
+  color: #6B7280;
+}
+
+.disclaimer svg {
+  flex-shrink: 0;
+}
+

@@ -248,7 +248,7 @@ async def update_match_reason(
     valid_codes = [
         'timing', 'premium_low', 'iv_low', 'earnings_concern',
         'gut_feeling', 'better_opportunity', 'risk_too_high',
-        'already_exposed', 'other'
+        'already_exposed', 'other', 'skipped'
     ]
     
     if reason_code not in valid_codes:
@@ -568,29 +568,38 @@ async def get_divergence_rate(
     """
     start_date = date.today() - timedelta(days=days)
     
-    matches = db.query(RecommendationExecutionMatch).filter(
-        RecommendationExecutionMatch.recommendation_date >= start_date,
-        RecommendationExecutionMatch.recommendation_id != None  # Has recommendation
+    # Get all matches in the period
+    all_matches = db.query(RecommendationExecutionMatch).filter(
+        RecommendationExecutionMatch.recommendation_date >= start_date
     ).all()
     
-    if not matches:
+    if not all_matches:
         return {"divergence_rate": 0, "sample_size": 0}
     
-    consent = sum(1 for m in matches if m.match_type == 'consent')
-    modify = sum(1 for m in matches if m.match_type == 'modify')
-    reject = sum(1 for m in matches if m.match_type == 'reject')
+    # Count each type
+    consent = sum(1 for m in all_matches if m.match_type == 'consent')
+    modify = sum(1 for m in all_matches if m.match_type == 'modify')
+    reject = sum(1 for m in all_matches if m.match_type == 'reject')
+    independent = sum(1 for m in all_matches if m.match_type == 'independent')
     
-    divergence = (modify + reject) / len(matches) * 100
+    # Total recommendations (excludes independent actions since those had no recommendation)
+    rec_matches = [m for m in all_matches if m.recommendation_id is not None]
+    total_with_rec = len(rec_matches)
+    
+    divergence = (modify + reject) / total_with_rec * 100 if total_with_rec > 0 else 0
+    consent_rate = consent / total_with_rec * 100 if total_with_rec > 0 else 0
     
     return {
         "period_days": days,
-        "total_recommendations": len(matches),
+        "total_recommendations": total_with_rec,
+        "total_matches": len(all_matches),  # Total including independent
         "consent": consent,
         "modify": modify,
         "reject": reject,
+        "independent": independent,
         "divergence_rate": round(divergence, 1),
-        "consent_rate": round(consent / len(matches) * 100, 1),
-        "by_week": _group_by_week(matches)
+        "consent_rate": round(consent_rate, 1),
+        "by_week": _group_by_week(all_matches)
     }
 
 

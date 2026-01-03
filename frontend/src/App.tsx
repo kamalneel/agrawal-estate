@@ -15,6 +15,8 @@ import OptionsSelling from './pages/OptionsSelling'
 import BuyBorrowDie from './pages/BuyBorrowDie'
 import RetirementDeductions from './pages/RetirementDeductions'
 import StrategyManagement from './pages/StrategyManagement'
+import LearningDashboard from './pages/LearningDashboard'
+import PlaidIntegration from './pages/PlaidIntegration'
 import Notifications from './pages/Notifications'
 import { DataIngestion } from './pages/DataIngestion'
 import { EstatePlanning } from './pages/EstatePlanning'
@@ -47,6 +49,8 @@ export default function App() {
         <Route path="/strategies/buy-borrow-die" element={<BuyBorrowDie />} />
         <Route path="/strategies/retirement-deductions" element={<RetirementDeductions />} />
         <Route path="/strategies/management" element={<StrategyManagement />} />
+        <Route path="/strategies/learning" element={<LearningDashboard />} />
+        <Route path="/integrations/plaid" element={<PlaidIntegration />} />
         
         {/* Legacy route redirect - keep for backwards compatibility */}
         <Route path="/tax-planning" element={<TaxPlanning />} />

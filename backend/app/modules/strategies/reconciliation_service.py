@@ -19,7 +19,7 @@ Design Philosophy:
 
 import logging
 from datetime import datetime, date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -134,10 +134,15 @@ class ReconciliationService:
         return summary
     
     def _get_recommendations_for_date(self, target_date: date) -> List[StrategyRecommendationRecord]:
-        """Get all recommendations that were sent on a specific date."""
+        """
+        Get all recommendations generated on a specific date.
+        
+        Note: We include ALL recommendations, not just those with notifications sent,
+        because users can see recommendations in the dashboard even without push notifications.
+        The RLHF system should learn from all visible recommendations.
+        """
         return self.db.query(StrategyRecommendationRecord).filter(
             func.date(StrategyRecommendationRecord.created_at) == target_date,
-            StrategyRecommendationRecord.notification_sent == True
         ).all()
     
     def _get_executions_for_date_range(
@@ -291,8 +296,8 @@ class ReconciliationService:
         rec_expiration = context.get('expiration') or context.get('recommended_expiration')
         rec_premium = context.get('premium') or context.get('expected_premium')
         
-        # Parse execution details from description/symbol
-        exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol)
+        # Parse execution details from description/symbol (description has full option details)
+        exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
         exec_premium = float(exec.amount) / (float(exec.quantity or 1) * 100) if exec.quantity else None
         
         # Compare strike
@@ -339,16 +344,20 @@ class ReconciliationService:
         
         return max(0, score), details
     
-    def _parse_option_from_symbol(self, symbol: str) -> Tuple[Optional[Decimal], Optional[date]]:
+    def _parse_option_from_symbol(self, symbol: str, description: str = None) -> Tuple[Optional[Decimal], Optional[date]]:
         """
-        Parse option details from symbol like "NVDA 01/10/2025 Put $130.00".
+        Parse option details from symbol/description like "NVDA 01/10/2025 Put $130.00".
+        
+        The description field typically has the full option details, so we check that first.
         
         Returns (strike, expiration_date).
         """
-        if not symbol:
+        # Check description first (more detailed), then fall back to symbol
+        text = description or symbol
+        if not text:
             return None, None
         
-        parts = symbol.split()
+        parts = text.split()
         strike = None
         expiration = None
         
@@ -360,13 +369,12 @@ class ReconciliationService:
                 except:
                     pass
             
-            # Look for date
-            if '/' in part and len(part) >= 8:
-                try:
-                    expiration = datetime.strptime(part, '%m/%d/%Y').date()
-                except:
+            # Look for date - try multiple formats
+            if '/' in part:
+                for fmt in ['%m/%d/%Y', '%Y/%m/%d', '%m/%d/%y', '%d/%m/%Y']:
                     try:
-                        expiration = datetime.strptime(part, '%Y/%m/%d').date()
+                        expiration = datetime.strptime(part, fmt).date()
+                        break
                     except:
                         pass
         
@@ -457,7 +465,65 @@ class ReconciliationService:
                 rec = match.recommendation
                 exec = match.execution
                 
-                # Build the match record
+                # Extract recommendation details from context or recommendation_id
+                rec_strike = None
+                rec_expiration = None
+                rec_premium = None
+                
+                if rec:
+                    context = rec.context_snapshot or {}
+                    # Check multiple key names since different recommendation types use different keys
+                    rec_strike = (
+                        context.get('strike') or 
+                        context.get('recommended_strike') or 
+                        context.get('target_strike') or
+                        context.get('new_strike')  # For roll recommendations
+                    )
+                    rec_expiration = (
+                        context.get('expiration') or 
+                        context.get('recommended_expiration') or 
+                        context.get('target_expiration') or
+                        context.get('expiration_date') or  # Common key in context
+                        context.get('new_expiration')  # For roll recommendations
+                    )
+                    rec_premium = (
+                        context.get('premium') or 
+                        context.get('expected_premium') or 
+                        context.get('target_premium') or
+                        context.get('potential_premium') or
+                        context.get('net_credit')  # For spread recommendations
+                    )
+                    
+                    # Try to parse from recommendation_id if not in context
+                    # Format: v3_roll_weekly_PLTR_207.5_Neels_Brokerage
+                    if not rec_strike and rec.recommendation_id:
+                        parts = rec.recommendation_id.split('_')
+                        if len(parts) >= 5:
+                            try:
+                                rec_strike = Decimal(parts[4])  # Strike is typically 5th element
+                            except (ValueError, InvalidOperation):
+                                pass
+                    
+                    # Convert rec_expiration to date if it's a string
+                    if rec_expiration and isinstance(rec_expiration, str):
+                        try:
+                            rec_expiration = datetime.strptime(rec_expiration, '%Y-%m-%d').date()
+                        except ValueError:
+                            try:
+                                rec_expiration = datetime.strptime(rec_expiration, '%m/%d/%Y').date()
+                            except ValueError:
+                                rec_expiration = None
+                
+                # Parse execution details from symbol (e.g., "PLTR 01/09/2026 Call $182.50")
+                exec_strike = None
+                exec_expiration = None
+                exec_account = None
+                
+                if exec:
+                    exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
+                    exec_account = exec.account_id  # Use account_id from transaction
+                
+                # Build the match record with all details
                 db_match = RecommendationExecutionMatch(
                     # Recommendation side
                     recommendation_id=rec.recommendation_id if rec else None,
@@ -467,6 +533,9 @@ class ReconciliationService:
                     recommendation_type=rec.recommendation_type if rec else None,
                     recommended_action=rec.action_type if rec else None,
                     recommended_symbol=rec.symbol if rec else None,
+                    recommended_strike=Decimal(str(rec_strike)) if rec_strike else None,
+                    recommended_expiration=rec_expiration if isinstance(rec_expiration, date) else None,
+                    recommended_premium=Decimal(str(rec_premium)) if rec_premium else None,
                     recommendation_priority=rec.priority if rec else None,
                     recommendation_context=rec.context_snapshot if rec else None,
                     
@@ -475,8 +544,11 @@ class ReconciliationService:
                     execution_date=exec.transaction_date if exec else None,
                     execution_action=exec.transaction_type if exec else None,
                     execution_symbol=exec.symbol if exec else None,
+                    execution_strike=exec_strike if exec_strike else None,
+                    execution_expiration=exec_expiration if exec_expiration else None,
                     execution_premium=Decimal(str(abs(float(exec.amount or 0)))) if exec else None,
                     execution_contracts=int(exec.quantity or 1) if exec else None,
+                    execution_account=exec_account if exec_account else None,
                     
                     # Match analysis
                     match_type=match.match_type.value,
@@ -511,19 +583,23 @@ class ReconciliationService:
         
         for exec in executions:
             try:
-                # Extract symbol from execution
-                symbol = exec.symbol.split()[0] if exec.symbol else None
+                # Parse execution details from description (has full option details)
+                exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
+                exec_account = exec.account_id
                 
                 db_match = RecommendationExecutionMatch(
                     recommendation_date=target_date,
                     
-                    # Execution side only
+                    # Execution side with full details
                     execution_id=exec.id,
                     execution_date=exec.transaction_date,
                     execution_action=exec.transaction_type,
                     execution_symbol=exec.symbol,
+                    execution_strike=exec_strike if exec_strike else None,
+                    execution_expiration=exec_expiration if exec_expiration else None,
                     execution_premium=Decimal(str(abs(float(exec.amount or 0)))),
                     execution_contracts=int(exec.quantity or 1),
+                    execution_account=exec_account if exec_account else None,
                     
                     # Mark as independent
                     match_type=MatchType.INDEPENDENT.value,

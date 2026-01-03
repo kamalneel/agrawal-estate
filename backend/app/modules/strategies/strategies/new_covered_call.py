@@ -97,11 +97,15 @@ class NewCoveredCallStrategy(BaseStrategy):
             options_count = int(qty // 100)
             
             # Count sold contracts for this symbol in this account
+            # Only count CALLS - puts don't require share backing (they're cash-secured)
             sold_count = 0
             if account_name in sold_by_account:
                 by_symbol = sold_by_account[account_name].get("by_symbol", {})
                 if symbol in by_symbol:
-                    sold_count = sum(opt["contracts_sold"] for opt in by_symbol[symbol])
+                    sold_count = sum(
+                        opt["contracts_sold"] for opt in by_symbol[symbol]
+                        if opt.get("option_type", "").lower() == "call"
+                    )
             
             uncovered = options_count - sold_count
             

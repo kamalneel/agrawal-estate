@@ -111,11 +111,14 @@ class DiversificationStrategy(BaseStrategy):
                     qty = float(qty) if qty else 0
                     options_count = int(qty // 100)
                     
-                    # Check sold
+                    # Check sold - only count CALLS (puts don't require share backing)
                     account_sold = 0
                     if account_name in sold_by_account:
                         account_sold_opts = sold_by_account[account_name].get("by_symbol", {}).get(symbol, [])
-                        account_sold = sum(opt["contracts_sold"] for opt in account_sold_opts)
+                        account_sold = sum(
+                            opt["contracts_sold"] for opt in account_sold_opts
+                            if opt.get("option_type", "").lower() == "call"
+                        )
                     
                     if options_count > account_sold:
                         if symbol not in alternative_symbols:

@@ -230,6 +230,7 @@ def get_sold_options_by_account(db: Session) -> Dict[str, Dict]:
             by_symbol[opt.symbol].append({
                 "id": opt.id,
                 "strike_price": float(opt.strike_price),
+                "option_type": opt.option_type,  # 'call' or 'put' - needed to filter covered calls vs cash-secured puts
                 "contracts_sold": opt.contracts_sold,
             })
             total_contracts += opt.contracts_sold
@@ -365,7 +366,11 @@ def calculate_unsold_options(
     for symbol, available in holdings_by_symbol.items():
         sold_count = 0
         if symbol in sold_options:
-            sold_count = sum(opt["contracts_sold"] for opt in sold_options[symbol])
+            # Only count CALLS - puts don't require share backing (they're cash-secured)
+            sold_count = sum(
+                opt["contracts_sold"] for opt in sold_options[symbol]
+                if opt.get("option_type", "").lower() == "call"
+            )
         
         unsold = max(0, available - sold_count)
         

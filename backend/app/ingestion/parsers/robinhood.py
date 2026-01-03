@@ -264,49 +264,39 @@ class RobinhoodParser(BaseParser):
         )
     
     def _parse_holdings(self, file_path: Path, account_id: str) -> ParseResult:
-        """Parse Robinhood holdings/portfolio CSV."""
-        records = []
-        warnings = []
-        errors = []
+        """
+        Parse Robinhood holdings/portfolio CSV.
         
-        with open(file_path, 'r', encoding='utf-8-sig') as f:
-            reader = csv.DictReader(f)
-            
-            for row_num, row in enumerate(reader, start=2):
-                try:
-                    symbol = (row.get("Symbol") or "").strip().upper()
-                    # Skip empty rows
-                    if not symbol:
-                        continue
-                        
-                    data = {
-                        "source": self.source_name,
-                        "account_id": account_id,  # Inferred from filename
-                        "symbol": symbol,
-                        "quantity": self._normalize_amount(row.get("Quantity") or ""),
-                        "cost_basis": self._normalize_amount(row.get("Average Cost") or ""),
-                        "market_value": self._normalize_amount(row.get("Market Value") or ""),
-                    }
-                    
-                    records.append(ParsedRecord(
-                        record_type=RecordType.HOLDING,
-                        data=data,
-                        source_row=row_num
-                    ))
-                except Exception as e:
-                    errors.append(f"Row {row_num}: {str(e)}")
+        NOTE: This method intentionally returns an EMPTY records list.
+        Robinhood holdings should ONLY come from the paste feature (copy-paste from web UI),
+        which is the authoritative and most frequently updated source for current positions.
+        
+        CSV position files are not used because:
+        1. The account_id inference from filename may differ from paste's account_id
+        2. This could create duplicate holdings rows that get aggregated incorrectly
+        3. Paste is more frequent and always reflects real-time positions
+        
+        The file is still "parsed" successfully so it doesn't error, but no holdings
+        records are created. Use the paste feature at /api/v1/ingestion/robinhood-paste/save
+        to update Robinhood holdings.
+        """
+        warnings = [
+            "Robinhood holdings CSV was skipped. Holdings should be updated via paste feature, "
+            "not CSV import. Use the 'Paste Robinhood Data' feature in the UI for holdings updates."
+        ]
         
         return ParseResult(
-            success=len(errors) == 0,
+            success=True,
             source_name=self.source_name,
             file_path=file_path,
-            records=records,
+            records=[],  # Intentionally empty - paste is source of truth
             warnings=warnings,
-            errors=errors,
+            errors=[],
             metadata={
                 "file_type": "holdings",
-                "record_count": len(records),
-                "account_id": account_id
+                "record_count": 0,
+                "account_id": account_id,
+                "skipped_reason": "Holdings should come from paste feature, not CSV"
             }
         )
 

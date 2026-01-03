@@ -1625,14 +1625,9 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
   const [selectedYear, setSelectedYear] = useState(2025)
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null) // null = Full Year
   
-  const currentYear = new Date().getFullYear()
-  
-  // Reset month when year changes (unless selecting current year)
+  // Handle year change - month selection is preserved across year changes
   const handleYearChange = (year: number) => {
     setSelectedYear(year)
-    if (year !== currentYear) {
-      setSelectedMonth(null)
-    }
   }
   
   // Get account-specific data
@@ -1679,7 +1674,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
   // Helper to filter by year and optionally month
   const filterByYearAndMonth = (data: MonthlyData[]) => {
     let filtered = data.filter(d => d.year === selectedYear)
-    if (selectedMonth !== null && selectedYear === currentYear) {
+    if (selectedMonth !== null) {
       filtered = filtered.filter(d => {
         const monthNum = parseInt(d.month.split('-')[1], 10)
         return monthNum === selectedMonth
@@ -1705,8 +1700,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
   const yearInterestMonths = filteredInterest.filter(d => d.value !== 0).length
   
   // Period label for display
-  const periodLabel = selectedMonth !== null && selectedYear === currentYear
-    ? `${new Date(currentYear, selectedMonth - 1).toLocaleString('default', { month: 'long' })} ${selectedYear}`
+  const periodLabel = selectedMonth !== null
+    ? `${new Date(selectedYear, selectedMonth - 1).toLocaleString('default', { month: 'long' })} ${selectedYear}`
     : `${selectedYear}`
   
   const owner = accountOptions?.owner || accountDividends?.owner || accountInterest?.owner || 'Unknown'
@@ -1756,8 +1751,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
         </div>
       )}
 
-      {/* Month Selector - only show for current year */}
-      {selectedYear === currentYear && (
+      {/* Month Selector - show for any selected year */}
+      {years.length > 0 && (
         <div className={styles.monthSelectorRow} style={{ marginBottom: 'var(--space-6)' }}>
           <button
             className={clsx(styles.monthPill, selectedMonth === null && styles.active)}
@@ -1765,13 +1760,13 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
           >
             Full Year
           </button>
-          {[12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map(month => (
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(month => (
             <button
               key={month}
               className={clsx(styles.monthPill, selectedMonth === month && styles.active)}
               onClick={() => setSelectedMonth(month)}
             >
-              {new Date(currentYear, month - 1).toLocaleString('default', { month: 'short' })}
+              {new Date(selectedYear, month - 1).toLocaleString('default', { month: 'short' })}
             </button>
           ))}
         </div>
@@ -2201,13 +2196,13 @@ export function Income() {
   const [mainSelectedYear, setMainSelectedYear] = useState<number | 'all'>(2025)
   const [mainSelectedMonth, setMainSelectedMonth] = useState<number | null>(null) // null = Full Year, 1-12 = specific month
 
-  // Current year for showing month selector
+  // Current year for reference
   const currentYear = new Date().getFullYear()
 
-  // Reset month when year changes (unless selecting current year)
+  // Reset month when switching to 'all' (full year view is always available for any specific year)
   const handleYearChange = (year: number | 'all') => {
     setMainSelectedYear(year)
-    if (year !== currentYear) {
+    if (year === 'all') {
       setMainSelectedMonth(null)
     }
   }
@@ -2299,7 +2294,7 @@ export function Income() {
     if (mainSelectedYear !== 'all') {
       filtered = filtered.filter(d => d.year === mainSelectedYear)
     }
-    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+    if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
       // d.month is a string like "2025-12", extract the month number
       filtered = filtered.filter(d => {
         const monthNum = parseInt(d.month.split('-')[1], 10)
@@ -2323,7 +2318,7 @@ export function Income() {
       : rentalData.properties.filter(p => p.year === mainSelectedYear)
     const yearlyTotal = filteredProperties.reduce((sum, p) => sum + p.net_income, 0)
     // If filtering by a specific month, prorate by dividing by 12
-    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+    if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
       return yearlyTotal / 12
     }
     return yearlyTotal
@@ -2342,7 +2337,7 @@ export function Income() {
       return total + (yearData?.gross || 0)
     }, 0)
     // If filtering by a specific month, prorate by dividing by 12
-    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+    if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
       return yearlyTotal / 12
     }
     return yearlyTotal
@@ -2466,8 +2461,8 @@ export function Income() {
       gross = yearData.gross
     }
     
-    // Prorate by month if a specific month is selected
-    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+    // Prorate by month if a specific month is selected (for any year, not just current)
+    if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
       net = net / 12
       gross = gross / 12
     }
@@ -2493,8 +2488,8 @@ export function Income() {
       gross = yearData.gross
     }
     
-    // Prorate by month if a specific month is selected
-    if (mainSelectedMonth !== null && mainSelectedYear === currentYear) {
+    // Prorate by month if a specific month is selected (for any year, not just current)
+    if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
       net = net / 12
       gross = gross / 12
     }
@@ -2698,8 +2693,8 @@ export function Income() {
           <div className={styles.heroLabel}>
             Total Income {mainSelectedYear === 'all' 
               ? '(All Time)' 
-              : mainSelectedMonth !== null && mainSelectedYear === currentYear
-                ? `(${new Date(currentYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
+              : mainSelectedMonth !== null
+                ? `(${new Date(mainSelectedYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
                 : `(${mainSelectedYear})`}
           </div>
           <div className={styles.heroValue}>
@@ -2763,8 +2758,8 @@ export function Income() {
             ))}
           </div>
 
-          {/* Month Selector - only show for current year */}
-          {mainSelectedYear === currentYear && (
+          {/* Month Selector - show for any selected year (not 'all') */}
+          {mainSelectedYear !== 'all' && (
             <div className={styles.monthSelectorRow}>
               <button
                 className={clsx(styles.monthPill, mainSelectedMonth === null && styles.active)}
@@ -2772,13 +2767,13 @@ export function Income() {
               >
                 Full Year
               </button>
-              {[12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map(month => (
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(month => (
                 <button
                   key={month}
                   className={clsx(styles.monthPill, mainSelectedMonth === month && styles.active)}
                   onClick={() => setMainSelectedMonth(month)}
                 >
-                  {new Date(currentYear, month - 1).toLocaleString('default', { month: 'short' })}
+                  {new Date(mainSelectedYear, month - 1).toLocaleString('default', { month: 'short' })}
                 </button>
               ))}
             </div>

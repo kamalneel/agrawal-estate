@@ -581,6 +581,283 @@
   transform: translateY(-1px);
 }
 
+/* Status Banner */
+.statusBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6);
+  border-radius: var(--radius-xl);
+  margin-bottom: var(--space-6);
+}
+
+.statusBanner.sustainable {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(16, 185, 129, 0.05) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.statusBanner.unsustainable {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(239, 68, 68, 0.05) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.statusIcon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sustainable .statusIcon {
+  background: var(--color-positive);
+  color: white;
+}
+
+.unsustainable .statusIcon {
+  background: var(--color-negative);
+  color: white;
+}
+
+.statusContent {
+  flex: 1;
+}
+
+.statusTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  margin: 0;
+}
+
+.sustainable .statusTitle {
+  color: var(--color-positive);
+}
+
+.unsustainable .statusTitle {
+  color: var(--color-negative);
+}
+
+.statusSubtitle {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin: var(--space-1) 0 0 0;
+}
+
+.statusMetric {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.statusMetricValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  display: block;
+}
+
+.sustainable .statusMetricValue {
+  color: var(--color-positive);
+}
+
+.unsustainable .statusMetricValue {
+  color: var(--color-negative);
+}
+
+.statusMetricLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Value Colors */
+.positive {
+  color: var(--color-positive) !important;
+}
+
+.negative {
+  color: var(--color-negative) !important;
+}
+
+/* Year Selector */
+.yearSelector {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.yearLabel {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  margin-right: var(--space-2);
+}
+
+.yearButton {
+  padding: var(--space-2) var(--space-4);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.yearButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--color-text-primary);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.yearButton.activeYear {
+  background: linear-gradient(135deg, var(--color-accent) 0%, #7C3AED 100%);
+  border-color: var(--color-accent);
+  color: white;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
+}
+
+/* Actuals Table */
+.tableContainer {
+  overflow-x: auto;
+  margin-top: var(--space-4);
+}
+
+.actualsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.actualsTable th,
+.actualsTable td {
+  padding: var(--space-3) var(--space-4);
+  text-align: right;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.actualsTable th {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: 0.05em;
+  background: var(--color-bg-tertiary);
+}
+
+.actualsTable th:first-child,
+.actualsTable td:first-child {
+  text-align: left;
+}
+
+.actualsTable td {
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+
+.actualsTable .activeRow {
+  background: rgba(139, 92, 246, 0.05);
+}
+
+.actualsTable .activeRow td {
+  color: var(--color-text-primary);
+}
+
+.actualsTable .positiveRow {
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.actualsTable .negativeRow {
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.actualsTable .spending {
+  color: var(--color-negative);
+  font-weight: var(--font-medium);
+}
+
+.actualsTable .income {
+  color: var(--color-positive);
+  font-weight: var(--font-medium);
+}
+
+.actualsTable .borrowed {
+  color: var(--color-accent);
+  font-weight: var(--font-medium);
+}
+
+.actualsTable .interest {
+  color: var(--color-warning);
+}
+
+.actualsTable .debt {
+  color: var(--color-negative);
+  font-weight: var(--font-semibold);
+}
+
+/* Rate Adjuster */
+.rateAdjuster {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.rateSlider {
+  flex: 1;
+  max-width: 300px;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--color-bg-tertiary);
+  border-radius: 3px;
+  outline: none;
+}
+
+.rateSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  background: var(--color-accent);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.rateSlider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+.refreshButton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.refreshButton:hover {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: white;
+}
+
 /* Responsive */
 @media (max-width: 1200px) {
   .summaryGrid {

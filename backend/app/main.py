@@ -27,6 +27,7 @@ from app.modules.strategies.router import router as strategies_router
 from app.modules.strategies.learning_router import router as learning_router
 from app.modules.india_investments.router import router as india_investments_router
 from app.modules.india_investments.mf_research_router import router as mf_research_router
+from app.modules.plaid.router import router as plaid_router
 from app.ingestion.router import router as ingestion_router
 from app.core.auth_router import router as auth_router
 
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(learning_router, prefix="/api/v1/strategies", tags=["Learning & RLHF"])
     app.include_router(india_investments_router, prefix="/api/v1/india-investments", tags=["India Investments"])
     app.include_router(mf_research_router, prefix="/api/v1/india-investments/mf-research", tags=["Mutual Fund Research"])
+    app.include_router(plaid_router, prefix="/api/v1", tags=["Plaid"])
     app.include_router(ingestion_router, prefix="/api/v1/ingestion", tags=["Data Ingestion"])
     
     @app.get("/", tags=["Health"])

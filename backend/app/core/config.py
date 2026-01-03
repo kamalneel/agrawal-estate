@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     TWILIO_WHATSAPP_FROM: Optional[str] = None
     WHATSAPP_TO: Optional[str] = None
     
+    # Plaid API Configuration
+    PLAID_CLIENT_ID: Optional[str] = None
+    PLAID_SECRET: Optional[str] = None
+    PLAID_ENV: str = "sandbox"  # sandbox, development, or production
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

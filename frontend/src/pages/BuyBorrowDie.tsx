@@ -10,6 +10,8 @@ import {
   Info,
   RefreshCw,
   Settings,
+  BarChart3,
+  Calendar,
 } from 'lucide-react';
 import {
   LineChart,
@@ -56,6 +58,47 @@ interface ProjectionData {
   };
 }
 
+interface MonthlyActual {
+  year: number;
+  month: number;
+  month_name: string;
+  spending: number;
+  income: number;
+  options_income: number;
+  interest_income: number;
+  salary_income: number;
+  net_cash_flow: number;
+  cumulative_net: number;
+  cumulative_spending: number;
+  cumulative_income: number;
+}
+
+interface ActualsData {
+  monthly_data: MonthlyActual[];
+  total_spending: number;
+  total_income: number;
+  total_options_income: number;
+  total_interest_income: number;
+  total_salary_income: number;
+  net_position: number;
+  monthly_salary: number;
+  year: number;
+  is_sustainable: boolean;
+  months_of_data: number;
+  annualized_spending: number;
+  annualized_income: number;
+  projected_annual_deficit: number;
+}
+
+interface YearSummary {
+  year: number;
+  total_income: number;
+  total_spending: number;
+  net_position: number;
+  cumulative_gap: number;
+  months_of_data: number;
+}
+
 const formatCurrency = (value: number) => {
   if (value >= 1000000) {
     return `$${(value / 1000000).toFixed(1)}M`;
@@ -76,9 +119,16 @@ const formatFullCurrency = (value: number) => {
 
 export default function BuyBorrowDie() {
   const [projection, setProjection] = useState<ProjectionData | null>(null);
+  const [actuals, setActuals] = useState<ActualsData | null>(null);
+  const [allYearsData, setAllYearsData] = useState<YearSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [actualsLoading, setActualsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'projection' | 'settings'>('projection');
+  const [activeTab, setActiveTab] = useState<'projection' | 'actuals' | 'settings'>('actuals');  // Default to Actuals
+
+  // Year selection for Actuals
+  const [selectedYear, setSelectedYear] = useState<number | 'all'>(2025); // Default to 2025, will update when years load
+  const [availableYears, setAvailableYears] = useState<number[]>([2025]); // Will be updated from API
 
   // Parameters
   const [monthlyBorrowing, setMonthlyBorrowing] = useState(20000);
@@ -87,7 +137,16 @@ export default function BuyBorrowDie() {
 
   useEffect(() => {
     fetchProjection();
+    fetchAvailableYears();
   }, []);
+
+  useEffect(() => {
+    if (selectedYear === 'all') {
+      fetchAllYearsData();
+    } else {
+      fetchActuals(selectedYear);
+    }
+  }, [selectedYear]);
 
   const fetchProjection = async () => {
     setLoading(true);
@@ -121,6 +180,69 @@ export default function BuyBorrowDie() {
       setError(err instanceof Error ? err.message : 'Failed to load projection');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchActuals = async (year: number) => {
+    setActualsLoading(true);
+    try {
+      const response = await fetch(`/api/v1/strategies/buy-borrow-die/actuals/${year}`, {
+        headers: getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setActuals(data);
+    } catch (err) {
+      console.error('Fetch actuals error:', err);
+    } finally {
+      setActualsLoading(false);
+    }
+  };
+
+  const fetchAvailableYears = async () => {
+    const currentYear = new Date().getFullYear();
+    try {
+      const response = await fetch(`/api/v1/strategies/buy-borrow-die/actuals/years`, {
+        headers: getAuthHeaders(),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const years = data.years || [currentYear];
+        setAvailableYears(years);
+        // If selected year is not in available years, select the first available
+        if (years.length > 0 && !years.includes(selectedYear as number)) {
+          setSelectedYear(years[0]);
+        }
+      }
+    } catch (err) {
+      console.error('Fetch available years error:', err);
+      // Default to current year if API fails
+      setAvailableYears([currentYear]);
+    }
+  };
+
+  const fetchAllYearsData = async () => {
+    setActualsLoading(true);
+    try {
+      const response = await fetch(`/api/v1/strategies/buy-borrow-die/actuals/all-years`, {
+        headers: getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setAllYearsData(data.yearly_summaries);
+    } catch (err) {
+      console.error('Fetch all years error:', err);
+    } finally {
+      setActualsLoading(false);
     }
   };
 
@@ -180,6 +302,12 @@ export default function BuyBorrowDie() {
           onClick={() => setActiveTab('projection')}
         >
           📊 Projection
+        </button>
+        <button
+          className={`${styles.tab} ${activeTab === 'actuals' ? styles.activeTab : ''}`}
+          onClick={() => setActiveTab('actuals')}
+        >
+          📈 Actuals
         </button>
         <button
           className={`${styles.tab} ${activeTab === 'settings' ? styles.activeTab : ''}`}
@@ -303,6 +431,250 @@ export default function BuyBorrowDie() {
                 </p>
               </div>
             </div>
+          </>
+        )}
+
+        {activeTab === 'actuals' && (
+          <>
+            {/* Year Selector */}
+            <div className={styles.yearSelector}>
+              <Calendar size={18} />
+              <span className={styles.yearLabel}>Year:</span>
+              {availableYears.map(year => (
+                <button
+                  key={year}
+                  className={`${styles.yearButton} ${selectedYear === year ? styles.activeYear : ''}`}
+                  onClick={() => setSelectedYear(year)}
+                >
+                  {year}
+                </button>
+              ))}
+              <button
+                className={`${styles.yearButton} ${selectedYear === 'all' ? styles.activeYear : ''}`}
+                onClick={() => setSelectedYear('all')}
+              >
+                All Years
+              </button>
+            </div>
+
+            {actualsLoading && (
+              <div className={styles.loadingState}>
+                <RefreshCw size={32} className={styles.spinner} />
+                <p>Loading actuals...</p>
+              </div>
+            )}
+
+            {/* All Years View */}
+            {!actualsLoading && selectedYear === 'all' && allYearsData && (
+              <>
+                <div className={styles.chartCard}>
+                  <h3 className={styles.chartTitle}>Year-over-Year Comparison</h3>
+                  <div className={styles.tableContainer}>
+                    <table className={styles.actualsTable}>
+                      <thead>
+                        <tr>
+                          <th>Year</th>
+                          <th>Income</th>
+                          <th>Spending</th>
+                          <th>Annual Gap</th>
+                          <th>Cumulative Gap</th>
+                          <th>Months</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {allYearsData.map((yearData) => (
+                          <tr 
+                            key={yearData.year} 
+                            className={yearData.net_position >= 0 ? styles.positiveRow : styles.negativeRow}
+                            onClick={() => setSelectedYear(yearData.year)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <td><strong>{yearData.year}</strong></td>
+                            <td className={styles.income}>{formatFullCurrency(yearData.total_income)}</td>
+                            <td className={styles.spending}>{formatFullCurrency(yearData.total_spending)}</td>
+                            <td className={yearData.net_position >= 0 ? styles.positive : styles.negative}>
+                              {yearData.net_position >= 0 ? '+' : ''}{formatFullCurrency(yearData.net_position)}
+                            </td>
+                            <td className={yearData.cumulative_gap >= 0 ? styles.positive : styles.negative}>
+                              {yearData.cumulative_gap >= 0 ? '+' : ''}{formatFullCurrency(yearData.cumulative_gap)}
+                            </td>
+                            <td>{yearData.months_of_data}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className={styles.chartSubtitle} style={{ marginTop: '12px' }}>
+                    Click on a year to see monthly breakdown
+                  </p>
+                </div>
+              </>
+            )}
+
+            {/* Single Year View */}
+            {!actualsLoading && selectedYear !== 'all' && actuals && (
+              <>
+                {/* Summary Cards */}
+                <div className={styles.summaryGrid}>
+                  <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Total Income (2025)</span>
+                    <span className={`${styles.summaryValue} ${styles.positive}`}>{formatFullCurrency(actuals.total_income)}</span>
+                    <span className={styles.summaryNote}>
+                      Salary+Rental: {formatFullCurrency(actuals.total_salary_income)} • Options: {formatFullCurrency(actuals.total_options_income)} • Interest+Div: {formatFullCurrency(actuals.total_interest_income)}
+                    </span>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Total Spending (2025)</span>
+                    <span className={`${styles.summaryValue} ${styles.negative}`}>{formatFullCurrency(actuals.total_spending)}</span>
+                    <span className={styles.summaryNote}>From brokerage account</span>
+                  </div>
+                  <div className={`${styles.summaryCard} ${actuals.projected_annual_deficit > 0 ? styles.danger : styles.success}`}>
+                    <span className={styles.summaryLabel}>Projected Annual Gap</span>
+                    <span className={styles.summaryValue}>
+                      {actuals.projected_annual_deficit > 0 ? '-' : '+'}{formatFullCurrency(Math.abs(actuals.projected_annual_deficit))}
+                    </span>
+                    <span className={styles.summaryNote}>
+                      {actuals.projected_annual_deficit > 0 ? 'Deficit if trend continues' : 'Surplus if trend continues'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Income vs Spending Bar Chart */}
+                <div className={styles.chartCard}>
+                  <h3 className={styles.chartTitle}>Income vs Spending by Month</h3>
+                  <p className={styles.chartSubtitle}>
+                    Green bars = Income • Red bars = Spending • Line = Cumulative Net Position
+                  </p>
+                  <div className={styles.chartContainer}>
+                    <ResponsiveContainer width="100%" height={400}>
+                      <ComposedChart 
+                        data={actuals.monthly_data.filter(m => m.income > 0 || m.spending > 0)} 
+                        margin={{ top: 20, right: 60, left: 20, bottom: 20 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                        <XAxis 
+                          dataKey="month_name" 
+                          stroke="#888" 
+                          tick={{ fontSize: 12 }}
+                          tickFormatter={(value) => value.substring(0, 3)}
+                        />
+                        <YAxis 
+                          yAxisId="left"
+                          stroke="#888" 
+                          tickFormatter={formatCurrency}
+                        />
+                        <YAxis 
+                          yAxisId="right"
+                          orientation="right"
+                          stroke="#3B82F6" 
+                          tickFormatter={formatCurrency}
+                        />
+                        <Tooltip 
+                          formatter={(value: number, name: string) => [formatFullCurrency(value), name]}
+                          labelFormatter={(label) => label}
+                          contentStyle={{
+                            backgroundColor: 'var(--color-bg-primary)',
+                            border: '1px solid var(--color-border)',
+                            borderRadius: '8px',
+                          }}
+                        />
+                        <Legend />
+                        <ReferenceLine yAxisId="right" y={0} stroke="#666" strokeDasharray="3 3" />
+                        <Area 
+                          yAxisId="left"
+                          type="monotone" 
+                          dataKey="income" 
+                          fill="rgba(16, 185, 129, 0.3)" 
+                          stroke="#10B981" 
+                          strokeWidth={2}
+                          name="Income"
+                        />
+                        <Area 
+                          yAxisId="left"
+                          type="monotone" 
+                          dataKey="spending" 
+                          fill="rgba(239, 68, 68, 0.3)" 
+                          stroke="#EF4444" 
+                          strokeWidth={2}
+                          name="Spending"
+                        />
+                        <Line 
+                          yAxisId="right"
+                          type="monotone" 
+                          dataKey="cumulative_net" 
+                          stroke="#3B82F6" 
+                          strokeWidth={3}
+                          dot={{ fill: '#3B82F6', strokeWidth: 2 }}
+                          name="Cumulative Net"
+                        />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Monthly Details Table */}
+                <div className={styles.chartCard}>
+                  <h3 className={styles.chartTitle}>Monthly Breakdown</h3>
+                  <div className={styles.tableContainer}>
+                    <table className={styles.actualsTable}>
+                      <thead>
+                        <tr>
+                          <th>Month</th>
+                          <th>Spending</th>
+                          <th>Options</th>
+                          <th>Salary+Rental</th>
+                          <th>Int+Div</th>
+                          <th>Total Income</th>
+                          <th>Net</th>
+                          <th>Cumulative</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {actuals.monthly_data.filter(m => m.income > 0 || m.spending > 0).map((month) => (
+                          <tr key={month.month} className={month.net_cash_flow >= 0 ? styles.positiveRow : styles.negativeRow}>
+                            <td>{month.month_name}</td>
+                            <td className={styles.spending}>
+                              {month.spending > 0 ? formatFullCurrency(month.spending) : '-'}
+                            </td>
+                            <td>{month.options_income > 0 ? formatFullCurrency(month.options_income) : '-'}</td>
+                            <td>{month.salary_income > 0 ? formatFullCurrency(month.salary_income) : '-'}</td>
+                            <td>{month.interest_income > 0 ? formatFullCurrency(month.interest_income) : '-'}</td>
+                            <td className={styles.income}>{formatFullCurrency(month.income)}</td>
+                            <td className={month.net_cash_flow >= 0 ? styles.positive : styles.negative}>
+                              {month.net_cash_flow >= 0 ? '+' : ''}{formatFullCurrency(month.net_cash_flow)}
+                            </td>
+                            <td className={month.cumulative_net >= 0 ? styles.positive : styles.negative}>
+                              {month.cumulative_net >= 0 ? '+' : ''}{formatFullCurrency(month.cumulative_net)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Data Source Info */}
+                <div className={styles.insightCard}>
+                  <Info size={24} className={styles.insightIcon} />
+                  <div>
+                    <h4 className={styles.insightTitle}>Data Sources</h4>
+                    <p className={styles.insightText}>
+                      <strong>Income:</strong> Options premiums, dividends, interest, salary, and rental income - 
+                      same data as the Income page.<br/>
+                      <strong>Spending:</strong> All money leaving brokerage accounts (withdrawals, credit card payments, transfers to spending).
+                    </p>
+                    <button 
+                      className={styles.refreshButton}
+                      onClick={fetchActuals}
+                      style={{ marginTop: '12px' }}
+                    >
+                      <RefreshCw size={16} />
+                      Refresh Data
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </>
         )}
 

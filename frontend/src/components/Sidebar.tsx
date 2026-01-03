@@ -21,6 +21,8 @@ import {
   Settings,
   Bell,
   Globe,
+  Brain,
+  Link2,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import styles from './Sidebar.module.css'
@@ -57,12 +59,14 @@ const strategiesGroup: NavGroup = {
     { path: '/strategies/buy-borrow-die', label: 'Buy/Borrow/Die', icon: <Banknote size={18} /> },
     { path: '/strategies/retirement-deductions', label: 'Retirement Deductions', icon: <PiggyBank size={18} /> },
     { path: '/strategies/management', label: 'Strategy Management', icon: <Settings size={18} /> },
+    { path: '/strategies/learning', label: 'RLHF Learning', icon: <Brain size={18} /> },
   ],
 }
 
 const bottomNavItems: NavItem[] = [
   { path: '/estate-planning', label: 'Estate Planning', icon: <ScrollText size={20} /> },
   { path: '/india-investments', label: 'India Investments', icon: <Globe size={20} /> },
+  { path: '/integrations/plaid', label: 'Plaid Integration', icon: <Link2 size={20} /> },
   { path: '/data-ingestion', label: 'Data Ingestion', icon: <Database size={20} /> },
 ]
 

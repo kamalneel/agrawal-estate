@@ -186,6 +186,372 @@ async def calculate_buy_borrow_die_projection(
     )
 
 
+class MonthlyActual(BaseModel):
+    """Actual spending and income data for a single month."""
+    year: int
+    month: int
+    month_name: str
+    spending: float
+    income: float
+    options_income: float
+    interest_income: float
+    salary_income: float
+    net_cash_flow: float  # income - spending
+    cumulative_net: float  # running total of net cash flow
+    cumulative_spending: float
+    cumulative_income: float
+
+
+class BuyBorrowDieActuals(BaseModel):
+    """Actual spending and income data for Buy/Borrow/Die strategy."""
+    monthly_data: List[MonthlyActual]
+    total_spending: float
+    total_income: float
+    total_options_income: float
+    total_interest_income: float
+    total_salary_income: float
+    net_position: float  # total_income - total_spending
+    monthly_salary: float
+    year: int
+    is_sustainable: bool
+    months_of_data: int
+    annualized_spending: float
+    annualized_income: float
+    projected_annual_deficit: float
+
+
+class YearSummary(BaseModel):
+    """Summary for a single year."""
+    year: int
+    total_income: float
+    total_spending: float
+    net_position: float
+    cumulative_gap: float
+    months_of_data: int
+
+
+class AllYearsResponse(BaseModel):
+    """Response for all years summary."""
+    yearly_summaries: List[YearSummary]
+    total_cumulative_gap: float
+
+
+class AvailableYearsResponse(BaseModel):
+    """Response for available years."""
+    years: List[int]
+
+
+@router.get("/buy-borrow-die/actuals/years")
+async def get_available_years(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Get list of years that have actuals data."""
+    import csv
+    import re
+    from pathlib import Path
+    from datetime import datetime
+    
+    years_with_data = set()
+    current_year = datetime.now().year
+    min_valid_year = 2020  # Reasonable minimum year
+    max_valid_year = current_year + 1  # Allow up to next year
+    
+    def is_valid_year(year: int) -> bool:
+        """Check if year is in valid range."""
+        return min_valid_year <= year <= max_valid_year
+    
+    # Check CSV files for available years
+    csv_dir = Path(__file__).parent.parent.parent.parent.parent / "data" / "processed" / "investments" / "robinhood"
+    
+    if csv_dir.exists():
+        for csv_file in csv_dir.glob("*.csv"):
+            # Extract year from filename - look for 4-digit patterns that are valid years
+            match = re.search(r'(\d{4})', csv_file.name)
+            if match:
+                year = int(match.group(1))
+                if is_valid_year(year):
+                    years_with_data.add(year)
+    
+    # Also check database for transaction years
+    try:
+        from app.modules.income import db_queries as income_db
+        options_monthly = income_db.get_options_income_monthly(db)
+        for month_key in options_monthly.keys():
+            year = int(month_key.split('-')[0])
+            if is_valid_year(year):
+                years_with_data.add(year)
+    except:
+        pass
+    
+    # Default to current year if no data found
+    if not years_with_data:
+        years_with_data.add(current_year)
+    
+    return AvailableYearsResponse(years=sorted(years_with_data, reverse=True))
+
+
+@router.get("/buy-borrow-die/actuals/all-years")
+async def get_all_years_actuals(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Get summary data for all years."""
+    from datetime import datetime
+    
+    # Get available years first
+    years_response = await get_available_years(db, user)
+    years = years_response.years
+    
+    yearly_summaries = []
+    cumulative_gap = 0.0
+    
+    for year in sorted(years):
+        try:
+            # Fetch actuals for each year
+            actuals = await get_buy_borrow_die_actuals(year=year, db=db, user=user)
+            
+            # Only include years that have some data (income or spending > 0)
+            if actuals.total_income > 0 or actuals.total_spending > 0:
+                cumulative_gap += actuals.net_position
+                
+                yearly_summaries.append(YearSummary(
+                    year=year,
+                    total_income=actuals.total_income,
+                    total_spending=actuals.total_spending,
+                    net_position=actuals.net_position,
+                    cumulative_gap=round(cumulative_gap, 2),
+                    months_of_data=actuals.months_of_data
+                ))
+        except Exception as e:
+            print(f"Error fetching data for year {year}: {e}")
+            continue
+    
+    return AllYearsResponse(
+        yearly_summaries=yearly_summaries,
+        total_cumulative_gap=round(cumulative_gap, 2)
+    )
+
+
+@router.get("/buy-borrow-die/actuals/{year}")
+async def get_buy_borrow_die_actuals(
+    year: int = 2025,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get actual spending and income data for Buy/Borrow/Die tracking.
+    
+    Uses the SAME database as the Income page for consistency.
+    Income includes: Options, Dividends, Interest from investment_transactions
+    Plus: Salary and Rental from their respective services
+    Spending: Tracked from brokerage withdrawals (ACH, Credit Card, Transfers)
+    """
+    import csv
+    import re
+    from pathlib import Path
+    from app.modules.income import db_queries as income_db
+    from app.modules.income.salary_service import get_salary_service
+    from app.modules.income.rental_service import get_rental_service
+    
+    month_names = [
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ]
+    
+    # =========================================================================
+    # INCOME: Get from database (same source as Income page)
+    # =========================================================================
+    
+    # Get options income by month from database
+    options_monthly = income_db.get_options_income_monthly(db, year=year)
+    
+    # Get dividend income by month from database
+    dividends_monthly = income_db.get_dividend_income_monthly(db, year=year)
+    
+    # Get interest income by month from database
+    interest_monthly = income_db.get_interest_income_monthly(db, year=year)
+    
+    # Get salary income from SalaryService (same as Income page)
+    # Use get_salary_by_year() for simpler data access
+    salary_monthly: Dict[int, float] = {}
+    annual_salary = 0.0
+    try:
+        salary_service = get_salary_service(db=db)
+        salary_by_year = salary_service.get_salary_by_year(year)
+        # Sum up gross for all employees for this year
+        annual_salary = salary_by_year.get('total_gross_income', 0.0)
+        
+        # Divide annual salary by 12 for even monthly distribution
+        if annual_salary > 0:
+            monthly_salary_amount = annual_salary / 12
+            for m in range(1, 13):
+                salary_monthly[m] = monthly_salary_amount
+    except Exception as e:
+        print(f"Error loading salary: {e}")
+    
+    # Get rental income from RentalService (same as Income page)
+    # Filter by year to get only rental income for the requested year
+    rental_monthly: Dict[int, float] = {}
+    try:
+        rental_service = get_rental_service()
+        rental_summary = rental_service.get_rental_summary()
+        # Sum net_income only for properties in the requested year
+        annual_rental = 0.0
+        for prop in rental_summary.get('properties', []):
+            if prop.get('year') == year:
+                annual_rental += prop.get('net_income', 0)
+        
+        if annual_rental > 0:
+            monthly_rental = annual_rental / 12
+            for m in range(1, 13):
+                rental_monthly[m] = monthly_rental
+    except Exception as e:
+        print(f"Error loading rental: {e}")
+    
+    # =========================================================================
+    # SPENDING: Get from brokerage transactions CSV
+    # =========================================================================
+    
+    monthly_spending: Dict[int, float] = {}
+    
+    # Try to find the best CSV file for spending data
+    robinhood_dir = Path(__file__).parent.parent.parent.parent.parent / "data" / "processed" / "investments" / "robinhood"
+    
+    # First try year-specific file, then try multi-year all-data file
+    csv_path = robinhood_dir / f"Neel Individual {year} complete.csv"
+    if not csv_path.exists():
+        csv_path = robinhood_dir / "Neel Individual 2021-2025 all data.csv"
+    
+    if csv_path.exists():
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                activity_date = row.get('Activity Date', '')
+                description = row.get('Description', '')
+                trans_code = row.get('Trans Code', '')
+                amount_str = row.get('Amount', '')
+                
+                if not activity_date or not amount_str:
+                    continue
+                
+                date_match = re.match(r'(\d+)/(\d+)/(\d+)', activity_date)
+                if not date_match:
+                    continue
+                    
+                month_num = int(date_match.group(1))
+                year_num = int(date_match.group(3))
+                
+                if year_num != year:
+                    continue
+                
+                amount_clean = amount_str.replace('$', '').replace(',', '').replace('(', '').replace(')', '')
+                try:
+                    amount = abs(float(amount_clean))
+                except ValueError:
+                    continue
+                
+                is_spending = False
+                if trans_code == 'ACH' and 'Withdrawal' in description:
+                    is_spending = True
+                elif trans_code == 'XENT_CC' and 'Credit Card balance payment' in description:
+                    is_spending = True
+                elif trans_code == 'XENT' and 'Brokerage to Spending' in description:
+                    is_spending = True
+                
+                if is_spending:
+                    monthly_spending[month_num] = monthly_spending.get(month_num, 0) + amount
+    
+    # =========================================================================
+    # BUILD MONTHLY DATA
+    # =========================================================================
+    
+    monthly_data = []
+    cumulative_spending = 0.0
+    cumulative_income = 0.0
+    cumulative_net = 0.0
+    months_with_data = 0
+    
+    total_options = 0.0
+    total_dividends = 0.0
+    total_interest = 0.0
+    total_salary = 0.0
+    total_rental = 0.0
+    
+    for month in range(1, 13):
+        month_key = f"{year}-{month:02d}"
+        
+        spending = monthly_spending.get(month, 0.0)
+        options_income = options_monthly.get(month_key, 0.0)
+        dividend_income = dividends_monthly.get(month_key, 0.0)
+        interest_income = interest_monthly.get(month_key, 0.0)
+        salary_income = salary_monthly.get(month, 0.0)
+        rental_income = rental_monthly.get(month, 0.0)
+        
+        # Track totals
+        total_options += options_income
+        total_dividends += dividend_income
+        total_interest += interest_income
+        total_salary += salary_income
+        total_rental += rental_income
+        
+        total_month_income = options_income + dividend_income + interest_income + salary_income + rental_income
+        
+        has_activity = spending > 0 or total_month_income > 0
+        if has_activity:
+            months_with_data += 1
+        
+        net_cash_flow = total_month_income - spending
+        
+        cumulative_spending += spending
+        cumulative_income += total_month_income
+        cumulative_net += net_cash_flow
+        
+        monthly_data.append(MonthlyActual(
+            year=year,
+            month=month,
+            month_name=month_names[month],
+            spending=round(spending, 2),
+            income=round(total_month_income, 2),
+            options_income=round(options_income, 2),
+            interest_income=round(interest_income + dividend_income, 2),  # Combine for display
+            salary_income=round(salary_income + rental_income, 2),  # Combine salary + rental
+            net_cash_flow=round(net_cash_flow, 2),
+            cumulative_net=round(cumulative_net, 2),
+            cumulative_spending=round(cumulative_spending, 2),
+            cumulative_income=round(cumulative_income, 2)
+        ))
+    
+    # Calculate totals
+    total_spending = cumulative_spending
+    total_income = total_options + total_dividends + total_interest + total_salary + total_rental
+    net_position = total_income - total_spending
+    
+    # Annualize based on months with data
+    annualized_spending = (total_spending / months_with_data * 12) if months_with_data > 0 else 0
+    annualized_income = (total_income / months_with_data * 12) if months_with_data > 0 else 0
+    projected_annual_deficit = annualized_spending - annualized_income
+    
+    is_sustainable = net_position >= 0
+    
+    return BuyBorrowDieActuals(
+        monthly_data=monthly_data,
+        total_spending=round(total_spending, 2),
+        total_income=round(total_income, 2),
+        total_options_income=round(total_options, 2),
+        total_interest_income=round(total_interest + total_dividends, 2),
+        total_salary_income=round(total_salary + total_rental, 2),
+        net_position=round(net_position, 2),
+        monthly_salary=total_salary / months_with_data if months_with_data > 0 else 0,
+        year=year,
+        is_sustainable=is_sustainable,
+        months_of_data=months_with_data,
+        annualized_spending=round(annualized_spending, 2),
+        annualized_income=round(annualized_income, 2),
+        projected_annual_deficit=round(projected_annual_deficit, 2)
+    )
+
+
 @router.post("/options-selling/income-projection")
 async def calculate_options_income(
     params: dict,
@@ -1143,8 +1509,12 @@ async def calculate_options_income_with_sold_status(
             account_symbol_options = holding["options"]
             
             # Get sold contracts for THIS account and THIS symbol
+            # ONLY count CALLS - puts don't require share backing (they're cash-secured)
             symbol_sold_opts = account_sold_by_symbol.get(symbol, [])
-            account_sold = sum(opt["contracts_sold"] for opt in symbol_sold_opts)
+            account_sold = sum(
+                opt["contracts_sold"] for opt in symbol_sold_opts 
+                if opt.get("option_type", "").lower() == "call"
+            )
             
             # Calculate unsold for this account's holding
             account_unsold = max(0, account_symbol_options - account_sold)
@@ -3189,4 +3559,174 @@ async def get_pending_telegram_updates(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to check Telegram status: {str(e)}")
+
+
+# ============================================================================
+# DEBUG: HOLDINGS DATA VERIFICATION
+# ============================================================================
+
+@router.get("/debug/holdings/{symbol}")
+async def debug_holdings_for_symbol(
+    symbol: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Debug endpoint to show raw database data for a specific symbol.
+    
+    Shows:
+    - All holdings rows for the symbol across all accounts
+    - All accounts that have this symbol
+    - Whether there are duplicates that could cause aggregation issues
+    
+    Use this to debug when Options Selling shows incorrect share counts.
+    """
+    from app.modules.investments.models import InvestmentHolding, InvestmentAccount
+    
+    symbol_upper = symbol.upper()
+    
+    # Get ALL holdings for this symbol (including from all sources)
+    holdings = db.query(InvestmentHolding).filter(
+        InvestmentHolding.symbol == symbol_upper
+    ).all()
+    
+    holdings_data = []
+    for h in holdings:
+        # Look up the account
+        account = db.query(InvestmentAccount).filter(
+            InvestmentAccount.account_id == h.account_id,
+            InvestmentAccount.source == h.source
+        ).first()
+        
+        holdings_data.append({
+            "holding_id": h.id if hasattr(h, 'id') else None,
+            "account_id": h.account_id,
+            "source": h.source,
+            "account_name": account.account_name if account else "NO ACCOUNT FOUND",
+            "account_type": account.account_type if account else None,
+            "symbol": h.symbol,
+            "quantity": float(h.quantity) if h.quantity else 0,
+            "current_price": float(h.current_price) if h.current_price else 0,
+            "market_value": float(h.market_value) if h.market_value else 0,
+            "last_updated": h.last_updated.isoformat() if h.last_updated else None,
+        })
+    
+    # Get all accounts that COULD have this symbol
+    all_accounts = db.query(InvestmentAccount).filter(
+        InvestmentAccount.account_type.in_(['brokerage', 'retirement', 'ira', 'roth_ira'])
+    ).all()
+    
+    accounts_data = []
+    for a in all_accounts:
+        accounts_data.append({
+            "account_id": a.account_id,
+            "account_name": a.account_name,
+            "source": a.source,
+            "account_type": a.account_type,
+        })
+    
+    # Check for potential duplicates (same account_name but different account_id)
+    account_names = {}
+    for h in holdings_data:
+        name = h["account_name"]
+        if name not in account_names:
+            account_names[name] = []
+        account_names[name].append(h)
+    
+    duplicates = {
+        name: rows for name, rows in account_names.items() 
+        if len(rows) > 1
+    }
+    
+    # Calculate total that would show in Options Selling (by account_name)
+    totals_by_account_name = {}
+    for h in holdings_data:
+        name = h["account_name"]
+        if name not in totals_by_account_name:
+            totals_by_account_name[name] = 0
+        totals_by_account_name[name] += h["quantity"]
+    
+    return {
+        "symbol": symbol_upper,
+        "total_holdings_rows": len(holdings),
+        "holdings": holdings_data,
+        "totals_by_account_name": totals_by_account_name,
+        "has_potential_duplicates": len(duplicates) > 0,
+        "potential_duplicates": duplicates,
+        "all_brokerage_accounts": accounts_data,
+        "diagnosis": (
+            f"ISSUE FOUND: Multiple holdings rows for same account_name are being aggregated. "
+            f"See 'potential_duplicates' for details."
+            if duplicates else
+            "No duplicate account_names found. Check if total matches expected."
+        )
+    }
+
+
+@router.get("/debug/accounts")
+async def debug_all_accounts(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Debug endpoint to show all investment accounts and their holdings summary.
+    
+    Use this to identify:
+    - Duplicate accounts with same name but different IDs
+    - Accounts that might need to be merged
+    """
+    from app.modules.investments.models import InvestmentHolding, InvestmentAccount
+    
+    accounts = db.query(InvestmentAccount).order_by(
+        InvestmentAccount.account_name,
+        InvestmentAccount.source
+    ).all()
+    
+    result = []
+    for a in accounts:
+        # Get holdings count and total for this account
+        holdings = db.query(InvestmentHolding).filter(
+            InvestmentHolding.account_id == a.account_id,
+            InvestmentHolding.source == a.source
+        ).all()
+        
+        total_value = sum(float(h.market_value or 0) for h in holdings)
+        symbols = [h.symbol for h in holdings if h.quantity and float(h.quantity) >= 100]
+        
+        result.append({
+            "account_id": a.account_id,
+            "account_name": a.account_name,
+            "source": a.source,
+            "account_type": a.account_type,
+            "holdings_count": len(holdings),
+            "total_value": round(total_value, 2),
+            "symbols_with_100_plus_shares": symbols,
+        })
+    
+    # Check for duplicate account_names
+    name_counts = {}
+    for a in result:
+        name = a["account_name"]
+        if name not in name_counts:
+            name_counts[name] = []
+        name_counts[name].append(a)
+    
+    duplicates = {
+        name: accounts for name, accounts in name_counts.items()
+        if len(accounts) > 1
+    }
+    
+    return {
+        "total_accounts": len(accounts),
+        "accounts": result,
+        "duplicate_account_names": duplicates,
+        "has_duplicates": len(duplicates) > 0,
+        "recommendation": (
+            "DUPLICATE ACCOUNTS FOUND! Accounts with the same name but different IDs "
+            "will have their holdings aggregated in the Options Selling page. "
+            "Use the /api/v1/ingestion/merge-accounts endpoint to consolidate them."
+            if duplicates else
+            "No duplicate account names found."
+        )
+    }
 
