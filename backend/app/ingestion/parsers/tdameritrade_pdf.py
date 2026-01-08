@@ -3,9 +3,12 @@ TD Ameritrade PDF Statement Parser.
 
 Parses TD Ameritrade monthly brokerage statements to extract:
 - Account information (owner, account number)
-- Current holdings/positions with cost basis
-- Portfolio value summary
-- Transactions (buys, sells, dividends)
+- Portfolio value summary (portfolio snapshots)
+- Transactions (buys, sells, dividends) - historical records
+
+NOTE: PDFs are historical documents. Holdings from PDFs are NOT extracted because
+they would overwrite current positions with old data. Current holdings should come 
+from CSV exports or paste data which represent the live/current state.
 """
 
 import re
@@ -109,36 +112,20 @@ class TDAmeritradePDFParser(BaseParser):
                 # Extract portfolio value
                 portfolio_value = self._extract_portfolio_value(full_text)
                 
-                # Extract holdings from Account Positions section
+                # Extract holdings ONLY to calculate portfolio value if not found directly
+                # We do NOT create HOLDING records from PDFs - they're historical and would
+                # overwrite current positions with old data
                 holdings = self._extract_holdings(full_text)
                 
+                # Calculate portfolio value from holdings if not found
+                if not portfolio_value and holdings:
+                    portfolio_value = sum(h.get("market_value", 0) or 0 for h in holdings)
+                
                 # Extract transactions from Account Activity section
+                # Transactions are historical records that don't overwrite current state
                 transactions = self._extract_transactions(full_text)
                 
-                # Create holding records
-                for holding in holdings:
-                    record_data = {
-                        "source": "tdameritrade",
-                        "account_id": account_id,
-                        "owner": owner,
-                        "account_type": account_type,
-                        "symbol": holding["symbol"],
-                        "quantity": holding["quantity"],
-                        "description": holding.get("description"),
-                        "market_value": holding.get("market_value"),
-                        "current_price": holding.get("price"),
-                        "cost_basis": holding.get("cost_basis"),
-                        "unrealized_gain": holding.get("unrealized_gain"),
-                        "statement_date": statement_date,
-                    }
-                    
-                    records.append(ParsedRecord(
-                        record_type=RecordType.HOLDING,
-                        data=record_data,
-                        source_row=0
-                    ))
-                
-                # Create transaction records
+                # Create transaction records (historical, additive - these are OK from PDFs)
                 for txn in transactions:
                     record_data = {
                         "source": "tdameritrade",
@@ -177,11 +164,11 @@ class TDAmeritradePDFParser(BaseParser):
                     metadata["statement_date"] = statement_date.isoformat() if statement_date else None
                     metadata["portfolio_value"] = portfolio_value
                 
-                metadata["holdings_count"] = len(holdings)
+                metadata["snapshots_count"] = 1 if (statement_date and portfolio_value) else 0
                 metadata["transactions_count"] = len(transactions)
                 
-                if not holdings and not transactions:
-                    warnings.append("No holdings or transactions found in PDF.")
+                if not records:
+                    warnings.append("No portfolio snapshot or transactions found in PDF.")
                 
         except ImportError:
             errors.append("pdfplumber library not installed.")

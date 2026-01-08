@@ -1,6 +1,6 @@
 """
 Stock price service for fetching historical prices and calculating changes.
-Uses yfinance and direct Yahoo Finance API for real market data.
+Uses Schwab API as primary source, yfinance/Yahoo Finance API as fallback.
 """
 
 import yfinance as yf
@@ -13,6 +13,61 @@ import time
 import pytz
 
 logger = logging.getLogger(__name__)
+
+
+def get_prices_schwab_first(symbols: List[str]) -> Dict[str, dict]:
+    """
+    Get current prices for symbols, using Schwab as primary source.
+    Falls back to Yahoo Finance if Schwab fails.
+    
+    Returns dict with symbol -> {"current_price": float, "source": str}
+    """
+    results = {}
+    symbols_needing_fallback = []
+    
+    if not symbols:
+        return results
+    
+    # Try Schwab first (batch request for efficiency)
+    try:
+        from app.modules.strategies.schwab_service import get_stock_quotes_batch_schwab, is_schwab_configured
+        
+        if is_schwab_configured():
+            logger.info(f"Fetching prices from Schwab for {len(symbols)} symbols...")
+            quotes = get_stock_quotes_batch_schwab(symbols)
+            
+            for symbol in symbols:
+                quote = quotes.get(symbol)
+                if quote and quote.get("lastPrice"):
+                    results[symbol] = {
+                        "current_price": round(float(quote["lastPrice"]), 2),
+                        "source": "schwab"
+                    }
+                    logger.debug(f"Got price for {symbol} from Schwab: ${quote['lastPrice']}")
+                else:
+                    symbols_needing_fallback.append(symbol)
+        else:
+            logger.warning("Schwab not configured, using Yahoo for all symbols")
+            symbols_needing_fallback = symbols
+    except ImportError:
+        logger.warning("Schwab service not available, using Yahoo for all symbols")
+        symbols_needing_fallback = symbols
+    except Exception as e:
+        logger.warning(f"Schwab service error: {e}, falling back to Yahoo")
+        symbols_needing_fallback = [s for s in symbols if s not in results]
+    
+    # Fall back to Yahoo for any remaining symbols
+    if symbols_needing_fallback:
+        logger.info(f"Falling back to Yahoo for {len(symbols_needing_fallback)} symbols")
+        yahoo_prices = get_live_prices_fast(symbols_needing_fallback)
+        for symbol, price in yahoo_prices.items():
+            if price and symbol not in results:
+                results[symbol] = {
+                    "current_price": round(float(price), 2),
+                    "source": "yahoo"
+                }
+    
+    return results
 
 # Cache for live prices (symbol -> (price, timestamp))
 _price_cache: Dict[str, Tuple[float, datetime]] = {}
@@ -423,10 +478,15 @@ def update_holdings_with_live_prices(db) -> Dict[str, any]:
         if not symbols:
             return stats
         
-        # Fetch current prices from Yahoo Finance
+        # Fetch current prices - Schwab first, then Yahoo fallback
         logger.info(f"Fetching prices for {len(symbols)} symbols: {symbols}")
-        price_data = get_price_changes(symbols)
+        price_data = get_prices_schwab_first(symbols)
         stats["symbols_fetched"] = len(price_data)
+        
+        # Track sources
+        schwab_count = sum(1 for p in price_data.values() if p.get("source") == "schwab")
+        yahoo_count = sum(1 for p in price_data.values() if p.get("source") == "yahoo")
+        logger.info(f"Price sources: Schwab={schwab_count}, Yahoo={yahoo_count}")
         
         # Update each holding
         for holding in holdings:

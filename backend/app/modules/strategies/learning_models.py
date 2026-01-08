@@ -106,6 +106,10 @@ class RecommendationExecutionMatch(Base):
     user_reason_text = Column(Text, nullable=True)
     feedback_id = Column(Integer, ForeignKey('recommendation_feedback.id'), nullable=True)
     
+    # ===== REVIEW STATUS =====
+    # Tracks if user has seen/acknowledged this match (for feed-like UX)
+    reviewed_at = Column(DateTime, nullable=True)  # When user reviewed/acknowledged
+    
     # ===== METADATA =====
     week_number = Column(Integer, nullable=True)  # ISO week number for grouping
     year = Column(Integer, nullable=True)

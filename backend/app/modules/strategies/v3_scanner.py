@@ -104,7 +104,8 @@ def scan_6am(positions: List[Any], db=None) -> List[Dict[str, Any]]:
             result = evaluator.evaluate(position)
             
             # Save morning state for 8 AM comparison
-            _morning_state[_get_position_id(position)] = _capture_state(position, evaluator)
+            position_id = _get_position_id(position)
+            _morning_state[position_id] = _capture_state(position, evaluator)
             
             # Filter and add recommendation
             if result:
@@ -113,6 +114,35 @@ def scan_6am(positions: List[Any], db=None) -> List[Dict[str, Any]]:
                     logger.debug(f"6AM: {result.symbol} -> {result.action}")
                 else:
                     logger.debug(f"6AM: {result.symbol} filtered (duplicate)")
+            
+            # Check for ex-dividend assignment risk (calls with ex-div before expiration)
+            option_type = getattr(position, 'option_type', '').lower()
+            if option_type == 'call':
+                exdiv_date = _has_exdiv_before_expiration(position.symbol, position.expiration_date)
+                if exdiv_date:
+                    days_to_exdiv = (exdiv_date - date.today()).days
+                    exdiv_rec = {
+                        'action': 'EXDIV_ASSIGNMENT_RISK',
+                        'type': 'EXDIV_ASSIGNMENT_RISK',
+                        'symbol': position.symbol,
+                        'priority': 'medium' if days_to_exdiv > 3 else 'high',
+                        'message': (
+                            f'Ex-dividend on {exdiv_date.strftime("%b %d")} ({days_to_exdiv}d away) - '
+                            f'ITM calls may be assigned early to capture dividend.'
+                        ),
+                        'details': {
+                            'strike': position.strike_price,
+                            'expiration': position.expiration_date.isoformat(),
+                            'exdiv_date': exdiv_date.isoformat(),
+                            'days_to_exdiv': days_to_exdiv,
+                        }
+                    }
+                    if scan_filter.should_send(position_id + '_exdiv_risk', exdiv_rec):
+                        recommendations.append(exdiv_rec)
+                        logger.info(
+                            f"6AM EXDIV RISK: {position.symbol} ${position.strike_price} - "
+                            f"ex-div {exdiv_date} before exp {position.expiration_date}"
+                        )
                     
         except Exception as e:
             logger.error(f"6AM: Error evaluating {position.symbol}: {e}")
@@ -287,6 +317,43 @@ def scan_1245pm(positions: List[Any]) -> List[Dict[str, Any]]:
                         record_assignment_from_position(position)
                     continue  # Skip normal expiry handling
                 
+                # Check if this is Triple Witching Day
+                is_triple_witching = _is_triple_witching_today()
+                
+                if is_triple_witching:
+                    # Get Triple Witching specific analysis
+                    try:
+                        current_price = evaluator.ta_service.get_technical_indicators(position.symbol).current_price
+                        tw_analysis = _get_triple_witching_analysis(position, current_price)
+                        if tw_analysis:
+                            rec = {
+                                'action': tw_analysis.action,
+                                'type': 'TRIPLE_WITCHING_EXPIRY',
+                                'symbol': position.symbol,
+                                'priority': tw_analysis.priority,
+                                'message': tw_analysis.message,
+                                'details': {
+                                    'strike': position.strike_price,
+                                    'option_type': position.option_type,
+                                    'is_itm': tw_analysis.is_itm,
+                                    'itm_otm_pct': tw_analysis.itm_otm_pct,
+                                    'timing': tw_analysis.timing,
+                                    'rationale': tw_analysis.rationale,
+                                    'avoid_windows': tw_analysis.avoid_windows,
+                                    'alternative_action': tw_analysis.alternative_action,
+                                }
+                            }
+                            
+                            if scan_filter.should_send(position_id + '_tw', rec):
+                                urgent_items.append(rec)
+                                logger.warning(
+                                    f"12:45PM TRIPLE WITCHING: {position.symbol} ${position.strike_price} - "
+                                    f"{tw_analysis.action}"
+                                )
+                            continue
+                    except Exception as e:
+                        logger.error(f"12:45PM: Error getting TW analysis for {position.symbol}: {e}")
+                
                 # Normal expiring position handling
                 rec = {
                     'action': 'EXPIRES_TODAY',
@@ -389,9 +456,66 @@ def scan_8pm(positions: List[Any]) -> List[Dict[str, Any]]:
                 
                 if scan_filter.should_send(position_id + '_earnings', rec):
                     tomorrow_events.append(rec)
+            
+            # Check for ex-dividend tomorrow (early assignment risk for ITM calls)
+            if _has_exdiv_tomorrow(position.symbol):
+                rec = {
+                    'action': 'EXDIV_TOMORROW',
+                    'type': 'EXDIV_TOMORROW',
+                    'symbol': position.symbol,
+                    'priority': 'medium',
+                    'message': (
+                        f'Ex-dividend date tomorrow - ITM calls may be assigned early '
+                        f'to capture dividend. Consider rolling if near/ITM.'
+                    ),
+                    'details': {
+                        'strike': position.strike_price,
+                        'option_type': position.option_type,
+                        'expiration': position.expiration_date.isoformat(),
+                    }
+                }
+                
+                if scan_filter.should_send(position_id + '_exdiv', rec):
+                    tomorrow_events.append(rec)
+                    logger.info(
+                        f"8PM EXDIV ALERT: {position.symbol} goes ex-dividend tomorrow - "
+                        f"early assignment risk for ITM calls"
+                    )
                     
         except Exception as e:
             logger.error(f"8PM: Error checking {position.symbol}: {e}")
+    
+    # Check for Triple Witching tomorrow
+    if _is_triple_witching_tomorrow():
+        tomorrow = date.today() + timedelta(days=1)
+        expiring_tomorrow = [p for p in positions if p.expiration_date == tomorrow]
+        
+        if expiring_tomorrow:
+            rec = {
+                'action': 'TRIPLE_WITCHING_TOMORROW',
+                'type': 'TRIPLE_WITCHING_TOMORROW',
+                'symbol': None,
+                'priority': 'high',
+                'message': (
+                    f'⚠️ TRIPLE WITCHING TOMORROW - {len(expiring_tomorrow)} positions expiring. '
+                    f'Prepare action plan tonight. Expect 2-3x normal spreads, volatile pricing.'
+                ),
+                'details': {
+                    'expiring_count': len(expiring_tomorrow),
+                    'positions': [
+                        {'symbol': p.symbol, 'strike': p.strike_price, 'option_type': p.option_type}
+                        for p in expiring_tomorrow[:10]
+                    ],
+                    'best_trading_window': '10:30 AM - 2:30 PM ET',
+                    'avoid_windows': ['6:30-7:00 AM ET (opening)', '3:00-4:00 PM ET (final hour)'],
+                }
+            }
+            
+            if scan_filter.should_send('triple_witching_eve', rec):
+                tomorrow_events.append(rec)
+                logger.info(
+                    f"8PM TRIPLE WITCHING EVE: {len(expiring_tomorrow)} positions expiring tomorrow"
+                )
     
     logger.info(f"V3 8PM Scan: Found {len(tomorrow_events)} tomorrow events")
     return tomorrow_events
@@ -596,4 +720,87 @@ def _has_earnings_tomorrow(symbol: str) -> bool:
         return earnings_date == tomorrow if earnings_date else False
     except Exception:
         return False
+
+
+def _has_exdiv_tomorrow(symbol: str) -> bool:
+    """Check if stock goes ex-dividend tomorrow."""
+    try:
+        from app.modules.strategies.option_monitor import DividendTracker
+        tracker = DividendTracker()
+        exdiv_date = tracker.get_next_ex_dividend_date(symbol)
+        tomorrow = date.today() + timedelta(days=1)
+        return exdiv_date == tomorrow if exdiv_date else False
+    except Exception:
+        return False
+
+
+def _get_exdiv_date(symbol: str) -> Optional[date]:
+    """Get the next ex-dividend date for a symbol."""
+    try:
+        from app.modules.strategies.option_monitor import DividendTracker
+        tracker = DividendTracker()
+        return tracker.get_next_ex_dividend_date(symbol)
+    except Exception:
+        return None
+
+
+def _has_exdiv_before_expiration(symbol: str, expiration_date: date) -> Optional[date]:
+    """
+    Check if ex-dividend date falls before option expiration within the alert window.
+    
+    This is important because ITM calls may be assigned early before ex-div
+    to capture the dividend.
+    
+    Returns the ex-div date if:
+      1. It falls before expiration
+      2. It's within the configured alert window (default 7 days)
+    
+    Returns None otherwise.
+    """
+    try:
+        # Get config for alert window
+        from app.modules.strategies.algorithm_config import get_config
+        config = get_config("v3")
+        days_before_alert = config.get("dividend", {}).get("days_before_exdiv_alert", 7)
+        
+        exdiv_date = _get_exdiv_date(symbol)
+        if exdiv_date and date.today() <= exdiv_date < expiration_date:
+            days_to_exdiv = (exdiv_date - date.today()).days
+            # Only alert if within the configured window
+            if days_to_exdiv <= days_before_alert:
+                return exdiv_date
+        return None
+    except Exception:
+        return None
+
+
+def _is_triple_witching_tomorrow() -> bool:
+    """Check if tomorrow is Triple Witching Day."""
+    try:
+        from app.modules.strategies.strategies.triple_witching_handler import is_triple_witching
+        tomorrow = date.today() + timedelta(days=1)
+        return is_triple_witching(tomorrow)
+    except Exception:
+        return False
+
+
+def _is_triple_witching_today() -> bool:
+    """Check if today is Triple Witching Day."""
+    try:
+        from app.modules.strategies.strategies.triple_witching_handler import is_triple_witching
+        return is_triple_witching(date.today())
+    except Exception:
+        return False
+
+
+def _get_triple_witching_analysis(position, current_price: float):
+    """Get Triple Witching analysis for a position expiring today."""
+    try:
+        from app.modules.strategies.strategies.triple_witching_handler import (
+            analyze_expiring_position_on_triple_witching
+        )
+        return analyze_expiring_position_on_triple_witching(position, current_price)
+    except Exception as e:
+        logger.error(f"Error getting triple witching analysis for {position.symbol}: {e}")
+        return None
 

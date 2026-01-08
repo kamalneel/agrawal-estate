@@ -3,8 +3,11 @@ Schwab PDF Statement Parser.
 
 Parses Schwab/Fidelity HSA monthly statements to extract:
 - Account information (owner, type, nickname)
-- Current holdings/positions
-- Account value summary
+- Account value summary (portfolio snapshots)
+
+NOTE: PDFs are historical documents. They should ONLY be used for portfolio value
+tracking over time, NOT for current holdings. Current holdings should come from
+CSV exports or paste data which represent the live/current state.
 """
 
 import re
@@ -90,7 +93,9 @@ class SchwabPDFParser(BaseParser):
                 metadata["account_type"] = account_type
                 metadata["account_number"] = account_number
                 
-                # Extract holdings from all pages
+                # Extract holdings ONLY to calculate portfolio value if not found on page 1
+                # We do NOT create HOLDING records from PDFs - they're historical and would
+                # overwrite current positions with old data
                 holdings = []
                 for page in pdf.pages:
                     page_text = page.extract_text() or ""
@@ -100,50 +105,14 @@ class SchwabPDFParser(BaseParser):
                 # Extract cash balance
                 cash_balance = self._extract_cash_balance(first_page_text)
                 
-                # Deduplicate holdings (same symbol might appear in summary and detail)
-                seen_symbols = set()
-                unique_holdings = []
-                for h in holdings:
-                    if h["symbol"] not in seen_symbols:
-                        seen_symbols.add(h["symbol"])
-                        unique_holdings.append(h)
-                
-                # Add cash as a holding if we have cash
-                if cash_balance and cash_balance > 0:
-                    unique_holdings.append({
-                        "symbol": "CASH",
-                        "name": "Cash & Cash Investments",
-                        "quantity": Decimal(str(cash_balance)),
-                        "price": Decimal("1.00"),
-                        "market_value": Decimal(str(cash_balance)),
-                    })
-                
-                # Create holding records
-                for holding in unique_holdings:
-                    record_data = {
-                        "source": "schwab",
-                        "account_id": account_id,
-                        "owner": owner,
-                        "account_type": account_type,
-                        "symbol": holding["symbol"],
-                        "quantity": holding["quantity"],
-                        "description": holding.get("name"),
-                        "market_value": holding.get("market_value"),
-                        "current_price": holding.get("price"),
-                        "statement_date": statement_date,
-                    }
-                    
-                    records.append(ParsedRecord(
-                        record_type=RecordType.HOLDING,
-                        data=record_data,
-                        source_row=0
-                    ))
-                
                 # Calculate portfolio value from holdings if not found on page 1
                 if not portfolio_value and holdings:
-                    portfolio_value = sum(h.get("market_value", 0) or 0 for h in unique_holdings)
+                    calculated_value = sum(h.get("market_value", 0) or 0 for h in holdings)
+                    if cash_balance:
+                        calculated_value += cash_balance
+                    portfolio_value = calculated_value
                 
-                # Create portfolio snapshot record
+                # Create portfolio snapshot record - this is the ONLY record type from PDFs
                 if statement_date and portfolio_value:
                     summary_data = {
                         "source": "schwab",
@@ -161,10 +130,10 @@ class SchwabPDFParser(BaseParser):
                     metadata["statement_date"] = statement_date.isoformat()
                     metadata["portfolio_value"] = portfolio_value
                 
-                metadata["holdings_count"] = len(unique_holdings)
+                metadata["snapshots_count"] = len(records)
                 
-                if not unique_holdings:
-                    warnings.append("No holdings found in PDF.")
+                if not records:
+                    warnings.append("No portfolio snapshot could be extracted from PDF.")
                 
         except ImportError:
             errors.append("pdfplumber library not installed.")

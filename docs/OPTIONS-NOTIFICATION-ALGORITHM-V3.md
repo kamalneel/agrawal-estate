@@ -1,13 +1,37 @@
 # OPTIONS NOTIFICATION & RECOMMENDATION ALGORITHM V3.0
 
-**Version:** 3.0  
+**Version:** 3.0 → **3.3**  
 **Status:** ✅ IMPLEMENTED  
 **Created:** December 21, 2024  
-**Implemented:** December 21, 2024  
+**Last Updated:** January 7, 2026  
 **Migration From:** V2.3  
 **Philosophy:** Patient position management aligned with actual trading strategy
 
-> **Implementation Notes:** See [V3 Implementation Notes](./V3-IMPLEMENTATION-NOTES.md) for details on what was built.
+---
+
+## 📚 Documentation Index
+
+The V3 system is documented across **four files** for clarity:
+
+| Document | Purpose | When to Read |
+|----------|---------|--------------|
+| **[V3-TRADING-PHILOSOPHY.md](./V3-TRADING-PHILOSOPHY.md)** | WHY we make decisions | Understanding the strategy |
+| **[RECOMMENDATION-ENGINE.md](./RECOMMENDATION-ENGINE.md)** | HOW recommendations are generated | Debugging logic issues |
+| **[NOTIFICATION-SYSTEM.md](./NOTIFICATION-SYSTEM.md)** | HOW we communicate to users | Fixing display issues |
+| **This file** | Original V3 spec + history | Reference and migration notes |
+
+### Quick Links
+
+- **V3.3 Changes:** [V3.3-ADDENDUM.md](./V3.3-ADDENDUM.md)
+- **Implementation Notes:** [V3-IMPLEMENTATION-NOTES.md](./V3-IMPLEMENTATION-NOTES.md)
+
+### V3.3 Key Updates (Jan 2026)
+
+- ✅ Weekly income priority (compress over extend)
+- ✅ Mean reversion awareness (far-dated ITM handling)  
+- ✅ Flexible ITM debit limits ($2-$5 based on severity)
+- ✅ WAIT recommendations with technical analysis
+- ✅ Schwab as primary data source
 
 ---
 

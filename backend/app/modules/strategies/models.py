@@ -137,6 +137,9 @@ class StrategyRecommendationRecord(Base):
     notification_sent = Column(Boolean, default=False)
     notification_sent_at = Column(DateTime, nullable=True)
     
+    # Notification mode: 'verbose' (every snapshot), 'smart' (only changes), or 'both'
+    notification_mode = Column(String(20), nullable=True)
+    
     # Metadata
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
@@ -148,6 +151,7 @@ class StrategyRecommendationRecord(Base):
         Index('idx_rec_type', 'recommendation_type'),
         Index('idx_rec_symbol', 'symbol'),
         Index('idx_rec_recommendation_id', 'recommendation_id', unique=True),  # Required for upsert
+        Index('idx_rec_notification_mode', 'notification_mode'),
     )
 
 
@@ -185,6 +189,9 @@ class RecommendationNotification(Base):
     notification_type = Column(String(50), nullable=False)  # 'new', 'update', 'expired', 'priority_escalated'
     priority = Column(String(20), nullable=False)  # Priority at time of notification
     previous_priority = Column(String(20), nullable=True)  # For priority escalation tracking
+    
+    # Notification mode: 'verbose' (every snapshot) or 'smart' (only on changes)
+    notification_mode = Column(String(20), nullable=True, default='smart')
     
     # Notification details
     channels_sent = Column(JSON, nullable=True)  # {'telegram': True, 'email': False}

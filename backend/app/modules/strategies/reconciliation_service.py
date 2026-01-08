@@ -18,7 +18,7 @@ Design Philosophy:
 """
 
 import logging
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time
 from decimal import Decimal, InvalidOperation
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass, field
@@ -37,6 +37,12 @@ from app.modules.strategies.models import (
     StrategyRecommendationRecord,
     RecommendationNotification,
 )
+from app.modules.strategies.recommendation_models import (
+    PositionRecommendation,
+    RecommendationSnapshot,
+    RecommendationExecution,
+    generate_recommendation_id,
+)
 from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
 
 logger = logging.getLogger(__name__)
@@ -52,11 +58,99 @@ class MatchType(str, Enum):
 
 
 @dataclass
+class V2SnapshotAdapter:
+    """
+    Adapter that wraps V2 RecommendationSnapshot to provide 
+    a V1-compatible interface for the reconciliation logic.
+    """
+    snapshot: 'RecommendationSnapshot'
+    position: 'PositionRecommendation'
+    
+    @property
+    def id(self) -> int:
+        return self.snapshot.id
+    
+    @property
+    def recommendation_id(self) -> str:
+        return self.position.recommendation_id
+    
+    @property
+    def symbol(self) -> str:
+        return self.position.symbol
+    
+    @property
+    def account_name(self) -> str:
+        return self.position.account_name
+    
+    @property
+    def action_type(self) -> str:
+        return self.snapshot.recommended_action
+    
+    @property
+    def recommendation_type(self) -> str:
+        # Map V2 actions to V1-style types
+        action = self.snapshot.recommended_action or ''
+        if action.upper() in ['ROLL', 'ROLL_OUT', 'ROLL_UP']:
+            return 'roll'
+        elif action.upper() in ['CLOSE', 'CLOSE_DONT_ROLL', 'BUY_TO_CLOSE']:
+            return 'close'
+        elif action.upper() in ['HOLD', 'WAIT']:
+            return 'hold'
+        elif action.upper() in ['MONITOR', 'WATCH']:
+            return 'monitor'
+        elif action.upper() in ['SELL', 'STO', 'SELL_TO_OPEN']:
+            return 'sell'
+        return action.lower() if action else 'unknown'
+    
+    @property
+    def priority(self) -> str:
+        return self.snapshot.priority
+    
+    @property
+    def notification_sent_at(self) -> Optional[datetime]:
+        return self.snapshot.notification_sent_at
+    
+    @property
+    def created_at(self) -> datetime:
+        return self.snapshot.created_at
+    
+    @property
+    def context_snapshot(self) -> Dict[str, Any]:
+        """Build V1-compatible context from V2 snapshot fields."""
+        context = self.snapshot.full_context or {}
+        
+        # Ensure key fields are present from snapshot fields
+        if self.snapshot.target_strike:
+            context['target_strike'] = float(self.snapshot.target_strike)
+            context['strike_price'] = float(self.snapshot.target_strike)
+        if self.snapshot.target_expiration:
+            context['target_expiration'] = str(self.snapshot.target_expiration)
+        if self.snapshot.target_premium:
+            context['target_premium'] = float(self.snapshot.target_premium)
+            context['new_premium'] = float(self.snapshot.target_premium)
+        if self.snapshot.net_cost:
+            context['net_cost'] = float(self.snapshot.net_cost)
+        if self.snapshot.estimated_cost_to_close:
+            context['close_cost'] = float(self.snapshot.estimated_cost_to_close)
+        if self.position.source_strike:
+            context['current_strike'] = float(self.position.source_strike)
+        if self.position.source_expiration:
+            context['current_expiration'] = str(self.position.source_expiration)
+        if self.position.source_contracts:
+            context['contracts'] = self.position.source_contracts
+        
+        context['account_name'] = self.position.account_name
+        context['symbol'] = self.position.symbol
+        
+        return context
+
+
+@dataclass
 class MatchResult:
     """Result of matching a recommendation to an execution."""
     match_type: MatchType
     confidence: float  # 0-100
-    recommendation: Optional[StrategyRecommendationRecord] = None
+    recommendation: Optional[Any] = None  # Can be StrategyRecommendationRecord or V2SnapshotAdapter
     execution: Optional[InvestmentTransaction] = None
     modification_details: Dict[str, Any] = field(default_factory=dict)
     hours_to_execution: Optional[float] = None
@@ -133,17 +227,32 @@ class ReconciliationService:
         logger.info(f"Reconciliation complete: {summary}")
         return summary
     
-    def _get_recommendations_for_date(self, target_date: date) -> List[StrategyRecommendationRecord]:
+    def _get_recommendations_for_date(self, target_date: date) -> List[V2SnapshotAdapter]:
         """
-        Get all recommendations generated on a specific date.
+        Get all V2 recommendations (snapshots) that were sent to the user on a specific date.
         
-        Note: We include ALL recommendations, not just those with notifications sent,
-        because users can see recommendations in the dashboard even without push notifications.
-        The RLHF system should learn from all visible recommendations.
+        Only includes snapshots where notification_sent_at is set, meaning the user
+        actually received this notification. This is key for accurate RLHF learning.
         """
-        return self.db.query(StrategyRecommendationRecord).filter(
-            func.date(StrategyRecommendationRecord.created_at) == target_date,
+        # Query V2 snapshots where notifications were actually sent
+        snapshots = self.db.query(RecommendationSnapshot).join(
+            PositionRecommendation,
+            RecommendationSnapshot.recommendation_id == PositionRecommendation.id
+        ).filter(
+            RecommendationSnapshot.notification_sent_at.isnot(None),
+            func.date(RecommendationSnapshot.notification_sent_at) == target_date,
         ).all()
+        
+        # Wrap in adapters for V1-compatible interface
+        result = []
+        for snapshot in snapshots:
+            position = snapshot.recommendation  # Use the relationship
+            if position:
+                result.append(V2SnapshotAdapter(snapshot=snapshot, position=position))
+            else:
+                logger.warning(f"Snapshot {snapshot.id} has no parent PositionRecommendation")
+        
+        return result
     
     def _get_executions_for_date_range(
         self, 
@@ -165,7 +274,7 @@ class ReconciliationService:
     
     def _match_recommendations_to_executions(
         self,
-        recommendations: List[StrategyRecommendationRecord],
+        recommendations: List[V2SnapshotAdapter],
         executions: List[InvestmentTransaction]
     ) -> List[MatchResult]:
         """
@@ -247,7 +356,7 @@ class ReconciliationService:
         
         return matches
     
-    def _extract_symbol_from_recommendation(self, rec: StrategyRecommendationRecord) -> Optional[str]:
+    def _extract_symbol_from_recommendation(self, rec: Any) -> Optional[str]:
         """Extract the underlying symbol from a recommendation."""
         # First try the symbol field directly
         if rec.symbol:
@@ -279,7 +388,7 @@ class ReconciliationService:
     
     def _score_match(
         self, 
-        rec: StrategyRecommendationRecord, 
+        rec: Any, 
         exec: InvestmentTransaction
     ) -> Tuple[float, Dict[str, Any]]:
         """
@@ -292,9 +401,35 @@ class ReconciliationService:
         
         # Extract recommendation details from context
         context = rec.context_snapshot or {}
-        rec_strike = context.get('strike') or context.get('recommended_strike')
-        rec_expiration = context.get('expiration') or context.get('recommended_expiration')
-        rec_premium = context.get('premium') or context.get('expected_premium')
+        rec_strike = (
+            context.get('strike') or 
+            context.get('recommended_strike') or 
+            context.get('strike_price') or  # Used in sell_unsold_contracts and new_covered_call
+            context.get('target_strike') or
+            context.get('new_strike')  # For roll recommendations
+        )
+        rec_expiration = (
+            context.get('expiration') or 
+            context.get('recommended_expiration') or
+            context.get('expiration_date') or  # Common key in context
+            context.get('target_expiration') or
+            context.get('new_expiration')  # For roll recommendations
+        )
+        # Try premium_per_contract first (per-contract value)
+        rec_premium = (
+            context.get('premium') or 
+            context.get('expected_premium') or
+            context.get('premium_per_contract') or  # Used in sell_unsold_contracts and new_covered_call
+            context.get('target_premium') or
+            context.get('potential_premium') or
+            context.get('net_credit')  # For spread recommendations
+        )
+        
+        # If we didn't find per-contract premium, try total_premium and divide by contracts
+        if not rec_premium and context.get('total_premium'):
+            contracts = context.get('contracts') or context.get('unsold_contracts') or 1
+            if contracts > 0:
+                rec_premium = float(context.get('total_premium')) / contracts
         
         # Parse execution details from description/symbol (description has full option details)
         exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
@@ -399,7 +534,7 @@ class ReconciliationService:
     
     def _classify_match(
         self,
-        rec: StrategyRecommendationRecord,
+        rec: Any,
         exec: InvestmentTransaction,
         details: Dict[str, Any]
     ) -> MatchType:
@@ -425,7 +560,7 @@ class ReconciliationService:
         
         return MatchType.MODIFY if significant else MatchType.CONSENT
     
-    def _determine_no_execution_type(self, rec: StrategyRecommendationRecord) -> MatchType:
+    def _determine_no_execution_type(self, rec: Any) -> MatchType:
         """
         Determine if no execution means reject or no_action.
         
@@ -442,7 +577,7 @@ class ReconciliationService:
     
     def _calculate_hours_to_execution(
         self,
-        rec: StrategyRecommendationRecord,
+        rec: Any,
         exec: InvestmentTransaction
     ) -> Optional[float]:
         """Calculate hours between recommendation and execution."""
@@ -476,22 +611,47 @@ class ReconciliationService:
                     rec_strike = (
                         context.get('strike') or 
                         context.get('recommended_strike') or 
+                        context.get('strike_price') or  # Used in sell_unsold_contracts and new_covered_call
                         context.get('target_strike') or
                         context.get('new_strike')  # For roll recommendations
                     )
                     rec_expiration = (
                         context.get('expiration') or 
                         context.get('recommended_expiration') or 
-                        context.get('target_expiration') or
                         context.get('expiration_date') or  # Common key in context
+                        context.get('target_expiration') or
                         context.get('new_expiration')  # For roll recommendations
                     )
+                    # Try premium_per_contract first (per-contract value)
+                    # For roll recommendations, prioritize new_premium (premium for the new position)
                     rec_premium = (
+                        context.get('new_premium') or  # Premium for new position in roll
+                        context.get('estimated_new_premium') or  # Alternative key for new premium
+                        context.get('new_premium_income') or  # Income from new position
+                        # Standard premium keys
                         context.get('premium') or 
                         context.get('expected_premium') or 
+                        context.get('premium_per_contract') or  # Used in sell_unsold_contracts and new_covered_call
                         context.get('target_premium') or
                         context.get('potential_premium') or
                         context.get('net_credit')  # For spread recommendations
+                    )
+                    
+                    # If we didn't find per-contract premium, try total_premium and divide by contracts
+                    # Note: We store per-contract premium in recommended_premium field
+                    if not rec_premium and context.get('total_premium'):
+                        contracts = context.get('contracts') or context.get('unsold_contracts') or 1
+                        if contracts > 0:
+                            rec_premium = float(context.get('total_premium')) / contracts
+                    
+                    # Also extract contracts for the match record
+                    rec_contracts = context.get('contracts') or context.get('unsold_contracts')
+                    
+                    # Extract account name - try context first, then direct field
+                    rec_account = (
+                        context.get('account_name') or 
+                        context.get('account') or
+                        getattr(rec, 'account_name', None)  # V2SnapshotAdapter provides this
                     )
                     
                     # Try to parse from recommendation_id if not in context
@@ -523,46 +683,108 @@ class ReconciliationService:
                     exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
                     exec_account = exec.account_id  # Use account_id from transaction
                 
-                # Build the match record with all details
-                db_match = RecommendationExecutionMatch(
-                    # Recommendation side
-                    recommendation_id=rec.recommendation_id if rec else None,
-                    recommendation_record_id=rec.id if rec else None,
-                    recommendation_date=target_date,
-                    recommendation_time=rec.notification_sent_at if rec else None,
-                    recommendation_type=rec.recommendation_type if rec else None,
-                    recommended_action=rec.action_type if rec else None,
-                    recommended_symbol=rec.symbol if rec else None,
-                    recommended_strike=Decimal(str(rec_strike)) if rec_strike else None,
-                    recommended_expiration=rec_expiration if isinstance(rec_expiration, date) else None,
-                    recommended_premium=Decimal(str(rec_premium)) if rec_premium else None,
-                    recommendation_priority=rec.priority if rec else None,
-                    recommendation_context=rec.context_snapshot if rec else None,
+                # Check if match already exists to avoid duplicates
+                existing_match = None
+                if rec and exec:
+                    # Try to find existing match by recommendation_record_id + execution_id
+                    existing_match = self.db.query(RecommendationExecutionMatch).filter(
+                        RecommendationExecutionMatch.recommendation_record_id == rec.id,
+                        RecommendationExecutionMatch.execution_id == exec.id,
+                        RecommendationExecutionMatch.recommendation_date == target_date
+                    ).first()
+                elif rec:
+                    # For reject/no_action matches, check by recommendation_record_id + date
+                    existing_match = self.db.query(RecommendationExecutionMatch).filter(
+                        RecommendationExecutionMatch.recommendation_record_id == rec.id,
+                        RecommendationExecutionMatch.recommendation_date == target_date,
+                        RecommendationExecutionMatch.execution_id.is_(None)
+                    ).first()
+                
+                if existing_match:
+                    # Update existing match with latest data
+                    # Use notification_sent_at if available, otherwise fall back to created_at
+                    existing_match.recommendation_time = rec.notification_sent_at if rec and rec.notification_sent_at else (rec.created_at if rec else None)
+                    existing_match.recommendation_type = rec.recommendation_type if rec else None
+                    existing_match.recommended_action = rec.action_type if rec else None
+                    existing_match.recommended_symbol = rec.symbol if rec else None
+                    existing_match.recommended_strike = Decimal(str(rec_strike)) if rec_strike else None
+                    existing_match.recommended_expiration = rec_expiration if isinstance(rec_expiration, date) else None
+                    existing_match.recommended_premium = Decimal(str(rec_premium)) if rec_premium else None
+                    existing_match.recommended_contracts = int(rec_contracts) if rec_contracts else None
+                    existing_match.recommendation_priority = rec.priority if rec else None
+                    existing_match.recommendation_context = rec.context_snapshot if rec else None
                     
-                    # Execution side
-                    execution_id=exec.id if exec else None,
-                    execution_date=exec.transaction_date if exec else None,
-                    execution_action=exec.transaction_type if exec else None,
-                    execution_symbol=exec.symbol if exec else None,
-                    execution_strike=exec_strike if exec_strike else None,
-                    execution_expiration=exec_expiration if exec_expiration else None,
-                    execution_premium=Decimal(str(abs(float(exec.amount or 0)))) if exec else None,
-                    execution_contracts=int(exec.quantity or 1) if exec else None,
-                    execution_account=exec_account if exec_account else None,
+                    if exec:
+                        existing_match.execution_date = exec.transaction_date
+                        # Convert transaction_date (Date) to DateTime for execution_time
+                        # Use 9:30 AM as default time (market open) if we only have date
+                        if exec.transaction_date:
+                            existing_match.execution_time = datetime.combine(exec.transaction_date, time(9, 30))
+                        existing_match.execution_action = exec.transaction_type
+                        existing_match.execution_symbol = exec.symbol
+                        existing_match.execution_strike = exec_strike if exec_strike else None
+                        existing_match.execution_expiration = exec_expiration if exec_expiration else None
+                        existing_match.execution_premium = Decimal(str(abs(float(exec.amount or 0))))
+                        existing_match.execution_contracts = int(exec.quantity or 1)
+                        existing_match.execution_account = exec_account if exec_account else None
                     
-                    # Match analysis
-                    match_type=match.match_type.value,
-                    match_confidence=Decimal(str(match.confidence)),
-                    modification_details=match.modification_details if match.modification_details else None,
-                    hours_to_execution=Decimal(str(match.hours_to_execution)) if match.hours_to_execution else None,
+                    existing_match.match_type = match.match_type.value
+                    existing_match.match_confidence = Decimal(str(match.confidence))
+                    existing_match.modification_details = match.modification_details if match.modification_details else None
+                    existing_match.hours_to_execution = Decimal(str(match.hours_to_execution)) if match.hours_to_execution else None
+                    existing_match.reconciled_at = datetime.utcnow()
+                    existing_match.updated_at = datetime.utcnow()
                     
                     # Week tracking
-                    year=iso_cal.year,
-                    week_number=iso_cal.week,
-                    reconciled_at=datetime.utcnow(),
-                )
+                    existing_match.year = iso_cal.year
+                    existing_match.week_number = iso_cal.week
+                else:
+                    # Create new match record
+                    db_match = RecommendationExecutionMatch(
+                        # Recommendation side
+                        recommendation_id=rec.recommendation_id if rec else None,
+                        recommendation_record_id=rec.id if rec else None,
+                        recommendation_date=target_date,
+                        # Use notification_sent_at if available, otherwise fall back to created_at
+                        recommendation_time=rec.notification_sent_at if rec and rec.notification_sent_at else (rec.created_at if rec else None),
+                        recommendation_type=rec.recommendation_type if rec else None,
+                        recommended_action=rec.action_type if rec else None,
+                        recommended_symbol=rec.symbol if rec else None,
+                        recommended_strike=Decimal(str(rec_strike)) if rec_strike else None,
+                        recommended_expiration=rec_expiration if isinstance(rec_expiration, date) else None,
+                        recommended_premium=Decimal(str(rec_premium)) if rec_premium else None,
+                        recommended_contracts=int(rec_contracts) if rec_contracts else None,
+                        recommendation_priority=rec.priority if rec else None,
+                        recommendation_context=rec.context_snapshot if rec else None,
+                        
+                        # Execution side
+                        execution_id=exec.id if exec else None,
+                        execution_date=exec.transaction_date if exec else None,
+                        # Convert transaction_date (Date) to DateTime for execution_time
+                        # Use 9:30 AM as default time (market open) if we only have date
+                        execution_time=datetime.combine(exec.transaction_date, time(9, 30)) if exec and exec.transaction_date else None,
+                        execution_action=exec.transaction_type if exec else None,
+                        execution_symbol=exec.symbol if exec else None,
+                        execution_strike=exec_strike if exec_strike else None,
+                        execution_expiration=exec_expiration if exec_expiration else None,
+                        execution_premium=Decimal(str(abs(float(exec.amount or 0)))) if exec else None,
+                        execution_contracts=int(exec.quantity or 1) if exec else None,
+                        execution_account=exec_account if exec_account else None,
+                        
+                        # Match analysis
+                        match_type=match.match_type.value,
+                        match_confidence=Decimal(str(match.confidence)),
+                        modification_details=match.modification_details if match.modification_details else None,
+                        hours_to_execution=Decimal(str(match.hours_to_execution)) if match.hours_to_execution else None,
+                        
+                        # Week tracking
+                        year=iso_cal.year,
+                        week_number=iso_cal.week,
+                        reconciled_at=datetime.utcnow(),
+                    )
+                    
+                    self.db.add(db_match)
                 
-                self.db.add(db_match)
                 saved += 1
                 
             except Exception as e:
@@ -583,35 +805,66 @@ class ReconciliationService:
         
         for exec in executions:
             try:
-                # Parse execution details from description (has full option details)
-                exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
-                exec_account = exec.account_id
+                # Check if this independent execution already exists
+                existing_match = self.db.query(RecommendationExecutionMatch).filter(
+                    RecommendationExecutionMatch.execution_id == exec.id,
+                    RecommendationExecutionMatch.recommendation_date == target_date,
+                    RecommendationExecutionMatch.match_type == MatchType.INDEPENDENT.value
+                ).first()
                 
-                db_match = RecommendationExecutionMatch(
-                    recommendation_date=target_date,
+                if existing_match:
+                    # Update existing match with latest data
+                    exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
+                    exec_account = exec.account_id
                     
-                    # Execution side with full details
-                    execution_id=exec.id,
-                    execution_date=exec.transaction_date,
-                    execution_action=exec.transaction_type,
-                    execution_symbol=exec.symbol,
-                    execution_strike=exec_strike if exec_strike else None,
-                    execution_expiration=exec_expiration if exec_expiration else None,
-                    execution_premium=Decimal(str(abs(float(exec.amount or 0)))),
-                    execution_contracts=int(exec.quantity or 1),
-                    execution_account=exec_account if exec_account else None,
+                    existing_match.execution_date = exec.transaction_date
+                    # Convert transaction_date (Date) to DateTime for execution_time
+                    if exec.transaction_date:
+                        existing_match.execution_time = datetime.combine(exec.transaction_date, time(9, 30))
+                    existing_match.execution_action = exec.transaction_type
+                    existing_match.execution_symbol = exec.symbol
+                    existing_match.execution_strike = exec_strike if exec_strike else None
+                    existing_match.execution_expiration = exec_expiration if exec_expiration else None
+                    existing_match.execution_premium = Decimal(str(abs(float(exec.amount or 0))))
+                    existing_match.execution_contracts = int(exec.quantity or 1)
+                    existing_match.execution_account = exec_account if exec_account else None
+                    existing_match.reconciled_at = datetime.utcnow()
+                    existing_match.updated_at = datetime.utcnow()
+                    existing_match.year = iso_cal.year
+                    existing_match.week_number = iso_cal.week
+                else:
+                    # Parse execution details from description (has full option details)
+                    exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
+                    exec_account = exec.account_id
                     
-                    # Mark as independent
-                    match_type=MatchType.INDEPENDENT.value,
-                    match_confidence=Decimal('100.0'),
+                    db_match = RecommendationExecutionMatch(
+                        recommendation_date=target_date,
+                        
+                        # Execution side with full details
+                        execution_id=exec.id,
+                        execution_date=exec.transaction_date,
+                        # Convert transaction_date (Date) to DateTime for execution_time
+                        execution_time=datetime.combine(exec.transaction_date, time(9, 30)) if exec.transaction_date else None,
+                        execution_action=exec.transaction_type,
+                        execution_symbol=exec.symbol,
+                        execution_strike=exec_strike if exec_strike else None,
+                        execution_expiration=exec_expiration if exec_expiration else None,
+                        execution_premium=Decimal(str(abs(float(exec.amount or 0)))),
+                        execution_contracts=int(exec.quantity or 1),
+                        execution_account=exec_account if exec_account else None,
+                        
+                        # Mark as independent
+                        match_type=MatchType.INDEPENDENT.value,
+                        match_confidence=Decimal('100.0'),
+                        
+                        # Week tracking
+                        year=iso_cal.year,
+                        week_number=iso_cal.week,
+                        reconciled_at=datetime.utcnow(),
+                    )
                     
-                    # Week tracking
-                    year=iso_cal.year,
-                    week_number=iso_cal.week,
-                    reconciled_at=datetime.utcnow(),
-                )
+                    self.db.add(db_match)
                 
-                self.db.add(db_match)
                 saved += 1
                 
             except Exception as e:
@@ -959,6 +1212,265 @@ class ReconciliationService:
                 })
         
         return candidates
+
+
+# =========================================================================
+# V2 RECONCILIATION (Snapshot-based model)
+# =========================================================================
+
+    def reconcile_to_v2_model(self, match: MatchResult) -> Optional[int]:
+        """
+        Link a match result to the V2 recommendation model.
+        
+        This creates a RecommendationExecution record and resolves
+        the corresponding PositionRecommendation.
+        
+        Returns the execution ID if created, None otherwise.
+        """
+        try:
+            rec = match.recommendation
+            exec = match.execution
+            
+            if not rec or not rec.context_snapshot:
+                return None
+            
+            context = rec.context_snapshot
+            
+            # Extract position identity to find V2 recommendation
+            symbol = context.get('symbol')
+            account_name = context.get('account_name') or context.get('account', 'Unknown')
+            source_strike = context.get('current_strike') or context.get('strike_price')
+            source_expiration_str = context.get('current_expiration') or context.get('expiration_date')
+            option_type = context.get('option_type', 'call')
+            
+            if not symbol or not source_strike or not source_expiration_str:
+                return None
+            
+            # Parse expiration
+            if isinstance(source_expiration_str, str):
+                source_expiration = date.fromisoformat(source_expiration_str)
+            else:
+                source_expiration = source_expiration_str
+            
+            # Generate recommendation ID and find it
+            rec_id = generate_recommendation_id(
+                symbol, float(source_strike), source_expiration, option_type, account_name
+            )
+            
+            v2_rec = self.db.query(PositionRecommendation).filter(
+                PositionRecommendation.recommendation_id == rec_id
+            ).first()
+            
+            if not v2_rec:
+                logger.debug(f"[V2_RECONCILE] No V2 recommendation found for {rec_id}")
+                return None
+            
+            # Get the latest snapshot
+            latest_snapshot = self.db.query(RecommendationSnapshot).filter(
+                RecommendationSnapshot.recommendation_id == v2_rec.id
+            ).order_by(RecommendationSnapshot.snapshot_number.desc()).first()
+            
+            # Parse execution details
+            exec_strike = None
+            exec_expiration = None
+            if exec:
+                exec_strike, exec_expiration = self._parse_option_from_symbol(exec.symbol, exec.description)
+            
+            # Create execution record
+            v2_execution = RecommendationExecution(
+                recommendation_id=v2_rec.id,
+                snapshot_id=latest_snapshot.id if latest_snapshot else None,
+                
+                execution_action=exec.transaction_type if exec else None,
+                execution_strike=Decimal(str(exec_strike)) if exec_strike else None,
+                execution_expiration=exec_expiration,
+                execution_premium=Decimal(str(abs(float(exec.amount or 0)))) if exec else None,
+                execution_contracts=int(exec.quantity or 1) if exec else None,
+                
+                match_type=match.match_type.value,
+                match_confidence=Decimal(str(match.confidence)),
+                modification_details=match.modification_details if match.modification_details else None,
+                
+                executed_at=datetime.combine(exec.transaction_date, time(9, 30)) if exec and exec.transaction_date else None,
+                hours_after_snapshot=Decimal(str(match.hours_to_execution)) if match.hours_to_execution else None,
+                notification_count_before_action=v2_rec.total_notifications_sent,
+                
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            
+            self.db.add(v2_execution)
+            
+            # Resolve the recommendation
+            resolution_type = f'user_acted_{match.match_type.value}'
+            v2_rec.status = 'resolved'
+            v2_rec.resolution_type = resolution_type
+            v2_rec.resolved_at = datetime.utcnow()
+            
+            if v2_rec.first_detected_at:
+                v2_rec.days_active = (datetime.utcnow() - v2_rec.first_detected_at).days
+            
+            v2_rec.updated_at = datetime.utcnow()
+            
+            self.db.flush()
+            
+            logger.info(f"[V2_RECONCILE] Created execution for {rec_id} (match_type={match.match_type.value})")
+            
+            # Auto-create new recommendation if this was a roll
+            new_rec_id = self._auto_create_new_recommendation_if_rolled(
+                v2_rec, v2_execution, exec, exec_strike, exec_expiration
+            )
+            
+            if new_rec_id:
+                logger.info(f"[V2_RECONCILE] Created new recommendation for rolled position: {new_rec_id}")
+            
+            return v2_execution.id
+            
+        except Exception as e:
+            logger.error(f"[V2_RECONCILE] Error: {e}", exc_info=True)
+            return None
+    
+    def _auto_create_new_recommendation_if_rolled(
+        self,
+        old_rec: PositionRecommendation,
+        execution: RecommendationExecution,
+        exec_txn,
+        exec_strike: float,
+        exec_expiration: date
+    ) -> Optional[int]:
+        """
+        Auto-create a new recommendation when a position is rolled.
+        
+        This is called after an execution is linked to a recommendation.
+        If the execution appears to be a roll (new strike or expiration),
+        create a new recommendation for the new position.
+        """
+        try:
+            # Skip if not a roll action
+            exec_action = execution.execution_action if execution else None
+            if not exec_action:
+                return None
+            
+            # Check if this looks like a roll (STO = Sell to Open for new position)
+            # or if the recommended action was a roll
+            latest_snapshot = self.db.query(RecommendationSnapshot).filter(
+                RecommendationSnapshot.recommendation_id == old_rec.id
+            ).order_by(RecommendationSnapshot.snapshot_number.desc()).first()
+            
+            was_roll_recommended = False
+            if latest_snapshot and latest_snapshot.recommended_action:
+                was_roll_recommended = 'ROLL' in latest_snapshot.recommended_action.upper()
+            
+            # Skip if no new strike/expiration (not a roll)
+            if not exec_strike or not exec_expiration:
+                return None
+            
+            # Skip if same as old position (not a roll)
+            if (float(old_rec.source_strike) == exec_strike and 
+                old_rec.source_expiration == exec_expiration):
+                return None
+            
+            # Check if a recommendation already exists for the new position
+            new_rec_id = generate_recommendation_id(
+                symbol=old_rec.symbol,
+                account_name=old_rec.account_name,
+                source_strike=Decimal(str(exec_strike)),
+                source_expiration=exec_expiration,
+                option_type=old_rec.option_type
+            )
+            
+            existing = self.db.query(PositionRecommendation).filter(
+                PositionRecommendation.recommendation_id == new_rec_id
+            ).first()
+            
+            if existing:
+                logger.debug(f"[V2_RECONCILE] New position recommendation already exists: {new_rec_id}")
+                return existing.id
+            
+            # Create new recommendation
+            new_rec = PositionRecommendation(
+                recommendation_id=new_rec_id,
+                symbol=old_rec.symbol,
+                account_name=old_rec.account_name,
+                source_strike=Decimal(str(exec_strike)),
+                source_expiration=exec_expiration,
+                option_type=old_rec.option_type,
+                source_contracts=old_rec.source_contracts,
+                status='active',
+                first_detected_at=datetime.utcnow(),
+            )
+            
+            self.db.add(new_rec)
+            self.db.flush()
+            
+            # Mark old recommendation as superseded
+            old_rec.status = 'superseded'
+            old_rec.resolution_type = 'rolled_to_new'
+            old_rec.resolution_notes = f'Rolled to {exec_strike} {exec_expiration}'
+            
+            logger.info(
+                f"[V2_RECONCILE] Created new recommendation {new_rec_id} for rolled position "
+                f"({old_rec.source_strike}→{exec_strike}, {old_rec.source_expiration}→{exec_expiration})"
+            )
+            
+            return new_rec.id
+            
+        except Exception as e:
+            logger.error(f"[V2_RECONCILE] Error creating new recommendation: {e}", exc_info=True)
+            return None
+    
+    def reconcile_day_v2(self, target_date: date) -> Dict[str, Any]:
+        """
+        Reconcile recommendations to V2 model for a specific day.
+        
+        This should be called after reconcile_day() to also update
+        the new snapshot-based tables.
+        """
+        logger.info(f"[V2_RECONCILE] Starting V2 reconciliation for {target_date}")
+        
+        # Get all matches from the legacy table for this date
+        matches_today = self.db.query(RecommendationExecutionMatch).filter(
+            RecommendationExecutionMatch.recommendation_date == target_date
+        ).all()
+        
+        v2_created = 0
+        
+        for legacy_match in matches_today:
+            if legacy_match.recommendation_record_id:
+                # Get the recommendation
+                rec = self.db.query(StrategyRecommendationRecord).get(
+                    legacy_match.recommendation_record_id
+                )
+                
+                if rec:
+                    # Build a MatchResult from the legacy match
+                    exec_obj = None
+                    if legacy_match.execution_id:
+                        exec_obj = self.db.query(InvestmentTransaction).get(legacy_match.execution_id)
+                    
+                    match_result = MatchResult(
+                        match_type=MatchType(legacy_match.match_type),
+                        confidence=float(legacy_match.match_confidence or 100),
+                        recommendation=rec,
+                        execution=exec_obj,
+                        modification_details=legacy_match.modification_details or {},
+                        hours_to_execution=float(legacy_match.hours_to_execution) if legacy_match.hours_to_execution else None
+                    )
+                    
+                    result = self.reconcile_to_v2_model(match_result)
+                    if result:
+                        v2_created += 1
+        
+        self.db.commit()
+        
+        summary = {
+            "date": target_date.isoformat(),
+            "legacy_matches_processed": len(matches_today),
+            "v2_executions_created": v2_created
+        }
+        
+        logger.info(f"[V2_RECONCILE] Complete: {summary}")
+        return summary
 
 
 # =========================================================================

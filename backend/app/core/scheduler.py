@@ -70,13 +70,14 @@ class RecommendationScheduler:
         )
         
         # =================================================================
-        # SCAN 2: 8:00 AM - Post-Opening Urgent
+        # SCAN 2: 8:00 AM - Post-Opening Urgent (V2)
         # =================================================================
         # Purpose: Catch urgent state changes from market open volatility
         # Evaluates: Newly ITM positions, new pull-back opportunities,
         #           earnings TODAY, positions >10% deeper ITM, expiring TODAY
+        # NOTE: Using V2 system - notifications reference snapshot numbers
         self.scheduler.add_job(
-            self.check_and_notify,
+            lambda: self.check_and_notify_v2(scan_type='8am_post_open'),
             trigger=CronTrigger(
                 hour=8,
                 minute=0,
@@ -84,17 +85,17 @@ class RecommendationScheduler:
                 timezone=PT
             ),
             id='scan_2_post_open',
-            name='V3 Scan 2: Post-Opening Urgent (8:00 AM PT)',
+            name='V3 Scan 2: Post-Opening Urgent (8:00 AM PT) [V2]',
             replace_existing=True
         )
         
         # =================================================================
-        # SCAN 3: 12:00 PM - Midday Opportunities
+        # SCAN 3: 12:00 PM - Midday Opportunities (V2)
         # =================================================================
         # Purpose: Check for intraday opportunities
         # Evaluates: Pull-back opportunities, significant moves (>10% since morning)
         self.scheduler.add_job(
-            self.check_and_notify,
+            lambda: self.check_and_notify_v2(scan_type='12pm_midday'),
             trigger=CronTrigger(
                 hour=12,
                 minute=0,
@@ -102,17 +103,17 @@ class RecommendationScheduler:
                 timezone=PT
             ),
             id='scan_3_midday',
-            name='V3 Scan 3: Midday Opportunities (12:00 PM PT)',
+            name='V3 Scan 3: Midday Opportunities (12:00 PM PT) [V2]',
             replace_existing=True
         )
         
         # =================================================================
-        # SCAN 4: 12:45 PM - Pre-Close Urgent
+        # SCAN 4: 12:45 PM - Pre-Close Urgent (V2)
         # =================================================================
         # Purpose: Last 15 minutes before market close (1:00 PM PT)
         # Evaluates: Expiring TODAY, Smart Assignment (IRA), Triple Witching
         self.scheduler.add_job(
-            self.check_and_notify,
+            lambda: self.check_and_notify_v2(scan_type='1245pm_pre_close'),
             trigger=CronTrigger(
                 hour=12,
                 minute=45,
@@ -120,18 +121,18 @@ class RecommendationScheduler:
                 timezone=PT
             ),
             id='scan_4_pre_close',
-            name='V3 Scan 4: Pre-Close Urgent (12:45 PM PT)',
+            name='V3 Scan 4: Pre-Close Urgent (12:45 PM PT) [V2]',
             replace_existing=True
         )
         
         # =================================================================
-        # SCAN 5: 8:00 PM - Evening Planning
+        # SCAN 5: 8:00 PM - Evening Planning (V2)
         # =================================================================
         # Purpose: Next day preparation (informational only)
         # Evaluates: Earnings TOMORROW, Ex-dividend TOMORROW, 
         #           Positions expiring TOMORROW
         self.scheduler.add_job(
-            self.check_and_notify,
+            lambda: self.check_and_notify_v2(scan_type='8pm_evening'),
             trigger=CronTrigger(
                 hour=20,
                 minute=0,
@@ -243,8 +244,8 @@ class RecommendationScheduler:
             
             logger.info(f"Completed technical analysis for {len(symbols)} symbols")
             
-            # Now run the normal recommendation check
-            self.check_and_notify(send_notifications=True)
+            # Now run the V2-native recommendation check with notifications
+            self.check_and_notify_v2(send_notifications=True, scan_type='6am_main')
             
         except Exception as e:
             logger.error(f"Error in daily technical analysis: {e}", exc_info=True)
@@ -442,22 +443,55 @@ class RecommendationScheduler:
                 logger.info(f"Skipping {len(medium_recs) + len(low_recs)} medium/low priority recommendation(s) during active hours (8 AM - 2 PM PT)")
         
         # ================================================================
-        # SEND ALL RECOMMENDATIONS IN A SINGLE CONSOLIDATED MESSAGE
+        # DUAL NOTIFICATION MODE: VERBOSE + SMART
         # ================================================================
-        if all_to_send:
-            results = notification_service.send_recommendation_notification(
-                all_to_send,
-                priority_filter=None  # Already filtered above
-            )
-            self._record_notifications(db, all_to_send, results)
-            sent_count = len(all_to_send)
-            sent_recommendations.extend(all_to_send)
-            logger.info(f"Sent consolidated notification with {sent_count} recommendation(s) grouped by account")
+        # 1. VERBOSE MODE: Send ALL recommendations (no filtering)
+        #    Every snapshot triggers a notification
+        # 2. SMART MODE: Send filtered recommendations (current behavior)
+        #    Only new or changed recommendations
+        # ================================================================
         
-        if sent_count > 0:
-            logger.info(f"Total notifications sent: {sent_count}")
+        # Get all recommendations (excluding bull put which already has limits)
+        all_for_verbose = other_recs.copy()  # All other_recs without smart filtering
+        # Filter out NO_ACTION and HOLD for verbose mode
+        all_for_verbose = [r for r in all_for_verbose if r.get("action_type") not in ("NO_ACTION", "HOLD")]
+        
+        # 1. VERBOSE MODE: Send ALL recommendations
+        if all_for_verbose:
+            logger.info(f"[VERBOSE MODE] Sending {len(all_for_verbose)} recommendation(s)")
+            verbose_results = notification_service.send_recommendation_notification(
+                all_for_verbose,
+                priority_filter=None,
+                notification_mode='verbose'
+            )
+            self._record_notifications(db, all_for_verbose, verbose_results, notification_mode='verbose')
+            sent_recommendations.extend(all_for_verbose)
+            logger.info(f"[VERBOSE MODE] Sent {len(all_for_verbose)} notification(s)")
         else:
-            logger.info("No new notifications to send (all filtered by deduplication)")
+            logger.info("[VERBOSE MODE] No recommendations to send")
+        
+        # 2. SMART MODE: Send filtered recommendations
+        if all_to_send:
+            logger.info(f"[SMART MODE] Sending {len(all_to_send)} filtered recommendation(s)")
+            smart_results = notification_service.send_recommendation_notification(
+                all_to_send,
+                priority_filter=None,
+                notification_mode='smart'
+            )
+            self._record_notifications(db, all_to_send, smart_results, notification_mode='smart')
+            sent_count = len(all_to_send)
+            # Don't add to sent_recommendations again (already added in verbose)
+            logger.info(f"[SMART MODE] Sent {sent_count} notification(s)")
+        else:
+            logger.info("[SMART MODE] No new/changed notifications to send")
+        
+        total_verbose = len(all_for_verbose) if all_for_verbose else 0
+        total_smart = len(all_to_send) if all_to_send else 0
+        
+        if total_verbose > 0 or total_smart > 0:
+            logger.info(f"Total notifications sent: {total_verbose} verbose + {total_smart} smart")
+        else:
+            logger.info("No notifications to send")
         
         return sent_recommendations
     
@@ -500,18 +534,29 @@ class RecommendationScheduler:
         self,
         db: Session,
         recommendations: List[Dict[str, Any]],
-        channel_results: Dict[str, bool]
+        channel_results: Dict[str, bool],
+        notification_mode: str = 'smart'
     ):
-        """Record that notifications were sent."""
+        """
+        Record that notifications were sent.
+        
+        Args:
+            db: Database session
+            recommendations: List of recommendation dicts
+            channel_results: Results from notification service
+            notification_mode: 'verbose' or 'smart'
+        """
         priority_order = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+        telegram_message_id = channel_results.get("telegram_message_id")
         
         for rec in recommendations:
             rec_id = rec.get("id")
             priority = rec.get("priority", "low")
             
-            # Check if this is a priority escalation
+            # Check if this is a priority escalation (only for smart mode)
             last_notif = db.query(RecommendationNotification).filter(
-                RecommendationNotification.recommendation_id == rec_id
+                RecommendationNotification.recommendation_id == rec_id,
+                RecommendationNotification.notification_mode == notification_mode
             ).order_by(RecommendationNotification.sent_at.desc()).first()
             
             notification_type = "new"
@@ -525,12 +570,21 @@ class RecommendationScheduler:
                     notification_type = "update"
             
             # Calculate next notification allowed time based on priority
-            cooldown_minutes = {
-                "urgent": 0,
-                "high": 0,
-                "medium": 30,
-                "low": 60
-            }
+            # For verbose mode, use shorter cooldowns (or no cooldown)
+            if notification_mode == 'verbose':
+                cooldown_minutes = {
+                    "urgent": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0
+                }
+            else:
+                cooldown_minutes = {
+                    "urgent": 0,
+                    "high": 0,
+                    "medium": 30,
+                    "low": 60
+                }
             cooldown = cooldown_minutes.get(priority, 60)
             next_allowed = datetime.utcnow() + timedelta(minutes=cooldown) if cooldown > 0 else None
             
@@ -539,12 +593,225 @@ class RecommendationScheduler:
                 notification_type=notification_type,
                 priority=priority,
                 previous_priority=previous_priority,
+                notification_mode=notification_mode,
                 channels_sent=channel_results,
                 next_notification_allowed_at=next_allowed
             )
             db.add(notification)
+            
+            # === V2: Mark corresponding snapshot as notified ===
+            self._mark_v2_snapshot_notified(
+                db, rec, 
+                telegram_message_id=telegram_message_id,
+                notification_type=notification_type,
+                notification_mode=notification_mode
+            )
         
         db.commit()
+    
+    def _mark_v2_snapshot_notified(
+        self,
+        db: Session,
+        rec: Dict[str, Any],
+        telegram_message_id: int = None,
+        notification_type: str = "new",
+        notification_mode: str = "smart"
+    ):
+        """
+        Mark the latest V2 snapshot as notified.
+        
+        This keeps the V2 model in sync with notifications.
+        
+        Args:
+            db: Database session
+            rec: Recommendation dict
+            telegram_message_id: Message ID from Telegram
+            notification_type: 'new', 'update', 'priority_escalated'
+            notification_mode: 'verbose' or 'smart'
+        """
+        try:
+            from app.modules.strategies.recommendation_models import (
+                PositionRecommendation,
+                RecommendationSnapshot,
+                generate_recommendation_id
+            )
+            from datetime import date
+            
+            context = rec.get("context", {})
+            symbol = context.get("symbol")
+            account_name = context.get("account_name") or context.get("account")
+            source_strike = context.get("current_strike") or context.get("strike_price")
+            source_expiration_str = context.get("current_expiration") or context.get("expiration_date")
+            option_type = context.get("option_type", "call")
+            
+            if not symbol or not source_strike or not source_expiration_str:
+                return
+            
+            # Parse expiration
+            if isinstance(source_expiration_str, str):
+                source_expiration = date.fromisoformat(source_expiration_str)
+            else:
+                source_expiration = source_expiration_str
+            
+            # Generate recommendation ID
+            rec_id = generate_recommendation_id(
+                symbol, float(source_strike), source_expiration, option_type, account_name
+            )
+            
+            # Find the V2 recommendation
+            v2_rec = db.query(PositionRecommendation).filter(
+                PositionRecommendation.recommendation_id == rec_id,
+                PositionRecommendation.status == 'active'
+            ).first()
+            
+            if not v2_rec:
+                return
+            
+            # Get the latest snapshot
+            latest_snapshot = db.query(RecommendationSnapshot).filter(
+                RecommendationSnapshot.recommendation_id == v2_rec.id
+            ).order_by(RecommendationSnapshot.snapshot_number.desc()).first()
+            
+            if latest_snapshot:
+                now = datetime.utcnow()
+                
+                # Update mode-specific fields
+                if notification_mode == 'verbose':
+                    latest_snapshot.verbose_notification_sent = True
+                    latest_snapshot.verbose_notification_at = now
+                elif notification_mode == 'smart':
+                    latest_snapshot.smart_notification_sent = True
+                    latest_snapshot.smart_notification_at = now
+                
+                # Update general fields if this is the first notification
+                if not latest_snapshot.notification_sent:
+                    latest_snapshot.notification_sent = True
+                    latest_snapshot.notification_sent_at = now
+                    latest_snapshot.notification_channel = "telegram"
+                    latest_snapshot.telegram_message_id = telegram_message_id
+                    latest_snapshot.notification_decision = f"sent_{notification_type}"
+                    latest_snapshot.notification_mode = notification_mode
+                    
+                    # Update recommendation stats (only count once per snapshot)
+                    v2_rec.total_notifications_sent = (v2_rec.total_notifications_sent or 0) + 1
+                    v2_rec.updated_at = now
+                elif latest_snapshot.notification_mode and notification_mode not in latest_snapshot.notification_mode:
+                    # Update mode to 'both' if we're adding a second mode
+                    latest_snapshot.notification_mode = 'both'
+                
+                logger.debug(f"[V2_NOTIFY] Marked snapshot #{latest_snapshot.snapshot_number} for {rec_id} as notified ({notification_mode} mode)")
+                
+        except Exception as e:
+            logger.error(f"[V2_NOTIFY] Error marking snapshot as notified: {e}")
+    
+    # =========================================================================
+    # V2-NATIVE NOTIFICATION METHOD
+    # =========================================================================
+    
+    def check_and_notify_v2(self, send_notifications: bool = True, scan_type: str = None):
+        """
+        V2-native recommendation check and notification.
+        
+        This method:
+        1. Runs the V1 recommendation engine (which dual-writes to V2)
+        2. Sends notifications directly from V2 snapshots
+        3. Includes snapshot numbers in notifications for traceability
+        
+        Args:
+            send_notifications: Whether to actually send Telegram notifications
+            scan_type: Optional scan identifier (e.g., '6am', '12pm')
+        """
+        db: Session = SessionLocal()
+        try:
+            logger.info(f"[V2] Running V2-native recommendation check...")
+            
+            # Step 0: Clean up stale recommendations (positions that no longer exist)
+            from app.modules.strategies.recommendation_service import RecommendationService
+            rec_cleanup_service = RecommendationService(db)
+            cleaned_count = rec_cleanup_service.cleanup_stale_recommendations()
+            if cleaned_count > 0:
+                logger.info(f"[V2] Cleaned {cleaned_count} stale recommendations before scan")
+            
+            # Step 1: Generate recommendations via V1 (which dual-writes to V2)
+            service = StrategyService(db)
+            recommendations = service.generate_recommendations({
+                "default_premium": 60,
+                "profit_threshold": 0.80
+            })
+            
+            if recommendations:
+                logger.info(f"[V2] Generated {len(recommendations)} V1 recommendations (dual-written to V2)")
+                
+                # Save to V1 history for backwards compatibility
+                from app.modules.strategies.recommendations import OptionsStrategyRecommendationService
+                rec_service = OptionsStrategyRecommendationService(db)
+                rec_service.save_recommendations_to_history(recommendations, scan_type=scan_type)
+            
+            # Step 2: Get notifications from V2 model (including sell opportunities)
+            from app.modules.strategies.v2_notification_service import get_v2_notification_service
+            v2_service = get_v2_notification_service(db)
+            
+            # Use comprehensive method that includes V2 snapshots + V1 sell opportunities
+            notifications = v2_service.get_all_notifications_to_send(
+                mode='both', 
+                scan_type=scan_type,
+                include_sell_opportunities=True
+            )
+            
+            verbose_count = len(notifications['verbose'])
+            smart_count = len(notifications['smart'])
+            
+            logger.info(f"[V2] Notifications to send: {verbose_count} verbose, {smart_count} smart")
+            
+            if not send_notifications:
+                logger.info("[V2] Notifications disabled, skipping send")
+                return
+            
+            # Step 3: Send notifications
+            notification_service = get_notification_service()
+            
+            # Send VERBOSE mode notification
+            if notifications['verbose']:
+                verbose_message = v2_service.format_telegram_message(
+                    notifications['verbose'], 
+                    mode='verbose'
+                )
+                if verbose_message and notification_service.telegram_enabled:
+                    success, message_id = notification_service._send_telegram(verbose_message)
+                    if success:
+                        logger.info(f"[V2] Sent VERBOSE notification ({verbose_count} items)")
+                        # Mark snapshots as notified
+                        for notif in notifications['verbose']:
+                            v2_service.mark_snapshot_notified(
+                                notif['snapshot_id'], 
+                                mode='verbose',
+                                message_id=message_id
+                            )
+            
+            # Send SMART mode notification
+            if notifications['smart']:
+                smart_message = v2_service.format_telegram_message(
+                    notifications['smart'], 
+                    mode='smart'
+                )
+                if smart_message and notification_service.telegram_enabled:
+                    success, message_id = notification_service._send_telegram(smart_message)
+                    if success:
+                        logger.info(f"[V2] Sent SMART notification ({smart_count} items)")
+                        # Mark snapshots as notified
+                        for notif in notifications['smart']:
+                            v2_service.mark_snapshot_notified(
+                                notif['snapshot_id'], 
+                                mode='smart',
+                                message_id=message_id
+                            )
+            
+            logger.info("[V2] V2-native notification check complete")
+            
+        except Exception as e:
+            logger.error(f"[V2] Error in V2 recommendation check: {e}", exc_info=True)
+        finally:
+            db.close()
     
     # =========================================================================
     # RLHF LEARNING METHODS

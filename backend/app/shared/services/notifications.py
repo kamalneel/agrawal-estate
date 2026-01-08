@@ -81,7 +81,8 @@ class NotificationService:
         self,
         recommendations: List[Dict[str, Any]],
         priority_filter: Optional[str] = None,
-        db_session=None
+        db_session=None,
+        notification_mode: str = None
     ) -> Dict[str, Any]:
         """
         Send notification about new recommendations.
@@ -90,6 +91,7 @@ class NotificationService:
             recommendations: List of recommendation dicts
             priority_filter: Only notify for this priority or higher (e.g., "high")
             db_session: Optional database session for tracking Telegram messages
+            notification_mode: 'verbose', 'smart', or None (no label)
         
         Returns:
             Dict of channel -> success status (with telegram_message_id if applicable)
@@ -111,6 +113,14 @@ class NotificationService:
         # Format message
         message = self._format_recommendations_message(filtered)
         
+        # Add mode header if specified
+        if notification_mode == 'verbose':
+            mode_header = "📢 *VERBOSE MODE* - All Snapshots\n─────────────────────\n\n"
+            message = mode_header + message
+        elif notification_mode == 'smart':
+            mode_header = "🧠 *SMART MODE* - Changes Only\n─────────────────────\n\n"
+            message = mode_header + message
+        
         # Extract recommendation IDs for tracking
         recommendation_ids = [
             r.get("id") or r.get("recommendation_id") 
@@ -120,6 +130,7 @@ class NotificationService:
         
         # Send to all enabled channels
         results = {}
+        results["notification_mode"] = notification_mode
         
         if self.telegram_enabled:
             success, message_id = self._send_telegram(message)

@@ -14,7 +14,7 @@ from decimal import Decimal
 from app.modules.strategies.models import SoldOption, SoldOptionsSnapshot, OptionPremiumSetting, StrategyRecommendationRecord
 from app.modules.strategies.services import get_sold_options_by_account, calculate_4_week_average_premiums
 from app.modules.strategies.option_monitor import OptionRollMonitor, get_positions_from_db
-from sqlalchemy import text
+from sqlalchemy import text, or_
 import json
 import logging
 
@@ -612,7 +612,9 @@ class OptionsStrategyRecommendationService:
     
     def save_recommendations_to_history(
         self, 
-        recommendations: List[StrategyRecommendation]
+        recommendations: List[StrategyRecommendation],
+        scan_type: str = None,
+        enable_dual_write: bool = True
     ) -> int:
         """
         Save recommendations to the database for history tracking.
@@ -620,11 +622,15 @@ class OptionsStrategyRecommendationService:
         
         Uses INSERT ON CONFLICT to handle duplicates gracefully.
         The database has a UNIQUE constraint on recommendation_id.
+        
+        With enable_dual_write=True, also writes to the new V2 tables
+        (position_recommendations + recommendation_snapshots).
         """
         from sqlalchemy.dialects.postgresql import insert
         from sqlalchemy import inspect
         
         saved_count = 0
+        dual_write_results = []  # Track (recommendation, snapshot, should_notify)
         
         for rec in recommendations:
             # Extract symbol and account from context if available
@@ -667,9 +673,12 @@ class OptionsStrategyRecommendationService:
                 "priority": insert_stmt.excluded.priority,
                 "potential_income": insert_stmt.excluded.potential_income,
                 "context_snapshot": insert_stmt.excluded.context_snapshot,
-                # Reset to "new" status and update timestamp
+                # Reset to "new" status
                 "status": "new",
+                # UPDATE created_at so recurring recommendations appear under "Today" in web UI
+                # This ensures web UI matches what was sent to Telegram
                 "created_at": insert_stmt.excluded.created_at,
+                # Only update expires_at if it's being extended
                 "expires_at": insert_stmt.excluded.expires_at,
                 # Clear any previous acknowledgment
                 "acknowledged_at": None,
@@ -688,18 +697,245 @@ class OptionsStrategyRecommendationService:
                     logger.info(f"[SAVE_REC] ✅ SAVED/UPDATED: {rec.id} (type={rec.type}, priority={rec.priority})")
                 else:
                     logger.warning(f"[SAVE_REC] ⚠️ No rows affected for: {rec.id}")
+                
+                # === DUAL WRITE to V2 tables ===
+                if enable_dual_write:
+                    dual_result = self._dual_write_to_v2(rec, scan_type)
+                    if dual_result:
+                        dual_write_results.append(dual_result)
+                        
             except Exception as exec_error:
                 logger.error(f"[SAVE_REC] ❌ ERROR executing upsert for {rec.id}: {exec_error}")
         
         try:
             self.db.commit()
             logger.info(f"[SAVE_REC] ═══ SAVE COMPLETE: {saved_count} recommendations saved/updated ═══")
+            if enable_dual_write and dual_write_results:
+                logger.info(f"[SAVE_REC] V2 dual-write: {len(dual_write_results)} snapshots created")
         except Exception as e:
             logger.error(f"Error saving recommendations: {e}")
             self.db.rollback()
             saved_count = 0
         
         return saved_count
+    
+    def _dual_write_to_v2(
+        self,
+        rec: StrategyRecommendation,
+        scan_type: str = None
+    ):
+        """
+        Write recommendation to the new V2 tables (position_recommendations + snapshots).
+        
+        This enables the new snapshot-based tracking while maintaining
+        backward compatibility with the legacy table.
+        """
+        try:
+            from app.modules.strategies.recommendation_models import (
+                PositionRecommendation,
+                RecommendationSnapshot,
+                generate_recommendation_id
+            )
+            from datetime import datetime, date
+            from decimal import Decimal
+            
+            context = rec.context or {}
+            
+            # Only process option-related recommendations that have position identity
+            if not context.get('symbol'):
+                return None
+            
+            # Extract position identity
+            symbol = context.get('symbol')
+            account_name = context.get('account_name') or context.get('account', 'Unknown')
+            
+            # Get source position details (what we're advising on)
+            source_strike = context.get('current_strike') or context.get('strike_price')
+            # Try multiple keys for expiration (different recommendation types use different keys)
+            source_expiration_str = (
+                context.get('current_expiration') or 
+                context.get('expiration_date') or
+                context.get('expiration')  # Used by roll_options recommendations
+            )
+            option_type = context.get('option_type', 'call')
+            
+            # Skip if we don't have required fields
+            if not source_strike or not source_expiration_str:
+                logger.debug(f"[DUAL_WRITE] Skipping {rec.id}: missing source_strike or source_expiration")
+                return None
+            
+            # Parse expiration date
+            if isinstance(source_expiration_str, str):
+                source_expiration = date.fromisoformat(source_expiration_str)
+            elif isinstance(source_expiration_str, date):
+                source_expiration = source_expiration_str
+            else:
+                logger.debug(f"[DUAL_WRITE] Skipping {rec.id}: invalid expiration format")
+                return None
+            
+            # Generate stable recommendation ID
+            rec_id = generate_recommendation_id(
+                symbol=symbol,
+                account_name=account_name,
+                strike=float(source_strike),
+                expiration=source_expiration,
+                option_type=option_type
+            )
+            
+            # Find or create recommendation
+            existing = self.db.query(PositionRecommendation).filter(
+                PositionRecommendation.recommendation_id == rec_id,
+                PositionRecommendation.status == 'active'
+            ).first()
+            
+            if existing:
+                recommendation = existing
+                snapshot_number = (recommendation.total_snapshots or 0) + 1
+            else:
+                # Create new recommendation
+                recommendation = PositionRecommendation(
+                    recommendation_id=rec_id,
+                    symbol=symbol,
+                    account_name=account_name,
+                    source_strike=Decimal(str(source_strike)),
+                    source_expiration=source_expiration,
+                    option_type=option_type,
+                    source_contracts=context.get('contracts'),
+                    source_original_premium=Decimal(str(context.get('original_premium'))) if context.get('original_premium') else None,
+                    status='active',
+                    first_detected_at=datetime.utcnow(),
+                    total_snapshots=0,
+                    total_notifications_sent=0,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                self.db.add(recommendation)
+                self.db.flush()
+                snapshot_number = 1
+            
+            # Get previous snapshot for change detection
+            prev_snapshot = None
+            if recommendation.id:
+                prev_snapshot = self.db.query(RecommendationSnapshot).filter(
+                    RecommendationSnapshot.recommendation_id == recommendation.id
+                ).order_by(RecommendationSnapshot.snapshot_number.desc()).first()
+            
+            # Determine action from recommendation type
+            action = rec.action_type.upper() if rec.action_type else 'UNKNOWN'
+            if 'roll' in rec.type.lower():
+                action = 'ROLL_WEEKLY'
+            elif 'itm' in rec.type.lower():
+                action = 'ROLL_ITM'
+            elif 'pull_back' in rec.type.lower():
+                action = 'PULL_BACK'
+            elif 'close' in rec.type.lower():
+                action = 'CLOSE'
+            
+            # Detect changes
+            action_changed = prev_snapshot and prev_snapshot.recommended_action != action
+            target_strike = context.get('new_strike') or context.get('target_strike')
+            target_expiration_str = context.get('new_expiration') or context.get('target_expiration')
+            target_expiration = None
+            if target_expiration_str:
+                if isinstance(target_expiration_str, str):
+                    target_expiration = date.fromisoformat(target_expiration_str)
+                elif isinstance(target_expiration_str, date):
+                    target_expiration = target_expiration_str
+            
+            target_changed = prev_snapshot and (
+                prev_snapshot.target_strike != (Decimal(str(target_strike)) if target_strike else None) or
+                prev_snapshot.target_expiration != target_expiration
+            )
+            priority_changed = prev_snapshot and prev_snapshot.priority != rec.priority
+            
+            # Create snapshot
+            snapshot = RecommendationSnapshot(
+                recommendation_id=recommendation.id,
+                snapshot_number=snapshot_number,
+                evaluated_at=datetime.utcnow(),
+                scan_type=scan_type,
+                
+                recommended_action=action,
+                priority=rec.priority,
+                decision_state=action,
+                reason=rec.rationale,
+                
+                target_strike=Decimal(str(target_strike)) if target_strike else None,
+                target_expiration=target_expiration,
+                target_premium=Decimal(str(context.get('target_premium'))) if context.get('target_premium') else None,
+                net_cost=Decimal(str(context.get('net_cost'))) if context.get('net_cost') else None,
+                
+                current_premium=Decimal(str(context.get('current_premium') or context.get('buy_back_cost'))) if context.get('current_premium') or context.get('buy_back_cost') else None,
+                profit_pct=Decimal(str(context.get('profit_percent'))) if context.get('profit_percent') else None,
+                is_itm=context.get('is_itm', False),
+                itm_pct=Decimal(str(context.get('itm_percent'))) if context.get('itm_percent') else None,
+                
+                stock_price=Decimal(str(context.get('current_price'))) if context.get('current_price') else None,
+                
+                action_changed=action_changed,
+                target_changed=target_changed,
+                priority_changed=priority_changed,
+                previous_action=prev_snapshot.recommended_action if prev_snapshot else None,
+                previous_target_strike=prev_snapshot.target_strike if prev_snapshot else None,
+                previous_target_expiration=prev_snapshot.target_expiration if prev_snapshot else None,
+                previous_priority=prev_snapshot.priority if prev_snapshot else None,
+                
+                full_context=context,
+                notification_sent=False,
+                
+                created_at=datetime.utcnow()
+            )
+            
+            self.db.add(snapshot)
+            
+            # Update recommendation stats
+            recommendation.total_snapshots = snapshot_number
+            recommendation.last_snapshot_at = snapshot.evaluated_at
+            recommendation.updated_at = datetime.utcnow()
+            
+            logger.info(f"[DUAL_WRITE] ✅ Created snapshot #{snapshot_number} for {rec_id}")
+            
+            # Determine if should notify
+            should_notify = self._should_notify_v2(snapshot, prev_snapshot, rec.priority)
+            
+            return (recommendation, snapshot, should_notify)
+            
+        except Exception as e:
+            logger.error(f"[DUAL_WRITE] ❌ Error for {rec.id}: {e}", exc_info=True)
+            return None
+    
+    def _should_notify_v2(
+        self,
+        snapshot,
+        prev_snapshot,
+        priority: str
+    ) -> bool:
+        """Determine if V2 snapshot should trigger notification."""
+        # No action recommendations don't notify
+        if snapshot.recommended_action in ('NO_ACTION', 'HOLD'):
+            return False
+        
+        # First snapshot: notify
+        if prev_snapshot is None:
+            return True
+        
+        # Action changed: notify
+        if snapshot.action_changed:
+            return True
+        
+        # Target changed significantly: notify
+        if snapshot.target_changed:
+            return True
+        
+        # Priority escalated: notify
+        if snapshot.priority_changed:
+            priority_order = {'urgent': 0, 'high': 1, 'medium': 2, 'low': 3}
+            current = priority_order.get(snapshot.priority, 99)
+            previous = priority_order.get(snapshot.previous_priority, 99)
+            if current < previous:
+                return True
+        
+        return False
 
 
 def get_recommendation_history(
@@ -708,11 +944,19 @@ def get_recommendation_history(
     strategy_type: Optional[str] = None,
     priority: Optional[str] = None,
     symbol: Optional[str] = None,
+    notification_mode: Optional[str] = None,
     days_back: int = 30,
     limit: int = 100
 ) -> List[StrategyRecommendationRecord]:
     """
     Fetch recommendation history with optional filters.
+    
+    Args:
+        notification_mode: Filter by notification mode
+            - 'verbose': Only verbose mode notifications
+            - 'smart': Only smart mode notifications
+            - 'both': Only notifications sent in both modes
+            - None/'all': All notifications (no filter)
     """
     query = db.query(StrategyRecommendationRecord)
     
@@ -725,6 +969,20 @@ def get_recommendation_history(
         query = query.filter(StrategyRecommendationRecord.priority == priority)
     if symbol:
         query = query.filter(StrategyRecommendationRecord.symbol == symbol)
+    
+    # Notification mode filter
+    # - 'verbose' = show ALL records (verbose means every evaluation)
+    # - 'smart' = show only records that had changes or are new (smarter filtering)
+    # - 'all' or None = show all records (default)
+    # Note: 'verbose' and 'all' both show everything - no filter applied
+    if notification_mode and notification_mode.lower() == 'smart':
+        # Smart mode shows only records marked as smart or legacy records (which are implicitly smart)
+        query = query.filter(
+            or_(
+                StrategyRecommendationRecord.notification_mode.in_(['smart', 'both']),
+                StrategyRecommendationRecord.notification_mode.is_(None)  # Legacy records
+            )
+        )
     
     # Date filter
     cutoff = datetime.utcnow() - timedelta(days=days_back)

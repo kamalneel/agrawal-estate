@@ -17,6 +17,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.modules.strategies.models import SoldOptionsSnapshot, SoldOption
+from app.core.timezone import format_datetime_for_api
 
 
 def parse_options_screenshot_with_ai(image_data: bytes, source: str = "robinhood") -> Tuple[List[Dict], str]:
@@ -322,7 +323,7 @@ def get_current_sold_options(db: Session, source: Optional[str] = None) -> Dict:
             "source": latest_snapshot.source,
             "account_name": latest_snapshot.account_name,
             "snapshot_date": latest_snapshot.snapshot_date.isoformat(),
-            "created_at": latest_snapshot.created_at.isoformat()
+            "created_at": format_datetime_for_api(latest_snapshot.created_at)
         },
         "options": [
             {

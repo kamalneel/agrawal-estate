@@ -1,10 +1,17 @@
 """
 Robinhood PDF Statement Parser.
 
-Parses Robinhood monthly/quarterly statements to extract:
-- Account information (owner, type)
-- Current holdings/positions
-- Account value summary
+NOTE: Robinhood account statement PDFs provide NO VALUE to this system.
+
+All data we need is already available from better sources:
+- Current holdings → Paste data (real-time)
+- Portfolio value → Calculated from holdings + Shor API (real-time prices)
+- Transaction history → CSV exports
+- Dividend income → CSV exports
+- Options positions → Paste data
+
+This parser intentionally does NOT extract any data from Robinhood PDFs.
+It recognizes them only to skip them gracefully with a clear message.
 """
 
 import re
@@ -64,162 +71,28 @@ class RobinhoodPDFParser(BaseParser):
         return False
     
     def parse(self, file_path: Path) -> ParseResult:
-        """Parse Robinhood PDF statement and extract holdings."""
-        import pdfplumber
+        """
+        Robinhood account statement PDFs provide no value - skip them.
         
-        records = []
-        warnings = []
-        errors = []
-        metadata = {
-            "file_type": "pdf_statement",
-            "source": "robinhood",
-        }
-        
-        try:
-            with pdfplumber.open(file_path) as pdf:
-                # MULTI-ACCOUNT SUPPORT: Scan all pages for account headers
-                # A single PDF may contain multiple accounts (e.g., IRA + Roth IRA)
-                accounts = self._detect_accounts_in_pdf(pdf)
-                
-                # Get statement date from first page
-                first_page_text = pdf.pages[0].extract_text() or ""
-                statement_date = self._extract_statement_date(first_page_text)
-                
-                # Get owner from filename if not in PDF
-                owner_from_file, type_from_file = self._parse_filename(file_path.name)
-                
-                # If no accounts detected, fall back to single-account mode
-                if not accounts:
-                    owner, account_type, account_number = self._extract_account_info(first_page_text)
-                    if owner == "Unknown":
-                        owner = owner_from_file
-                    if account_type == "brokerage" and type_from_file != "brokerage":
-                        account_type = type_from_file
-                    
-                    portfolio_value, cash_balance, securities_value = self._extract_portfolio_values(first_page_text)
-                    accounts = [{
-                        "owner": owner,
-                        "account_type": account_type,
-                        "account_number": account_number,
-                        "start_page": 0,
-                        "end_page": len(pdf.pages),
-                        "portfolio_value": portfolio_value,
-                        "cash_balance": cash_balance,
-                    }]
-                
-                metadata["owner"] = accounts[0]["owner"] if accounts else "Unknown"
-                metadata["account_type"] = accounts[0]["account_type"] if accounts else "brokerage"
-                metadata["account_number"] = accounts[0].get("account_number", "")
-                metadata["accounts_found"] = len(accounts)
-                
-                total_holdings = 0
-                
-                # Process each account separately
-                for acct in accounts:
-                    owner = acct["owner"]
-                    if owner == "Unknown":
-                        owner = owner_from_file
-                    
-                    account_type = acct["account_type"]
-                    account_number = acct.get("account_number", "")
-                    
-                    # Create unique account_id for each account type
-                    if account_type == "roth_ira":
-                        account_id = f"{owner.lower()}_roth_ira"
-                        account_name = f"{owner}'s Roth IRA"
-                    elif account_type == "ira" or account_type == "traditional_ira":
-                        account_id = f"{owner.lower()}_ira"
-                        account_name = f"{owner}'s IRA"
-                    elif account_type == "brokerage":
-                        account_id = f"{owner.lower()}_brokerage"
-                        account_name = f"{owner}'s Brokerage"
-                    else:
-                        account_id = f"{owner.lower()}_{account_type}"
-                        account_name = f"{owner}'s {account_type.replace('_', ' ').title()}"
-                    
-                    # Extract holdings for this account's page range
-                    holdings = self._extract_holdings_from_page_range(
-                        pdf, acct["start_page"], acct["end_page"]
-                    )
-                    
-                    # Create records for each holding
-                    for holding in holdings:
-                        if self._is_option(holding.get("symbol", "")):
-                            continue
-                        
-                        record_data = {
-                            "source": "robinhood",
-                            "account_name": account_name,
-                            "account_id": account_id,
-                            "owner": owner,
-                            "account_type": account_type,
-                            "symbol": holding["symbol"],
-                            "quantity": holding["quantity"],
-                            "name": holding.get("name"),
-                            "description": holding.get("name"),
-                            "market_value": holding.get("market_value"),
-                            "current_price": holding.get("price"),
-                            "as_of_date": statement_date,
-                            "statement_date": statement_date,
-                        }
-                        
-                        records.append(ParsedRecord(
-                            record_type=RecordType.HOLDING,
-                            data=record_data,
-                            source_row=0
-                        ))
-                        total_holdings += 1
-                    
-                    # Get portfolio value - from detected account or calculate from holdings
-                    portfolio_value = acct.get("portfolio_value", 0)
-                    cash_balance = acct.get("cash_balance")
-                    calculated_value = sum(h.get("market_value", 0) or 0 for h in holdings)
-                    
-                    if not portfolio_value and calculated_value > 0:
-                        portfolio_value = calculated_value
-                    
-                    # If portfolio value includes cash + securities, use the higher value
-                    if portfolio_value and calculated_value > portfolio_value:
-                        portfolio_value = calculated_value
-                    
-                    # Create account summary record
-                    if statement_date and portfolio_value:
-                        summary_data = {
-                            "source": "robinhood",
-                            "account_id": account_id,
-                            "owner": owner,
-                            "account_type": account_type,
-                            "statement_date": statement_date,
-                            "portfolio_value": portfolio_value,
-                            "cash_balance": cash_balance,
-                            "securities_value": calculated_value,
-                        }
-                        records.append(ParsedRecord(
-                            record_type=RecordType.ACCOUNT_SUMMARY,
-                            data=summary_data,
-                            source_row=0
-                        ))
-                    metadata["statement_date"] = statement_date.isoformat()
-                    metadata["portfolio_value"] = portfolio_value
-                
-                if len([r for r in records if r.record_type == RecordType.HOLDING]) == 0:
-                    warnings.append("No holdings found in PDF. The account may be empty or the format is not recognized.")
-                
-                metadata["holdings_count"] = len([r for r in records if r.record_type == RecordType.HOLDING])
-                
-        except ImportError:
-            errors.append("pdfplumber library not installed. Run: pip install pdfplumber")
-        except Exception as e:
-            errors.append(f"Error parsing PDF: {str(e)}")
-        
+        All Robinhood data is better obtained from:
+        - Paste data: Current holdings and options (real-time)
+        - CSV exports: Transaction history-and dividend income
+        - Shor API: Real-time prices for portfolio valuation
+        """
         return ParseResult(
-            success=len(errors) == 0 and len(records) > 0,
+            success=True,  # Not an error, just nothing to extract
             source_name=self.source_name,
             file_path=file_path,
-            records=records,
-            warnings=warnings,
-            errors=errors,
-            metadata=metadata
+            records=[],
+            warnings=["Robinhood account statement PDFs are skipped - no useful data. "
+                     "Use paste data for holdings and CSV exports for transactions."],
+            errors=[],
+            metadata={
+                "file_type": "pdf_statement",
+                "source": "robinhood",
+                "skipped": True,
+                "reason": "Robinhood PDFs provide no value; data available from better sources",
+            }
         )
     
     def _extract_account_info(self, text: str) -> Tuple[str, str, str]:

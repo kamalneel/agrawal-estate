@@ -15,6 +15,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Centralized timezone handling - import from core
+from app.core.timezone import format_datetime_for_api as _format_dt_as_utc
+
 from app.core.database import get_db
 from app.core.auth import get_current_user
 from app.modules.strategies.models import SoldOptionsSnapshot, SoldOption
@@ -194,8 +197,10 @@ class MonthlyActual(BaseModel):
     spending: float
     income: float
     options_income: float
-    interest_income: float
-    salary_income: float
+    dividend_income: float  # Separate dividend income
+    interest_income: float  # Separate interest income (not including dividends)
+    rental_income: float  # Separate rental income
+    salary_income: float  # Salary only (not including rental)
     net_cash_flow: float  # income - spending
     cumulative_net: float  # running total of net cash flow
     cumulative_spending: float
@@ -514,8 +519,10 @@ async def get_buy_borrow_die_actuals(
             spending=round(spending, 2),
             income=round(total_month_income, 2),
             options_income=round(options_income, 2),
-            interest_income=round(interest_income + dividend_income, 2),  # Combine for display
-            salary_income=round(salary_income + rental_income, 2),  # Combine salary + rental
+            dividend_income=round(dividend_income, 2),  # Separate dividend income
+            interest_income=round(interest_income, 2),  # Separate interest income
+            rental_income=round(rental_income, 2),  # Separate rental income
+            salary_income=round(salary_income, 2),  # Salary only (not including rental)
             net_cash_flow=round(net_cash_flow, 2),
             cumulative_net=round(cumulative_net, 2),
             cumulative_spending=round(cumulative_spending, 2),
@@ -1262,7 +1269,7 @@ async def list_options_snapshots(
                 "snapshot_date": s.snapshot_date.isoformat(),
                 "parsing_status": s.parsing_status,
                 "options_count": len(s.options) if s.options else 0,
-                "created_at": s.created_at.isoformat()
+                "created_at": _format_dt_as_utc(s.created_at)
             }
             for s in snapshots
         ]
@@ -2852,6 +2859,7 @@ async def get_notification_history(
     strategy_type: Optional[str] = Query(None, description="Filter by strategy type"),
     priority: Optional[str] = Query(None, description="Filter by priority: urgent, high, medium, low"),
     symbol: Optional[str] = Query(None, description="Filter by stock symbol"),
+    notification_mode: Optional[str] = Query(None, description="Filter by notification mode: verbose, smart, or all (default: all)"),
     days_back: int = Query(30, description="Number of days to look back"),
     limit: int = Query(100, description="Maximum number of records to return"),
     db: Session = Depends(get_db),
@@ -2860,6 +2868,11 @@ async def get_notification_history(
     """
     Get historical notifications/recommendations with optional filters.
     Returns records sorted by created_at (most recent first).
+    
+    notification_mode:
+    - 'verbose': Shows ALL snapshots (every evaluation)
+    - 'smart': Shows only new/changed recommendations
+    - None/'all': Shows everything (default)
     """
     from app.modules.strategies.recommendations import get_recommendation_history
     
@@ -2869,22 +2882,13 @@ async def get_notification_history(
         strategy_type=strategy_type,
         priority=priority,
         symbol=symbol,
+        notification_mode=notification_mode,
         days_back=days_back,
         limit=limit
     )
     
     # Convert to dict format
     history = []
-    # Helper to format naive datetime as UTC ISO string
-    def format_utc(dt):
-        """Format datetime as UTC ISO string with Z suffix for proper JS interpretation."""
-        if dt is None:
-            return None
-        # If naive, assume it's UTC and append Z
-        if dt.tzinfo is None:
-            return dt.isoformat() + 'Z'
-        # If already timezone-aware, convert to ISO
-        return dt.isoformat()
     
     for rec in records:
         # Extract account_name from context_snapshot if not set in record
@@ -2916,13 +2920,14 @@ async def get_notification_history(
             "account_name": account_name,
             "status": rec.status,
             "context": rec.context_snapshot,
-            "created_at": format_utc(rec.created_at),
-            "expires_at": format_utc(rec.expires_at),
-            "acknowledged_at": format_utc(rec.acknowledged_at),
-            "acted_at": format_utc(rec.acted_at),
-            "dismissed_at": format_utc(rec.dismissed_at),
+            "created_at": _format_dt_as_utc(rec.created_at),
+            "expires_at": _format_dt_as_utc(rec.expires_at),
+            "acknowledged_at": _format_dt_as_utc(rec.acknowledged_at),
+            "acted_at": _format_dt_as_utc(rec.acted_at),
+            "dismissed_at": _format_dt_as_utc(rec.dismissed_at),
             "notification_sent": rec.notification_sent,
-            "notification_sent_at": format_utc(rec.notification_sent_at),
+            "notification_sent_at": _format_dt_as_utc(rec.notification_sent_at),
+            "notification_mode": getattr(rec, 'notification_mode', None),
         })
     
     return {
@@ -2933,8 +2938,181 @@ async def get_notification_history(
             "strategy_type": strategy_type,
             "priority": priority,
             "symbol": symbol,
+            "notification_mode": notification_mode,
             "days_back": days_back
         }
+    }
+
+
+@router.get("/notifications/v2/current")
+async def get_v2_current_notifications(
+    mode: str = Query("all", description="Filter mode: verbose, smart, or all"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get current V2 notifications - same data as Telegram receives.
+    
+    This returns all active V2 recommendations with their latest snapshots,
+    formatted identically to what the Telegram bot sends.
+    
+    mode:
+    - 'verbose': All active recommendations (every snapshot)
+    - 'smart': Only new/changed recommendations  
+    - 'all': Everything (same as verbose)
+    """
+    from app.modules.strategies.v2_notification_service import get_v2_notification_service
+    
+    v2_service = get_v2_notification_service(db)
+    
+    # Get notifications using the same logic as Telegram
+    notifications = v2_service.get_all_notifications_to_send(
+        mode='both' if mode == 'all' else mode,
+        include_sell_opportunities=True
+    )
+    
+    # Combine verbose and smart, removing duplicates
+    all_notifs = []
+    seen_ids = set()
+    
+    for notif in notifications.get('verbose', []):
+        if notif['id'] not in seen_ids:
+            notif['notification_mode'] = 'verbose'
+            all_notifs.append(notif)
+            seen_ids.add(notif['id'])
+    
+    # For smart mode filter, only show smart notifications
+    if mode == 'smart':
+        smart_ids = {n['id'] for n in notifications.get('smart', [])}
+        all_notifs = [n for n in all_notifs if n['id'] in smart_ids]
+        for notif in all_notifs:
+            notif['notification_mode'] = 'smart'
+    
+    # Format timestamps
+    for notif in all_notifs:
+        if notif.get('created_at'):
+            # Already in ISO format from service
+            pass
+        if notif.get('evaluated_at'):
+            pass
+    
+    return {
+        "history": all_notifs,
+        "count": len(all_notifs),
+        "mode": mode,
+        "v2_enabled": True,
+        "source": "v2_snapshots",
+        "verbose_count": len(notifications.get('verbose', [])),
+        "smart_count": len(notifications.get('smart', [])),
+    }
+
+
+@router.get("/notifications/v2/history")
+async def get_v2_notification_history(
+    mode: str = Query("all", description="Filter mode: verbose, smart, or all"),
+    status: Optional[str] = Query(None, description="Filter by rec status: active, resolved"),
+    symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    days_back: int = Query(30, description="Number of days to look back"),
+    limit: int = Query(100, description="Maximum records"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get V2 notification history with snapshot information.
+    
+    This returns notifications based on the V2 recommendation/snapshot model,
+    including snapshot numbers and change tracking.
+    
+    mode:
+    - 'verbose': All snapshots that were notified in verbose mode
+    - 'smart': Only snapshots notified in smart mode  
+    - 'all': Everything
+    """
+    from app.modules.strategies.recommendation_models import (
+        PositionRecommendation,
+        RecommendationSnapshot
+    )
+    from datetime import timedelta
+    
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    
+    # Build query
+    query = db.query(RecommendationSnapshot).join(
+        PositionRecommendation
+    ).filter(
+        RecommendationSnapshot.evaluated_at >= cutoff
+    )
+    
+    # Filter by mode - interpret like notification display modes, not database flags
+    # 'verbose' = show ALL snapshots (every evaluation, like verbose mode shows everything)
+    # 'smart' = only snapshots where something changed (like smart mode only shows changes)  
+    # 'all' = same as verbose
+    if mode == 'smart':
+        # Smart mode: only show snapshots where action, target, or priority changed
+        from sqlalchemy import or_
+        query = query.filter(
+            or_(
+                RecommendationSnapshot.action_changed == True,
+                RecommendationSnapshot.target_changed == True,
+                RecommendationSnapshot.priority_changed == True,
+                RecommendationSnapshot.snapshot_number == 1  # First snapshot is always "new"
+            )
+        )
+    # 'verbose' and 'all' show everything - no additional filter
+    
+    # Filter by status
+    if status:
+        query = query.filter(PositionRecommendation.status == status)
+    
+    # Filter by symbol
+    if symbol:
+        query = query.filter(PositionRecommendation.symbol.ilike(f"%{symbol}%"))
+    
+    # Order and limit
+    snapshots = query.order_by(
+        RecommendationSnapshot.evaluated_at.desc()
+    ).limit(limit).all()
+    
+    # Use v2_notification_service for consistent formatting
+    from app.modules.strategies.v2_notification_service import get_v2_notification_service
+    v2_service = get_v2_notification_service(db)
+    
+    # Format results using the same logic as /current endpoint
+    history = []
+    for snap in snapshots:
+        rec = snap.recommendation
+        
+        # Use the notification service to build the item - ensures consistent formatting
+        notif_item = v2_service._build_notification_item(rec, snap)
+        
+        # Add history-specific fields and ensure timestamps are formatted correctly
+        notif_item.update({
+            # History-specific identity fields
+            "id": f"v2_{rec.recommendation_id}_snap{snap.snapshot_number}",
+            "recommendation_id": rec.recommendation_id,
+            "v2_recommendation_id": rec.id,
+            "snapshot_id": snap.id,
+            
+            # Override timestamps with proper UTC formatting
+            "evaluated_at": _format_dt_as_utc(snap.evaluated_at),
+            "notification_sent_at": _format_dt_as_utc(snap.notification_sent_at),
+            "created_at": _format_dt_as_utc(snap.created_at),
+            
+            # Status fields  
+            "status": rec.status,
+            "recommendation_status": rec.status,
+            "notification_mode": snap.notification_mode,
+            "verbose_notification_sent": snap.verbose_notification_sent,
+            "smart_notification_sent": snap.smart_notification_sent,
+        })
+        
+        history.append(notif_item)
+    
+    return {
+        "history": history,
+        "count": len(history),
+        "mode": mode,
+        "v2_enabled": True,
     }
 
 
@@ -3255,7 +3433,7 @@ async def get_feedback_history(
                 "account_name": r.account_name,
                 "sentiment": r.sentiment,
                 "actionable_insight": r.actionable_insight,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": _format_dt_as_utc(r.created_at),
             }
             for r in records
         ],

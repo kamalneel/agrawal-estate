@@ -38,11 +38,16 @@ interface Match {
     strike: number;
     expiration: string;
     premium: number;
+    contracts: number | null;
+    account: string | null;
     priority: string;
+    date: string | null;
+    time: string | null;
   } | null;
   execution: {
     id: number;
     date: string;
+    time: string | null;
     action: string;
     symbol: string;
     strike: number;
@@ -54,6 +59,7 @@ interface Match {
   modification: any;
   hours_to_execution: number;
   user_reason: string;
+  reviewed_at: string | null;
   week: string;
 }
 
@@ -117,6 +123,7 @@ export default function LearningDashboard() {
   
   // Data states
   const [matches, setMatches] = useState<Match[]>([]);
+  const [unreviewedCount, setUnreviewedCount] = useState<number>(0);
   const [weeklySummaries, setWeeklySummaries] = useState<WeeklySummary[]>([]);
   const [v4Candidates, setV4Candidates] = useState<V4Candidate[]>([]);
   const [divergenceAnalytics, setDivergenceAnalytics] = useState<DivergenceAnalytics | null>(null);
@@ -127,7 +134,10 @@ export default function LearningDashboard() {
   
   // Actions
   const [reconciling, setReconciling] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [decidingCandidate, setDecidingCandidate] = useState<string | null>(null);
+  const [reconcileDays, setReconcileDays] = useState<number>(1); // Default: yesterday only
+  const [showReconcileOptions, setShowReconcileOptions] = useState(false);
 
   useEffect(() => {
     fetchAllData();
@@ -151,13 +161,44 @@ export default function LearningDashboard() {
   const fetchMatches = async (filter: string) => {
     try {
       const url = filter === 'all' 
-        ? '/api/v1/strategies/learning/matches?limit=50'
-        : `/api/v1/strategies/learning/matches?limit=50&match_type=${filter}`;
+        ? '/api/v1/strategies/learning/matches?limit=100'
+        : `/api/v1/strategies/learning/matches?limit=100&match_type=${filter}`;
       const response = await fetch(url, { headers: getAuthHeaders() });
       const data = await response.json();
       setMatches(data.matches || []);
+      setUnreviewedCount(data.unreviewed_count || 0);
     } catch (error) {
       console.error('Error fetching matches:', error);
+    }
+  };
+
+  const markAsReviewed = async (matchId: number) => {
+    try {
+      await fetch(`/api/v1/strategies/learning/matches/${matchId}/review`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+      });
+      // Update local state
+      setMatches(prev => prev.map(m => 
+        m.id === matchId ? { ...m, reviewed_at: new Date().toISOString() } : m
+      ));
+      setUnreviewedCount(prev => Math.max(0, prev - 1));
+    } catch (error) {
+      console.error('Error marking match as reviewed:', error);
+    }
+  };
+
+  const markAllAsReviewed = async () => {
+    try {
+      await fetch('/api/v1/strategies/learning/matches/review-all', {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+      });
+      // Update local state
+      setMatches(prev => prev.map(m => ({ ...m, reviewed_at: new Date().toISOString() })));
+      setUnreviewedCount(0);
+    } catch (error) {
+      console.error('Error marking all as reviewed:', error);
     }
   };
 
@@ -199,19 +240,51 @@ export default function LearningDashboard() {
 
   const triggerReconciliation = async () => {
     setReconciling(true);
+    setShowReconcileOptions(false);
     try {
-      const response = await fetch('/api/v1/strategies/learning/reconcile', {
+      const url = reconcileDays === 1
+        ? '/api/v1/strategies/learning/reconcile'
+        : `/api/v1/strategies/learning/reconcile?days_back=${reconcileDays}`;
+      const response = await fetch(url, {
         method: 'POST',
         headers: getAuthHeaders(),
       });
       const data = await response.json();
-      alert(`Reconciliation complete: ${data.result.matches_saved} matches saved`);
+      const matchCount = reconcileDays === 1 
+        ? data.result?.matches_saved || 0
+        : data.total_matches_saved || 0;
+      const message = reconcileDays === 1
+        ? `Reconciliation complete: ${matchCount} matches saved for yesterday`
+        : `Reconciliation complete: ${matchCount} matches saved across ${data.days_reconciled} days`;
+      alert(message);
       await fetchAllData();
     } catch (error) {
       console.error('Error triggering reconciliation:', error);
       alert('Failed to trigger reconciliation');
     } finally {
       setReconciling(false);
+    }
+  };
+
+  const clearAllMatches = async () => {
+    if (!confirm('⚠️ This will delete ALL RLHF match data. Are you sure?')) {
+      return;
+    }
+    
+    setClearing(true);
+    try {
+      const response = await fetch('/api/v1/strategies/learning/clear-matches', {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+      const data = await response.json();
+      alert(`Cleared ${data.deleted?.matches || 0} matches. Ready for fresh reconciliation.`);
+      await fetchAllData();
+    } catch (error) {
+      console.error('Error clearing matches:', error);
+      alert('Failed to clear matches');
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -292,14 +365,98 @@ export default function LearningDashboard() {
             </p>
           </div>
         </div>
-        <button 
-          onClick={triggerReconciliation} 
-          className={styles.reconcileButton}
-          disabled={reconciling}
-        >
-          <RefreshCw size={18} className={reconciling ? styles.spinning : ''} />
-          {reconciling ? 'Reconciling...' : 'Run Reconciliation'}
-        </button>
+        <div style={{ position: 'relative', display: 'flex', gap: '0' }}>
+          <button 
+            onClick={triggerReconciliation} 
+            className={styles.reconcileButton}
+            disabled={reconciling}
+            style={{ borderRadius: '8px 0 0 8px' }}
+          >
+            <RefreshCw size={18} className={reconciling ? styles.spinning : ''} />
+            {reconciling ? 'Reconciling...' : `Reconcile ${reconcileDays === 1 ? 'Yesterday' : `${reconcileDays}d`}`}
+          </button>
+          <button
+            onClick={() => setShowReconcileOptions(!showReconcileOptions)}
+            className={styles.reconcileButton}
+            disabled={reconciling}
+            style={{ borderRadius: '0 8px 8px 0', borderLeft: '1px solid rgba(255,255,255,0.2)', padding: '0.5rem 0.75rem' }}
+          >
+            ▼
+          </button>
+          {showReconcileOptions && (
+            <div style={{
+              position: 'absolute',
+              top: '100%',
+              right: 0,
+              marginTop: '4px',
+              backgroundColor: '#1F2937',
+              borderRadius: '8px',
+              border: '1px solid rgba(255,255,255,0.1)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+              zIndex: 100,
+              minWidth: '180px',
+              overflow: 'hidden'
+            }}>
+              {[
+                { value: 1, label: 'Yesterday Only' },
+                { value: 7, label: 'Last 7 Days' },
+                { value: 14, label: 'Last 14 Days' },
+                { value: 30, label: 'Last 30 Days' },
+              ].map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => {
+                    setReconcileDays(opt.value);
+                    setShowReconcileOptions(false);
+                  }}
+                  style={{
+                    display: 'block',
+                    width: '100%',
+                    padding: '0.75rem 1rem',
+                    textAlign: 'left',
+                    background: reconcileDays === opt.value ? 'rgba(236, 72, 153, 0.2)' : 'transparent',
+                    border: 'none',
+                    color: '#F9FAFB',
+                    cursor: 'pointer',
+                    fontSize: '0.875rem',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = reconcileDays === opt.value ? 'rgba(236, 72, 153, 0.2)' : 'transparent'}
+                >
+                  {opt.label}
+                  {reconcileDays === opt.value && ' ✓'}
+                </button>
+              ))}
+              {/* Divider */}
+              <div style={{ height: '1px', backgroundColor: 'rgba(255,255,255,0.1)', margin: '0.5rem 0' }} />
+              {/* Clear Data Button */}
+              <button
+                onClick={() => {
+                  setShowReconcileOptions(false);
+                  clearAllMatches();
+                }}
+                disabled={clearing}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  padding: '0.75rem 1rem',
+                  textAlign: 'left',
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#EF4444',
+                  cursor: clearing ? 'wait' : 'pointer',
+                  fontSize: '0.875rem',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                {clearing ? '⏳ Clearing...' : '🗑️ Clear All Data'}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Summary Cards */}
@@ -361,9 +518,27 @@ export default function LearningDashboard() {
         <button
           className={`${styles.tab} ${activeTab === 'matches' ? styles.activeTab : ''}`}
           onClick={() => setActiveTab('matches')}
+          style={{ position: 'relative' }}
         >
           <Target size={18} />
           Matches ({divergenceAnalytics?.total_recommendations || matches.length})
+          {unreviewedCount > 0 && (
+            <span style={{
+              position: 'absolute',
+              top: '-4px',
+              right: '-4px',
+              background: 'linear-gradient(135deg, #EC4899, #8B5CF6)',
+              color: 'white',
+              fontSize: '0.65rem',
+              fontWeight: 700,
+              padding: '2px 6px',
+              borderRadius: '9999px',
+              minWidth: '18px',
+              textAlign: 'center',
+            }}>
+              {unreviewedCount}
+            </span>
+          )}
         </button>
         <button
           className={`${styles.tab} ${activeTab === 'summaries' ? styles.activeTab : ''}`}
@@ -405,8 +580,11 @@ export default function LearningDashboard() {
               independent: divergenceAnalytics?.independent || 0,
               total: divergenceAnalytics?.total_matches || 0,
             }}
+            unreviewedCount={unreviewedCount}
             onFeedbackSubmit={submitMatchFeedback}
             onSkipFeedback={skipMatchFeedback}
+            onMarkReviewed={markAsReviewed}
+            onMarkAllReviewed={markAllAsReviewed}
           />
         )}
         
@@ -664,17 +842,51 @@ function MatchesTab({
   matchTypeFilter,
   setMatchTypeFilter,
   matchCounts,
+  unreviewedCount,
   onFeedbackSubmit,
   onSkipFeedback,
+  onMarkReviewed,
+  onMarkAllReviewed,
 }: {
   matches: Match[];
   matchTypeFilter: string;
   setMatchTypeFilter: (filter: string) => void;
   matchCounts: { consent: number; modify: number; reject: number; independent: number; total: number };
+  unreviewedCount: number;
   onFeedbackSubmit: (matchId: number, reasonCode: string, reasonText?: string) => Promise<void>;
   onSkipFeedback: (matchId: number) => Promise<void>;
+  onMarkReviewed: (matchId: number) => Promise<void>;
+  onMarkAllReviewed: () => Promise<void>;
 }) {
   // Format helpers for compact display
+  const formatDateTimeCompact = (dateStr: string | null | undefined, timeStr: string | null | undefined): string => {
+    if (!dateStr) return '';
+    try {
+      const date = new Date(dateStr);
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      
+      let timePart = '';
+      if (timeStr) {
+        try {
+          const time = new Date(timeStr);
+          let hours = time.getHours();
+          const minutes = time.getMinutes();
+          const ampm = hours >= 12 ? 'p' : 'a';
+          hours = hours % 12;
+          hours = hours ? hours : 12; // 0 should be 12
+          timePart = ` ${hours}:${String(minutes).padStart(2, '0')}${ampm}`;
+        } catch (e) {
+          // If time parsing fails, just use date
+        }
+      }
+      
+      return `${month}/${day}${timePart}`;
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
   const formatDateCompact = (dateStr: string | null | undefined): string => {
     if (!dateStr) return '';
     try {
@@ -757,19 +969,64 @@ function MatchesTab({
         ))}
       </div>
 
-      {/* Compact Match List - SHOWN FIRST for immediate visibility */}
+      {/* Compact Match List - Feed-like experience */}
       <div className={styles.compactMatchList}>
+        {/* Header with explanation and Mark All button */}
         <div style={{ 
           display: 'flex', 
           justifyContent: 'space-between', 
-          alignItems: 'center',
+          alignItems: 'flex-start',
           marginBottom: '0.75rem',
           borderBottom: '1px solid rgba(255,255,255,0.1)',
-          paddingBottom: '0.5rem'
+          paddingBottom: '0.75rem'
         }}>
-          <span style={{ color: '#9CA3AF', fontSize: '0.875rem' }}>
-            Showing {filteredMatches.length} {matchTypeFilter === 'all' ? '' : matchTypeFilter} matches
-          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <span style={{ color: '#9CA3AF', fontSize: '0.875rem' }}>
+                Showing {filteredMatches.length} {matchTypeFilter === 'all' ? '' : matchTypeFilter} matches
+              </span>
+              {unreviewedCount > 0 && (
+                <span style={{ 
+                  background: 'linear-gradient(135deg, #EC4899, #8B5CF6)',
+                  color: 'white',
+                  padding: '0.25rem 0.5rem',
+                  borderRadius: '9999px',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                }}>
+                  {unreviewedCount} new
+                </span>
+              )}
+            </div>
+            <span style={{ color: '#6B7280', fontSize: '0.75rem' }}>
+              Each row shows: My recommendation (Rec) vs Your action (Act). "—" means no action taken.
+            </span>
+          </div>
+          {unreviewedCount > 0 && (
+            <button
+              onClick={onMarkAllReviewed}
+              style={{
+                background: 'transparent',
+                border: '1px solid rgba(255,255,255,0.2)',
+                color: '#9CA3AF',
+                padding: '0.25rem 0.75rem',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.1)';
+                e.currentTarget.style.color = '#F9FAFB';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+                e.currentTarget.style.color = '#9CA3AF';
+              }}
+            >
+              Mark all reviewed
+            </button>
+          )}
         </div>
         
         {filteredMatches.length === 0 ? (
@@ -777,33 +1034,63 @@ function MatchesTab({
             No matches found for this filter.
           </p>
         ) : (
-          filteredMatches.slice(0, 50).map((m) => {
+          filteredMatches.slice(0, 100).map((m) => {
             const rec = m.recommendation;
             const exec = m.execution;
             const colors: Record<string, string> = { consent: '#10B981', modify: '#F59E0B', reject: '#EF4444', independent: '#8B5CF6' };
             const borderColor = colors[m.match_type] || '#6B7280';
+            const isUnreviewed = !m.reviewed_at;
             
-            // Build compact recommendation string
+            // Build compact recommendation string with date/time prefix
+            const recDateTime = formatDateTimeCompact(rec?.date || m.date, rec?.time || null);
             const recStr = rec 
-              ? `${formatAction(rec.action)} ${rec.symbol} ${formatDateCompact(m.date)}→${formatDateCompact(rec.expiration)} | $${rec.strike || '?'} | $${rec.premium?.toFixed(2) || '?'}`
+              ? `Rec [${recDateTime}]: ${formatAction(rec.action)} ${rec.symbol} ${formatDateCompact(rec.date || m.date)}→${formatDateCompact(rec.expiration)} | $${rec.strike || '?'} | ${rec.contracts ? `${rec.contracts}x @ ` : ''}$${rec.premium?.toFixed(2) || '?'}${rec.account ? ` (${rec.account})` : ''}`
               : '—';
             
-            // Build compact execution string  
+            // Build compact execution string with date/time prefix
+            const execDateTime = formatDateTimeCompact(exec?.date || m.date, exec?.time || null);
             const execStr = exec
-              ? `${formatAction(exec.action)} ${exec.symbol?.split(' ')[0]} ${formatDateCompact(exec.date || m.date)}→${formatDateCompact(exec.expiration)} | $${exec.strike || '?'} | ${exec.contracts}x @ $${(exec.premium && exec.contracts ? exec.premium / exec.contracts : 0).toFixed(2)} | $${exec.premium?.toFixed(2) || '?'}`
+              ? `Act [${execDateTime}]: ${formatAction(exec.action)} ${exec.symbol?.split(' ')[0]} ${formatDateCompact(exec.date || m.date)}→${formatDateCompact(exec.expiration)} | $${exec.strike || '?'} | ${exec.contracts}x @ $${(exec.premium && exec.contracts ? exec.premium / exec.contracts : 0).toFixed(2)} | $${exec.premium?.toFixed(2) || '?'}`
               : '—';
             
             return (
               <div 
                 key={m.id} 
                 className={styles.compactMatchRow}
-                style={{ borderLeftColor: borderColor }}
+                style={{ 
+                  borderLeftColor: borderColor,
+                  opacity: isUnreviewed ? 1 : 0.6,
+                  background: isUnreviewed ? 'rgba(139, 92, 246, 0.05)' : 'transparent',
+                }}
               >
-                <div style={{ color: '#93C5FD', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
-                  Rec: {recStr}
-                </div>
-                <div style={{ color: '#86EFAC', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
-                  Act: {execStr}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ color: '#93C5FD', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
+                      {recStr}
+                    </div>
+                    <div style={{ color: '#86EFAC', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
+                      {execStr}
+                    </div>
+                  </div>
+                  {isUnreviewed && (
+                    <button
+                      onClick={() => onMarkReviewed(m.id)}
+                      style={{
+                        background: 'rgba(16, 185, 129, 0.1)',
+                        border: '1px solid rgba(16, 185, 129, 0.3)',
+                        color: '#10B981',
+                        padding: '0.25rem 0.5rem',
+                        borderRadius: '4px',
+                        fontSize: '0.7rem',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        flexShrink: 0,
+                      }}
+                      title="Mark as reviewed"
+                    >
+                      Got it ✓
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -817,17 +1104,30 @@ function MatchesTab({
           <div className={styles.feedbackSectionHeader}>
             <div className={styles.feedbackSectionTitle}>
               <AlertTriangle size={18} color="#F59E0B" />
-              <h3>Needs Your Input</h3>
-              <span className={styles.feedbackCount}>{needsFeedback.length} items from last {FEEDBACK_WINDOW_DAYS} days</span>
+              <h3>Why Didn't You Act?</h3>
+              <span className={styles.feedbackCount}>{needsFeedback.length} unanswered from last {FEEDBACK_WINDOW_DAYS} days</span>
             </div>
-            <p className={styles.feedbackHint}>Quick tap a reason, or skip if you don't remember</p>
+            <p className={styles.feedbackHint}>
+              These are recommendations you received but didn't execute. Quick tap a reason to help improve future recommendations.
+            </p>
           </div>
           
           <div className={styles.feedbackCards}>
-            {needsFeedback.slice(0, 5).map((match) => {
+            {needsFeedback.slice(0, 20).map((match) => {
               const config = matchTypeConfig[match.match_type as keyof typeof matchTypeConfig] || matchTypeConfig.reject;
               const Icon = config.icon;
               const isSubmitting = submittingId === match.id;
+              
+              // Build explanation based on match type
+              const getExplanation = () => {
+                if (match.match_type === 'reject' && match.recommendation) {
+                  return `I recommended "${formatAction(match.recommendation.action)} ${match.recommendation.contracts || ''}x ${match.recommendation.symbol} @ $${match.recommendation.strike}" but you didn't execute within 48 hours.`;
+                }
+                if (match.match_type === 'independent' && match.execution) {
+                  return `You executed "${formatAction(match.execution.action)} ${match.execution.contracts}x ${match.execution.symbol?.split(' ')[0]}" without a matching recommendation.`;
+                }
+                return '';
+              };
               
               return (
                 <div key={match.id} className={`${styles.feedbackCard} ${isSubmitting ? styles.submitting : ''}`}>
@@ -837,7 +1137,7 @@ function MatchesTab({
                       style={{ backgroundColor: config.bg, color: config.color }}
                     >
                       <Icon size={14} />
-                      {config.label}
+                      {match.match_type === 'reject' ? 'Not Executed' : 'Your Initiative'}
                     </div>
                     <span className={styles.matchDate}>{match.date}</span>
                     <button 
@@ -851,20 +1151,42 @@ function MatchesTab({
                   </div>
                   
                   <div className={styles.feedbackCardBody}>
+                    {/* Main trade info */}
                     {match.recommendation && (
                       <div className={styles.tradeInfo}>
                         <span className={styles.symbol}>{match.recommendation.symbol}</span>
                         <span className={styles.action}>{formatAction(match.recommendation.action)}</span>
                         {match.recommendation.strike && <span>${match.recommendation.strike}</span>}
+                        {match.recommendation.contracts && <span style={{ color: '#60A5FA' }}>{match.recommendation.contracts}x</span>}
+                        {match.recommendation.account && (
+                          <span style={{ color: '#9CA3AF', fontSize: '0.75rem' }}>
+                            ({match.recommendation.account})
+                          </span>
+                        )}
                       </div>
                     )}
                     {match.execution && !match.recommendation && (
                       <div className={styles.tradeInfo}>
                         <span className={styles.symbol}>{match.execution.symbol?.split(' ')[0]}</span>
                         <span className={styles.action}>{formatAction(match.execution.action)}</span>
-                        {match.execution.contracts && <span>{match.execution.contracts}x</span>}
+                        {match.execution.contracts && <span style={{ color: '#60A5FA' }}>{match.execution.contracts}x</span>}
+                        {match.execution.account && (
+                          <span style={{ color: '#9CA3AF', fontSize: '0.75rem' }}>
+                            ({match.execution.account})
+                          </span>
+                        )}
                       </div>
                     )}
+                    {/* Explanation text */}
+                    <p style={{ 
+                      color: '#9CA3AF', 
+                      fontSize: '0.75rem', 
+                      margin: '0.5rem 0 0 0',
+                      fontStyle: 'italic',
+                      lineHeight: 1.4
+                    }}>
+                      {getExplanation()}
+                    </p>
                   </div>
                   
                   <div className={styles.quickReasons}>
@@ -917,12 +1239,45 @@ function CompactMatchList({ matches }: { matches: Match[] }) {
     independent: '⚡',
   };
 
-  // Format recommendation line: "Roll PLTR 01/02→01/09 | $207.5→$196 | $0.49 (~$100)"
+  // Format date/time as [01/02 6:00a]
+  const formatDateTimeCompact = (dateStr: string | null | undefined, timeStr: string | null | undefined): string => {
+    if (!dateStr) return '';
+    try {
+      const date = new Date(dateStr);
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      
+      let timePart = '';
+      if (timeStr) {
+        try {
+          const time = new Date(timeStr);
+          let hours = time.getHours();
+          const minutes = time.getMinutes();
+          const ampm = hours >= 12 ? 'p' : 'a';
+          hours = hours % 12;
+          hours = hours ? hours : 12; // 0 should be 12
+          timePart = ` ${hours}:${String(minutes).padStart(2, '0')}${ampm}`;
+        } catch (e) {
+          // If time parsing fails, just use date
+        }
+      }
+      
+      return `${month}/${day}${timePart}`;
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
+  // Format recommendation line: "Rec [01/02 6:00a]: Roll PLTR 01/02→01/09 | $207.5 | $0.49"
   const formatRecommendation = (match: Match): string => {
     if (!match.recommendation) return '—';
     
     const rec = match.recommendation;
+    const recDateTime = formatDateTimeCompact(rec.date || match.date, rec.time || null);
     const parts: string[] = [];
+    
+    // Date/time prefix
+    parts.push(`Rec [${recDateTime}]:`);
     
     // Action + Symbol + Date
     const action = formatAction(rec.action);
@@ -941,22 +1296,35 @@ function CompactMatchList({ matches }: { matches: Match[] }) {
       parts.push(`$${rec.strike}`);
     }
     
-    // Premium
+    // Premium (with contracts if available)
     if (rec.premium != null) {
-      parts.push(`$${rec.premium.toFixed(2)}`);
+      if (rec.contracts) {
+        parts.push(`${rec.contracts}x @ $${rec.premium.toFixed(2)}`);
+      } else {
+        parts.push(`$${rec.premium.toFixed(2)}`);
+      }
+    }
+    
+    // Account name
+    if (rec.account) {
+      parts.push(`(${rec.account})`);
     }
     
     return parts.join(' | ');
   };
 
-  // Format execution line: "Roll PLTR 01/02→01/09 @ 9:12 AM | $182.5 | 2 contracts @ $0.70 | $139.96"
+  // Format execution line: "Act [01/02 7:30a]: Roll PLTR 01/02→01/09 | $182.5 | 2x @ $0.70 | $139.96"
   const formatExecution = (match: Match): string => {
     if (!match.execution) return '—';
     
     const exec = match.execution;
+    const execDateTime = formatDateTimeCompact(exec.date || match.date, exec.time || null);
     const parts: string[] = [];
     
-    // Action + Symbol + Date + Time
+    // Date/time prefix
+    parts.push(`Act [${execDateTime}]:`);
+    
+    // Action + Symbol + Date
     const action = formatAction(exec.action);
     const symbol = exec.symbol?.split(' ')[0] || '?';
     const dateStr = match.date || '';

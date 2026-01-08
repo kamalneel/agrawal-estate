@@ -738,7 +738,8 @@ class TechnicalAnalysisService:
         symbol: str,
         option_type: str,  # "call" or "put"
         expiration_weeks: int = 1,
-        probability_target: float = 0.90
+        probability_target: float = 0.90,
+        target_expiration_date: str = None  # Optional: Use exact expiration date instead of calculating from weeks
     ) -> Optional[StrikeRecommendation]:
         """
         Recommend a strike price for selling options.
@@ -755,8 +756,9 @@ class TechnicalAnalysisService:
         Args:
             symbol: Stock symbol
             option_type: "call" or "put"
-            expiration_weeks: Weeks until expiration
+            expiration_weeks: Weeks until expiration (used if target_expiration_date not provided)
             probability_target: Target probability of staying OTM (0.90 = 90%)
+            target_expiration_date: Optional exact expiration date (YYYY-MM-DD) - overrides expiration_weeks
         
         Returns:
             StrikeRecommendation or None
@@ -772,8 +774,13 @@ class TechnicalAnalysisService:
         logger.info(f"[STRIKE_DEBUG] {symbol}: recommend_strike_price called - current_price=${current_price:.2f}, target_delta={target_delta:.2f}, weeks={expiration_weeks}")
         
         # ===== PRIORITY 1: Try to get REAL delta from options chain =====
-        expiration_date = self._get_next_friday(expiration_weeks)
-        logger.info(f"[STRIKE_DEBUG] {symbol}: Calculated expiration_date={expiration_date}")
+        # V3.1: Use provided expiration date if available, otherwise calculate from weeks
+        if target_expiration_date:
+            expiration_date = target_expiration_date
+            logger.info(f"[STRIKE_DEBUG] {symbol}: Using provided expiration_date={expiration_date}")
+        else:
+            expiration_date = self._get_next_friday(expiration_weeks)
+            logger.info(f"[STRIKE_DEBUG] {symbol}: Calculated expiration_date={expiration_date}")
         chain_result = self._get_strike_from_options_chain(
             symbol=symbol,
             option_type=option_type,

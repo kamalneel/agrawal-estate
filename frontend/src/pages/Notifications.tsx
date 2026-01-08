@@ -27,6 +27,24 @@ import {
 import TechnicalAnalysisModal from '../components/TechnicalAnalysisModal';
 import styles from './Notifications.module.css';
 
+// Account ordering - consistent with Income, Investments, and other pages
+// Order: Neel's accounts first, then Jaya's, then others
+const ACCOUNT_ORDER: Record<string, number> = {
+  "Neel's Brokerage": 1,
+  "Neel's Retirement": 2,
+  "Neel's Roth IRA": 3,
+  "Jaya's Brokerage": 4,
+  "Jaya's IRA": 5,
+  "Jaya's Roth IRA": 6,
+  "Alisha's Brokerage": 7,
+  "Agrawal Family HSA": 8,
+  "Other": 99,  // Catch-all for unknown accounts
+};
+
+const getAccountSortOrder = (accountName: string): number => {
+  return ACCOUNT_ORDER[accountName] ?? 50;  // Unknown accounts go in the middle
+};
+
 interface Recommendation {
   id: string;
   type: string;
@@ -45,6 +63,19 @@ interface Recommendation {
   created_at?: string;
   expires_at?: string;
   status?: string;
+  // V2 Snapshot fields
+  snapshot_number?: number;
+  total_snapshots?: number;
+  action_changed?: boolean;
+  target_changed?: boolean;
+  priority_changed?: boolean;
+  notification_mode?: 'verbose' | 'smart';
+  source_strike?: number;
+  source_expiration?: string;
+  target_strike?: number;
+  target_expiration?: string;
+  stock_price?: number;
+  profit_pct?: number;
   // Triple Witching fields
   is_triple_witching?: boolean;
   hide_roll_options?: boolean;
@@ -157,6 +188,10 @@ export default function Notifications() {
   });
   const [showFilters, setShowFilters] = useState(false);
   
+  // Notification Mode: 'verbose' (all snapshots) or 'smart' (changes only)
+  // Matches mobile (Telegram) which also has these two modes
+  const [notificationMode, setNotificationMode] = useState<'verbose' | 'smart'>('verbose');
+  
   // Expanded recommendations
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   
@@ -182,22 +217,32 @@ export default function Notifications() {
   const [telegramPollResult, setTelegramPollResult] = useState<string | null>(null);
   
   // Helper function to fetch history from DB
-  // Always fetches all data (365 days) - filtering happens in frontend via filteredRecommendations
-  const fetchHistoryFromDB = async (): Promise<Recommendation[]> => {
+  // Fetches notification HISTORY - shows all past notifications like Telegram chat history
+  // Uses /history endpoint to include resolved recommendations, not just active ones
+  const fetchHistoryFromDB = async (mode?: 'verbose' | 'smart'): Promise<Recommendation[]> => {
     try {
+      const effectiveMode = mode || 'verbose';
+      // Use /history endpoint to get ALL past notifications (like Telegram chat history)
+      // This includes resolved recommendations, not just active ones
       const response = await fetch(
-        `/api/v1/strategies/notifications/history?days_back=365&limit=500`,
+        `/api/v1/strategies/notifications/v2/history?mode=${effectiveMode}&days_back=7&limit=200`,
         { headers: getAuthHeaders() }
       );
       
       if (response.ok) {
         const result = await response.json();
-        return result.history || [];
+        const history = result.history || [];
+        console.log(`[Notifications] V2 history API returned ${history.length} notifications (${effectiveMode} mode, last 7 days)`);
+        return history;
+      } else {
+        const errorText = await response.text();
+        console.error(`[Notifications] V2 history API error ${response.status}: ${errorText}`);
+        throw new Error(`API returned ${response.status}: ${errorText}`);
       }
     } catch (err) {
-      console.warn('Failed to fetch history from DB:', err);
+      console.error('[Notifications] Failed to fetch history from DB:', err);
+      throw err; // Re-throw so caller can handle it
     }
-    return [];
   };
   
   // Fetch feedback history
@@ -278,9 +323,19 @@ export default function Notifications() {
         const cached = localStorage.getItem('notifications_cache');
         if (cached) {
           const parsed = JSON.parse(cached);
-          setRecommendations(parsed.recommendations || []);
-          if (parsed.generated_at) {
-            setGeneratedAt(new Date(parsed.generated_at));
+          const cachedRecs = parsed.recommendations || [];
+          setRecommendations(cachedRecs);
+          
+          // Use the most recent notification's created_at from cached data
+          // This will be overwritten by DB fetch, but shows something meaningful immediately
+          if (cachedRecs.length > 0) {
+            const mostRecentCreatedAt = cachedRecs.reduce((latest: Date, rec: Recommendation) => {
+              if (!rec.created_at) return latest;
+              const recDate = new Date(rec.created_at);
+              return recDate > latest ? recDate : latest;
+            }, new Date(0));
+            setGeneratedAt(mostRecentCreatedAt);
+            console.log(`[Notifications] Using cached data, most recent: ${mostRecentCreatedAt.toISOString()}`);
           }
         }
       }
@@ -290,30 +345,81 @@ export default function Notifications() {
     
     // Step 2: Fetch from DB for consistency across browsers (non-blocking)
     // ALWAYS update from DB - it's the single source of truth
-    fetchHistoryFromDB().then(historyData => {
-      setRecommendations(historyData);
-      
-      // Use the most recent created_at from the data as the "last refreshed" time
-      // NOT the current time (that would be misleading on page refresh)
-      if (historyData.length > 0) {
-        const mostRecentCreatedAt = historyData.reduce((latest, rec) => {
-          const recDate = new Date(rec.created_at);
-          return recDate > latest ? recDate : latest;
-        }, new Date(0));
-        setGeneratedAt(mostRecentCreatedAt);
-      }
-      
-      // Always update cache (even if empty) to stay in sync with DB
-      try {
-        localStorage.setItem('notifications_cache', JSON.stringify({
-          recommendations: historyData,
-          generated_at: historyData.length > 0 ? historyData[0].created_at : null,
-          timestamp: new Date().toISOString()
-        }));
-      } catch (e) {
-        console.warn('Failed to update cache:', e);
-      }
-    });
+    fetchHistoryFromDB(notificationMode)
+      .then(historyData => {
+        console.log(`[Notifications] Fetched ${historyData.length} notifications from DB on page load`);
+        
+        // Compare with cached data to see if we got newer notifications
+        try {
+          const cached = localStorage.getItem('notifications_cache');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            const cachedRecs = parsed.recommendations || [];
+            const cachedCount = cachedRecs.length;
+            
+            // Find the most recent timestamp in both cache and DB (not just first item)
+            const cachedLatest = cachedRecs.reduce((latest: Date | null, rec: Recommendation) => {
+              if (!rec.created_at) return latest;
+              const recDate = new Date(rec.created_at);
+              return !latest || recDate > latest ? recDate : latest;
+            }, null as Date | null);
+            
+            const dbLatest = historyData.reduce((latest: Date | null, rec: Recommendation) => {
+              if (!rec.created_at) return latest;
+              const recDate = new Date(rec.created_at);
+              return !latest || recDate > latest ? recDate : latest;
+            }, null as Date | null);
+            
+            console.log(`[Notifications] Cache had ${cachedCount} notifications, DB has ${historyData.length}`);
+            if (cachedLatest && dbLatest) {
+              if (dbLatest > cachedLatest) {
+                console.log(`[Notifications] ✅ DB has newer data! Cache latest: ${cachedLatest.toISOString()}, DB latest: ${dbLatest.toISOString()}`);
+              } else if (cachedLatest > dbLatest) {
+                console.log(`[Notifications] ⚠️ Cache is newer than DB! Cache: ${cachedLatest.toISOString()}, DB: ${dbLatest.toISOString()}`);
+              } else {
+                console.log(`[Notifications] ✅ Cache and DB are in sync (same latest timestamp: ${cachedLatest.toISOString()})`);
+              }
+            } else {
+              console.log(`[Notifications] Could not compare timestamps (cachedLatest: ${cachedLatest?.toISOString()}, dbLatest: ${dbLatest?.toISOString()})`);
+            }
+          }
+        } catch (e) {
+          console.warn('[Notifications] Error comparing cache:', e);
+        }
+        
+        // Update state with fresh data from DB
+        setRecommendations(historyData);
+        
+        // Always use the most recent notification's created_at to show data freshness
+        // This reflects when the backend last generated recommendations (scheduled scans)
+        // NOT when the user last clicked Refresh
+        if (historyData.length > 0) {
+          const mostRecentCreatedAt = historyData.reduce((latest, rec) => {
+            if (!rec.created_at) return latest;
+            const recDate = new Date(rec.created_at);
+            return recDate > latest ? recDate : latest;
+          }, new Date(0));
+          setGeneratedAt(mostRecentCreatedAt);
+          console.log(`[Notifications] Data freshness: most recent notification at ${mostRecentCreatedAt.toISOString()}`);
+        }
+        
+        // Cache for faster subsequent loads
+        try {
+          localStorage.setItem('notifications_cache', JSON.stringify({
+            recommendations: historyData,
+            timestamp: new Date().toISOString()
+          }));
+          console.log(`[Notifications] ✅ Updated cache with ${historyData.length} notifications`);
+        } catch (e) {
+          console.warn('Failed to update cache:', e);
+        }
+      })
+      .catch(err => {
+        console.error('[Notifications] Failed to fetch from DB on page load:', err);
+        // Don't clear existing recommendations if DB fetch fails
+        // Keep showing cached data until user manually refreshes
+        // The cached data is already displayed from Step 1, so we don't need to do anything
+      });
   }, []);
   
   const fetchRecommendations = async () => {
@@ -326,7 +432,7 @@ export default function Notifications() {
       // This gives instant feedback while we run the slow operations
       // ============================================================
       console.log('Step 1: Fetching existing history from DB...');
-      const initialHistory = await fetchHistoryFromDB();
+      const initialHistory = await fetchHistoryFromDB(notificationMode);
       if (initialHistory.length > 0) {
         setRecommendations(initialHistory);
         console.log(`Showing ${initialHistory.length} existing notifications from DB`);
@@ -414,21 +520,31 @@ export default function Notifications() {
       // This is the single source of truth - same data for all browsers
       // ============================================================
       console.log('Step 4: Re-fetching complete history from DB...');
-      const finalHistory = await fetchHistoryFromDB();
+      const finalHistory = await fetchHistoryFromDB(notificationMode);
       
       // Use history as the single source of truth
       setRecommendations(finalHistory);
-      // Set to NOW because user just clicked Refresh
-      const refreshTime = new Date();
-      setGeneratedAt(refreshTime);
-      console.log(`Displaying ${finalHistory.length} total notifications from DB`);
+      
+      // Use the most recent notification's timestamp to show data freshness
+      // This reflects when the backend last generated recommendations
+      if (finalHistory.length > 0) {
+        const mostRecentCreatedAt = finalHistory.reduce((latest, rec) => {
+          if (!rec.created_at) return latest;
+          const recDate = new Date(rec.created_at);
+          return recDate > latest ? recDate : latest;
+        }, new Date(0));
+        setGeneratedAt(mostRecentCreatedAt);
+        console.log(`Displaying ${finalHistory.length} notifications, most recent from ${mostRecentCreatedAt.toISOString()}`);
+      } else {
+        setGeneratedAt(new Date());
+        console.log(`No notifications found`);
+      }
       
       // Cache for next page load (instant display)
       try {
         localStorage.setItem('notifications_cache', JSON.stringify({
           recommendations: finalHistory,
-          generated_at: refreshTime.toISOString(),
-          timestamp: refreshTime.toISOString()
+          timestamp: new Date().toISOString()
         }));
       } catch (e) {
         console.warn('Failed to cache notifications:', e);
@@ -577,8 +693,8 @@ export default function Notifications() {
     });
   }, [recommendations, filters]);
   
-  // Group recommendations by time, sorted by priority within each group
-  // This matches the order shown in phone notifications
+  // Group recommendations by time, then by account within each time group
+  // This matches the organization shown in Telegram notifications
   const groupedRecommendations = useMemo(() => {
     const groups: Record<string, Recommendation[]> = {};
     const groupLatestTime: Record<string, Date> = {}; // Track most recent time in each group
@@ -609,16 +725,56 @@ export default function Notifications() {
       new Date(b).getTime() - new Date(a).getTime()
     );
     
-    // Sort recommendations within each group by priority (matches phone notification order)
-    // Use the most recent actual time for display, not the rounded group key
-    return sortedKeys.map(groupKey => ({
-      timeKey: groupLatestTime[groupKey].toISOString(), // Display the most recent time
-      recommendations: groups[groupKey].sort((a, b) => {
-        const priorityA = priorityOrder[a.priority] ?? 99;
-        const priorityB = priorityOrder[b.priority] ?? 99;
-        return priorityA - priorityB;
-      })
-    }));
+    // Log grouping info for debugging
+    if (sortedKeys.length > 0) {
+      const mostRecentGroup = sortedKeys[0];
+      const groupTime = groupLatestTime[mostRecentGroup];
+      const groupRecs = groups[mostRecentGroup];
+      const timestamps = groupRecs.map(r => r.created_at).filter(Boolean);
+      console.log(`[Notifications] Most recent group: ${groupTime.toISOString()} (${groupRecs.length} notifications)`);
+      if (timestamps.length > 0) {
+        const minTime = new Date(Math.min(...timestamps.map(t => new Date(t).getTime())));
+        const maxTime = new Date(Math.max(...timestamps.map(t => new Date(t).getTime())));
+        console.log(`[Notifications]   Time range in group: ${minTime.toISOString()} to ${maxTime.toISOString()}`);
+      }
+    }
+    
+    // Group by account within each time group, then sort by priority
+    // This matches Telegram notification organization
+    return sortedKeys.map(groupKey => {
+      const recsInGroup = groups[groupKey];
+      
+      // Group by account
+      const byAccount: Record<string, Recommendation[]> = {};
+      recsInGroup.forEach(rec => {
+        const account = rec.account_name || 'Other';
+        if (!byAccount[account]) {
+          byAccount[account] = [];
+        }
+        byAccount[account].push(rec);
+      });
+      
+      // Sort accounts using standard NEO order (Neel's first, then Jaya's, then others)
+      const sortedAccounts = Object.keys(byAccount).sort((a, b) => {
+        return getAccountSortOrder(a) - getAccountSortOrder(b);
+      });
+      
+      // Create account groups with recommendations sorted by priority
+      const accountGroups = sortedAccounts.map(account => ({
+        account,
+        recommendations: byAccount[account].sort((a, b) => {
+          const priorityA = priorityOrder[a.priority] ?? 99;
+          const priorityB = priorityOrder[b.priority] ?? 99;
+          return priorityA - priorityB;
+        })
+      }));
+      
+      return {
+        timeKey: groupLatestTime[groupKey].toISOString(), // Display the most recent time
+        accountGroups,
+        totalCount: recsInGroup.length
+      };
+    });
   }, [filteredRecommendations]);
   
   // Get unique values for filters
@@ -685,7 +841,12 @@ export default function Notifications() {
     }
   };
   
-  const getStrategyLabel = (type: string) => {
+  const getStrategyLabel = (type: string, action?: string) => {
+    // If action is WAIT or MONITOR, override the label
+    if (action?.toUpperCase() === 'WAIT' || action?.toLowerCase() === 'monitor') {
+      return 'Wait';
+    }
+    
     const labels: Record<string, string> = {
       sell_unsold_contracts: 'New Call',
       early_roll_opportunity: 'Roll',
@@ -928,7 +1089,7 @@ export default function Notifications() {
                 (new Date().getTime() - generatedAt.getTime() > 60 * 60 * 1000) ? styles.stale : ''
               }`}>
                 <Clock size={14} />
-                Last refreshed: {(() => {
+                Data from: {(() => {
                   const now = new Date();
                   const diffMs = now.getTime() - generatedAt.getTime();
                   const diffMins = Math.floor(diffMs / 60000);
@@ -1032,6 +1193,33 @@ export default function Notifications() {
       {/* Recommendations Tab Content */}
       {activeTab === 'recommendations' && (
         <>
+      {/* Notification Mode Selector - Matches Mobile (Telegram) */}
+      <div className={styles.notificationModeBar}>
+        <span className={styles.modeLabel}>View Mode:</span>
+        <div className={styles.modeToggle}>
+          <button
+            className={`${styles.modeButton} ${notificationMode === 'verbose' ? styles.modeActive : ''}`}
+            onClick={() => {
+              setNotificationMode('verbose');
+              fetchHistoryFromDB('verbose').then(data => setRecommendations(data));
+            }}
+            title="Shows all active recommendations (every snapshot)"
+          >
+            📢 Verbose
+          </button>
+          <button
+            className={`${styles.modeButton} ${notificationMode === 'smart' ? styles.modeActive : ''}`}
+            onClick={() => {
+              setNotificationMode('smart');
+              fetchHistoryFromDB('smart').then(data => setRecommendations(data));
+            }}
+            title="Shows only new or materially changed recommendations"
+          >
+            🧠 Smart
+          </button>
+        </div>
+      </div>
+
       {/* Filters Panel */}
       {showFilters && (
         <div className={styles.filtersPanel}>
@@ -1146,11 +1334,11 @@ export default function Notifications() {
                   <span>{formatTimeHeader(group.timeKey)}</span>
                   <div className={styles.groupSummary}>
                     <span className={styles.groupCount}>
-                      {group.recommendations.length} notification{group.recommendations.length !== 1 ? 's' : ''}
+                      {group.totalCount} notification{group.totalCount !== 1 ? 's' : ''}
                     </span>
-                    {formatGroupSummary(group.recommendations).length > 0 && (
+                    {formatGroupSummary(group.accountGroups.flatMap(ag => ag.recommendations)).length > 0 && (
                       <span className={styles.priorityBreakdown}>
-                        {formatGroupSummary(group.recommendations).map((item, idx) => (
+                        {formatGroupSummary(group.accountGroups.flatMap(ag => ag.recommendations)).map((item, idx) => (
                           <span key={item.priority} className={styles.priorityChip} style={{ color: item.color }}>
                             {idx > 0 && ', '}
                             {item.count} {item.priority}
@@ -1161,8 +1349,17 @@ export default function Notifications() {
                   </div>
                 </div>
                 
-                <div className={styles.notificationsList}>
-                  {group.recommendations.map(rec => (
+                {/* Account-grouped notifications - matches Telegram organization */}
+                {group.accountGroups.map(accountGroup => (
+                  <div key={accountGroup.account} className={styles.accountGroup}>
+                    <div className={styles.accountHeader}>
+                      <span className={styles.accountName}>{accountGroup.account}</span>
+                      <span className={styles.accountCount}>
+                        {accountGroup.recommendations.length} recommendation{accountGroup.recommendations.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+                    <div className={styles.notificationsList}>
+                      {accountGroup.recommendations.map(rec => (
                     <div 
                       key={rec.id} 
                       className={`${styles.notificationCard} ${expandedIds.has(rec.id) ? styles.expanded : ''} ${rec.status === 'acted' ? styles.acted : ''} ${rec.status === 'dismissed' ? styles.dismissed : ''}`}
@@ -1178,9 +1375,25 @@ export default function Notifications() {
                         
                         <div className={styles.notificationMain}>
                           <div className={styles.notificationMeta}>
-                            {rec.account_name && <span className={styles.accountBadge}>{rec.account_name}</span>}
+                            {/* Account badge removed - now shown in accountHeader above */}
                             {rec.symbol && <span className={styles.symbolBadge}>{rec.symbol}</span>}
-                            <span className={styles.strategyBadge}>{getStrategyLabel(rec.type)}</span>
+                            <span className={`${styles.strategyBadge} ${rec.action?.toUpperCase() === 'WAIT' ? styles.waitBadge : ''}`}>
+                              {getStrategyLabel(rec.type, rec.action)}
+                            </span>
+                            {/* V2 Snapshot info */}
+                            {rec.snapshot_number && (
+                              <span className={styles.snapshotBadge}>
+                                #{rec.snapshot_number}
+                                {rec.action_changed && <span className={styles.changeIndicator} title="Action changed">⚡</span>}
+                                {rec.target_changed && <span className={styles.changeIndicator} title="Target changed">🎯</span>}
+                                {rec.priority_changed && <span className={styles.changeIndicator} title="Priority escalated">⬆️</span>}
+                              </span>
+                            )}
+                            {rec.notification_mode && (
+                              <span className={`${styles.modeBadge} ${rec.notification_mode === 'verbose' ? styles.verboseMode : styles.smartMode}`}>
+                                {rec.notification_mode === 'verbose' ? '📢' : '🧠'}
+                              </span>
+                            )}
                           </div>
                           <h4 className={styles.notificationTitle}>{rec.title}</h4>
                           <p className={styles.notificationDescription}>{rec.description}</p>
@@ -1309,9 +1522,11 @@ export default function Notifications() {
                           </div>
                         </div>
                       )}
-                    </div>
-                  ))}
+                      </div>
+                    ))}
+                  </div>
                 </div>
+              ))}
               </div>
             ))}
           </div>

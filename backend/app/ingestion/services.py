@@ -665,6 +665,7 @@ def save_investment_holding(db: Session, record: ParsedRecord, ingestion_id: Opt
         ingestion_id=ingestion_id,
     )
     db.add(holding)
+    db.flush()  # Flush to make visible for duplicate checks in same batch
     return "created"
 
 
@@ -712,6 +713,7 @@ def save_cash_transaction(db: Session, record: ParsedRecord, ingestion_id: Optio
         ingestion_id=ingestion_id,
     )
     db.add(transaction)
+    db.flush()  # Flush to make visible for duplicate checks in same batch
     return "created"
 
 
@@ -771,6 +773,7 @@ def save_tax_return(db: Session, record: ParsedRecord, ingestion_id: Optional[in
         ingestion_id=ingestion_id,
     )
     db.add(tax_return)
+    db.flush()  # Flush to make visible for duplicate checks in same batch
     return "created"
 
 
@@ -822,6 +825,9 @@ def save_portfolio_snapshot(db: Session, record: ParsedRecord, ingestion_id: Opt
         ingestion_id=ingestion_id,
     )
     db.add(snapshot)
+    # Flush immediately so subsequent queries in the same transaction can see this record
+    # This prevents duplicate key errors when multiple files have the same snapshot date
+    db.flush()
     return "created"
 
 

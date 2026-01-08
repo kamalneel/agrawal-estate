@@ -611,8 +611,8 @@ class StrategyService:
         # These strategies don't evaluate individual positions, so they run separately
         non_position_strategies = [
             'earnings_alert',
-            'new_covered_call', 
-            'sell_unsold_contracts',
+            'new_covered_call',  # Handles both WAIT and SELL for uncovered positions
+            # 'sell_unsold_contracts',  # DISABLED: Redundant - new_covered_call now does this with TA
             'diversification',
             'triple_witching_handler',
         ]
@@ -652,6 +652,11 @@ class StrategyService:
             'ROLL_ITM': 'roll_options',
             'ROLL_WEEKLY': 'roll_options',
             'CLOSE_CATASTROPHIC': 'roll_options',
+            'NEAR_ITM_WARNING': 'roll_options',
+            'EXDIV_TOMORROW': 'roll_options',
+            'EXDIV_ASSIGNMENT_RISK': 'roll_options',
+            'TRIPLE_WITCHING_TOMORROW': 'roll_options',
+            'TRIPLE_WITCHING_EXPIRY': 'roll_options',
         }
         
         strategy_type = action_to_type.get(result.action, 'roll_options')
@@ -684,6 +689,57 @@ class StrategyService:
         elif result.action == 'CLOSE_CATASTROPHIC':
             title = f"🚨 CLOSE {position.symbol} ${position.strike_price} - Cannot escape within 12 months"
             action_type = 'close'
+        
+        elif result.action == 'NEAR_ITM_WARNING':
+            # Position is dangerously close to strike - preemptive warning
+            otm_pct = result.details.get('otm_pct', 0)
+            days_left = result.details.get('days_to_expiry', 0)
+            risk_level = result.details.get('risk_level', 'elevated')
+            emoji = "🚨" if risk_level == 'urgent' else "⚠️"
+            title = (
+                f"{emoji} NEAR ITM: {position.symbol} ${position.strike_price} - "
+                f"Only {otm_pct:.1f}% OTM, {days_left}d to expiry"
+            )
+            action_type = 'roll'
+        
+        elif result.action == 'EXDIV_TOMORROW':
+            # Ex-dividend date is tomorrow - assignment risk for ITM calls
+            title = (
+                f"📅 EX-DIV TOMORROW: {position.symbol} ${position.strike_price} - "
+                f"ITM calls may be assigned early"
+            )
+            action_type = 'monitor'
+        
+        elif result.action == 'EXDIV_ASSIGNMENT_RISK':
+            # Ex-dividend date before expiration - early assignment risk
+            exdiv_date = result.details.get('exdiv_date', 'soon')
+            days_to_exdiv = result.details.get('days_to_exdiv', '?')
+            title = (
+                f"📅 EX-DIV RISK: {position.symbol} ${position.strike_price} - "
+                f"Ex-div in {days_to_exdiv}d, watch for early assignment"
+            )
+            action_type = 'monitor'
+        
+        elif result.action == 'TRIPLE_WITCHING_TOMORROW':
+            # Triple Witching is tomorrow - warning to prepare
+            expiring_count = result.details.get('expiring_count', 0)
+            title = (
+                f"🔴 TRIPLE WITCHING TOMORROW - {expiring_count} positions expiring. "
+                f"Prepare action plan tonight."
+            )
+            action_type = 'monitor'
+        
+        elif result.action == 'TRIPLE_WITCHING_EXPIRY':
+            # Position expiring on Triple Witching Day
+            tw_action = result.details.get('action', 'MONITOR')
+            is_itm = result.details.get('is_itm', False)
+            itm_otm_pct = result.details.get('itm_otm_pct', 0)
+            emoji = "🔴" if is_itm else "🟡"
+            title = (
+                f"{emoji} TRIPLE WITCHING: {position.symbol} ${position.strike_price} - "
+                f"{abs(itm_otm_pct):.1f}% {'ITM' if is_itm else 'OTM'}"
+            )
+            action_type = result.details.get('timing', 'Close before 3 PM ET')
             
         else:
             return None

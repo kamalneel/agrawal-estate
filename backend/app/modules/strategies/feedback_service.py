@@ -22,6 +22,7 @@ from app.modules.strategies.models import (
     RecommendationFeedback,
     StrategyRecommendationRecord
 )
+from app.core.timezone import format_datetime_for_api
 
 logger = logging.getLogger(__name__)
 
@@ -385,7 +386,7 @@ def get_recommendation_by_id(db: Session, recommendation_id: str) -> Optional[Di
         "symbol": record.symbol,
         "account_name": record.account_name,
         "context": record.context_snapshot,
-        "created_at": record.created_at.isoformat() if record.created_at else None
+        "created_at": format_datetime_for_api(record.created_at)
     }
 
 

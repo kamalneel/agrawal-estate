@@ -500,6 +500,13 @@
   text-transform: uppercase;
 }
 
+/* Wait badge - distinct muted yellow/amber styling */
+.waitBadge {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
 /* Symbol badge - medium prominence */
 .symbolBadge {
   padding: 0.2rem 0.5rem;
@@ -519,6 +526,42 @@
   font-size: 0.75rem;
   font-weight: 600;
   border: 1px solid rgba(6, 182, 212, 0.3);
+}
+
+/* V2 Snapshot badge */
+.snapshotBadge {
+  padding: 0.15rem 0.4rem;
+  background: rgba(249, 115, 22, 0.15);
+  color: #fb923c;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.changeIndicator {
+  font-size: 0.55rem;
+  margin-left: 0.1rem;
+}
+
+/* Notification mode badges */
+.modeBadge {
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.6rem;
+}
+
+.verboseMode {
+  background: rgba(234, 179, 8, 0.15);
+  color: #fbbf24;
+}
+
+.smartMode {
+  background: rgba(34, 211, 238, 0.15);
+  color: #22d3ee;
 }
 
 .notificationTitle {
@@ -1358,6 +1401,98 @@
 
 .activeTab .tabBadge {
   background: rgba(16, 185, 129, 0.25);
+}
+
+/* Notification Mode Bar */
+.notificationModeBar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(6, 78, 59, 0.08) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: 10px;
+  margin-bottom: 1rem;
+}
+
+.modeLabel {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #9ca3af;
+}
+
+.modeToggle {
+  display: flex;
+  gap: 0.25rem;
+  background: #1a1a1a;
+  padding: 0.25rem;
+  border-radius: 8px;
+  border: 1px solid #333;
+}
+
+.modeButton {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.modeButton:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.modeActive {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+}
+
+/* Account Group - Matches Telegram notification organization */
+.accountGroup {
+  margin-bottom: 1rem;
+  background: rgba(26, 26, 26, 0.5);
+  border-radius: 12px;
+  border: 1px solid #2a2a2a;
+  overflow: hidden;
+}
+
+.accountHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 78, 59, 0.05) 100%);
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.accountName {
+  font-weight: 600;
+  color: #10b981;
+  font-size: 0.95rem;
+}
+
+.accountCount {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.accountGroup .notificationsList {
+  padding: 0.5rem;
+}
+
+.accountGroup .notificationCard {
+  margin-bottom: 0.5rem;
+}
+
+.accountGroup .notificationCard:last-child {
+  margin-bottom: 0;
 }
 
 /* Feedback History Container */

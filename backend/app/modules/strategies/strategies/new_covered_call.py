@@ -18,6 +18,7 @@ V3 CHANGES:
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date, timedelta
+from decimal import Decimal
 import logging
 
 from sqlalchemy import text
@@ -26,6 +27,11 @@ from app.modules.strategies.recommendations import StrategyRecommendation
 from app.modules.strategies.technical_analysis import get_technical_analysis_service
 from app.modules.strategies.services import get_sold_options_by_account
 from app.modules.strategies.option_monitor import OptionChainFetcher
+from app.modules.strategies.recommendation_models import (
+    PositionRecommendation,
+    RecommendationSnapshot,
+    generate_recommendation_id
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +205,18 @@ class NewCoveredCallStrategy(BaseStrategy):
             # WAIT recommendation
             title = f"WAIT {symbol} - {position['uncovered']} unsold, likely bounce · Stock ${indicators.current_price:.0f}"
             
+            # Save to V2 model
+            self._save_to_v2(
+                position=position,
+                action='WAIT',
+                priority='low',
+                reason=reason,
+                context=context,
+                target_strike=strike_rec.recommended_strike,
+                target_expiration=next_friday,
+                target_premium=None
+            )
+            
             return StrategyRecommendation(
                 id=f"new_call_wait_{symbol}_{position['account_name']}_{date.today().isoformat()}",
                 type=self.strategy_type,
@@ -256,6 +274,18 @@ class NewCoveredCallStrategy(BaseStrategy):
             # Include premium in title and description
             title = f"SELL {position['uncovered']} {symbol} ${strike_rec.recommended_strike:.0f} call for {next_friday.strftime('%b %d')} · Stock ${indicators.current_price:.0f} and earn ${total_premium:.2f}"
             
+            # Save to V2 model
+            self._save_to_v2(
+                position=position,
+                action='SELL',
+                priority='high',
+                reason=reason + " " + strike_rec.rationale,
+                context=context,
+                target_strike=strike_rec.recommended_strike,
+                target_expiration=next_friday,
+                target_premium=real_premium_per_contract
+            )
+            
             return StrategyRecommendation(
                 id=f"new_call_sell_{symbol}_{position['account_name']}_{date.today().isoformat()}",
                 type=self.strategy_type,
@@ -288,4 +318,138 @@ class NewCoveredCallStrategy(BaseStrategy):
         if days_ahead <= 0:
             days_ahead += 7
         return today + timedelta(days=days_ahead)
+    
+    def _save_to_v2(
+        self,
+        position: Dict[str, Any],
+        action: str,  # 'SELL' or 'WAIT'
+        priority: str,
+        reason: str,
+        context: Dict[str, Any],
+        target_strike: float = None,
+        target_expiration: date = None,
+        target_premium: float = None
+    ) -> Optional[RecommendationSnapshot]:
+        """
+        Save recommendation to V2 model (PositionRecommendation + Snapshot).
+        
+        This ensures all strategies contribute to a single recommendation
+        object per position, with multiple snapshots tracking evaluations.
+        """
+        try:
+            symbol = position["symbol"]
+            account_name = position["account_name"]
+            
+            # Generate deterministic ID for uncovered position
+            rec_id = generate_recommendation_id(
+                symbol=symbol,
+                account_name=account_name,
+                strike=None,  # Uncovered position
+                expiration=None,
+                option_type="call"
+            )
+            
+            # Find or create PositionRecommendation
+            existing = self.db.query(PositionRecommendation).filter(
+                PositionRecommendation.recommendation_id == rec_id,
+                PositionRecommendation.status == 'active'
+            ).first()
+            
+            now = datetime.utcnow()
+            
+            if existing:
+                recommendation = existing
+                recommendation.last_snapshot_at = now
+                recommendation.updated_at = now
+            else:
+                recommendation = PositionRecommendation(
+                    recommendation_id=rec_id,
+                    symbol=symbol,
+                    account_name=account_name,
+                    source_strike=None,  # Uncovered
+                    source_expiration=None,  # Uncovered
+                    option_type='call',
+                    source_contracts=position.get('uncovered', 1),
+                    position_type='uncovered',
+                    status='active',
+                    first_detected_at=now,
+                    last_snapshot_at=now,
+                    total_snapshots=0,
+                    total_notifications_sent=0,
+                    created_at=now,
+                    updated_at=now
+                )
+                self.db.add(recommendation)
+                self.db.flush()  # Get the ID
+            
+            # Get previous snapshot to track changes
+            prev_snapshot = self.db.query(RecommendationSnapshot).filter(
+                RecommendationSnapshot.recommendation_id == recommendation.id
+            ).order_by(RecommendationSnapshot.snapshot_number.desc()).first()
+            
+            snapshot_number = (prev_snapshot.snapshot_number + 1) if prev_snapshot else 1
+            
+            # Detect changes from previous snapshot
+            action_changed = False
+            target_changed = False
+            priority_changed = False
+            
+            if prev_snapshot:
+                action_changed = prev_snapshot.recommended_action != action
+                target_changed = (
+                    target_strike is not None and 
+                    prev_snapshot.target_strike is not None and
+                    float(prev_snapshot.target_strike) != target_strike
+                )
+                priority_changed = prev_snapshot.priority != priority
+            
+            # Create snapshot
+            snapshot = RecommendationSnapshot(
+                recommendation_id=recommendation.id,
+                snapshot_number=snapshot_number,
+                evaluated_at=now,
+                scan_type='scheduled',
+                recommended_action=action,
+                priority=priority,
+                decision_state='uncovered_position',
+                reason=reason,
+                target_strike=Decimal(str(target_strike)) if target_strike else None,
+                target_expiration=target_expiration,
+                target_premium=Decimal(str(target_premium)) if target_premium else None,
+                stock_price=Decimal(str(context.get('current_price', 0))),
+                # Technical analysis
+                rsi=Decimal(str(context.get('technical_analysis', {}).get('rsi', 0))),
+                trend=context.get('technical_analysis', {}).get('trend'),
+                bollinger_position=context.get('technical_analysis', {}).get('bb_position'),
+                # Change tracking
+                action_changed=action_changed,
+                target_changed=target_changed,
+                priority_changed=priority_changed,
+                previous_action=prev_snapshot.recommended_action if prev_snapshot else None,
+                previous_target_strike=prev_snapshot.target_strike if prev_snapshot else None,
+                previous_priority=prev_snapshot.priority if prev_snapshot else None,
+                # Full context
+                full_context=context,
+                created_at=now
+            )
+            
+            self.db.add(snapshot)
+            
+            # Update recommendation stats
+            recommendation.total_snapshots = snapshot_number
+            recommendation.last_snapshot_at = now
+            
+            self.db.commit()
+            
+            logger.info(
+                f"[V2] {symbol}@{account_name}: Snapshot #{snapshot_number} "
+                f"({action}) {'⚡' if action_changed else ''}"
+            )
+            
+            return snapshot
+            
+        except Exception as e:
+            logger.error(f"[V2] Error saving {position.get('symbol', '?')}: {e}", exc_info=True)
+            self.db.rollback()
+            return None
 

@@ -65,8 +65,10 @@ interface MonthlyActual {
   spending: number;
   income: number;
   options_income: number;
-  interest_income: number;
-  salary_income: number;
+  dividend_income: number;  // Separate dividend income
+  interest_income: number;  // Separate interest income (not including dividends)
+  rental_income: number;  // Separate rental income
+  salary_income: number;  // Salary only (not including rental)
   net_cash_flow: number;
   cumulative_net: number;
   cumulative_spending: number;
@@ -129,6 +131,7 @@ export default function BuyBorrowDie() {
   // Year selection for Actuals
   const [selectedYear, setSelectedYear] = useState<number | 'all'>(2025); // Default to 2025, will update when years load
   const [availableYears, setAvailableYears] = useState<number[]>([2025]); // Will be updated from API
+  const [isCumulative, setIsCumulative] = useState(true); // Default to cumulative view
 
   // Parameters
   const [monthlyBorrowing, setMonthlyBorrowing] = useState(20000);
@@ -524,6 +527,19 @@ export default function BuyBorrowDie() {
                     </span>
                   </div>
                   <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Income from Option + dividend + interest + rental</span>
+                    <span className={`${styles.summaryValue} ${styles.positive}`}>
+                      {formatFullCurrency(
+                        actuals.monthly_data.reduce((sum, m) => 
+                          sum + m.options_income + m.dividend_income + m.interest_income + m.rental_income, 0
+                        )
+                      )}
+                    </span>
+                    <span className={styles.summaryNote}>
+                      Options + Dividends + Interest + Rental (excludes salaries)
+                    </span>
+                  </div>
+                  <div className={styles.summaryCard}>
                     <span className={styles.summaryLabel}>Total Spending (2025)</span>
                     <span className={`${styles.summaryValue} ${styles.negative}`}>{formatFullCurrency(actuals.total_spending)}</span>
                     <span className={styles.summaryNote}>From brokerage account</span>
@@ -541,14 +557,81 @@ export default function BuyBorrowDie() {
 
                 {/* Income vs Spending Bar Chart */}
                 <div className={styles.chartCard}>
-                  <h3 className={styles.chartTitle}>Income vs Spending by Month</h3>
-                  <p className={styles.chartSubtitle}>
-                    Green bars = Income • Red bars = Spending • Line = Cumulative Net Position
-                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <div>
+                      <h3 className={styles.chartTitle}>Income vs Spending by Month</h3>
+                      <p className={styles.chartSubtitle}>
+                        Green bars = Income • Purple bars = Income from Option + dividend + interest + rental • Red bars = Spending
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <button
+                        onClick={() => setIsCumulative(false)}
+                        style={{
+                          padding: '8px 16px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--color-border)',
+                          backgroundColor: !isCumulative ? 'var(--color-accent)' : 'transparent',
+                          color: !isCumulative ? 'var(--color-text-inverse)' : 'var(--color-text-secondary)',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          fontWeight: !isCumulative ? '600' : '400',
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        Non-Cumulative
+                      </button>
+                      <button
+                        onClick={() => setIsCumulative(true)}
+                        style={{
+                          padding: '8px 16px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--color-border)',
+                          backgroundColor: isCumulative ? 'var(--color-accent)' : 'transparent',
+                          color: isCumulative ? 'var(--color-text-inverse)' : 'var(--color-text-secondary)',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          fontWeight: isCumulative ? '600' : '400',
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        Cumulative
+                      </button>
+                    </div>
+                  </div>
                   <div className={styles.chartContainer}>
                     <ResponsiveContainer width="100%" height={400}>
                       <ComposedChart 
-                        data={actuals.monthly_data.filter(m => m.income > 0 || m.spending > 0)} 
+                        data={(() => {
+                          const filtered = actuals.monthly_data.filter(m => m.income > 0 || m.spending > 0);
+                          let cumulativeIncome = 0;
+                          let cumulativeIncomeFromOptions = 0;
+                          let cumulativeSpending = 0;
+                          
+                          return filtered.map(m => {
+                            // Income from Options + Dividends + Interest + Rental (excluding salaries)
+                            const incomeFromOptionsDividendInterestRental = 
+                              m.options_income + m.dividend_income + m.interest_income + m.rental_income;
+                            
+                            if (isCumulative) {
+                              cumulativeIncome += m.income;
+                              cumulativeIncomeFromOptions += incomeFromOptionsDividendInterestRental;
+                              cumulativeSpending += m.spending;
+                              
+                              return {
+                                ...m,
+                                income: cumulativeIncome,
+                                income_from_options_dividend_interest_rental: cumulativeIncomeFromOptions,
+                                spending: cumulativeSpending,
+                              };
+                            } else {
+                              return {
+                                ...m,
+                                income_from_options_dividend_interest_rental: incomeFromOptionsDividendInterestRental,
+                              };
+                            }
+                          });
+                        })()} 
                         margin={{ top: 20, right: 60, left: 20, bottom: 20 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
@@ -563,12 +646,6 @@ export default function BuyBorrowDie() {
                           stroke="#888" 
                           tickFormatter={formatCurrency}
                         />
-                        <YAxis 
-                          yAxisId="right"
-                          orientation="right"
-                          stroke="#3B82F6" 
-                          tickFormatter={formatCurrency}
-                        />
                         <Tooltip 
                           formatter={(value: number, name: string) => [formatFullCurrency(value), name]}
                           labelFormatter={(label) => label}
@@ -579,7 +656,7 @@ export default function BuyBorrowDie() {
                           }}
                         />
                         <Legend />
-                        <ReferenceLine yAxisId="right" y={0} stroke="#666" strokeDasharray="3 3" />
+                        <ReferenceLine yAxisId="left" y={0} stroke="#666" strokeDasharray="3 3" />
                         <Area 
                           yAxisId="left"
                           type="monotone" 
@@ -592,20 +669,20 @@ export default function BuyBorrowDie() {
                         <Area 
                           yAxisId="left"
                           type="monotone" 
+                          dataKey="income_from_options_dividend_interest_rental" 
+                          fill="rgba(168, 85, 247, 0.3)" 
+                          stroke="#A855F7" 
+                          strokeWidth={2}
+                          name="Income from Option + dividend + interest + rental"
+                        />
+                        <Area 
+                          yAxisId="left"
+                          type="monotone" 
                           dataKey="spending" 
                           fill="rgba(239, 68, 68, 0.3)" 
                           stroke="#EF4444" 
                           strokeWidth={2}
                           name="Spending"
-                        />
-                        <Line 
-                          yAxisId="right"
-                          type="monotone" 
-                          dataKey="cumulative_net" 
-                          stroke="#3B82F6" 
-                          strokeWidth={3}
-                          dot={{ fill: '#3B82F6', strokeWidth: 2 }}
-                          name="Cumulative Net"
                         />
                       </ComposedChart>
                     </ResponsiveContainer>

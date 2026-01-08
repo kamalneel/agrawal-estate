@@ -109,29 +109,54 @@ def find_zero_cost_roll(
     
     # Calculate max acceptable debit (20% of original premium)
     max_debit = original_premium * 0.20
-    max_weeks = max_months * 4  # Convert months to weeks
+    max_days = max_months * 30  # Approximate days in max_months
     
     today = date.today()
-    
-    # Filter scan durations to max_weeks
-    scan_weeks = [w for w in SCAN_DURATIONS_WEEKS if w <= max_weeks]
+    max_expiration = today + timedelta(days=max_days)
     
     logger.info(
         f"Zero-cost finder: {symbol} ${current_strike} {option_type}, "
         f"buy_back=${buy_back_cost:.2f}, max_debit=${max_debit:.2f}, "
-        f"delta_target={delta_target}, max_weeks={max_weeks}"
+        f"delta_target={delta_target}, max_date={max_expiration}"
     )
     
-    for weeks in scan_weeks:
-        # Calculate target expiration (next Friday after weeks)
-        target_date = today + timedelta(weeks=weeks)
-        days_to_friday = (4 - target_date.weekday()) % 7
-        expiration = target_date + timedelta(days=days_to_friday)
+    # V3.1 FIX: Use actual available expirations from Schwab API instead of calculating dates
+    # This ensures we check monthly options like April 17 that don't fall on calculated weeks
+    from app.modules.strategies.schwab_service import get_option_expirations_schwab
+    available_expirations = get_option_expirations_schwab(symbol)
+    
+    if not available_expirations:
+        logger.warning(f"No expirations available for {symbol}, falling back to week-based scan")
+        # Fallback to old week-based calculation
+        available_expirations = []
+        for weeks in SCAN_DURATIONS_WEEKS:
+            target_date = today + timedelta(weeks=weeks)
+            days_to_friday = (4 - target_date.weekday()) % 7
+            exp = target_date + timedelta(days=days_to_friday)
+            if exp <= max_expiration:
+                available_expirations.append(exp.isoformat())
+    
+    logger.debug(f"Scanning {len(available_expirations)} available expirations for {symbol}")
+    
+    for exp_str in available_expirations:
+        # Parse expiration date
+        if isinstance(exp_str, str):
+            expiration = date.fromisoformat(exp_str)
+        else:
+            expiration = exp_str
+        
+        # Skip if beyond max search window
+        if expiration > max_expiration:
+            logger.debug(f"Skipping {expiration} - beyond max_date {max_expiration}")
+            break  # Expirations are sorted, so we can stop
         
         # Skip if before or same as current expiration
         if expiration <= current_expiration:
             logger.debug(f"Skipping {expiration} - before/same as current {current_expiration}")
             continue
+        
+        # Calculate weeks for logging
+        weeks = (expiration - today).days // 7
         
         # Skip earnings week if enabled
         if skip_earnings and should_skip_expiration_for_earnings(symbol, expiration):
@@ -143,40 +168,34 @@ def find_zero_cost_roll(
             logger.debug(f"Skipping {expiration} - ex-dividend week")
             continue
         
-        # Get recommended strike using delta_target
-        strike_rec = ta_service.recommend_strike_price(
+        # V3.2: For ITM escapes, search ALL OTM strikes to find cheapest roll
+        # Instead of using delta_target to select a single strike, we check all strikes
+        # that could potentially cover the buy-back cost, starting from closest OTM
+        
+        exp_str = expiration.isoformat() if isinstance(expiration, date) else expiration
+        best_roll = _find_best_roll_for_expiration(
+            option_fetcher=option_fetcher,
             symbol=symbol,
             option_type=option_type,
-            expiration_weeks=weeks,
-            probability_target=delta_target
+            expiration=exp_str,
+            current_price=current_price,
+            buy_back_cost=buy_back_cost,
+            original_premium=original_premium,
+            max_debit=max_debit,
+            delta_target=delta_target
         )
         
-        if not strike_rec:
-            logger.debug(f"No strike recommendation for {weeks}w")
+        if best_roll is None:
+            logger.debug(f"No acceptable roll found for {expiration}")
             continue
         
-        new_strike = strike_rec.recommended_strike
-        
-        # Get option premium for this strike and expiration
-        premium_result = _get_option_premium(
-            option_fetcher, symbol, new_strike, option_type, expiration
-        )
-        
-        if premium_result is None:
-            logger.debug(f"No premium data for {weeks}w ${new_strike}")
-            continue
-        
-        new_premium = premium_result['mid_price']
-        delta = premium_result.get('delta', 1 - delta_target)
+        new_strike = best_roll['strike']
+        new_premium = best_roll['premium']
+        delta = best_roll['delta']
+        net_cost = best_roll['net_cost']
         probability_otm = (1 - abs(delta)) * 100
         
-        # Calculate net cost
-        net_cost = buy_back_cost - new_premium  # Positive = debit, Negative = credit
-        
-        # Check if acceptable using V3 20% rule
-        cost_check = is_acceptable_cost(net_cost, original_premium)
-        
-        if cost_check['acceptable']:
+        if best_roll['acceptable']:
             # FOUND IT! Return immediately (shortest acceptable)
             logger.info(
                 f"Zero-cost found: {weeks}w {expiration} ${new_strike} "
@@ -217,6 +236,109 @@ def find_zero_cost_roll(
         f"No zero-cost roll found for {symbol} ${current_strike} {option_type} "
         f"within {max_months} months"
     )
+    return None
+
+
+def _find_best_roll_for_expiration(
+    option_fetcher,
+    symbol: str,
+    option_type: str,
+    expiration: str,
+    current_price: float,
+    buy_back_cost: float,
+    original_premium: float,
+    max_debit: float,
+    delta_target: float = 0.70
+) -> Optional[Dict[str, Any]]:
+    """
+    V3.2: Find the best roll option for a specific expiration.
+    
+    For ITM escapes, we can't just use Delta 30 - that may not find affordable rolls.
+    Instead, we search ALL OTM strikes and find the CLOSEST to ATM that achieves
+    acceptable net cost.
+    
+    Args:
+        option_fetcher: OptionChainFetcher instance
+        symbol: Stock symbol
+        option_type: 'call' or 'put'
+        expiration: Expiration date string (YYYY-MM-DD)
+        current_price: Current stock price
+        buy_back_cost: Cost to close current position
+        original_premium: Original premium (for 20% rule)
+        max_debit: Maximum acceptable debit
+        delta_target: Fallback delta target if chain not available
+    
+    Returns:
+        Dict with best roll info, or None if no acceptable roll found
+    """
+    from app.modules.strategies.schwab_service import get_options_chain_schwab
+    
+    # Get full options chain for this expiration
+    chain = get_options_chain_schwab(symbol, expiration_date=expiration, option_type=option_type.upper())
+    
+    if not chain:
+        logger.debug(f"No chain available for {symbol} {expiration}")
+        return None
+    
+    options = chain.get('calls' if option_type.lower() == 'call' else 'puts', [])
+    
+    if not options:
+        logger.debug(f"No {option_type}s available for {symbol} {expiration}")
+        return None
+    
+    # For calls: want strikes > current_price (OTM)
+    # For puts: want strikes < current_price (OTM)
+    if option_type.lower() == 'call':
+        otm_options = [o for o in options if o.get('strike', 0) > current_price]
+        # Sort by strike ascending (closest OTM first)
+        otm_options.sort(key=lambda x: x.get('strike', float('inf')))
+    else:
+        otm_options = [o for o in options if o.get('strike', 0) < current_price]
+        # Sort by strike descending (closest OTM first)
+        otm_options.sort(key=lambda x: x.get('strike', 0), reverse=True)
+    
+    if not otm_options:
+        logger.debug(f"No OTM {option_type}s for {symbol} at {current_price}")
+        return None
+    
+    # Search from closest OTM to furthest, find first acceptable roll
+    for opt in otm_options:
+        strike = opt.get('strike', 0)
+        bid = opt.get('bid', 0)
+        delta = opt.get('delta', 0)
+        
+        if bid <= 0:
+            continue
+        
+        # Calculate net cost using bid (conservative)
+        net_cost = buy_back_cost - bid
+        
+        # Check if acceptable
+        cost_check = is_acceptable_cost(net_cost, original_premium)
+        
+        if cost_check['acceptable']:
+            logger.info(
+                f"Found acceptable roll: {symbol} ${strike} @ {expiration}, "
+                f"bid=${bid:.2f}, net_cost=${net_cost:.2f}, delta={delta:.3f}"
+            )
+            return {
+                'strike': strike,
+                'premium': bid,
+                'delta': delta,
+                'net_cost': net_cost,
+                'acceptable': True
+            }
+    
+    # No acceptable roll found at this expiration
+    # Return the closest OTM option info for debugging
+    closest = otm_options[0] if otm_options else None
+    if closest:
+        net_cost = buy_back_cost - closest.get('bid', 0)
+        logger.debug(
+            f"No acceptable roll at {expiration}. Closest: ${closest.get('strike')} "
+            f"bid=${closest.get('bid'):.2f}, net_cost=${net_cost:.2f} (max=${max_debit:.2f})"
+        )
+    
     return None
 
 
