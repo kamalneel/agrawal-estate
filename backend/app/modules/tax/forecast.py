@@ -4,18 +4,29 @@ Tax Forecast Calculation Service.
 Generates tax forecasts for future years based on:
 - Historical tax data (deductions, filing status, etc.)
 - Projected income for the forecast year
+- Official IRS 2025 tax brackets and Trump Tax Cuts (TCJA) provisions
+- One Big Beautiful Bill Act (OBBBA) provisions signed July 4, 2025
+
+Updated with official 2025 tax law changes including:
+- Standard deduction: $31,500 (MFJ)
+- Updated federal tax brackets (7 brackets, inflation-adjusted)
+- Capital gains treatment (0%, 15%, 20% rates)
+- NIIT 3.8% (unchanged, $250k threshold MFJ)
+- Retirement contribution limits (401k: $23,500, IRA: $7,000, HSA: $8,550 family)
 """
 
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
 from decimal import Decimal
+from sqlalchemy import extract, and_, func
 import json
 
 from app.modules.tax.models import IncomeTaxReturn
-from app.modules.income.models import W2Record
+from app.modules.income.models import W2Record, RetirementContribution
 from app.modules.income import db_queries
 from app.modules.income.salary_service import get_salary_service
 from app.modules.income.rental_service import get_rental_service
+from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
 
 
 def calculate_tax_forecast(
@@ -103,6 +114,8 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
         "options_income": 0,
         "dividend_income": 0,
         "interest_income": 0,
+        "capital_gains": {},
+        "retirement_contributions": {},
     }
     
     # Get W-2 income for the year
@@ -171,25 +184,62 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
                         year_rental_income += month_data.get("amount", 0)
     
     income["rental_income"] = year_rental_income
-    
+
+    # Get capital gains/losses for the forecast year
+    capital_gains = _calculate_capital_gains(db, year)
+    income["capital_gains"] = capital_gains
+
+    # Get retirement contributions for the forecast year (these reduce AGI)
+    retirement = _get_retirement_contributions(db, year)
+    income["retirement_contributions"] = retirement
+
     return income
 
 
 def _calculate_agi(income: Dict[str, Any]) -> float:
-    """Calculate Adjusted Gross Income from income sources."""
+    """
+    Calculate Adjusted Gross Income from income sources.
+
+    AGI = Total Income - Above-the-line Deductions
+
+    Includes:
+    - W-2 wages
+    - Investment income (options, dividends, interest)
+    - Rental income (net)
+    - Capital gains/losses (net)
+
+    Subtracts (above-the-line deductions):
+    - IRA contributions
+    - HSA contributions
+    - Other pre-tax retirement contributions (already excluded from W-2 wages)
+    """
     agi = 0
-    
-    # W-2 wages
+
+    # W-2 wages (already reduced by 401k contributions in Box 1)
     agi += income["w2_income"].get("total_wages", 0)
-    
+
     # Investment income (options, dividends, interest)
     agi += income.get("options_income", 0)
     agi += income.get("dividend_income", 0)
     agi += income.get("interest_income", 0)
-    
+
     # Rental income (net after expenses and depreciation)
     agi += income.get("rental_income", 0)
-    
+
+    # Capital gains/losses (net)
+    cap_gains = income.get("capital_gains", {})
+    net_short_term = cap_gains.get("net_short_term", 0)
+    net_long_term = cap_gains.get("net_long_term", 0)
+    agi += net_short_term + net_long_term
+
+    # Above-the-line deductions (reduce AGI)
+    retirement = income.get("retirement_contributions", {})
+    # IRA contributions (traditional IRA reduces AGI, Roth does not)
+    agi -= retirement.get("ira_deduction", 0)
+    # HSA contributions
+    agi -= retirement.get("hsa_contribution", 0)
+    # Note: 401k contributions already excluded from W-2 Box 1 wages
+
     return agi
 
 
@@ -200,18 +250,19 @@ def _calculate_taxable_income(
 ) -> float:
     """Calculate taxable income after deductions."""
     # Standard deduction amounts (Married Filing Jointly)
+    # Source: One Big Beautiful Bill Act (OBBBA), signed July 4, 2025
     standard_deductions = {
-        2025: 30800,  # Estimated - adjust when official
+        2025: 31500,  # Official IRS amount for 2025 (OBBBA)
         2024: 29200,
         2023: 27700,
     }
-    
-    standard_deduction = standard_deductions.get(year, 29200)
+
+    standard_deduction = standard_deductions.get(year, 31500)
     itemized_total = deductions.get("itemized_total", 0)
-    
+
     # Use the larger of standard or itemized
     deduction = max(standard_deduction, itemized_total) if itemized_total > 0 else standard_deduction
-    
+
     taxable_income = max(0, agi - deduction)
     return taxable_income
 
@@ -222,48 +273,82 @@ def _calculate_federal_tax(
     year: int
 ) -> float:
     """
-    Calculate federal income tax using tax brackets.
-    Simplified calculation - uses 2024 brackets for 2025 (adjust when 2025 brackets are official).
+    Calculate federal income tax using official IRS tax brackets.
+    Updated for 2025 with TCJA provisions made permanent.
+    Source: IRS Revenue Procedure 2024-40, Tax Foundation
     """
-    # 2024 Tax Brackets (Married Filing Jointly)
-    # Using 2024 brackets as estimate for 2025
-    brackets = [
-        (0, 0.10),
-        (23200, 0.12),
-        (94300, 0.22),
-        (201050, 0.24),
-        (383900, 0.32),
-        (487050, 0.35),
-        (731200, 0.37),
-    ]
-    
-    # Single brackets (if needed)
-    if filing_status == "Single":
+    # 2025 Official Tax Brackets (Married Filing Jointly)
+    # Source: https://taxfoundation.org/data/all/federal/2025-tax-brackets/
+    if year >= 2025:
+        if filing_status in ["MFJ", "married_filing_jointly"]:
+            brackets = [
+                (0, 0.10),
+                (23850, 0.12),
+                (96950, 0.22),
+                (206700, 0.24),
+                (394600, 0.32),
+                (501050, 0.35),
+                (751600, 0.37),
+            ]
+        elif filing_status in ["Single", "single"]:
+            brackets = [
+                (0, 0.10),
+                (11925, 0.12),
+                (48475, 0.22),
+                (103350, 0.24),
+                (197300, 0.32),
+                (250525, 0.35),
+                (626350, 0.37),
+            ]
+        else:
+            # Default to MFJ
+            brackets = [
+                (0, 0.10),
+                (23850, 0.12),
+                (96950, 0.22),
+                (206700, 0.24),
+                (394600, 0.32),
+                (501050, 0.35),
+                (751600, 0.37),
+            ]
+    else:
+        # 2024 Tax Brackets (Married Filing Jointly)
         brackets = [
             (0, 0.10),
-            (11600, 0.12),
-            (47150, 0.22),
-            (100525, 0.24),
-            (191950, 0.32),
-            (243725, 0.35),
-            (609350, 0.37),
+            (23200, 0.12),
+            (94300, 0.22),
+            (201050, 0.24),
+            (383900, 0.32),
+            (487050, 0.35),
+            (731200, 0.37),
         ]
-    
+
+        if filing_status in ["Single", "single"]:
+            brackets = [
+                (0, 0.10),
+                (11600, 0.12),
+                (47150, 0.22),
+                (100525, 0.24),
+                (191950, 0.32),
+                (243725, 0.35),
+                (609350, 0.37),
+            ]
+
     tax = 0.0
     remaining_income = taxable_income
-    
+
     for i in range(len(brackets)):
         bracket_start, rate = brackets[i]
         bracket_end = brackets[i + 1][0] if i + 1 < len(brackets) else float('inf')
-        
+
         if remaining_income <= 0:
             break
-        
+
         if taxable_income > bracket_start:
             bracket_income = min(remaining_income, bracket_end - bracket_start)
             tax += bracket_income * rate
             remaining_income -= bracket_income
-    
+
     return tax
 
 
@@ -274,50 +359,88 @@ def _calculate_ca_state_tax(
 ) -> float:
     """
     Calculate California state income tax.
-    Using 2024 brackets as estimate for 2025.
+
+    California has 9 tax brackets ranging from 1% to 12.3%.
+    High earners (income > $1M) pay additional 1% mental health tax (total 13.3%).
+
+    2025 brackets are slightly adjusted for inflation from 2024.
+    Source: California Franchise Tax Board (FTB)
     """
-    # 2024 California Tax Brackets (Married Filing Jointly)
-    brackets = [
-        (0, 0.01),
-        (20298, 0.02),
-        (48042, 0.04),
-        (61214, 0.06),
-        (76364, 0.08),
-        (101710, 0.093),
-        (610404, 0.103),
-        (732546, 0.113),
-        (1227424, 0.123),
-    ]
-    
-    # Single brackets
-    if filing_status == "Single":
+    # 2025 California Tax Brackets (Married Filing Jointly)
+    # Note: California adjusts brackets annually for inflation
+    # Using 2024 brackets with ~2.8% inflation adjustment for 2025
+    if year >= 2025:
         brackets = [
             (0, 0.01),
-            (10149, 0.02),
-            (24021, 0.04),
-            (30607, 0.06),
-            (38182, 0.08),
-            (50855, 0.093),
-            (305202, 0.103),
-            (366273, 0.113),
-            (613712, 0.123),
+            (20862, 0.02),      # ~2.8% inflation adjustment
+            (49387, 0.04),
+            (62928, 0.06),
+            (78502, 0.08),
+            (104558, 0.093),
+            (627495, 0.103),
+            (753057, 0.113),
+            (1261792, 0.123),
         ]
-    
+
+        if filing_status in ["Single", "single"]:
+            brackets = [
+                (0, 0.01),
+                (10431, 0.02),
+                (24694, 0.04),
+                (31464, 0.06),
+                (39251, 0.08),
+                (52279, 0.093),
+                (313748, 0.103),
+                (376529, 0.113),
+                (630896, 0.123),
+            ]
+    else:
+        # 2024 California Tax Brackets (Married Filing Jointly)
+        brackets = [
+            (0, 0.01),
+            (20298, 0.02),
+            (48042, 0.04),
+            (61214, 0.06),
+            (76364, 0.08),
+            (101710, 0.093),
+            (610404, 0.103),
+            (732546, 0.113),
+            (1227424, 0.123),
+        ]
+
+        if filing_status in ["Single", "single"]:
+            brackets = [
+                (0, 0.01),
+                (10149, 0.02),
+                (24021, 0.04),
+                (30607, 0.06),
+                (38182, 0.08),
+                (50855, 0.093),
+                (305202, 0.103),
+                (366273, 0.113),
+                (613712, 0.123),
+            ]
+
     tax = 0.0
     remaining_income = taxable_income
-    
+
     for i in range(len(brackets)):
         bracket_start, rate = brackets[i]
         bracket_end = brackets[i + 1][0] if i + 1 < len(brackets) else float('inf')
-        
+
         if remaining_income <= 0:
             break
-        
+
         if taxable_income > bracket_start:
             bracket_income = min(remaining_income, bracket_end - bracket_start)
             tax += bracket_income * rate
             remaining_income -= bracket_income
-    
+
+    # Mental Health Services Tax: Additional 1% on income over $1M
+    if taxable_income > 1000000:
+        mental_health_tax = (taxable_income - 1000000) * 0.01
+        tax += mental_health_tax
+
     return tax
 
 
@@ -428,6 +551,110 @@ def _build_forecast_details(
     # Copy rental properties from base if available
     if base_details.get("rental_properties"):
         details["rental_properties"] = base_details["rental_properties"]
-    
+
+    # Add capital gains if present
+    cap_gains = income.get("capital_gains", {})
+    if cap_gains.get("net_short_term") or cap_gains.get("net_long_term"):
+        details["capital_gains"] = {
+            "short_term": cap_gains.get("net_short_term", 0),
+            "long_term": cap_gains.get("net_long_term", 0),
+            "total": cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0)
+        }
+        # Add to income sources
+        if cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0) != 0:
+            details["income_sources"].append({
+                "source": "Capital Gains (Net)",
+                "amount": cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0)
+            })
+
     return details
+
+
+def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
+    """
+    Calculate net capital gains/losses from investment transactions.
+
+    Short-term: Assets held ≤ 1 year (taxed as ordinary income)
+    Long-term: Assets held > 1 year (preferential rates: 0%, 15%, 20%)
+
+    Returns dict with net_short_term and net_long_term
+    """
+    # Query BUY and SELL transactions for the year
+    # This is a simplified calculation - real cap gains tracking requires lot matching
+    sell_transactions = db.query(InvestmentTransaction).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['SELL', 'SOLD']),
+        extract('year', InvestmentTransaction.transaction_date) == year
+    ).all()
+
+    # For now, use a simplified approach:
+    # - Assume all stock sales generate some capital gains
+    # - Use the net proceeds from SELL transactions
+    # - Without proper cost basis tracking, we estimate based on transaction patterns
+
+    total_proceeds = sum(float(t.amount or 0) for t in sell_transactions)
+
+    # Simplified: Assume 30% of proceeds are gains (conservative estimate)
+    # In reality, this should be tracked with actual cost basis
+    estimated_gains = total_proceeds * 0.30 if total_proceeds > 0 else 0
+
+    # For now, classify all as long-term (most holdings are long-term)
+    # This is a simplification - proper tracking would require holding period analysis
+    return {
+        "net_short_term": 0,  # Conservative: assume mostly long-term holdings
+        "net_long_term": estimated_gains,
+        "total_proceeds": total_proceeds,
+        "note": "Estimated - requires proper cost basis tracking for accuracy"
+    }
+
+
+def _get_retirement_contributions(db: Session, year: int) -> Dict[str, float]:
+    """
+    Get retirement contributions that reduce AGI.
+
+    401(k) contributions: Already excluded from W-2 Box 1 wages
+    Traditional IRA: Deductible (reduces AGI)
+    Roth IRA: Not deductible (doesn't reduce AGI)
+    HSA: Deductible (reduces AGI)
+
+    2025 Limits:
+    - 401(k): $23,500 ($31,000 with catch-up 50+, $34,750 ages 60-63)
+    - IRA: $7,000 ($8,000 with catch-up 50+)
+    - HSA: $4,300 individual / $8,550 family ($1,000 catch-up 55+)
+
+    Returns dict with deductible amounts
+    """
+    # Query retirement contribution records
+    contributions = db.query(RetirementContribution).filter(
+        RetirementContribution.tax_year == year
+    ).all()
+
+    total_ira_deduction = 0
+    total_hsa_contribution = 0
+    total_401k = 0
+
+    for contrib in contributions:
+        # Traditional IRA contributions are deductible
+        ira_contrib = float(contrib.ira_contributions or 0)
+        total_ira_deduction += ira_contrib
+
+        # HSA contributions are deductible
+        hsa_contrib = float(contrib.hsa_contributions or 0)
+        total_hsa_contribution += hsa_contrib
+
+        # 401k for reference (already excluded from W-2 wages)
+        k401_contrib = float(contrib.contributions_401k or 0)
+        total_401k += k401_contrib
+
+    return {
+        "ira_deduction": total_ira_deduction,
+        "hsa_contribution": total_hsa_contribution,
+        "k401_total": total_401k,  # For reference only, already excluded from wages
+        "total_above_line_deduction": total_ira_deduction + total_hsa_contribution
+    }
 
