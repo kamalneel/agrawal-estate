@@ -11,6 +11,7 @@ import { RealEstate } from './pages/RealEstate'
 import { Cash } from './pages/Cash'
 import Tax from './pages/Tax'
 import TaxForms from './pages/TaxForms'
+import CostBasis from './pages/CostBasis'
 import TaxPlanning from './pages/TaxPlanning'
 import OptionsSelling from './pages/OptionsSelling'
 import BuyBorrowDie from './pages/BuyBorrowDie'
@@ -44,6 +45,7 @@ export default function App() {
         <Route path="/cash" element={<Cash />} />
         <Route path="/tax" element={<Tax />} />
         <Route path="/tax/forms" element={<TaxForms />} />
+        <Route path="/tax/cost-basis" element={<CostBasis />} />
 
         {/* Strategies */}
         <Route path="/strategies/tax-optimization" element={<TaxPlanning />} />

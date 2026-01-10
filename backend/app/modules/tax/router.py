@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
+from decimal import Decimal
 import json
 from io import BytesIO
 
@@ -22,6 +23,8 @@ from app.modules.tax.pdf_generator import (
     generate_california_540_pdf,
     generate_tax_forms_pdf
 )
+from app.modules.tax.cost_basis_service import CostBasisService
+from app.modules.tax.models import StockLot, StockLotSale
 
 router = APIRouter()
 
@@ -414,6 +417,309 @@ async def download_all_forms_pdf(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
+
+
+# ==================== Cost Basis Tracking Endpoints ====================
+
+@router.get("/cost-basis/{year}")
+async def get_capital_gains_summary(
+    year: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get capital gains summary for a tax year.
+
+    Returns realized gains broken down by short-term vs long-term,
+    total proceeds, cost basis, and per-symbol breakdown.
+    """
+    service = CostBasisService(db)
+    return service.get_capital_gains_summary(year)
+
+
+@router.get("/cost-basis/{year}/realized")
+async def get_realized_gains(
+    year: int,
+    symbol: Optional[str] = Query(default=None),
+    is_long_term: Optional[bool] = Query(default=None),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get all realized capital gains transactions for a tax year.
+
+    Query parameters:
+    - symbol: Filter by stock symbol
+    - is_long_term: Filter by long-term (true) or short-term (false)
+    """
+    service = CostBasisService(db)
+    sales = service.get_realized_gains(year, symbol=symbol, is_long_term=is_long_term)
+
+    # Convert to dict format
+    results = []
+    for sale in sales:
+        lot = db.query(StockLot).filter(StockLot.lot_id == sale.lot_id).first()
+        results.append({
+            "sale_id": sale.sale_id,
+            "symbol": lot.symbol if lot else None,
+            "sale_date": sale.sale_date.isoformat(),
+            "purchase_date": lot.purchase_date.isoformat() if lot else None,
+            "quantity_sold": float(sale.quantity_sold),
+            "proceeds": float(sale.proceeds),
+            "proceeds_per_share": float(sale.proceeds_per_share),
+            "cost_basis": float(sale.cost_basis),
+            "gain_loss": float(sale.gain_loss),
+            "holding_period_days": sale.holding_period_days,
+            "is_long_term": sale.is_long_term,
+            "wash_sale": sale.wash_sale,
+            "notes": sale.notes
+        })
+
+    return {
+        "tax_year": year,
+        "transactions": results,
+        "count": len(results)
+    }
+
+
+@router.get("/cost-basis/lots")
+async def get_stock_lots(
+    symbol: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default="open", description="'open', 'closed', or 'all'"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get stock lots (open or closed positions).
+
+    Query parameters:
+    - symbol: Filter by stock symbol
+    - status: 'open' (default), 'closed', or 'all'
+    """
+    service = CostBasisService(db)
+
+    if status == "closed":
+        lots = service.get_closed_lots(symbol=symbol)
+    elif status == "all":
+        query = db.query(StockLot)
+        if symbol:
+            query = query.filter(StockLot.symbol == symbol.upper())
+        lots = query.order_by(StockLot.purchase_date.desc()).all()
+    else:  # open
+        lots = service.get_open_lots(symbol=symbol)
+
+    results = []
+    for lot in lots:
+        results.append({
+            "lot_id": lot.lot_id,
+            "symbol": lot.symbol,
+            "purchase_date": lot.purchase_date.isoformat(),
+            "quantity": float(lot.quantity),
+            "quantity_remaining": float(lot.quantity_remaining),
+            "cost_basis": float(lot.cost_basis),
+            "cost_per_share": float(lot.cost_per_share),
+            "account_id": lot.account_id,
+            "source": lot.source,
+            "status": lot.status,
+            "lot_method": lot.lot_method,
+            "notes": lot.notes
+        })
+
+    return {
+        "lots": results,
+        "count": len(results)
+    }
+
+
+@router.get("/cost-basis/unrealized")
+async def get_unrealized_gains(
+    symbol: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get unrealized gains for open positions.
+
+    Note: This endpoint requires current market prices.
+    Currently returns placeholder data. Will be enhanced to fetch live prices.
+    """
+    service = CostBasisService(db)
+
+    # TODO: Fetch current prices from market data API
+    # For now, return 0 to indicate this feature needs price data
+    current_prices = {}
+
+    lots = service.get_open_lots(symbol=symbol)
+
+    # Return lot information without unrealized gains until we have price data
+    results = []
+    for lot in lots:
+        results.append({
+            "symbol": lot.symbol,
+            "quantity_remaining": float(lot.quantity_remaining),
+            "cost_basis": float(lot.cost_per_share * lot.quantity_remaining),
+            "cost_per_share": float(lot.cost_per_share),
+            "purchase_date": lot.purchase_date.isoformat(),
+            "note": "Current price data needed for unrealized gain calculation"
+        })
+
+    return {
+        "open_positions": results,
+        "note": "Market data integration required for unrealized gains"
+    }
+
+
+@router.post("/cost-basis/lots")
+async def create_stock_lot(
+    lot_data: Dict[str, Any],
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Create a new stock lot manually.
+
+    Request body:
+    {
+        "symbol": "AAPL",
+        "purchase_date": "2024-01-15",
+        "quantity": 100,
+        "cost_basis": 18500.00,
+        "source": "manual",
+        "account_id": "my_account",
+        "lot_method": "FIFO",
+        "notes": "Optional notes"
+    }
+    """
+    from datetime import datetime
+
+    service = CostBasisService(db)
+
+    try:
+        lot = service.create_lot(
+            symbol=lot_data["symbol"],
+            purchase_date=datetime.fromisoformat(lot_data["purchase_date"]).date(),
+            quantity=Decimal(str(lot_data["quantity"])),
+            cost_basis=Decimal(str(lot_data["cost_basis"])),
+            source=lot_data.get("source", "manual"),
+            account_id=lot_data.get("account_id"),
+            lot_method=lot_data.get("lot_method", "FIFO"),
+            notes=lot_data.get("notes")
+        )
+
+        return {
+            "success": True,
+            "lot_id": lot.lot_id,
+            "message": f"Created lot for {lot_data['quantity']} shares of {lot_data['symbol']}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/cost-basis/sales")
+async def process_stock_sale(
+    sale_data: Dict[str, Any],
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Process a stock sale (matches to lots and records gain/loss).
+
+    Request body:
+    {
+        "symbol": "AAPL",
+        "sale_date": "2025-01-10",
+        "quantity_sold": 50,
+        "proceeds": 9500.00,
+        "source": "manual",
+        "account_id": "my_account",
+        "lot_method": "FIFO",
+        "notes": "Optional notes"
+    }
+    """
+    from datetime import datetime
+    from decimal import Decimal
+
+    service = CostBasisService(db)
+
+    try:
+        sales = service.process_sale(
+            symbol=sale_data["symbol"],
+            sale_date=datetime.fromisoformat(sale_data["sale_date"]).date(),
+            quantity_sold=Decimal(str(sale_data["quantity_sold"])),
+            proceeds=Decimal(str(sale_data["proceeds"])),
+            source=sale_data.get("source", "manual"),
+            account_id=sale_data.get("account_id"),
+            lot_method=sale_data.get("lot_method", "FIFO"),
+            notes=sale_data.get("notes")
+        )
+
+        total_gain = sum(float(s.gain_loss) for s in sales)
+
+        return {
+            "success": True,
+            "num_lots_matched": len(sales),
+            "total_gain_loss": total_gain,
+            "sales": [
+                {
+                    "sale_id": s.sale_id,
+                    "lot_id": s.lot_id,
+                    "quantity": float(s.quantity_sold),
+                    "gain_loss": float(s.gain_loss),
+                    "is_long_term": s.is_long_term
+                }
+                for s in sales
+            ],
+            "message": f"Processed sale of {sale_data['quantity_sold']} shares of {sale_data['symbol']}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/cost-basis/import/robinhood")
+async def import_robinhood_transactions(
+    transactions: List[Dict[str, Any]],
+    account_id: str = Query(default="robinhood_main"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Import Robinhood transactions in bulk.
+
+    Request body: Array of transactions:
+    [
+        {
+            "symbol": "AAPL",
+            "date": "2024-01-15",
+            "type": "buy",
+            "quantity": 100,
+            "amount": 18500.00
+        },
+        ...
+    ]
+    """
+    from datetime import datetime
+
+    service = CostBasisService(db)
+
+    # Convert date strings to date objects
+    for txn in transactions:
+        if isinstance(txn["date"], str):
+            txn["date"] = datetime.fromisoformat(txn["date"]).date()
+
+    try:
+        lots_created, sales_created = service.import_robinhood_transactions(
+            transactions, account_id=account_id
+        )
+
+        return {
+            "success": True,
+            "lots_created": lots_created,
+            "sales_created": sales_created,
+            "transactions_processed": len(transactions),
+            "message": f"Imported {len(transactions)} transactions"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # Property Tax Endpoints (original)
