@@ -575,7 +575,7 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
     Calculate net capital gains/losses from investment transactions.
 
     Uses actual cost basis tracking for precise gain/loss calculations.
-    Falls back to estimation if cost basis data is not available.
+    Falls back to transaction-based estimation, then to 50% conservative estimate.
 
     Short-term: Assets held ≤ 1 year (taxed as ordinary income)
     Long-term: Assets held > 1 year (preferential rates: 0%, 15%, 20%)
@@ -603,8 +603,7 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
         # Cost basis tracking not available or failed - fall back to estimation
         pass
 
-    # Fallback: Estimate capital gains from sell transactions
-    # Query BUY and SELL transactions for the year
+    # Fallback 1: Use transaction data if available
     sell_transactions = db.query(InvestmentTransaction).join(
         InvestmentAccount,
         and_(
@@ -616,19 +615,29 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
         extract('year', InvestmentTransaction.transaction_date) == year
     ).all()
 
-    total_proceeds = sum(float(t.amount or 0) for t in sell_transactions)
+    if sell_transactions:
+        # We have transaction data - use actual sale amounts with 50% gain estimate
+        total_proceeds = sum(float(t.amount or 0) for t in sell_transactions)
 
-    # Simplified: Assume 30% of proceeds are gains (conservative estimate)
-    # In reality, this should be tracked with actual cost basis
-    estimated_gains = total_proceeds * 0.30 if total_proceeds > 0 else 0
+        # Use 50% as a conservative estimate of gains when we have transactions but no cost basis
+        # This is more conservative than 30% and accounts for typical market appreciation
+        estimated_gains = total_proceeds * 0.50 if total_proceeds > 0 else 0
 
-    # For now, classify all as long-term (most holdings are long-term)
-    # This is a simplification - proper tracking would require holding period analysis
+        # For now, classify all as long-term (most holdings are long-term)
+        return {
+            "net_short_term": 0,
+            "net_long_term": estimated_gains,
+            "total_proceeds": total_proceeds,
+            "note": "Estimated at 50% gains - import to Cost Basis Tracker for accuracy"
+        }
+
+    # Fallback 2: No transaction data at all - return zeros
+    # This happens when there are no sales in the database for this year
     return {
-        "net_short_term": 0,  # Conservative: assume mostly long-term holdings
-        "net_long_term": estimated_gains,
-        "total_proceeds": total_proceeds,
-        "note": "Estimated - import transactions to Cost Basis Tracker for accuracy"
+        "net_short_term": 0,
+        "net_long_term": 0,
+        "total_proceeds": 0,
+        "note": "No transaction data available - import transactions to Cost Basis Tracker"
     }
 
 
