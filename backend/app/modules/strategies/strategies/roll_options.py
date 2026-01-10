@@ -309,34 +309,35 @@ class RollOptionsStrategy(BaseStrategy):
             next_friday
         )
         
-        # If we can't get the new premium, estimate it
+        # DO NOT use fallback estimates - they can be dangerously inaccurate
+        # Instead, show unavailable data and let user verify actual price
         if new_premium is None:
-            # Estimate based on volatility and distance from strike
-            estimated_premium = position.original_premium * 0.8  # Conservative estimate
-            new_premium = estimated_premium
-            premium_source = "estimated"
+            premium_source = "unavailable"
+            net_cost = None
+            net_cost_total = None
+            net_cost_str = "check new premium on Robinhood"
+            is_credit = None
+            logger.warning(f"{position.symbol}: New premium data unavailable - will indicate in recommendation")
         else:
             premium_source = "market"
-        
-        # Net cost: positive = debit (you pay), negative = credit (you receive)
-        net_cost = buy_back_cost - new_premium
-        net_cost_total = net_cost * 100 * position.contracts
-        
-        # Format for display
-        if net_cost < 0:
-            net_cost_str = f"${abs(net_cost):.2f} credit"
-            is_credit = True
-        else:
-            net_cost_str = f"${net_cost:.2f} debit"
-            is_credit = False
+            # Net cost: positive = debit (you pay), negative = credit (you receive)
+            net_cost = buy_back_cost - new_premium
+            net_cost_total = net_cost * 100 * position.contracts
+            
+            # Format for display
+            if net_cost < 0:
+                net_cost_str = f"${abs(net_cost):.2f} credit"
+                is_credit = True
+            else:
+                net_cost_str = f"${net_cost:.2f} debit"
+                is_credit = False
         
         # === COST SENSITIVITY CHECK ===
-        # Don't recommend if:
-        # 1. Debit is more than 50% of the new premium (bad deal)
-        # 2. Debit is more than remaining premium in current position
+        # Only perform checks if we have actual premium data
+        # If premium unavailable, still show recommendation but user must verify
         remaining_premium = position.original_premium - buy_back_cost
         
-        if net_cost > 0:  # It's a debit
+        if net_cost is not None and net_cost > 0:  # It's a debit
             # If debit > remaining premium, rolling costs more than just letting it expire
             if net_cost > remaining_premium and remaining_premium > 0:
                 logger.info(
@@ -346,7 +347,7 @@ class RollOptionsStrategy(BaseStrategy):
                 return None
             
             # If debit > 50% of new premium, it's a bad deal
-            if new_premium > 0 and net_cost > (new_premium * 0.5):
+            if new_premium and new_premium > 0 and net_cost > (new_premium * 0.5):
                 logger.info(
                     f"Skipping early roll for {position.symbol}: debit ${net_cost:.2f} > "
                     f"50% of new premium ${new_premium:.2f}"
@@ -366,13 +367,13 @@ class RollOptionsStrategy(BaseStrategy):
             "original_premium": position.original_premium,
             "current_premium": alert.current_premium,
             "account": position.account_name,
-            # Cost analysis
+            # Cost analysis (values may be None if premium unavailable)
             "buy_back_cost": round(buy_back_cost, 2),
-            "new_premium": round(new_premium, 2),
-            "new_premium_source": premium_source,
-            "net_cost": round(net_cost, 2),
-            "net_cost_total": round(net_cost_total, 2),
-            "is_credit": is_credit,
+            "new_premium": round(new_premium, 2) if new_premium is not None else None,
+            "new_premium_source": premium_source,  # "market" or "unavailable"
+            "net_cost": round(net_cost, 2) if net_cost is not None else None,
+            "net_cost_total": round(net_cost_total, 2) if net_cost_total is not None else None,
+            "is_credit": is_credit,  # None if premium unavailable
             # Technical analysis
             "technical_analysis": {
                 "current_price": indicators.current_price,
@@ -405,6 +406,47 @@ class RollOptionsStrategy(BaseStrategy):
         else:
             priority = "medium"  # Standard early roll
         
+        # Format premium strings (handle unavailable data)
+        new_premium_str = f"${new_premium:.2f}" if new_premium is not None else "premium not available"
+        
+        # Description/rationale handling for unavailable premium
+        if new_premium is not None:
+            description = (
+                f"Roll {position.symbol} ${position.strike_price} {position.option_type} "
+                f"{position.expiration_date.strftime('%b %d')} → "
+                f"{next_friday.strftime('%b %d')} ${strike_rec.recommended_strike:.0f} - "
+                f"{net_cost_str}/share ({alert.profit_percent*100:.0f}% profit captured)"
+            )
+            rationale = (
+                f"Captured {alert.profit_percent*100:.0f}% profit. "
+                f"Roll cost: buy back at ${buy_back_cost:.2f}, sell new at {new_premium_str} = {net_cost_str}. "
+                f"{strike_rec.rationale}"
+            )
+            action = (
+                f"Buy to close ${position.strike_price} {position.option_type} at ${buy_back_cost:.2f}, "
+                f"sell ${strike_rec.recommended_strike:.0f} {position.option_type} for {next_friday.strftime('%b %d')} "
+                f"at ~{new_premium_str} ({net_cost_str})"
+            )
+            potential_income = abs(net_cost_total) if is_credit else new_premium * 100 * position.contracts
+        else:
+            description = (
+                f"Roll {position.symbol} ${position.strike_price} {position.option_type} "
+                f"{position.expiration_date.strftime('%b %d')} → "
+                f"{next_friday.strftime('%b %d')} ${strike_rec.recommended_strike:.0f} - "
+                f"Check new premium ({alert.profit_percent*100:.0f}% profit captured)"
+            )
+            rationale = (
+                f"Captured {alert.profit_percent*100:.0f}% profit. "
+                f"Roll cost: buy back at ${buy_back_cost:.2f}, sell new at {new_premium_str}. "
+                f"{strike_rec.rationale}"
+            )
+            action = (
+                f"Buy to close ${position.strike_price} {position.option_type} at ${buy_back_cost:.2f}, "
+                f"sell ${strike_rec.recommended_strike:.0f} {position.option_type} for {next_friday.strftime('%b %d')} "
+                f"({net_cost_str})"
+            )
+            potential_income = None
+        
         # Include account in ID to make unique per account
         account_slug = (position.account_name or "unknown").replace(" ", "_").replace("'", "")
         return StrategyRecommendation(
@@ -413,24 +455,11 @@ class RollOptionsStrategy(BaseStrategy):
             category=self.category,
             priority=priority,
             title=title,
-            description=(
-                f"Roll {position.symbol} ${position.strike_price} {position.option_type} "
-                f"{position.expiration_date.strftime('%b %d')} → "
-                f"{next_friday.strftime('%b %d')} ${strike_rec.recommended_strike:.0f} - "
-                f"{net_cost_str}/share ({alert.profit_percent*100:.0f}% profit captured)"
-            ),
-            rationale=(
-                f"Captured {alert.profit_percent*100:.0f}% profit. "
-                f"Roll cost: buy back at ${buy_back_cost:.2f}, sell new at ${new_premium:.2f} = {net_cost_str}. "
-                f"{strike_rec.rationale}"
-            ),
-            action=(
-                f"Buy to close ${position.strike_price} {position.option_type} at ${buy_back_cost:.2f}, "
-                f"sell ${strike_rec.recommended_strike:.0f} {position.option_type} for {next_friday.strftime('%b %d')} "
-                f"at ~${new_premium:.2f} ({net_cost_str})"
-            ),
+            description=description,
+            rationale=rationale,
+            action=action,
             action_type="roll",
-            potential_income=abs(net_cost_total) if is_credit else new_premium * 100 * position.contracts,
+            potential_income=potential_income,
             potential_risk="low",
             time_horizon="this_week",
             symbol=position.symbol,

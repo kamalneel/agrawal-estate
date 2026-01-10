@@ -651,6 +651,96 @@
   margin-bottom: 0.25rem;
 }
 
+/* V3.4: Decision Rationale */
+.decisionRationale {
+  font-size: 0.85rem;
+  color: #d1d5db;
+  line-height: 1.7;
+  padding: 0.75rem;
+  background: rgba(99, 102, 241, 0.05);
+  border-radius: 6px;
+  border-left: 3px solid #6366f1;
+}
+
+.decisionRationale p {
+  margin: 0 0 0.75rem;
+}
+
+.decisionRationale p:last-child {
+  margin-bottom: 0;
+}
+
+/* V3.4: TA Summary Section */
+.taSummarySection {
+  margin-top: 1rem;
+}
+
+.taSummarySection h5 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #9ca3af;
+  margin: 0 0 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.taSummaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.5rem;
+  background: rgba(30, 30, 30, 0.5);
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #2a2a2a;
+}
+
+.taSummaryItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.taLabel {
+  font-size: 0.7rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.taValue {
+  font-size: 0.85rem;
+  color: #e5e7eb;
+  font-weight: 500;
+}
+
+/* TA Status Colors */
+.taItm {
+  color: #f87171 !important;
+}
+
+.taOtm {
+  color: #34d399 !important;
+}
+
+.taSupport {
+  color: #34d399 !important;
+}
+
+.taResistance {
+  color: #f87171 !important;
+}
+
+.taOversold {
+  color: #34d399 !important;
+}
+
+.taOverbought {
+  color: #f87171 !important;
+}
+
 .detailActions {
   display: flex;
   gap: 0.75rem;

@@ -201,6 +201,14 @@ class NewCoveredCallStrategy(BaseStrategy):
             "strike_rationale": strike_rec.rationale,
         }
         
+        # Build TA summary and decision rationale for V3.4 enhanced notifications
+        ta_summary = self._build_ta_summary(position, indicators, strike_rec)
+        decision_rationale = self._build_decision_rationale(
+            position, indicators, strike_rec, should_wait, reason
+        )
+        context['ta_summary'] = ta_summary
+        context['decision_rationale'] = decision_rationale
+        
         if should_wait:
             # WAIT recommendation
             title = f"WAIT {symbol} - {position['uncovered']} unsold, likely bounce · Stock ${indicators.current_price:.0f}"
@@ -247,32 +255,48 @@ class NewCoveredCallStrategy(BaseStrategy):
             try:
                 option_quote = option_fetcher.get_option_quote(
                     symbol=symbol,
-                    expiration_date=next_friday,
-                    strike=strike_rec.recommended_strike,
-                    option_type='call'
+                    strike_price=strike_rec.recommended_strike,
+                    option_type='call',
+                    expiration_date=next_friday
                 )
                 if option_quote:
                     # Use bid price for selling (more conservative/realistic)
                     if option_quote.bid and option_quote.bid > 0:
                         real_premium_per_contract = option_quote.bid * 100
+                        premium_source = "live_bid"
                     elif option_quote.last_price and option_quote.last_price > 0:
                         real_premium_per_contract = option_quote.last_price * 100
-                    logger.debug(f"Real premium for {symbol} ${strike_rec.recommended_strike:.0f}: ${real_premium_per_contract:.2f}/contract")
+                        premium_source = "last_price"
+                    else:
+                        premium_source = "unavailable"
+                    logger.debug(f"Real premium for {symbol} ${strike_rec.recommended_strike:.0f}: ${real_premium_per_contract:.2f}/contract" if real_premium_per_contract else f"Premium unavailable for {symbol}")
+                else:
+                    premium_source = "unavailable"
             except Exception as e:
                 logger.warning(f"Could not fetch real premium for {symbol}: {e}")
+                premium_source = "unavailable"
             
-            # Fallback to estimate if real premium not available
-            if real_premium_per_contract is None:
-                real_premium_per_contract = indicators.current_price * 0.004 * 100  # 0.4% estimate per contract
+            # Calculate totals only if premium is available
+            # DO NOT use fallback estimates - they can be dangerously inaccurate
+            if real_premium_per_contract is not None:
+                total_premium = real_premium_per_contract * position["uncovered"]
+                context["premium_per_contract"] = round(real_premium_per_contract, 2)
+                context["total_premium"] = round(total_premium, 2)
+                context["premium_source"] = premium_source
+                premium_str = f"${total_premium:.0f}"
+            else:
+                total_premium = None
+                context["premium_per_contract"] = None
+                context["total_premium"] = None
+                context["premium_source"] = "unavailable"
+                premium_str = "premium not available"
+                logger.warning(f"[{symbol}] Premium data unavailable - recommendation will show 'premium not available'")
             
-            total_premium = real_premium_per_contract * position["uncovered"]
-            
-            # Add premium to context for frontend
-            context["premium_per_contract"] = round(real_premium_per_contract, 2)
-            context["total_premium"] = round(total_premium, 2)
-            
-            # Include premium in title and description
-            title = f"SELL {position['uncovered']} {symbol} ${strike_rec.recommended_strike:.0f} call for {next_friday.strftime('%b %d')} · Stock ${indicators.current_price:.0f} and earn ${total_premium:.2f}"
+            # Include premium in title and description (show availability status)
+            if total_premium is not None:
+                title = f"SELL {position['uncovered']} {symbol} ${strike_rec.recommended_strike:.0f} call for {next_friday.strftime('%b %d')} · Stock ${indicators.current_price:.0f} · Earn ${total_premium:.0f}"
+            else:
+                title = f"SELL {position['uncovered']} {symbol} ${strike_rec.recommended_strike:.0f} call for {next_friday.strftime('%b %d')} · Stock ${indicators.current_price:.0f} · Premium not available"
             
             # Save to V2 model
             self._save_to_v2(
@@ -286,23 +310,32 @@ class NewCoveredCallStrategy(BaseStrategy):
                 target_premium=real_premium_per_contract
             )
             
+            # Build description based on premium availability
+            if total_premium is not None:
+                description = (
+                    f"Sell {position['uncovered']} {symbol} covered call(s) at ${strike_rec.recommended_strike:.0f} "
+                    f"expiring {next_friday.strftime('%b %d')} in {position['account_name']} · Earn ${total_premium:.0f}"
+                )
+            else:
+                description = (
+                    f"Sell {position['uncovered']} {symbol} covered call(s) at ${strike_rec.recommended_strike:.0f} "
+                    f"expiring {next_friday.strftime('%b %d')} in {position['account_name']} · Check Robinhood for current premium"
+                )
+            
             return StrategyRecommendation(
                 id=f"new_call_sell_{symbol}_{position['account_name']}_{date.today().isoformat()}",
                 type=self.strategy_type,
                 category=self.category,
                 priority="high",
                 title=title,
-                description=(
-                    f"Sell {position['uncovered']} {symbol} covered call(s) at ${strike_rec.recommended_strike:.0f} "
-                    f"expiring {next_friday.strftime('%b %d')} in {position['account_name']} and earn ${total_premium:.2f}"
-                ),
+                description=description,
                 rationale=reason + " " + strike_rec.rationale,
                 action=(
                     f"Sell {position['uncovered']} {symbol} ${strike_rec.recommended_strike:.0f} call "
                     f"expiring {next_friday.strftime('%b %d')}"
                 ),
                 action_type="sell",
-                potential_income=round(total_premium, 2),
+                potential_income=round(total_premium, 2) if total_premium is not None else None,
                 potential_risk="low",
                 time_horizon="this_week",
                 symbol=symbol,
@@ -452,4 +485,110 @@ class NewCoveredCallStrategy(BaseStrategy):
             logger.error(f"[V2] Error saving {position.get('symbol', '?')}: {e}", exc_info=True)
             self.db.rollback()
             return None
+    
+    def _build_ta_summary(
+        self,
+        position: Dict[str, Any],
+        indicators,
+        strike_rec
+    ) -> Dict[str, Any]:
+        """Build TA summary for V3.4 enhanced notifications."""
+        current_price = indicators.current_price
+        strike_price = strike_rec.recommended_strike
+        
+        # Calculate Bollinger Band position (0% = lower, 100% = upper)
+        bb_range = indicators.bb_upper - indicators.bb_lower
+        bb_position_pct = ((current_price - indicators.bb_lower) / bb_range * 100) if bb_range > 0 else 50
+        
+        # Determine BB position description
+        if bb_position_pct < 25:
+            bb_position_desc = "near lower support"
+        elif bb_position_pct < 40:
+            bb_position_desc = "lower half"
+        elif bb_position_pct > 75:
+            bb_position_desc = "near upper resistance"
+        elif bb_position_pct > 60:
+            bb_position_desc = "upper half"
+        else:
+            bb_position_desc = "middle"
+        
+        # RSI interpretation
+        rsi = indicators.rsi_14
+        if rsi < 30:
+            rsi_desc = "oversold"
+        elif rsi < 40:
+            rsi_desc = "near oversold"
+        elif rsi > 70:
+            rsi_desc = "overbought"
+        elif rsi > 60:
+            rsi_desc = "near overbought"
+        else:
+            rsi_desc = "neutral"
+        
+        return {
+            'current_price': round(current_price, 2),
+            'strike_price': round(strike_price, 2),
+            'option_type': 'CALL',
+            'is_itm': False,  # Uncovered - not applicable
+            'itm_pct': None,
+            'otm_pct': round(((strike_price - current_price) / current_price * 100), 1) if strike_price > current_price else None,
+            'days_to_expiry': (self._get_next_friday() - date.today()).days,
+            'bollinger': {
+                'upper': round(indicators.bb_upper, 2),
+                'middle': round(indicators.bb_middle, 2),
+                'lower': round(indicators.bb_lower, 2),
+                'position_pct': round(bb_position_pct, 0),
+                'position_desc': bb_position_desc,
+            },
+            'rsi': {
+                'value': round(rsi, 1),
+                'status': rsi_desc,
+            },
+            'support': round(indicators.nearest_support, 2) if indicators.nearest_support else None,
+            'resistance': round(indicators.nearest_resistance, 2) if indicators.nearest_resistance else None,
+        }
+    
+    def _build_decision_rationale(
+        self,
+        position: Dict[str, Any],
+        indicators,
+        strike_rec,
+        should_wait: bool,
+        reason: str
+    ) -> str:
+        """Build plain English decision rationale for V3.4."""
+        symbol = position['symbol']
+        uncovered = position['uncovered']
+        current_price = indicators.current_price
+        strike = strike_rec.recommended_strike
+        
+        # Build situation
+        situation = f"You have {uncovered} unsold contract(s) of {symbol} "
+        situation += f"with stock trading at ${current_price:.2f}. "
+        
+        # Build TA context
+        bb_range = indicators.bb_upper - indicators.bb_lower
+        bb_position_pct = ((current_price - indicators.bb_lower) / bb_range * 100) if bb_range > 0 else 50
+        rsi = indicators.rsi_14
+        
+        ta_context = f"{symbol} is currently at {bb_position_pct:.0f}% of its Bollinger Band range "
+        ta_context += f"(${indicators.bb_lower:.0f} - ${indicators.bb_upper:.0f}) "
+        ta_context += f"with RSI at {rsi:.0f}. "
+        
+        # Build recommendation
+        if should_wait:
+            recommendation = (
+                f"WAIT - The stock appears oversold/at support and likely to bounce. "
+                f"Selling a call now would lock in a lower strike price. "
+                f"Monitor for a bounce before selling at ${strike:.0f}."
+            )
+        else:
+            next_friday = self._get_next_friday()
+            recommendation = (
+                f"SELL NOW - Technical conditions are favorable. "
+                f"Sell {uncovered} ${strike:.0f} call(s) expiring {next_friday.strftime('%b %d')} "
+                f"to capture premium while the stock is in a good position."
+            )
+        
+        return f"{situation}\n\n{ta_context}\n\n{recommendation}"
 

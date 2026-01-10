@@ -109,6 +109,32 @@ interface Recommendation {
       expected_fill_location: string;
     };
   };
+  // V3.4: Enhanced explanation fields
+  ta_summary?: {
+    current_price: number;
+    strike_price: number;
+    option_type: string;
+    is_itm: boolean;
+    itm_pct?: number;
+    otm_pct?: number;
+    days_to_expiry: number;
+    bollinger: {
+      upper: number;
+      middle: number;
+      lower: number;
+      position_pct: number;
+      position_desc: string;
+    };
+    rsi: {
+      value: number;
+      status: string;
+    };
+    support?: number;
+    resistance?: number;
+    ma_50?: number;
+    ma_200?: number;
+  };
+  decision_rationale?: string;
 }
 
 const getAuthHeaders = () => {
@@ -1435,6 +1461,89 @@ export default function Notifications() {
                             <h5><Target size={14} /> Recommended Action</h5>
                             <p className={styles.actionText}>{rec.action}</p>
                           </div>
+                          
+                          {/* V3.4: Decision Rationale (Plain English) */}
+                          {rec.decision_rationale && (
+                            <div className={styles.rationaleSection}>
+                              <h5><Lightbulb size={14} /> Why This Recommendation</h5>
+                              <div className={styles.decisionRationale}>
+                                {rec.decision_rationale.split('\n\n').map((paragraph, i) => (
+                                  <p key={i}>{paragraph}</p>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* V3.4: Technical Analysis Summary */}
+                          {rec.ta_summary && (
+                            <div className={styles.taSummarySection}>
+                              <h5><BarChart3 size={14} /> Technical Snapshot</h5>
+                              <div className={styles.taSummaryGrid}>
+                                <div className={styles.taSummaryItem}>
+                                  <span className={styles.taLabel}>Current Price</span>
+                                  <span className={styles.taValue}>${rec.ta_summary.current_price?.toFixed(2)}</span>
+                                </div>
+                                <div className={styles.taSummaryItem}>
+                                  <span className={styles.taLabel}>Strike Price</span>
+                                  <span className={styles.taValue}>${rec.ta_summary.strike_price?.toFixed(2)} {rec.ta_summary.option_type}</span>
+                                </div>
+                                <div className={styles.taSummaryItem}>
+                                  <span className={styles.taLabel}>Status</span>
+                                  <span className={`${styles.taValue} ${rec.ta_summary.is_itm ? styles.taItm : styles.taOtm}`}>
+                                    {rec.ta_summary.is_itm 
+                                      ? `${rec.ta_summary.itm_pct?.toFixed(1)}% ITM` 
+                                      : `${rec.ta_summary.otm_pct?.toFixed(1)}% OTM`}
+                                  </span>
+                                </div>
+                                <div className={styles.taSummaryItem}>
+                                  <span className={styles.taLabel}>Days to Expiry</span>
+                                  <span className={styles.taValue}>{rec.ta_summary.days_to_expiry} days</span>
+                                </div>
+                                {rec.ta_summary.bollinger && (
+                                  <>
+                                    <div className={styles.taSummaryItem}>
+                                      <span className={styles.taLabel}>Bollinger Position</span>
+                                      <span className={`${styles.taValue} ${
+                                        rec.ta_summary.bollinger.position_pct < 30 ? styles.taSupport :
+                                        rec.ta_summary.bollinger.position_pct > 70 ? styles.taResistance : ''
+                                      }`}>
+                                        {rec.ta_summary.bollinger.position_pct?.toFixed(0)}% ({rec.ta_summary.bollinger.position_desc})
+                                      </span>
+                                    </div>
+                                    <div className={styles.taSummaryItem}>
+                                      <span className={styles.taLabel}>Bollinger Bands</span>
+                                      <span className={styles.taValue} style={{fontSize: '11px'}}>
+                                        ${rec.ta_summary.bollinger.lower?.toFixed(0)} / ${rec.ta_summary.bollinger.middle?.toFixed(0)} / ${rec.ta_summary.bollinger.upper?.toFixed(0)}
+                                      </span>
+                                    </div>
+                                  </>
+                                )}
+                                {rec.ta_summary.rsi && (
+                                  <div className={styles.taSummaryItem}>
+                                    <span className={styles.taLabel}>RSI (14)</span>
+                                    <span className={`${styles.taValue} ${
+                                      rec.ta_summary.rsi.value < 30 ? styles.taOversold :
+                                      rec.ta_summary.rsi.value > 70 ? styles.taOverbought : ''
+                                    }`}>
+                                      {rec.ta_summary.rsi.value?.toFixed(1)} ({rec.ta_summary.rsi.status})
+                                    </span>
+                                  </div>
+                                )}
+                                {rec.ta_summary.support && (
+                                  <div className={styles.taSummaryItem}>
+                                    <span className={styles.taLabel}>Support</span>
+                                    <span className={styles.taValue}>${rec.ta_summary.support?.toFixed(2)}</span>
+                                  </div>
+                                )}
+                                {rec.ta_summary.resistance && (
+                                  <div className={styles.taSummaryItem}>
+                                    <span className={styles.taLabel}>Resistance</span>
+                                    <span className={styles.taValue}>${rec.ta_summary.resistance?.toFixed(2)}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                           
                           {/* Triple Witching Execution Guidance */}
                           {hasTripleWitchingGuidance(rec) && renderTripleWitchingGuidance(rec)}

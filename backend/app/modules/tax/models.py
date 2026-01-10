@@ -5,7 +5,8 @@ Tax module database models.
 from sqlalchemy import Column, Integer, String, Numeric, Date, Text, UniqueConstraint, ForeignKey, Index, Boolean, DateTime
 from sqlalchemy.orm import relationship
 
-from app.shared.models.base import BaseModel
+from app.shared.models.base import BaseModel, TimestampMixin
+from app.core.database import Base
 
 
 class TaxProperty(BaseModel):
@@ -117,7 +118,7 @@ class IncomeTaxReturn(BaseModel):
     )
 
 
-class StockLot(BaseModel):
+class StockLot(Base, TimestampMixin):
     """
     Stock lot for cost basis tracking.
 
@@ -166,7 +167,7 @@ class StockLot(BaseModel):
     )
 
 
-class StockLotSale(BaseModel):
+class StockLotSale(Base, TimestampMixin):
     """
     Stock lot sale record - matches a sale to a specific lot.
 

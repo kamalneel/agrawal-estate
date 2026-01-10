@@ -138,42 +138,46 @@ async def get_tax_returns(
         total_other += other
         total_agi += agi
     
-    # Add forecast if requested and no 2025 return exists
+    # Add forecasts for 2025 and 2026 if requested
     if include_forecast:
-        has_2025 = any(tr.tax_year == 2025 for tr in returns)
-        if not has_2025:
-            try:
-                forecast = calculate_tax_forecast(db, forecast_year=2025, base_year=2024)
-                federal = forecast.get("federal_tax", 0)
-                state = forecast.get("state_tax", 0)
-                other = forecast.get("other_tax", 0)
-                agi = forecast.get("agi", 0)
-                total = federal + state + other
-                
-                federal_rate = (federal / agi * 100) if agi > 0 else 0
-                state_rate = (state / agi * 100) if agi > 0 else 0
-                other_rate = (other / agi * 100) if agi > 0 else 0
-                effective_rate = (total / agi * 100) if agi > 0 else 0
-                
-                years.insert(0, TaxReturnSummary(
-                    year=2025,
-                    agi=agi,
-                    federal_tax=federal,
-                    state_tax=state,
-                    other_tax=other,
-                    total_tax=total,
-                    effective_rate=round(effective_rate, 2),
-                    federal_rate=round(federal_rate, 1),
-                    state_rate=round(state_rate, 1),
-                    other_rate=round(other_rate, 1),
-                ))
-            except Exception as e:
-                # Log the error for debugging
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f"Failed to generate 2025 forecast: {str(e)}", exc_info=True)
-                # If forecast fails, just skip it
-                pass
+        forecast_years = [2026, 2025]  # Add in reverse order so 2025 appears before 2026
+        for forecast_year in forecast_years:
+            has_year = any(tr.tax_year == forecast_year for tr in returns)
+            if not has_year:
+                try:
+                    # Use 2024 as base year for deductions
+                    base_year = 2024
+                    forecast = calculate_tax_forecast(db, forecast_year=forecast_year, base_year=base_year)
+                    federal = forecast.get("federal_tax", 0)
+                    state = forecast.get("state_tax", 0)
+                    other = forecast.get("other_tax", 0)
+                    agi = forecast.get("agi", 0)
+                    total = federal + state + other
+                    
+                    federal_rate = (federal / agi * 100) if agi > 0 else 0
+                    state_rate = (state / agi * 100) if agi > 0 else 0
+                    other_rate = (other / agi * 100) if agi > 0 else 0
+                    effective_rate = (total / agi * 100) if agi > 0 else 0
+                    
+                    years.insert(0, TaxReturnSummary(
+                        year=forecast_year,
+                        agi=agi,
+                        federal_tax=federal,
+                        state_tax=state,
+                        other_tax=other,
+                        total_tax=total,
+                        effective_rate=round(effective_rate, 2),
+                        federal_rate=round(federal_rate, 1),
+                        state_rate=round(state_rate, 1),
+                        other_rate=round(other_rate, 1),
+                    ))
+                except Exception as e:
+                    # Log the error for debugging
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Failed to generate {forecast_year} forecast: {str(e)}", exc_info=True)
+                    # If forecast fails, just skip it
+                    pass
     
     total_taxes = total_federal + total_state + total_other
     avg_rate = (total_taxes / total_agi * 100) if total_agi > 0 else 0
@@ -264,15 +268,18 @@ async def get_tax_forecast(
         agi = forecast.get("agi", 0)
         effective_rate = forecast.get("effective_rate", 0)
         
+        # Get W-2 withholding info
+        w2_withholding = forecast.get("w2_withholding", {})
+        
         return {
             "year": forecast["tax_year"],
             "agi": agi,
             "federal_tax": forecast.get("federal_tax", 0),
-            "federal_withheld": None,  # Forecast doesn't have withheld amounts
+            "federal_withheld": w2_withholding.get("federal"),
             "federal_owed": None,
             "federal_refund": None,
             "state_tax": forecast.get("state_tax", 0),
-            "state_withheld": None,
+            "state_withheld": w2_withholding.get("state"),
             "state_owed": None,
             "state_refund": None,
             "other_tax": other_tax,
@@ -281,6 +288,11 @@ async def get_tax_forecast(
             "filing_status": forecast.get("filing_status"),
             "is_forecast": True,
             "details": forecast.get("details", {}),
+            # Payment schedule for quarterly estimated taxes
+            "payment_schedule": forecast.get("payment_schedule", []),
+            "w2_withholding": w2_withholding,
+            "estimated_tax_needed": forecast.get("estimated_tax_needed", 0),
+            "safe_harbor": forecast.get("safe_harbor", {}),
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -720,6 +732,133 @@ async def import_robinhood_transactions(
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/cost-basis/sync")
+async def sync_from_investment_transactions(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    clear_existing: bool = Query(default=False, description="Clear existing lots before syncing")
+):
+    """
+    Sync Cost Basis Tracker from existing investment_transactions table.
+    
+    This imports all BUY and SELL transactions from your investment accounts
+    into the Cost Basis Tracker for accurate gain/loss calculations.
+    """
+    from sqlalchemy import text
+    from datetime import datetime
+    from decimal import Decimal
+    
+    service = CostBasisService(db)
+    
+    # Optionally clear existing data
+    if clear_existing:
+        db.query(StockLotSale).delete()
+        db.query(StockLot).delete()
+        db.commit()
+    
+    # Query all BUY and SELL transactions from taxable accounts
+    # Exclude retirement accounts (IRA, Roth, 401k, HSA)
+    non_taxable_types = ['ira', 'roth_ira', 'traditional_ira', '401k', 'hsa', 'retirement']
+    
+    query = text("""
+        SELECT 
+            it.transaction_date,
+            it.transaction_type,
+            it.symbol,
+            it.quantity,
+            it.amount,
+            it.price_per_share,
+            it.account_id,
+            it.source
+        FROM investment_transactions it
+        JOIN investment_accounts ia ON it.account_id = ia.account_id AND it.source = ia.source
+        WHERE it.transaction_type IN ('BUY', 'BOUGHT', 'SELL', 'SOLD')
+          AND it.symbol IS NOT NULL 
+          AND it.symbol != ''
+          AND it.quantity > 0
+          AND LOWER(COALESCE(ia.account_type, '')) NOT IN :non_taxable
+        ORDER BY it.transaction_date ASC
+    """)
+    
+    result = db.execute(query, {"non_taxable": tuple(non_taxable_types)}).fetchall()
+    
+    lots_created = 0
+    sales_created = 0
+    errors = []
+    
+    for row in result:
+        try:
+            txn_date = row.transaction_date
+            txn_type = row.transaction_type.upper()
+            symbol = row.symbol.upper()
+            quantity = Decimal(str(abs(row.quantity or 0)))
+            amount = Decimal(str(abs(row.amount or 0)))
+            account_id = row.account_id or "unknown"
+            source = row.source or "unknown"
+            
+            if quantity <= 0 or amount <= 0:
+                continue
+            
+            if txn_type in ["BUY", "BOUGHT"]:
+                # Check if lot already exists (avoid duplicates)
+                existing = db.query(StockLot).filter(
+                    StockLot.symbol == symbol,
+                    StockLot.purchase_date == txn_date,
+                    StockLot.quantity == quantity,
+                    StockLot.cost_basis == amount
+                ).first()
+                
+                if not existing:
+                    service.create_lot(
+                        symbol=symbol,
+                        purchase_date=txn_date,
+                        quantity=quantity,
+                        cost_basis=amount,
+                        source=source,
+                        account_id=account_id,
+                        lot_method="FIFO"
+                    )
+                    lots_created += 1
+                    
+            elif txn_type in ["SELL", "SOLD"]:
+                # Check if sale already exists
+                existing = db.query(StockLotSale).filter(
+                    StockLotSale.sale_date == txn_date,
+                    StockLotSale.quantity_sold == quantity,
+                    StockLotSale.proceeds == amount
+                ).first()
+                
+                if not existing:
+                    try:
+                        sales = service.process_sale(
+                            symbol=symbol,
+                            sale_date=txn_date,
+                            quantity_sold=quantity,
+                            proceeds=amount,
+                            source=source,
+                            account_id=account_id,
+                            lot_method="FIFO"
+                        )
+                        sales_created += len(sales)
+                    except ValueError as e:
+                        # No matching lots found - this can happen if buy was before our data
+                        errors.append(f"{symbol} on {txn_date}: {str(e)}")
+                        
+        except Exception as e:
+            errors.append(f"Error processing {row}: {str(e)}")
+            db.rollback()
+    
+    return {
+        "success": True,
+        "lots_created": lots_created,
+        "sales_created": sales_created,
+        "transactions_processed": len(result),
+        "errors": errors[:10] if errors else [],  # Limit errors shown
+        "total_errors": len(errors),
+        "message": f"Synced {lots_created} lots and {sales_created} sales from investment transactions"
+    }
 
 
 # Property Tax Endpoints (original)

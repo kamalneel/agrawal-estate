@@ -499,8 +499,13 @@ def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id:
     hash_data = f"{source}:{account_id_str}:{transaction_date}:{symbol}:{transaction_type}:{quantity}:{amount}"
     record_hash = hashlib.sha256(hash_data.encode()).hexdigest()
     
-    # Create new transaction with explicit flush to catch duplicates immediately
+    # Create new transaction with savepoint for error recovery
+    # Using a savepoint allows us to rollback just this INSERT without
+    # affecting the rest of the transaction (like the ingestion_log)
     try:
+        # Begin a savepoint (nested transaction)
+        savepoint = db.begin_nested()
+        
         transaction = InvestmentTransaction(
             source=source,
             account_id=account_id_str,
@@ -518,6 +523,9 @@ def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id:
         db.add(transaction)
         db.flush()  # Flush immediately to catch unique constraint violations
         
+        # Commit the savepoint (not the main transaction)
+        savepoint.commit()
+        
         # NOTE: We intentionally DO NOT update holdings from transaction imports.
         # Holdings should ONLY come from the Robinhood paste (copy-paste from web UI),
         # which is the authoritative source for current positions.
@@ -527,11 +535,21 @@ def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id:
         
         return "created"
     except Exception as e:
-        db.rollback()
+        # Rollback only the savepoint, NOT the main transaction
+        # This preserves the ingestion_log and other already-saved transactions
+        if 'savepoint' in dir() and savepoint:
+            try:
+                savepoint.rollback()
+            except Exception:
+                pass  # Savepoint might already be rolled back
+        
         # Check if it's a unique constraint violation (duplicate)
         if "UniqueViolation" in str(type(e).__name__) or "unique constraint" in str(e).lower():
             return "skipped"
-        raise
+        
+        # For other errors, log and skip rather than failing the whole batch
+        print(f"Error saving transaction: {e}")
+        return "skipped"
 
 
 def save_investment_holding(db: Session, record: ParsedRecord, ingestion_id: Optional[int] = None) -> str:

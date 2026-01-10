@@ -615,6 +615,7 @@ class StrategyService:
             # 'sell_unsold_contracts',  # DISABLED: Redundant - new_covered_call now does this with TA
             'diversification',
             'triple_witching_handler',
+            'cash_secured_put',  # V3.4: Put selling recommendations based on TA
         ]
         
         enabled_strategies = self.get_enabled_strategies()
@@ -782,6 +783,12 @@ class StrategyService:
             context['zero_cost_data'] = sanitize_for_json(result.zero_cost_data)
         if result.pull_back_data:
             context['pull_back_data'] = sanitize_for_json(result.pull_back_data)
+        
+        # Include TA summary and decision rationale for V2 snapshot enrichment
+        if result.ta_summary:
+            context['ta_summary'] = result.ta_summary
+        if result.decision_rationale:
+            context['decision_rationale'] = result.decision_rationale
         
         # Build action string
         if result.action in ('ROLL_ITM', 'ROLL_WEEKLY', 'PULL_BACK'):

@@ -210,50 +210,67 @@ class SellUnsoldContractsStrategy(BaseStrategy):
                             elif option_quote.last_price and option_quote.last_price > 0:
                                 real_premium_per_contract = option_quote.last_price * 100
                                 premium_source = "last_price"
-                            logger.info(f"[SELL_DEBUG] {symbol}: Premium=${real_premium_per_contract:.2f}/contract, source={premium_source}")
+                            else:
+                                premium_source = "unavailable"
+                            if real_premium_per_contract:
+                                logger.info(f"[SELL_DEBUG] {symbol}: Premium=${real_premium_per_contract:.2f}/contract, source={premium_source}")
                         else:
                             logger.warning(f"[SELL_DEBUG] {symbol}: No option quote returned for ${strike}")
+                            premium_source = "unavailable"
                     except Exception as e:
                         logger.warning(f"[SELL_DEBUG] {symbol}: Could not fetch premium: {e}")
+                        premium_source = "unavailable"
+                else:
+                    premium_source = "unavailable"
                 
-                # Fallback to table-based estimate if no real data
+                # DO NOT use fallback estimates - they can be dangerously inaccurate
+                # Instead, show "premium not available" and let user check actual price
                 if real_premium_per_contract is None:
-                    fallback_premium = get_premium(symbol)
-                    real_premium_per_contract = fallback_premium
-                    premium_source = "estimated"
-                    logger.debug(f"Using fallback premium for {symbol}: ${fallback_premium:.2f}/contract")
-                
-                # Calculate total premium for all contracts
-                total_premium = real_premium_per_contract * unsold
-                
-                # Skip if below minimum income threshold (using per-contract amount)
-                if total_premium < min_weekly_income:
-                    continue
-                
-                # Determine priority based on total potential income
-                if total_premium > 500:
-                    priority = "high"
-                elif total_premium > 200:
-                    priority = "medium"
+                    premium_source = "unavailable"
+                    total_premium = None
+                    logger.warning(f"[SELL_DEBUG] {symbol}: Premium data unavailable - will show 'premium not available'")
                 else:
-                    priority = "low"
+                    total_premium = real_premium_per_contract * unsold
                 
-                # Title includes strike, expiration, and current stock price
+                # Determine priority based on total potential income (or default to medium if unavailable)
+                if total_premium is not None:
+                    if total_premium > 500:
+                        priority = "high"
+                    elif total_premium > 200:
+                        priority = "medium"
+                    else:
+                        priority = "low"
+                else:
+                    priority = "medium"  # Default when premium unavailable
+                
+                # Title includes strike, expiration, stock price, and premium if available
                 if current_price:
-                    title = f"Sell {unsold} {symbol} call(s) at {strike_str} for {exp_str} · Stock ${current_price:.0f}"
+                    if total_premium is not None:
+                        title = f"Sell {unsold} {symbol} call(s) at {strike_str} for {exp_str} · Stock ${current_price:.0f} · Earn ${total_premium:.0f}"
+                    else:
+                        title = f"Sell {unsold} {symbol} call(s) at {strike_str} for {exp_str} · Stock ${current_price:.0f} · Premium not available"
                 else:
-                    title = f"Sell {unsold} {symbol} call(s) at {strike_str} for {exp_str}"
+                    if total_premium is not None:
+                        title = f"Sell {unsold} {symbol} call(s) at {strike_str} for {exp_str} · Earn ${total_premium:.0f}"
+                    else:
+                        title = f"Sell {unsold} {symbol} call(s) at {strike_str} for {exp_str} · Premium not available"
                 
-                # Description now shows per-contract and total premium (not weekly/yearly)
-                if unsold == 1:
-                    description = (
-                        f"You have {unsold} unsold contract for {symbol}. "
-                        f"Est. Premium: ${real_premium_per_contract:.0f}"
-                    )
+                # Description - show premium if available, otherwise prompt user to check
+                if total_premium is not None:
+                    if unsold == 1:
+                        description = (
+                            f"You have {unsold} unsold contract for {symbol}. "
+                            f"Premium: ${real_premium_per_contract:.0f}"
+                        )
+                    else:
+                        description = (
+                            f"You have {unsold} unsold contracts for {symbol}. "
+                            f"Premium: ${real_premium_per_contract:.0f}/contract (${total_premium:.0f} total)"
+                        )
                 else:
                     description = (
-                        f"You have {unsold} unsold contracts for {symbol}. "
-                        f"Est. Premium: ${real_premium_per_contract:.0f}/contract (${total_premium:.0f} total)"
+                        f"You have {unsold} unsold contract(s) for {symbol}. "
+                        f"Check Robinhood for current premium."
                     )
                 
                 rationale_parts = [
@@ -288,9 +305,9 @@ class SellUnsoldContractsStrategy(BaseStrategy):
                         "unsold_contracts": unsold,
                         "total_options": data["total_options"],
                         "sold_contracts": data["total_sold"],
-                        "premium_per_contract": real_premium_per_contract,
-                        "total_premium": total_premium,
-                        "premium_source": premium_source,  # "live_bid", "last_price", or "estimated"
+                        "premium_per_contract": real_premium_per_contract,  # None if unavailable
+                        "total_premium": total_premium,  # None if unavailable
+                        "premium_source": premium_source,  # "live_bid", "last_price", or "unavailable"
                         "strike_price": strike,
                         "current_price": current_price,
                         "strike_rationale": strike_rationale,

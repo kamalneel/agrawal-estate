@@ -581,3 +581,193 @@ def get_monthly_chart_data(
     
     return result
 
+
+# =============================================================================
+# TAX-SPECIFIC QUERIES - Only include income from TAXABLE accounts
+# =============================================================================
+# These functions are used for tax forecasting and exclude income from
+# tax-advantaged accounts (IRA, Roth IRA, 401k, HSA, retirement accounts)
+# which are either tax-deferred or tax-free.
+
+# Account types that are NOT taxable in the current year
+NON_TAXABLE_ACCOUNT_TYPES = ['ira', 'roth_ira', 'traditional_ira', '401k', 'hsa', 'retirement']
+
+
+def get_taxable_options_income(
+    db: Session,
+    year: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Get options income from TAXABLE accounts only (excludes IRA, Roth, 401k, HSA).
+    
+    Used for tax forecasting - retirement account income is tax-deferred or tax-free.
+    
+    Args:
+        db: Database session
+        year: Optional year filter
+    
+    Returns:
+        Dict with total_income and transaction_count
+    """
+    query = db.query(
+        func.sum(InvestmentTransaction.amount).label('total'),
+        func.count(InvestmentTransaction.id).label('count')
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+        InvestmentAccount.is_active == 'Y',
+        ~InvestmentAccount.account_type.in_(NON_TAXABLE_ACCOUNT_TYPES)
+    )
+    
+    if year:
+        query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
+    
+    result = query.first()
+    
+    return {
+        'total_income': float(result.total or 0),
+        'transaction_count': result.count or 0
+    }
+
+
+def get_taxable_dividend_income(
+    db: Session,
+    year: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Get dividend income from TAXABLE accounts only (excludes IRA, Roth, 401k, HSA).
+    
+    Used for tax forecasting - retirement account income is tax-deferred or tax-free.
+    """
+    query = db.query(
+        func.sum(InvestmentTransaction.amount).label('total'),
+        func.count(InvestmentTransaction.id).label('count')
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['DIVIDEND', 'CDIV', 'QUAL DIV REINVEST', 'REINVEST DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND']),
+        InvestmentAccount.is_active == 'Y',
+        ~InvestmentAccount.account_type.in_(NON_TAXABLE_ACCOUNT_TYPES)
+    )
+    
+    if year:
+        query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
+    
+    result = query.first()
+    
+    return {
+        'total_income': float(result.total or 0),
+        'transaction_count': result.count or 0
+    }
+
+
+def get_taxable_interest_income(
+    db: Session,
+    year: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Get interest income from TAXABLE accounts only (excludes IRA, Roth, 401k, HSA).
+    
+    Used for tax forecasting - retirement account income is tax-deferred or tax-free.
+    """
+    query = db.query(
+        func.sum(InvestmentTransaction.amount).label('total'),
+        func.count(InvestmentTransaction.id).label('count')
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']),
+        InvestmentAccount.is_active == 'Y',
+        ~InvestmentAccount.account_type.in_(NON_TAXABLE_ACCOUNT_TYPES)
+    )
+    
+    if year:
+        query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
+    
+    result = query.first()
+    
+    return {
+        'total_income': float(result.total or 0),
+        'transaction_count': result.count or 0
+    }
+
+
+def get_taxable_stock_sales(
+    db: Session,
+    year: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Get stock sale proceeds from TAXABLE accounts only (excludes IRA, Roth, 401k, HSA).
+    
+    Used for capital gains calculation in tax forecasting.
+    Sales in retirement accounts don't generate taxable capital gains.
+    """
+    query = db.query(
+        func.sum(InvestmentTransaction.amount).label('total'),
+        func.count(InvestmentTransaction.id).label('count')
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['SELL', 'SOLD']),
+        InvestmentAccount.is_active == 'Y',
+        ~InvestmentAccount.account_type.in_(NON_TAXABLE_ACCOUNT_TYPES)
+    )
+    
+    if year:
+        query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
+    
+    result = query.first()
+    
+    return {
+        'total_proceeds': float(result.total or 0),
+        'transaction_count': result.count or 0
+    }
+
+
+def get_taxable_income_summary(
+    db: Session,
+    year: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Get complete TAXABLE income summary for tax forecasting.
+    
+    Only includes income from taxable brokerage accounts.
+    Excludes all retirement accounts (IRA, Roth IRA, 401k, HSA).
+    
+    Returns:
+        Dict with options_income, dividend_income, interest_income, stock_proceeds
+    """
+    options = get_taxable_options_income(db, year=year)
+    dividends = get_taxable_dividend_income(db, year=year)
+    interest = get_taxable_interest_income(db, year=year)
+    sales = get_taxable_stock_sales(db, year=year)
+    
+    return {
+        'options_income': options['total_income'],
+        'dividend_income': dividends['total_income'],
+        'interest_income': interest['total_income'],
+        'stock_proceeds': sales['total_proceeds'],
+        'total_investment_income': (
+            options['total_income'] + 
+            dividends['total_income'] + 
+            interest['total_income']
+        )
+    }
+

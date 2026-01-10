@@ -168,10 +168,13 @@ class V2NotificationService:
                     title = f"SELL: {rec.symbol} calls"
                 if snapshot.stock_price:
                     title += f" · Stock ${snapshot.stock_price:.0f}"
-                # Add premium for SELL
+                # Add premium for SELL (or indicate unavailable)
                 if snapshot.target_premium:
                     total_premium = float(snapshot.target_premium) * contracts
                     title += f" · Earn ${total_premium:.0f}"
+                else:
+                    # Premium data not available - be transparent about it
+                    title += f" · Premium not available"
             else:
                 if snapshot.target_strike:
                     title = f"SELL: {rec.symbol} ${snapshot.target_strike} calls"
@@ -295,7 +298,11 @@ class V2NotificationService:
                 'profit_pct': float(snapshot.profit_pct) if snapshot.profit_pct else None,
                 'snapshot_number': snapshot.snapshot_number,
                 'total_snapshots': rec.total_snapshots,
-            }
+            },
+            
+            # V3.4: Enhanced explanation fields
+            'ta_summary': snapshot.full_context.get('ta_summary') if snapshot.full_context else None,
+            'decision_rationale': snapshot.full_context.get('decision_rationale') if snapshot.full_context else None,
         }
     
     def _should_notify_smart(
@@ -500,10 +507,12 @@ class V2NotificationService:
                         line = f"• SELL: {symbol} ${target_strike} calls"
                     else:
                         line = f"• SELL: {symbol} calls"
-                    # Add premium estimate
+                    # Add premium (or indicate unavailable)
                     if target_premium and contracts:
                         total_premium = target_premium * contracts
                         line += f" (earn ${total_premium:.0f})"
+                    else:
+                        line += f" (check premium)"
                 elif action.upper() == 'WAIT':
                     # WAIT recommendations - show with distinct indicator
                     uncovered = item.get('contracts', 0) or (item.get('context') or {}).get('uncovered_shares', 0) // 100

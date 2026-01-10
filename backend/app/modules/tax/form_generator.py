@@ -87,7 +87,8 @@ def _generate_form_1040(forecast: Dict[str, Any], base_return: IncomeTaxReturn) 
     """Generate IRS Form 1040 from forecast data."""
 
     details = forecast.get("details", {})
-    income_sources = {item["source"]: item["amount"] for item in details.get("income_sources", [])}
+    income_sources_list = details.get("income_sources", [])
+    income_sources = {item["source"]: item["amount"] for item in income_sources_list}
     w2_breakdown = details.get("w2_breakdown", [])
     cap_gains_detail = details.get("capital_gains", {})
     deductions = details.get("deductions", {})
@@ -99,15 +100,25 @@ def _generate_form_1040(forecast: Dict[str, Any], base_return: IncomeTaxReturn) 
     # Get capital gains
     capital_gain_loss = cap_gains_detail.get("total", 0)
 
-    # Schedule 1 income (rental from Schedule E)
-    schedule_1_income = income_sources.get("Rental Income", 0)
+    # Schedule 1 income (rental from Schedule E, options income as "other income")
+    # Note: Rental income may be stored with depreciation info
+    rental_income = 0
+    for source in income_sources_list:
+        if "Rental" in source.get("source", ""):
+            rental_income = source.get("amount", 0)
+            break
+    
+    # Options income goes through Schedule 1 as "other income"
+    options_income = income_sources.get("Options Income", 0)
+    
+    # Schedule 1 additional income = rental + options
+    schedule1_additional = rental_income + options_income
 
     # Calculate total income
     wages = total_wages
     interest = income_sources.get("Interest Income", 0)
     dividends = income_sources.get("Dividend Income", 0)
     capital_gains = capital_gain_loss
-    schedule1_additional = schedule_1_income
 
     total_income = wages + interest + dividends + capital_gains + schedule1_additional
 
@@ -215,10 +226,16 @@ def _generate_schedule_1(forecast: Dict[str, Any]) -> Schedule1:
     """Generate Schedule 1 - Additional Income and Adjustments."""
 
     details = forecast.get("details", {})
-    income_sources = {item["source"]: item["amount"] for item in details.get("income_sources", [])}
+    income_sources_list = details.get("income_sources", [])
+    income_sources = {item["source"]: item["amount"] for item in income_sources_list}
 
     # Rental income goes on Schedule E, which flows to Schedule 1 line 5
-    rental_income = income_sources.get("Rental Income", 0)
+    # Look for any source containing "Rental" (handles "Rental Income (Net of Depreciation)")
+    rental_income = 0
+    for source in income_sources_list:
+        if "Rental" in source.get("source", ""):
+            rental_income = source.get("amount", 0)
+            break
 
     # Options income (treated as other income)
     options_income = income_sources.get("Options Income", 0)
@@ -251,9 +268,14 @@ def _generate_schedule_e(forecast: Dict[str, Any]) -> ScheduleE:
 
     details = forecast.get("details", {})
     rental_properties = details.get("rental_properties", [])
-    income_sources = {item["source"]: item["amount"] for item in details.get("income_sources", [])}
-
-    rental_net_income = income_sources.get("Rental Income", 0)
+    income_sources_list = details.get("income_sources", [])
+    
+    # Look for any source containing "Rental"
+    rental_net_income = 0
+    for source in income_sources_list:
+        if "Rental" in source.get("source", ""):
+            rental_net_income = source.get("amount", 0)
+            break
 
     # Use first rental property if available
     if rental_properties and len(rental_properties) > 0:
@@ -312,7 +334,8 @@ def _generate_california_540(
     """Generate California Form 540 from forecast data."""
 
     details = forecast.get("details", {})
-    income_sources = {item["source"]: item["amount"] for item in details.get("income_sources", [])}
+    income_sources_list = details.get("income_sources", [])
+    income_sources = {item["source"]: item["amount"] for item in income_sources_list}
     w2_breakdown = details.get("w2_breakdown", [])
     cap_gains_detail = details.get("capital_gains", {})
     deductions = details.get("deductions", {})
@@ -322,9 +345,19 @@ def _generate_california_540(
     interest = income_sources.get("Interest Income", 0)
     dividends = income_sources.get("Dividend Income", 0)
     capital_gains = cap_gains_detail.get("total", 0)
-    rental_income = income_sources.get("Rental Income", 0)
+    
+    # Options income - goes to "other income" line
+    options_income = income_sources.get("Options Income", 0)
+    
+    # Rental income - look for any source containing "Rental"
+    rental_income = 0
+    for source in income_sources_list:
+        if "Rental" in source.get("source", ""):
+            rental_income = source.get("amount", 0)
+            break
 
-    total_income = wages + interest + dividends + capital_gains + rental_income
+    # Total income includes ALL sources
+    total_income = wages + interest + dividends + capital_gains + rental_income + options_income
 
     # AGI (California generally follows federal AGI)
     agi = forecast.get("agi", 0)
@@ -379,6 +412,7 @@ def _generate_california_540(
         line_13=dividends,
         line_16=capital_gains,
         line_17=rental_income,
+        line_19=options_income,  # Options income as "Other income"
         line_20=total_income,
 
         # AGI

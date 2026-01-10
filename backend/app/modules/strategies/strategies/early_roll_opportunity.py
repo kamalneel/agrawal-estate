@@ -239,32 +239,35 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
         except Exception as e:
             logger.warning(f"{pos.symbol}: Could not get actual premium for new strike: {e}")
         
-        # Use actual premium if available, otherwise estimate (fallback)
+        # Use actual premium if available
+        # DO NOT use fallback estimates - they can be misleading
         if actual_new_premium is not None:
             estimated_new_premium = actual_new_premium
+            premium_source = "live_bid"
         else:
-            # Fallback estimation (less accurate)
-            if current_price and new_strike > pos.strike_price:
-                premium_factor = 0.75  # Rolling UP - expect lower premium
-            elif current_price and new_strike < pos.strike_price:
-                premium_factor = 0.90  # Rolling DOWN - expect higher premium
-            else:
-                premium_factor = 0.80
-            estimated_new_premium = pos.original_premium * premium_factor
-            logger.warning(f"{pos.symbol}: Using ESTIMATED premium ${estimated_new_premium:.2f} (no live quote)")
+            # No actual data - set to None and be transparent
+            estimated_new_premium = None
+            premium_source = "unavailable"
+            logger.warning(f"{pos.symbol}: New premium data unavailable - will indicate in recommendation")
         
         # Calculate the ROLL economics correctly:
         # - Cost to close current position (debit)
         # - Premium from new position (credit)
         # - Net = credit - debit (positive = net credit, negative = net debit)
         cost_to_close = alert.current_premium * pos.contracts * 100
-        new_premium_income = estimated_new_premium * pos.contracts * 100
-        net_roll_cash_flow = new_premium_income - cost_to_close  # Negative = you pay
+        
+        # Calculate net if premium is available, otherwise set to None
+        if estimated_new_premium is not None:
+            new_premium_income = estimated_new_premium * pos.contracts * 100
+            net_roll_cash_flow = new_premium_income - cost_to_close  # Negative = you pay
+            logger.info(f"{pos.symbol} ROLL ECONOMICS: close=${cost_to_close:.0f}, new=${new_premium_income:.0f}, net=${net_roll_cash_flow:.0f}")
+        else:
+            new_premium_income = None
+            net_roll_cash_flow = None
+            logger.info(f"{pos.symbol} ROLL ECONOMICS: close=${cost_to_close:.0f}, new=UNAVAILABLE")
         
         # The PROFIT is what you keep from the original trade
         locked_in_profit = alert.profit_amount * pos.contracts * 100
-        
-        logger.info(f"{pos.symbol} ROLL ECONOMICS: close=${cost_to_close:.0f}, new=${new_premium_income:.0f}, net=${net_roll_cash_flow:.0f}, profit_locked=${locked_in_profit:.0f}")
         
         # Format dates as MM/DD
         current_exp_str = current_expiry.strftime("%-m/%d")
@@ -277,11 +280,22 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
         # V2: Adjust title/description based on whether we should wait for bounce
         price_info = f" Current price: ${current_price:.2f}." if current_price else ""
         
-        # Format the roll economics for display
-        if net_roll_cash_flow >= 0:
-            roll_cash_str = f"Net credit: ${net_roll_cash_flow:.0f}"
+        # Format the roll economics for display (handle unavailable premium)
+        if net_roll_cash_flow is not None:
+            if net_roll_cash_flow >= 0:
+                roll_cash_str = f"Net credit: ${net_roll_cash_flow:.0f}"
+            else:
+                roll_cash_str = f"Net debit: ${abs(net_roll_cash_flow):.0f}"
         else:
-            roll_cash_str = f"Net debit: ${abs(net_roll_cash_flow):.0f}"
+            roll_cash_str = "Check new premium on Robinhood"
+        
+        # Format premium display strings (handle unavailable data)
+        if estimated_new_premium is not None:
+            new_premium_str = f"${estimated_new_premium:.2f}"
+            new_income_str = f"${new_premium_income:.0f}"
+        else:
+            new_premium_str = "premium not available"
+            new_income_str = "check Robinhood"
         
         if should_wait_for_bounce:
             # CLOSE + WAIT recommendation (stock is oversold)
@@ -311,13 +325,13 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
             description = (
                 f"📊 EARNINGS on {earnings_date.strftime('%b %d') if earnings_date else 'this week'}! "
                 f"{profit_pct}% profit captured.{price_info} "
-                f"Close at ${alert.current_premium:.2f}, sell {new_strike_str} for ${estimated_new_premium:.2f}. {roll_cash_str}."
+                f"Close at ${alert.current_premium:.2f}, sell {new_strike_str} for {new_premium_str}. {roll_cash_str}."
             )
             rationale_parts = [
                 f"⚠️ EARNINGS on {earnings_date} - lock in profits before binary event.",
                 f"You've captured {profit_pct}% (${locked_in_profit:.0f} profit) with {alert.days_to_expiry} days remaining.",
-                f"Roll to {new_strike_str} for {new_exp_str}: sell for ${estimated_new_premium:.2f}/contract.",
-                f"Roll transaction: Pay ${cost_to_close:.0f} to close, receive ${new_premium_income:.0f} from new sale. {roll_cash_str}.",
+                f"Roll to {new_strike_str} for {new_exp_str}: sell for {new_premium_str}/contract.",
+                f"Roll transaction: Pay ${cost_to_close:.0f} to close, receive {new_income_str} from new sale. {roll_cash_str}.",
                 strike_rationale
             ]
             action = f"Buy to close {old_strike_str} at ${alert.current_premium:.2f}, sell {new_strike_str} {pos.option_type} for {new_exp_str}"
@@ -333,8 +347,8 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
             )
             rationale_parts = [
                 f"You've captured {profit_pct}% of the premium (${locked_in_profit:.0f} profit).",
-                f"Roll to {new_strike_str} for {new_exp_str}: new premium ${estimated_new_premium:.2f}/contract.",
-                f"Roll transaction: Pay ${cost_to_close:.0f} to close, receive ${new_premium_income:.0f}. {roll_cash_str}.",
+                f"Roll to {new_strike_str} for {new_exp_str}: new premium {new_premium_str}/contract.",
+                f"Roll transaction: Pay ${cost_to_close:.0f} to close, receive {new_income_str}. {roll_cash_str}.",
                 strike_rationale
             ]
             action = f"Buy to close {old_strike_str} at ${alert.current_premium:.2f}, sell {new_strike_str} {pos.option_type} for {new_exp_str}"
@@ -381,10 +395,11 @@ class EarlyRollOpportunityStrategy(BaseStrategy):
                 "new_strike": new_strike,
                 "old_strike": pos.strike_price,
                 "new_expiration": next_friday.isoformat(),
-                "estimated_new_premium": estimated_new_premium,
-                "new_premium_income": new_premium_income,
+                "estimated_new_premium": estimated_new_premium,  # None if unavailable
+                "new_premium_income": new_premium_income,  # None if unavailable
+                "premium_source": premium_source,  # "live_bid" or "unavailable"
                 "cost_to_close": cost_to_close,
-                "net_roll_cash_flow": net_roll_cash_flow,  # Positive = credit, negative = debit
+                "net_roll_cash_flow": net_roll_cash_flow,  # None if new premium unavailable
                 "locked_in_profit": locked_in_profit,
                 # Technical analysis context
                 "current_price": current_price,

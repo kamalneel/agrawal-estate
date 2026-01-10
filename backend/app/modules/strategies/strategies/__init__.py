@@ -20,6 +20,9 @@ from app.modules.strategies.strategies.earnings_alert import EarningsAlertStrate
 # Triple Witching handler (V2)
 from app.modules.strategies.strategies.triple_witching_handler import TripleWitchingStrategy
 
+# V3.4: Cash-Secured Put Strategy
+from app.modules.strategies.strategies.cash_secured_put import CashSecuredPutStrategy
+
 # Strategy registry - maps strategy_type to strategy class
 STRATEGY_REGISTRY = {
     # Original strategies
@@ -37,6 +40,8 @@ STRATEGY_REGISTRY = {
     "earnings_alert": EarningsAlertStrategy,
     # Triple Witching (V2)
     "triple_witching": TripleWitchingStrategy,
+    # V3.4: Cash-Secured Put (income generation)
+    "cash_secured_put": CashSecuredPutStrategy,
 }
 
 __all__ = [
@@ -51,6 +56,7 @@ __all__ = [
     "MegaCapBullPutStrategy",
     "EarningsAlertStrategy",
     "TripleWitchingStrategy",
+    "CashSecuredPutStrategy",
     "STRATEGY_REGISTRY",
 ]
 

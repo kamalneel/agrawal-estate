@@ -74,6 +74,7 @@ interface CaliforniaForm540 {
   line_13: number;
   line_16: number;
   line_17: number;
+  line_19: number;  // Other income (options, etc.)
   line_20: number;
   line_22: number;
   line_23: number;
@@ -486,6 +487,7 @@ function California540View({ form, formatCurrency }: { form: CaliforniaForm540; 
         <FormLine line="13" description="Dividends" amount={form.line_13} format={formatCurrency} />
         <FormLine line="16" description="Capital gain or (loss)" amount={form.line_16} format={formatCurrency} />
         <FormLine line="17" description="Rental, partnerships, etc." amount={form.line_17} format={formatCurrency} />
+        <FormLine line="19" description="Other income (options, etc.)" amount={form.line_19} format={formatCurrency} />
         <FormLine line="20" description="Total income" amount={form.line_20} format={formatCurrency} highlight />
         <FormLine line="22" description="California AGI" amount={form.line_22} format={formatCurrency} highlight />
       </div>

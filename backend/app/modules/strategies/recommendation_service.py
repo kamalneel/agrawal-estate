@@ -286,8 +286,12 @@ class RecommendationService:
             previous_target_expiration=prev_snapshot.target_expiration if prev_snapshot else None,
             previous_priority=prev_snapshot.priority if prev_snapshot else None,
             
-            # Full context
-            full_context=full_context,
+            # Full context - include ta_summary and decision_rationale from evaluation
+            full_context={
+                **(full_context or {}),
+                'ta_summary': evaluation.ta_summary,
+                'decision_rationale': evaluation.decision_rationale,
+            } if evaluation.ta_summary or evaluation.decision_rationale else full_context,
             
             # Notification (will be updated later)
             notification_sent=False,

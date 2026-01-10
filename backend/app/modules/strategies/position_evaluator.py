@@ -70,6 +70,218 @@ class EvaluationResult:
     
     # For ITM rolls
     zero_cost_data: Optional[Dict[str, Any]] = None
+    
+    # V3.4: Enhanced explanation fields
+    ta_summary: Optional[Dict[str, Any]] = None  # Technical Analysis snapshot
+    decision_rationale: Optional[str] = None  # Plain English explanation
+
+
+def build_ta_summary(
+    symbol: str,
+    current_price: float,
+    strike_price: float,
+    option_type: str,
+    days_to_exp: int,
+    ta_indicators: Any
+) -> Dict[str, Any]:
+    """
+    Build a simple, readable Technical Analysis summary.
+    
+    Returns:
+        Dict with key TA metrics in a simple format
+    """
+    if not ta_indicators:
+        return {}
+    
+    # Calculate ITM/OTM status
+    if option_type == 'call':
+        is_itm = current_price > strike_price
+        itm_pct = ((current_price - strike_price) / strike_price * 100) if is_itm else 0
+        otm_pct = ((strike_price - current_price) / strike_price * 100) if not is_itm else 0
+    else:  # put
+        is_itm = current_price < strike_price
+        itm_pct = ((strike_price - current_price) / strike_price * 100) if is_itm else 0
+        otm_pct = ((current_price - strike_price) / strike_price * 100) if not is_itm else 0
+    
+    # Calculate Bollinger Band position (0% = lower, 100% = upper)
+    bb_range = ta_indicators.bb_upper - ta_indicators.bb_lower
+    bb_position_pct = ((current_price - ta_indicators.bb_lower) / bb_range * 100) if bb_range > 0 else 50
+    
+    # Determine BB position description
+    if bb_position_pct < 25:
+        bb_position_desc = "near lower support"
+    elif bb_position_pct < 40:
+        bb_position_desc = "lower half"
+    elif bb_position_pct > 75:
+        bb_position_desc = "near upper resistance"
+    elif bb_position_pct > 60:
+        bb_position_desc = "upper half"
+    else:
+        bb_position_desc = "middle"
+    
+    # RSI interpretation
+    rsi = ta_indicators.rsi_14
+    if rsi < 30:
+        rsi_desc = "oversold"
+    elif rsi < 40:
+        rsi_desc = "near oversold"
+    elif rsi > 70:
+        rsi_desc = "overbought"
+    elif rsi > 60:
+        rsi_desc = "near overbought"
+    else:
+        rsi_desc = "neutral"
+    
+    return {
+        'current_price': round(current_price, 2),
+        'strike_price': round(strike_price, 2),
+        'option_type': option_type.upper(),
+        'is_itm': is_itm,
+        'itm_pct': round(itm_pct, 1) if is_itm else None,
+        'otm_pct': round(otm_pct, 1) if not is_itm else None,
+        'days_to_expiry': days_to_exp,
+        'bollinger': {
+            'upper': round(ta_indicators.bb_upper, 2),
+            'middle': round(ta_indicators.bb_middle, 2),
+            'lower': round(ta_indicators.bb_lower, 2),
+            'position_pct': round(bb_position_pct, 0),
+            'position_desc': bb_position_desc,
+        },
+        'rsi': {
+            'value': round(rsi, 1),
+            'status': rsi_desc,
+        },
+        'support': round(ta_indicators.nearest_support, 2) if ta_indicators.nearest_support else None,
+        'resistance': round(ta_indicators.nearest_resistance, 2) if ta_indicators.nearest_resistance else None,
+        'ma_50': round(ta_indicators.ma_50, 2) if ta_indicators.ma_50 else None,
+        'ma_200': round(ta_indicators.ma_200, 2) if ta_indicators.ma_200 else None,
+    }
+
+
+def build_decision_rationale(
+    symbol: str,
+    action: str,
+    ta_summary: Dict[str, Any],
+    option_type: str,
+    strike_price: float,
+    expiration_date: date,
+    new_strike: Optional[float] = None,
+    new_expiration: Optional[date] = None,
+    net_cost: Optional[float] = None,
+) -> str:
+    """
+    Build a plain English explanation of the decision.
+    
+    Returns:
+        A paragraph explaining WHY this recommendation was made.
+    """
+    current_price = ta_summary.get('current_price', 0)
+    days_to_exp = ta_summary.get('days_to_expiry', 0)
+    bb = ta_summary.get('bollinger', {})
+    rsi_data = ta_summary.get('rsi', {})
+    is_itm = ta_summary.get('is_itm', False)
+    itm_pct = ta_summary.get('itm_pct', 0)
+    
+    # Build the situation description
+    situation = f"Your {symbol} ${strike_price:.0f} {option_type.upper()} is "
+    if is_itm:
+        situation += f"currently {itm_pct:.1f}% in-the-money "
+    else:
+        situation += f"currently {ta_summary.get('otm_pct', 0):.1f}% out-of-the-money "
+    situation += f"with {days_to_exp} days until expiration on {expiration_date.strftime('%b %d')}."
+    
+    # Build TA context
+    bb_pos = bb.get('position_pct', 50)
+    bb_desc = bb.get('position_desc', 'middle')
+    rsi_val = rsi_data.get('value', 50)
+    rsi_status = rsi_data.get('status', 'neutral')
+    
+    ta_context = f"\n\n{symbol} is trading at ${current_price:.2f}, which is at the {bb_desc} of its Bollinger Band ({bb_pos:.0f}% position). "
+    ta_context += f"RSI is at {rsi_val:.0f} ({rsi_status}). "
+    
+    if ta_summary.get('support'):
+        ta_context += f"Nearest support is ${ta_summary['support']:.2f}. "
+    if ta_summary.get('resistance'):
+        ta_context += f"Nearest resistance is ${ta_summary['resistance']:.2f}."
+    
+    # Build action-specific rationale
+    if action == 'MONITOR':
+        if option_type == 'put' and bb_pos < 40:
+            rationale = (
+                f"\n\nThe stock is near its lower Bollinger Band, which historically acts as support. "
+                f"Mean reversion suggests the stock is likely to bounce back toward the middle band (~${bb.get('middle', 0):.2f}) "
+                f"in the coming days. If it bounces, your PUT would become less in-the-money or even go out-of-the-money."
+            )
+            recommendation = (
+                f"\n\nRECOMMENDATION: MONITOR for now. You still have {days_to_exp} days. "
+                f"Wait 2-3 days to see if the stock bounces from support. "
+                f"If it doesn't recover by {(expiration_date - timedelta(days=3)).strftime('%b %d')}, then consider rolling."
+            )
+        elif option_type == 'call' and bb_pos > 60:
+            rationale = (
+                f"\n\nThe stock is near its upper Bollinger Band, which historically acts as resistance. "
+                f"Mean reversion suggests the stock is likely to pull back toward the middle band (~${bb.get('middle', 0):.2f}) "
+                f"in the coming days. If it pulls back, your CALL would become less in-the-money or even go out-of-the-money."
+            )
+            recommendation = (
+                f"\n\nRECOMMENDATION: MONITOR for now. You still have {days_to_exp} days. "
+                f"Wait 2-3 days to see if the stock pulls back from resistance. "
+                f"If it doesn't correct by {(expiration_date - timedelta(days=3)).strftime('%b %d')}, then consider rolling."
+            )
+        else:
+            rationale = f"\n\nTechnical indicators suggest waiting before taking action."
+            recommendation = f"\n\nRECOMMENDATION: MONITOR and reassess in a few days."
+    
+    elif action in ['ROLL_ITM', 'COMPRESS']:
+        if new_strike and new_expiration:
+            weeks_out = (new_expiration - date.today()).days // 7
+            cost_str = f"${abs(net_cost):.2f} {'credit' if net_cost < 0 else 'debit'}" if net_cost else "cost-neutral"
+            
+            rationale = (
+                f"\n\nThe position needs to be rolled to avoid potential assignment. "
+                f"Rolling to ${new_strike:.0f} on {new_expiration.strftime('%b %d')} ({weeks_out} weeks out) "
+                f"would move the position out-of-the-money at a {cost_str}."
+            )
+            recommendation = (
+                f"\n\nRECOMMENDATION: Roll to ${new_strike:.0f} {new_expiration.strftime('%b %d')}. "
+                f"This is the shortest expiration where an acceptable roll exists."
+            )
+        else:
+            rationale = "\n\nThe position needs to be rolled to manage risk."
+            recommendation = "\n\nRECOMMENDATION: Consider rolling to a further expiration."
+    
+    elif action == 'PULL_BACK':
+        if new_strike and new_expiration:
+            weeks_saved = (expiration_date - new_expiration).days // 7
+            cost_str = f"${abs(net_cost):.2f} {'credit' if net_cost < 0 else 'debit'}" if net_cost else "cost-neutral"
+            
+            rationale = (
+                f"\n\nYou can compress this position to a shorter duration and capture profits. "
+                f"The current position has captured enough profit to roll back by {weeks_saved} week(s)."
+            )
+            recommendation = (
+                f"\n\nRECOMMENDATION: Pull back to ${new_strike:.0f} {new_expiration.strftime('%b %d')} for a {cost_str}. "
+                f"This preserves your weekly income cycle."
+            )
+        else:
+            rationale = "\n\nYou can compress this position to capture profits."
+            recommendation = "\n\nRECOMMENDATION: Consider pulling back to a shorter expiration."
+    
+    elif action == 'CLOSE_CATASTROPHIC':
+        rationale = (
+            f"\n\nThis position is deeply in-the-money and no acceptable roll was found within 6 months. "
+            f"The position may result in significant loss if held to expiration."
+        )
+        recommendation = (
+            f"\n\nRECOMMENDATION: Consider closing this position to limit further loss. "
+            f"Sometimes taking a small loss now prevents a larger loss later."
+        )
+    
+    else:
+        rationale = ""
+        recommendation = ""
+    
+    return situation + ta_context + rationale + recommendation
 
 
 class SmartScanFilter:
@@ -185,6 +397,55 @@ class PositionEvaluator:
         self.ta_service = ta_service
         self.option_fetcher = option_fetcher
     
+    def _enrich_with_ta(
+        self, 
+        result: Optional[EvaluationResult], 
+        position, 
+        indicators: Any, 
+        days_to_exp: int
+    ) -> Optional[EvaluationResult]:
+        """
+        Enrich an EvaluationResult with TA summary and decision rationale.
+        
+        This ensures ALL recommendations have TA context for the frontend.
+        """
+        if result is None or indicators is None:
+            return result
+        
+        # Skip if already has TA data
+        if result.ta_summary and result.decision_rationale:
+            return result
+        
+        try:
+            # Build TA summary
+            ta_summary = build_ta_summary(
+                symbol=position.symbol,
+                current_price=indicators.current_price,
+                strike_price=position.strike_price,
+                option_type=position.option_type,
+                days_to_exp=days_to_exp,
+                ta_indicators=indicators
+            )
+            
+            # Build decision rationale
+            decision_rationale = build_decision_rationale(
+                symbol=position.symbol,
+                action=result.action,
+                ta_summary=ta_summary,
+                option_type=position.option_type,
+                strike_price=position.strike_price,
+                expiration_date=position.expiration_date,
+            )
+            
+            # Update the result with TA data
+            result.ta_summary = ta_summary
+            result.decision_rationale = decision_rationale
+            
+        except Exception as e:
+            logger.warning(f"Could not enrich {position.symbol} with TA: {e}")
+        
+        return result
+    
     def evaluate(self, position) -> Optional[EvaluationResult]:
         """
         Main evaluation logic - returns ONE recommendation per position.
@@ -201,12 +462,18 @@ class PositionEvaluator:
         Returns:
             EvaluationResult, or None if no action needed
         """
+        # Store for TA enrichment at end
+        _indicators = None
+        _days_to_exp = 0
+        
         try:
             # Get current price and calculate ITM status
             indicators = self.ta_service.get_technical_indicators(position.symbol)
             if not indicators:
                 logger.warning(f"Cannot get indicators for {position.symbol}")
                 return None
+            
+            _indicators = indicators  # Store for enrichment
             
             current_price = indicators.current_price
             itm_calc = calculate_itm_status(
@@ -218,6 +485,7 @@ class PositionEvaluator:
             # Calculate weeks to expiration
             today = date.today()
             days_to_exp = (position.expiration_date - today).days
+            _days_to_exp = days_to_exp  # Store for enrichment
             weeks_to_exp = max(1, days_to_exp // 7)
             
             # Calculate profit percentage
@@ -247,7 +515,8 @@ class PositionEvaluator:
                 )
                 
                 if pull_back:
-                    return self._generate_pullback_result(position, pull_back)
+                    result = self._generate_pullback_result(position, pull_back)
+                    return self._enrich_with_ta(result, position, _indicators, _days_to_exp)
             
             # ================================================================
             # STATE 1.5: Weekly Income Priority (V3.3)
@@ -273,7 +542,7 @@ class PositionEvaluator:
                     original_premium, itm_pct, days_to_exp, profit_pct
                 )
                 if weekly_compress:
-                    return weekly_compress
+                    return self._enrich_with_ta(weekly_compress, position, _indicators, _days_to_exp)
                 
                 # If no compress found, fall through to normal ITM handling
                 logger.info(f"{position.symbol}: No weekly income compress found, trying normal ITM escape")
@@ -339,6 +608,26 @@ class PositionEvaluator:
                             f"{position.symbol}: TA-based MONITOR - {itm_pct:.1f}% ITM, "
                             f"{days_to_exp} days left, BB={bb_position_pct:.0f}%, RSI={rsi:.0f}"
                         )
+                        
+                        # Build TA summary and decision rationale
+                        ta_summary = build_ta_summary(
+                            symbol=position.symbol,
+                            current_price=current_price,
+                            strike_price=position.strike_price,
+                            option_type=position.option_type,
+                            days_to_exp=days_to_exp,
+                            ta_indicators=ta_indicators
+                        )
+                        
+                        decision_rationale = build_decision_rationale(
+                            symbol=position.symbol,
+                            action='MONITOR',
+                            ta_summary=ta_summary,
+                            option_type=position.option_type,
+                            strike_price=position.strike_price,
+                            expiration_date=position.expiration_date,
+                        )
+                        
                         return EvaluationResult(
                             action='MONITOR',
                             position_id=self._get_position_id(position),
@@ -358,6 +647,8 @@ class PositionEvaluator:
                                 'nearest_resistance': ta_indicators.nearest_resistance,
                                 'strategy': 'ta_monitor_mean_reversion',
                             },
+                            ta_summary=ta_summary,
+                            decision_rationale=decision_rationale,
                         )
                     else:
                         logger.info(
@@ -388,14 +679,14 @@ class PositionEvaluator:
                         original_premium, itm_pct, days_to_exp
                     )
                     if compress_result:
-                        return compress_result
+                        return self._enrich_with_ta(compress_result, position, _indicators, _days_to_exp)
                     
                     # No compress opportunity found - just monitor
                     logger.info(
                         f"{position.symbol}: ITM ({itm_pct:.1f}%), {days_to_exp} days out - "
                         f"no compress opportunity, monitoring for pullback"
                     )
-                    return EvaluationResult(
+                    monitor_result = EvaluationResult(
                         action='MONITOR',
                         position_id=self._get_position_id(position),
                         symbol=position.symbol,
@@ -412,12 +703,14 @@ class PositionEvaluator:
                             'strategy': 'monitor_for_compress',
                         },
                     )
+                    return self._enrich_with_ta(monitor_result, position, _indicators, _days_to_exp)
                 
                 # ITM with near expiration (<60 days): ESCAPE NOW
-                return self._handle_itm_position(
+                result = self._handle_itm_position(
                     position, current_price, current_premium, 
                     original_premium, itm_pct
                 )
+                return self._enrich_with_ta(result, position, _indicators, _days_to_exp)
             
             # ================================================================
             # STATE 2.5: Near ITM - approaching strike (preemptive alert)
@@ -430,19 +723,21 @@ class PositionEvaluator:
             
             if not is_itm and otm_pct <= near_itm_threshold and days_to_exp <= 7:
                 # Position is dangerously close to strike and expiring soon
-                return self._handle_near_itm_position(
+                result = self._handle_near_itm_position(
                     position, current_price, current_premium, 
                     original_premium, otm_pct, days_to_exp, urgent_near_itm_threshold
                 )
+                return self._enrich_with_ta(result, position, _indicators, _days_to_exp)
             
             # ================================================================
             # STATE 3: OTM and profitable (standard weekly roll)
             # Roll at 60% profit capture
             # ================================================================
             if profit_pct >= 0.60 and not is_itm:
-                return self._handle_profitable_position(
+                result = self._handle_profitable_position(
                     position, current_price, profit_pct
                 )
+                return self._enrich_with_ta(result, position, _indicators, _days_to_exp)
             
             # ================================================================
             # STATE 4: No action needed

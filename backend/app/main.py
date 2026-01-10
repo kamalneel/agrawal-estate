@@ -44,9 +44,11 @@ def create_app() -> FastAPI:
     )
     
     # CORS middleware for local network access
+    # Use ["*"] if CORS_ALLOW_ALL is True (development), otherwise use explicit origins
+    cors_origins = ["*"] if settings.CORS_ALLOW_ALL else settings.CORS_ORIGINS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

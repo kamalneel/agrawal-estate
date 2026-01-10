@@ -11,7 +11,14 @@ import {
   Users,
   TrendingUp,
   Briefcase,
-  Home
+  Home,
+  Wallet,
+  PiggyBank,
+  Banknote,
+  Calendar,
+  Clock,
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
 import {
   AreaChart,
@@ -48,6 +55,30 @@ interface TaxHistory {
   average_effective_rate: number;
 }
 
+interface AccountBreakdown {
+  account_name: string;
+  account_id: string;
+  source: string;
+  owner: string;
+  amount: number;
+}
+
+interface QuarterlyPayment {
+  quarter: number;
+  period: string;
+  due_date: string;
+  income_for_period: number;
+  cumulative_income: number;
+  estimated_payment: number;
+  federal_payment: number;
+  state_payment: number;
+  cumulative_paid: number;
+  cumulative_federal_paid?: number;
+  cumulative_state_paid?: number;
+  status: 'past_due' | 'due_soon' | 'upcoming' | 'not_required';
+  note?: string;
+}
+
 interface TaxDetails {
   year: number;
   agi: number;
@@ -64,6 +95,19 @@ interface TaxDetails {
   effective_rate: number;
   filing_status: string | null;
   is_forecast?: boolean;
+  // Payment schedule fields for forecasts
+  payment_schedule?: QuarterlyPayment[];
+  w2_withholding?: {
+    federal: number;
+    state: number;
+    total: number;
+  };
+  estimated_tax_needed?: number;
+  safe_harbor?: {
+    prior_year_110: number;
+    current_year_90: number;
+    recommended: number;
+  };
   details: {
     income_sources?: Array<{ source: string; amount: number }>;
     w2_breakdown?: Array<{
@@ -101,6 +145,10 @@ interface TaxDetails {
       amt?: number;
       self_employment?: number;
     };
+    // Account-level breakdowns for investment income
+    options_by_account?: AccountBreakdown[];
+    dividends_by_account?: AccountBreakdown[];
+    interest_by_account?: AccountBreakdown[];
   };
 }
 
@@ -149,15 +197,30 @@ export default function Tax() {
   const fetchYearDetails = async (year: number) => {
     setDetailLoading(true);
     try {
-      // Check if this is a forecast year (2025 or future)
-      const isForecast = year >= 2025;
-      const endpoint = isForecast 
+      // First try to get actual tax return, if not found use forecast
+      // Years 2025 and later are forecasts until a real tax return is filed
+      const currentYear = new Date().getFullYear();
+      
+      // For years >= currentYear-1 (e.g., 2025 when it's 2026), we likely need forecast
+      // because tax returns aren't filed until April of the following year
+      const likelyForecast = year >= currentYear - 1;
+      
+      // Try returns first for past years, forecast for recent/future years
+      let endpoint = likelyForecast 
         ? `/api/v1/tax/forecast/${year}?base_year=2024`
         : `/api/v1/tax/returns/${year}`;
       
-      const response = await fetch(endpoint, {
+      let response = await fetch(endpoint, {
         headers: getAuthHeaders(),
       });
+      
+      // If returns 404 for a past year, try forecast
+      if (!response.ok && !likelyForecast) {
+        endpoint = `/api/v1/tax/forecast/${year}?base_year=2024`;
+        response = await fetch(endpoint, {
+          headers: getAuthHeaders(),
+        });
+      }
       
       if (!response.ok) {
         throw new Error(`Failed to fetch details for ${year}`);
@@ -288,15 +351,15 @@ export default function Tax() {
             <div className={styles.breakdownBar}>
               <div 
                 className={styles.breakdownBarFederal}
-                style={{ width: `${(yearDetails.federal_tax / yearDetails.total_tax) * 100}%` }}
+                style={{ width: `${yearDetails.total_tax > 0 ? (yearDetails.federal_tax / yearDetails.total_tax) * 100 : 0}%` }}
               >
-                {((yearDetails.federal_tax / yearDetails.total_tax) * 100).toFixed(0)}%
+                {yearDetails.total_tax > 0 ? ((yearDetails.federal_tax / yearDetails.total_tax) * 100).toFixed(0) : 0}%
               </div>
               <div 
                 className={styles.breakdownBarState}
-                style={{ width: `${(yearDetails.state_tax / yearDetails.total_tax) * 100}%` }}
+                style={{ width: `${yearDetails.total_tax > 0 ? (yearDetails.state_tax / yearDetails.total_tax) * 100 : 0}%` }}
               >
-                {((yearDetails.state_tax / yearDetails.total_tax) * 100).toFixed(0)}%
+                {yearDetails.total_tax > 0 ? ((yearDetails.state_tax / yearDetails.total_tax) * 100).toFixed(0) : 0}%
               </div>
             </div>
             <div className={styles.breakdownLabels}>
@@ -326,6 +389,115 @@ export default function Tax() {
             </div>
           </div>
         </div>
+
+        {/* Quarterly Payment Schedule */}
+        {yearDetails.is_forecast && yearDetails.payment_schedule && yearDetails.payment_schedule.length > 0 && (
+          <section className={styles.detailSection}>
+            <h3><Calendar size={18} /> Quarterly Estimated Tax Payments</h3>
+            
+            {/* Withholding Summary */}
+            {yearDetails.w2_withholding && (
+              <div className={styles.detailGrid} style={{ marginBottom: '1.5rem' }}>
+                <div className={styles.detailItem}>
+                  <span className={styles.detailItemLabel}>W-2 Withholding (Total)</span>
+                  <span className={styles.detailItemValue}>{formatCurrency(yearDetails.w2_withholding.total)}</span>
+                </div>
+                <div className={styles.detailItem}>
+                  <span className={styles.detailItemLabel}>↳ Federal Withheld</span>
+                  <span className={styles.detailItemValue} style={{ fontSize: '0.9rem' }}>{formatCurrency(yearDetails.w2_withholding.federal)}</span>
+                </div>
+                <div className={styles.detailItem}>
+                  <span className={styles.detailItemLabel}>↳ State Withheld</span>
+                  <span className={styles.detailItemValue} style={{ fontSize: '0.9rem' }}>{formatCurrency(yearDetails.w2_withholding.state)}</span>
+                </div>
+                <div className={styles.detailItem}>
+                  <span className={styles.detailItemLabel}>Estimated Tax Needed</span>
+                  <span className={`${styles.detailItemValue} ${(yearDetails.estimated_tax_needed || 0) > 0 ? styles.negative : styles.positive}`}>
+                    {formatCurrency(yearDetails.estimated_tax_needed || 0)}
+                  </span>
+                </div>
+                {yearDetails.safe_harbor && (
+                  <div className={styles.detailItem}>
+                    <span className={styles.detailItemLabel}>Safe Harbor Amount</span>
+                    <span className={styles.detailItemValue}>{formatCurrency(yearDetails.safe_harbor.recommended)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Payment Schedule Table */}
+            <div className={`${styles.employerTable} ${styles.paymentScheduleTable}`}>
+              <div className={styles.employerHeader}>
+                <span>Quarter</span>
+                <span>Period</span>
+                <span>Due Date</span>
+                <span>Federal (IRS)</span>
+                <span>State (FTB)</span>
+                <span>Total Due</span>
+                <span>Status</span>
+              </div>
+              {yearDetails.payment_schedule.map((payment, i) => (
+                <div key={i} className={styles.employerRow}>
+                  <span className={styles.employerName}>Q{payment.quarter}</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{payment.period}</span>
+                  <span style={{ fontWeight: 500 }}>
+                    {new Date(payment.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </span>
+                  <span className={payment.federal_payment > 0 ? styles.negative : styles.positive}>
+                    {formatCurrency(payment.federal_payment || 0)}
+                  </span>
+                  <span className={payment.state_payment > 0 ? styles.negative : styles.positive}>
+                    {formatCurrency(payment.state_payment || 0)}
+                  </span>
+                  <span className={payment.estimated_payment > 0 ? styles.negative : styles.positive} style={{ fontWeight: 600 }}>
+                    {formatCurrency(payment.estimated_payment)}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    {payment.status === 'past_due' && (
+                      <>
+                        <AlertTriangle size={14} style={{ color: '#ef4444' }} />
+                        <span style={{ color: '#ef4444', fontSize: '0.85rem' }}>Past Due</span>
+                      </>
+                    )}
+                    {payment.status === 'due_soon' && (
+                      <>
+                        <Clock size={14} style={{ color: '#f59e0b' }} />
+                        <span style={{ color: '#f59e0b', fontSize: '0.85rem' }}>Due Soon</span>
+                      </>
+                    )}
+                    {payment.status === 'upcoming' && (
+                      <>
+                        <Calendar size={14} style={{ color: '#10b981' }} />
+                        <span style={{ color: '#10b981', fontSize: '0.85rem' }}>Upcoming</span>
+                      </>
+                    )}
+                    {payment.status === 'not_required' && (
+                      <>
+                        <CheckCircle2 size={14} style={{ color: '#6b7280' }} />
+                        <span style={{ color: '#6b7280', fontSize: '0.85rem' }}>N/A</span>
+                      </>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Safe Harbor Note */}
+            {yearDetails.safe_harbor && (yearDetails.estimated_tax_needed || 0) > 0 && (
+              <div style={{ 
+                marginTop: '1rem', 
+                padding: '0.75rem 1rem', 
+                background: 'rgba(16, 185, 129, 0.1)', 
+                borderRadius: '8px',
+                fontSize: '0.875rem',
+                color: 'var(--text-secondary)'
+              }}>
+                <strong>💡 Safe Harbor Tip:</strong> To avoid underpayment penalties, pay at least {formatCurrency(yearDetails.safe_harbor.recommended)} in total 
+                (either 110% of prior year tax or 90% of current year tax, whichever is less).
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Income Sources */}
         {yearDetails.details.income_sources && yearDetails.details.income_sources.length > 0 && (
@@ -365,6 +537,69 @@ export default function Tax() {
           </section>
         )}
 
+        {/* Options Income by Account */}
+        {yearDetails.details.options_by_account && yearDetails.details.options_by_account.length > 0 && (
+          <section className={styles.detailSection}>
+            <h3><TrendingUp size={18} /> Options Income by Account</h3>
+            <div className={styles.employerTable}>
+              <div className={styles.employerHeader}>
+                <span>Account</span>
+                <span>Source</span>
+                <span>Amount</span>
+              </div>
+              {yearDetails.details.options_by_account.map((acct, i) => (
+                <div key={i} className={styles.employerRow}>
+                  <span className={styles.employerName}>{acct.account_name}</span>
+                  <span>{acct.source}</span>
+                  <span className={styles.positive}>{formatCurrency(acct.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Dividends by Account */}
+        {yearDetails.details.dividends_by_account && yearDetails.details.dividends_by_account.length > 0 && (
+          <section className={styles.detailSection}>
+            <h3><PiggyBank size={18} /> Dividend Income by Account</h3>
+            <div className={styles.employerTable}>
+              <div className={styles.employerHeader}>
+                <span>Account</span>
+                <span>Source</span>
+                <span>Amount</span>
+              </div>
+              {yearDetails.details.dividends_by_account.map((acct, i) => (
+                <div key={i} className={styles.employerRow}>
+                  <span className={styles.employerName}>{acct.account_name}</span>
+                  <span>{acct.source}</span>
+                  <span className={styles.positive}>{formatCurrency(acct.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Interest by Account */}
+        {yearDetails.details.interest_by_account && yearDetails.details.interest_by_account.length > 0 && (
+          <section className={styles.detailSection}>
+            <h3><Banknote size={18} /> Interest Income by Account</h3>
+            <div className={styles.employerTable}>
+              <div className={styles.employerHeader}>
+                <span>Account</span>
+                <span>Source</span>
+                <span>Amount</span>
+              </div>
+              {yearDetails.details.interest_by_account.map((acct, i) => (
+                <div key={i} className={styles.employerRow}>
+                  <span className={styles.employerName}>{acct.account_name}</span>
+                  <span>{acct.source}</span>
+                  <span className={styles.positive}>{formatCurrency(acct.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* Payroll Taxes */}
         {yearDetails.details.payroll_taxes && yearDetails.details.payroll_taxes.length > 0 && (
           <section className={styles.detailSection}>
@@ -388,14 +623,14 @@ export default function Tax() {
           </section>
         )}
 
-        {/* Capital Gains */}
+        {/* Stock Sales */}
         {yearDetails.details.capital_gains && (
           <section className={styles.detailSection}>
-            <h3><TrendingUp size={18} /> Capital Gains & Losses</h3>
+            <h3><TrendingUp size={18} /> Stock Sales</h3>
             <div className={styles.detailGrid}>
               {yearDetails.details.capital_gains.short_term !== undefined && (
                 <div className={styles.detailItem}>
-                  <span className={styles.detailItemLabel}>Short-term Gains</span>
+                  <span className={styles.detailItemLabel}>Short-Term (held ≤1 year)</span>
                   <span className={`${styles.detailItemValue} ${yearDetails.details.capital_gains.short_term >= 0 ? styles.positive : styles.negative}`}>
                     {formatCurrency(yearDetails.details.capital_gains.short_term)}
                   </span>
@@ -403,7 +638,7 @@ export default function Tax() {
               )}
               {yearDetails.details.capital_gains.long_term !== undefined && (
                 <div className={styles.detailItem}>
-                  <span className={styles.detailItemLabel}>Long-term Gains</span>
+                  <span className={styles.detailItemLabel}>Long-Term (held &gt;1 year)</span>
                   <span className={`${styles.detailItemValue} ${yearDetails.details.capital_gains.long_term >= 0 ? styles.positive : styles.negative}`}>
                     {formatCurrency(yearDetails.details.capital_gains.long_term)}
                   </span>
@@ -677,7 +912,9 @@ export default function Tax() {
         <h2>Tax Returns by Year</h2>
         <div className={styles.yearsGrid}>
           {taxHistory.years.map((year, index) => {
-            const isForecast = year.year >= 2025;
+            // Years >= currentYear-1 are likely forecasts (2025 when it's 2026)
+            const currentYear = new Date().getFullYear();
+            const isForecast = year.year >= currentYear - 1;
             return (
             <button
               key={year.year}

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, TrendingUp, TrendingDown, DollarSign, FileText, Filter, Download, Upload } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, DollarSign, FileText, Filter, Download, Upload, RefreshCw } from 'lucide-react';
 import styles from './CostBasis.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
 
@@ -67,10 +67,40 @@ export default function CostBasis() {
   // Filters
   const [symbolFilter, setSymbolFilter] = useState('');
   const [termFilter, setTermFilter] = useState<'all' | 'short' | 'long'>('all');
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
   }, [taxYear]);
+
+  const syncFromTransactions = async (clearExisting: boolean = false) => {
+    setSyncing(true);
+    setSyncMessage(null);
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/v1/tax/cost-basis/sync?clear_existing=${clearExisting}`,
+        { 
+          method: 'POST',
+          headers: getAuthHeaders() 
+        }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setSyncMessage(`✓ Synced ${data.lots_created} lots and ${data.sales_created} sales`);
+        // Reload data after sync
+        await loadData();
+      } else {
+        const error = await response.json();
+        setSyncMessage(`✗ Error: ${error.detail || 'Sync failed'}`);
+      }
+    } catch (error) {
+      console.error('Failed to sync:', error);
+      setSyncMessage('✗ Failed to sync from transactions');
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -183,8 +213,24 @@ export default function CostBasis() {
               <option value={2023}>2023</option>
             </select>
           </div>
+
+          <button 
+            className={styles.syncButton}
+            onClick={() => syncFromTransactions(false)}
+            disabled={syncing}
+          >
+            <RefreshCw size={18} className={syncing ? styles.spinning : ''} />
+            {syncing ? 'Syncing...' : 'Sync from Transactions'}
+          </button>
         </div>
       </div>
+
+      {/* Sync Message */}
+      {syncMessage && (
+        <div className={`${styles.syncMessage} ${syncMessage.startsWith('✓') ? styles.success : styles.error}`}>
+          {syncMessage}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className={styles.tabs}>
@@ -441,3 +487,4 @@ export default function CostBasis() {
     </div>
   );
 }
+
