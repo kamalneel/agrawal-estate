@@ -1,0 +1,421 @@
+.container {
+  min-height: 100vh;
+  background: var(--background);
+  padding: 2rem;
+}
+
+.loading,
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  gap: 1rem;
+}
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.error {
+  color: var(--text-secondary);
+}
+
+.error h2 {
+  color: var(--text);
+  margin: 0;
+}
+
+.retryButton {
+  margin-top: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.retryButton:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.backButton {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.backButton:hover {
+  background: var(--surface-hover);
+  transform: translateX(-2px);
+}
+
+.headerTitle {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex: 1;
+}
+
+.headerTitle h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  color: var(--text);
+}
+
+.subtitle {
+  margin: 0.25rem 0 0 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.downloadButton {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.downloadButton:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Notes Section */
+.notesSection {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 2rem;
+}
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: #856404;
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.note:last-child {
+  margin-bottom: 0;
+}
+
+.note svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 2rem;
+  border-bottom: 2px solid var(--border);
+  overflow-x: auto;
+}
+
+.tab,
+.tabActive {
+  padding: 1rem 1.5rem;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+  margin-bottom: -2px;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.tabActive {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* Form Content */
+.formContent {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 2rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.form {
+  color: var(--text);
+}
+
+.formHeader {
+  text-align: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 2px solid var(--border);
+}
+
+.formHeader h2 {
+  margin: 0;
+  font-size: 1.75rem;
+  color: var(--text);
+}
+
+.formHeader p {
+  margin: 0.5rem 0 0 0;
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.taxYear {
+  font-weight: 600;
+  color: var(--primary) !important;
+  margin-top: 0.5rem !important;
+}
+
+/* Form Sections */
+.formSection {
+  margin-bottom: 2rem;
+}
+
+.formSection h3 {
+  font-size: 1.125rem;
+  color: var(--text);
+  margin: 0 0 1rem 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.formRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+}
+
+.label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.value {
+  color: var(--text-secondary);
+}
+
+.checkmark {
+  color: #22c55e;
+}
+
+/* Form Lines */
+.formLine {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  gap: 1rem;
+  padding: 0.75rem;
+  border-radius: 6px;
+  transition: all 0.2s;
+  align-items: center;
+}
+
+.formLine:hover {
+  background: var(--surface-hover);
+}
+
+.lineNumber {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.lineDescription {
+  color: var(--text);
+}
+
+.lineAmount {
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Highlighted Lines */
+.formLine.highlight {
+  background: #f0f9ff;
+  border-left: 3px solid #3b82f6;
+  font-weight: 500;
+}
+
+.formLine.highlight .lineAmount {
+  color: #1d4ed8;
+  font-size: 1.1rem;
+}
+
+/* Success Lines (Refund) */
+.formLine.success {
+  background: #f0fdf4;
+  border-left: 3px solid #22c55e;
+}
+
+.formLine.success .lineAmount {
+  color: #15803d;
+  font-weight: 700;
+}
+
+/* Warning Lines (Amount Owed) */
+.formLine.warning {
+  background: #fef3c7;
+  border-left: 3px solid #f59e0b;
+}
+
+.formLine.warning .lineAmount {
+  color: #d97706;
+  font-weight: 700;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .container {
+    padding: 1rem;
+  }
+
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .headerTitle {
+    justify-content: center;
+  }
+
+  .headerTitle h1 {
+    font-size: 1.5rem;
+  }
+
+  .formContent {
+    padding: 1.5rem;
+  }
+
+  .formLine {
+    grid-template-columns: 50px 1fr auto;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+  }
+
+  .lineNumber {
+    font-size: 0.75rem;
+  }
+
+  .lineAmount {
+    font-size: 0.875rem;
+  }
+
+  .formLine.highlight .lineAmount {
+    font-size: 1rem;
+  }
+
+  .tabs {
+    gap: 0.25rem;
+  }
+
+  .tab,
+  .tabActive {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+  }
+}
+
+/* Print Styles */
+@media print {
+  .header,
+  .tabs,
+  .notesSection {
+    display: none;
+  }
+
+  .formContent {
+    box-shadow: none;
+    border: 1px solid #000;
+  }
+
+  .formLine:hover {
+    background: transparent;
+  }
+}
+
+/* Dark Mode Support */
+@media (prefers-color-scheme: dark) {
+  .formContent {
+    background: var(--surface);
+  }
+
+  .notesSection {
+    background: rgba(255, 193, 7, 0.1);
+    border-color: rgba(255, 193, 7, 0.3);
+  }
+
+  .note {
+    color: #ffc107;
+  }
+
+  .formLine.highlight {
+    background: rgba(59, 130, 246, 0.1);
+  }
+
+  .formLine.success {
+    background: rgba(34, 197, 94, 0.1);
+  }
+
+  .formLine.warning {
+    background: rgba(245, 158, 11, 0.1);
+  }
+}
