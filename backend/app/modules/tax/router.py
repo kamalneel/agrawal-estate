@@ -14,6 +14,7 @@ from app.core.auth import get_current_user
 from app.modules.tax.models import IncomeTaxReturn
 from app.modules.tax.planning import get_tax_planning_analysis, TaxPlanningAnalysis
 from app.modules.tax.forecast import calculate_tax_forecast
+from app.modules.tax.form_generator import generate_tax_forms, TaxFormPackage
 
 router = APIRouter()
 
@@ -275,6 +276,34 @@ async def get_tax_forecast(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating forecast: {str(e)}")
+
+
+@router.get("/forms/{year}", response_model=TaxFormPackage)
+async def get_tax_forms(
+    year: int,
+    base_year: Optional[int] = Query(default=2024, description="Base year for deductions"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Generate official IRS Form 1040 and California Form 540 for comparison.
+
+    Returns complete tax form package with:
+    - Form 1040 (U.S. Individual Income Tax Return)
+    - Schedule 1 (Additional Income and Adjustments)
+    - Schedule E (Rental Income) if applicable
+    - Schedule D (Capital Gains) if applicable
+    - California Form 540
+
+    Use this to compare against tax consultant's filed return line-by-line.
+    """
+    try:
+        forms = generate_tax_forms(db, tax_year=year, base_year=base_year)
+        return forms
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating tax forms: {str(e)}")
 
 
 # Property Tax Endpoints (original)
