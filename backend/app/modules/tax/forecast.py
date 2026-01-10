@@ -574,13 +574,37 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
     """
     Calculate net capital gains/losses from investment transactions.
 
+    Uses actual cost basis tracking for precise gain/loss calculations.
+    Falls back to estimation if cost basis data is not available.
+
     Short-term: Assets held ≤ 1 year (taxed as ordinary income)
     Long-term: Assets held > 1 year (preferential rates: 0%, 15%, 20%)
 
     Returns dict with net_short_term and net_long_term
     """
+    try:
+        # Try to use actual cost basis tracking
+        from app.modules.tax.cost_basis_service import CostBasisService
+
+        service = CostBasisService(db)
+        summary = service.get_capital_gains_summary(year)
+
+        if summary.get("num_transactions", 0) > 0:
+            # We have actual cost basis data - use it!
+            return {
+                "net_short_term": summary.get("total_short_term_gain", 0),
+                "net_long_term": summary.get("total_long_term_gain", 0),
+                "total_proceeds": summary.get("total_proceeds", 0),
+                "total_cost_basis": summary.get("total_cost_basis", 0),
+                "num_transactions": summary.get("num_transactions", 0),
+                "note": "Actual cost basis data"
+            }
+    except Exception:
+        # Cost basis tracking not available or failed - fall back to estimation
+        pass
+
+    # Fallback: Estimate capital gains from sell transactions
     # Query BUY and SELL transactions for the year
-    # This is a simplified calculation - real cap gains tracking requires lot matching
     sell_transactions = db.query(InvestmentTransaction).join(
         InvestmentAccount,
         and_(
@@ -591,11 +615,6 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
         InvestmentTransaction.transaction_type.in_(['SELL', 'SOLD']),
         extract('year', InvestmentTransaction.transaction_date) == year
     ).all()
-
-    # For now, use a simplified approach:
-    # - Assume all stock sales generate some capital gains
-    # - Use the net proceeds from SELL transactions
-    # - Without proper cost basis tracking, we estimate based on transaction patterns
 
     total_proceeds = sum(float(t.amount or 0) for t in sell_transactions)
 
@@ -609,7 +628,7 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
         "net_short_term": 0,  # Conservative: assume mostly long-term holdings
         "net_long_term": estimated_gains,
         "total_proceeds": total_proceeds,
-        "note": "Estimated - requires proper cost basis tracking for accuracy"
+        "note": "Estimated - import transactions to Cost Basis Tracker for accuracy"
     }
 
 
