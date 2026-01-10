@@ -4,10 +4,12 @@ Handles income taxes and property taxes with historical data.
 """
 
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 import json
+from io import BytesIO
 
 from app.core.database import get_db
 from app.core.auth import get_current_user
@@ -15,6 +17,11 @@ from app.modules.tax.models import IncomeTaxReturn
 from app.modules.tax.planning import get_tax_planning_analysis, TaxPlanningAnalysis
 from app.modules.tax.forecast import calculate_tax_forecast
 from app.modules.tax.form_generator import generate_tax_forms, TaxFormPackage
+from app.modules.tax.pdf_generator import (
+    generate_form_1040_pdf,
+    generate_california_540_pdf,
+    generate_tax_forms_pdf
+)
 
 router = APIRouter()
 
@@ -304,6 +311,109 @@ async def get_tax_forms(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating tax forms: {str(e)}")
+
+
+@router.get("/forms/{year}/pdf/1040")
+async def download_form_1040_pdf(
+    year: int,
+    base_year: Optional[int] = Query(default=2024, description="Base year for deductions"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Download IRS Form 1040 as PDF.
+
+    Returns a professional PDF version of Form 1040 matching the official IRS form layout.
+    """
+    try:
+        forms = generate_tax_forms(db, tax_year=year, base_year=base_year)
+
+        # Generate PDF
+        buffer = BytesIO()
+        generate_form_1040_pdf(forms.form_1040, buffer)
+        buffer.seek(0)
+
+        # Return as downloadable PDF
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=Form_1040_{year}_Forecast.pdf"
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
+
+
+@router.get("/forms/{year}/pdf/540")
+async def download_form_540_pdf(
+    year: int,
+    base_year: Optional[int] = Query(default=2024, description="Base year for deductions"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Download California Form 540 as PDF.
+
+    Returns a professional PDF version of CA Form 540 matching the official state form layout.
+    """
+    try:
+        forms = generate_tax_forms(db, tax_year=year, base_year=base_year)
+
+        if not forms.california_540:
+            raise HTTPException(status_code=404, detail="California Form 540 not available")
+
+        # Generate PDF
+        buffer = BytesIO()
+        generate_california_540_pdf(forms.california_540, buffer)
+        buffer.seek(0)
+
+        # Return as downloadable PDF
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=CA_Form_540_{year}_Forecast.pdf"
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
+
+
+@router.get("/forms/{year}/pdf")
+async def download_all_forms_pdf(
+    year: int,
+    base_year: Optional[int] = Query(default=2024, description="Base year for deductions"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Download complete tax form package as PDF.
+
+    Returns a multi-page PDF containing Form 1040 and California Form 540.
+    """
+    try:
+        forms = generate_tax_forms(db, tax_year=year, base_year=base_year)
+
+        # Generate combined PDF
+        buffer = generate_tax_forms_pdf(forms)
+
+        # Return as downloadable PDF
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=Tax_Forms_{year}_Forecast.pdf"
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating PDF: {str(e)}")
 
 
 # Property Tax Endpoints (original)

@@ -580,9 +580,15 @@ export default function Tax() {
             </div>
           </div>
         </div>
-        <button className={styles.heroRefresh} onClick={fetchTaxHistory}>
-          <RefreshCw size={18} />
-        </button>
+        <div className={styles.heroButtons}>
+          <button className={styles.heroButton} onClick={() => navigate('/tax/forms')}>
+            <FileText size={18} />
+            View Tax Forms
+          </button>
+          <button className={styles.heroRefresh} onClick={fetchTaxHistory}>
+            <RefreshCw size={18} />
+          </button>
+        </div>
       </div>
 
       {/* Chart Section */}

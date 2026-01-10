@@ -93,6 +93,38 @@
   color: #FFFFFF;
 }
 
+/* Hero Buttons */
+.heroButtons {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.heroButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: linear-gradient(135deg, #00A3FF 0%, #0092E6 100%);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.heroButton:hover {
+  background: linear-gradient(135deg, #0092E6 0%, #0080CC 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 163, 255, 0.3);
+}
+
 /* Chart Section */
 .chartSection {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
