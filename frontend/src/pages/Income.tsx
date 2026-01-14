@@ -444,7 +444,7 @@ interface OptionsDetailProps {
 }
 
 function OptionsDetail({ data, chartData, onBack }: OptionsDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2025)
+  const [selectedYear, setSelectedYear] = useState(2026)
   
   const filteredChartData = chartData.filter(d => d.year === selectedYear)
   const years = [...new Set(chartData.map(d => d.year))].sort((a, b) => b - a)
@@ -638,7 +638,7 @@ interface DividendsDetailProps {
 }
 
 function DividendsDetail({ data, chartData, onBack }: DividendsDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2025)
+  const [selectedYear, setSelectedYear] = useState(2026)
   
   const filteredChartData = chartData.filter(d => d.year === selectedYear)
   const years = [...new Set(chartData.map(d => d.year))].sort((a, b) => b - a)
@@ -798,7 +798,7 @@ interface InterestDetailProps {
 }
 
 function InterestDetail({ data, chartData, onBack }: InterestDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2025)
+  const [selectedYear, setSelectedYear] = useState(2026)
   
   const filteredChartData = chartData.filter(d => d.year === selectedYear)
   const years = [...new Set(chartData.map(d => d.year))].sort((a, b) => b - a)
@@ -982,7 +982,7 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
   const [optionsDetail, setOptionsDetail] = useState<AccountOptionsDetailData | null>(null)
   const [weeklyData, setWeeklyData] = useState<WeeklyBreakdownData | null>(null)
   const [selectedMonth, setSelectedMonth] = useState<string>('')
-  const [selectedYear, setSelectedYear] = useState(2025)
+  const [selectedYear, setSelectedYear] = useState(2026)
 
   // Fetch options detail for this account
   useEffect(() => {
@@ -1622,8 +1622,8 @@ interface AccountDetailProps {
 }
 
 function AccountDetail({ accountName, optionsData, dividendData, interestData, onBack, onOptionsClick }: AccountDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2025)
-  const [selectedMonth, setSelectedMonth] = useState<number | null>(null) // null = Full Year
+  const [selectedYear, setSelectedYear] = useState(2026)
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(1) // null = Full Year, default: January 2026
   
   // Handle year change - month selection is preserved across year changes
   const handleYearChange = (year: number) => {
@@ -1970,7 +1970,7 @@ interface SalaryDetailProps {
 function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<any>(null)
-  const [selectedYear, setSelectedYear] = useState<number | 'all'>('all')
+  const [selectedYear, setSelectedYear] = useState<number | 'all'>(2026)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -2193,8 +2193,8 @@ export function Income() {
   const [rentalData, setRentalData] = useState<RentalData | null>(null)
   const [rentalChartData, setRentalChartData] = useState<MonthlyData[]>([])
   const [salaryData, setSalaryData] = useState<SalaryData | null>(null)
-  const [mainSelectedYear, setMainSelectedYear] = useState<number | 'all'>(2025)
-  const [mainSelectedMonth, setMainSelectedMonth] = useState<number | null>(null) // null = Full Year, 1-12 = specific month
+  const [mainSelectedYear, setMainSelectedYear] = useState<number | 'all'>(2026)
+  const [mainSelectedMonth, setMainSelectedMonth] = useState<number | null>(1) // null = Full Year, 1-12 = specific month (default: January 2026)
 
   // Current year for reference
   const currentYear = new Date().getFullYear()
