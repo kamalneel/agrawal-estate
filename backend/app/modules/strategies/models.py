@@ -86,13 +86,25 @@ class OptionRollAlert(Base):
 class OptionPremiumSetting(Base):
     """Stores weekly premium per contract settings for each symbol."""
     __tablename__ = 'option_premium_settings'
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, unique=True)
     premium_per_contract = Column(Numeric(10, 2), nullable=False)  # Weekly premium per contract
     is_auto_updated = Column(Boolean, default=True)  # Whether this is auto-updated from 4-week average
     last_auto_update = Column(DateTime, nullable=True)  # When it was last auto-updated
     manual_override = Column(Boolean, default=False)  # If True, don't auto-update
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AccountCashBalance(Base):
+    """Stores cash balances per account for put selling calculations."""
+    __tablename__ = 'account_cash_balances'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_name = Column(String(200), nullable=False, unique=True)
+    cash_balance = Column(Numeric(12, 2), nullable=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -144,7 +156,13 @@ class StrategyRecommendationRecord(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
+    # RLHF Data Quality - for excluding erroneous recommendations from learning
+    excluded_from_learning = Column(Boolean, default=False, nullable=False)
+    exclusion_reason = Column(String(50), nullable=True)  # 'algorithm_bug', 'data_source_error', etc.
+    exclusion_notes = Column(Text, nullable=True)
+    excluded_at = Column(DateTime, nullable=True)
+
     __table_args__ = (
         Index('idx_rec_created_at', 'created_at'),
         Index('idx_rec_status', 'status'),
@@ -152,6 +170,7 @@ class StrategyRecommendationRecord(Base):
         Index('idx_rec_symbol', 'symbol'),
         Index('idx_rec_recommendation_id', 'recommendation_id', unique=True),  # Required for upsert
         Index('idx_rec_notification_mode', 'notification_mode'),
+        Index('idx_rec_excluded', 'excluded_from_learning'),
     )
 
 

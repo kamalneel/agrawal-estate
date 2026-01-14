@@ -47,12 +47,14 @@ interface Holding {
   value: number;
   options: number;
   premium_per_contract?: number;
+  premium_source?: 'database' | 'hardcoded' | 'global_default' | 'user_override' | 'actual_puts';
   weekly_income: number;
   monthly_income: number;
   yearly_income: number;
   sold_contracts?: number;
   unsold_contracts?: number;
   utilization_status?: 'none' | 'partial' | 'full';
+  is_cash_row?: boolean;
 }
 
 interface Account {
@@ -83,6 +85,7 @@ interface SymbolSummary {
   value: number;
   options: number;
   premium_per_contract: number;
+  premium_source?: 'database' | 'hardcoded' | 'global_default' | 'user_override' | 'actual_puts';
   weekly_income: number;
   monthly_income: number;
   yearly_income: number;
@@ -91,6 +94,7 @@ interface SymbolSummary {
   sold_contracts?: number;
   unsold_contracts?: number;
   utilization_status?: 'none' | 'partial' | 'full';
+  is_cash_row?: boolean;
 }
 
 interface PortfolioSummary {
@@ -170,6 +174,63 @@ interface MonitoredPosition {
   can_monitor: boolean;
   data_source?: 'live' | 'stored';
   snapshot_date?: string;
+}
+
+// Acquisition Watchlist interfaces
+interface AcquisitionPutOption {
+  strike: number;
+  bid: number;
+  ask: number;
+  delta: number;
+  otm_pct: number;
+  premium: number;
+  effective_buy_price: number;
+  discount_pct: number;
+  capital_required: number;
+  expiration: string;
+  prob_otm: number;
+}
+
+interface AcquisitionWatchlistItem {
+  id: number;
+  symbol: string;
+  target_price: number | null;
+  notes: string | null;
+  created_at: string;
+  current_price: number | null;
+  put_options: AcquisitionPutOption[];
+  ta_summary: {
+    rsi: number;
+    rsi_status: string;
+    bb_position_pct: number;
+    trend: string;
+  } | null;
+}
+
+// Put Opportunities interface
+interface PutOpportunity {
+  symbol: string;
+  current_price: number;
+  strike: number;
+  otm_pct: number;
+  bid: number;
+  ask: number;
+  premium: number;
+  grade: string;
+  score: number;
+  roi_pct: number;
+  capital_required: number;
+  expiration: string;
+  delta: number;
+  prob_otm: number;
+  rsi: number;
+  rsi_status: string;
+  bb_position_pct: number;
+  bb_status: string;
+  ta_score: number;
+  premium_score: number;
+  trend: string;
+  rationale: string;
 }
 
 interface HistoricalAlert {
@@ -438,6 +499,21 @@ export default function OptionsSelling() {
   const [priceUpdateTime, setPriceUpdateTime] = useState<Date | null>(null);
   const [usingLivePrices, setUsingLivePrices] = useState(false);
 
+  // Put Opportunities state
+  const [putOpportunities, setPutOpportunities] = useState<PutOpportunity[]>([]);
+  const [putLoading, setPutLoading] = useState(false);
+  const [putLastUpdated, setPutLastUpdated] = useState<Date | null>(null);
+  const [putSortField, setPutSortField] = useState<'score' | 'premium' | 'roi_pct' | 'capital_required'>('score');
+  const [putSortDesc, setPutSortDesc] = useState(true);
+
+  // Acquisition Watchlist state
+  const [acquisitionWatchlist, setAcquisitionWatchlist] = useState<AcquisitionWatchlistItem[]>([]);
+  const [acquisitionLoading, setAcquisitionLoading] = useState(false);
+  const [showAddAcquisition, setShowAddAcquisition] = useState(false);
+  const [newAcquisitionSymbol, setNewAcquisitionSymbol] = useState('');
+  const [newAcquisitionTargetPrice, setNewAcquisitionTargetPrice] = useState('');
+  const [newAcquisitionNotes, setNewAcquisitionNotes] = useState('');
+
   const fetchMonitoredPositions = async (useLivePrices: boolean = false) => {
     setPositionsLoading(true);
     try {
@@ -468,6 +544,147 @@ export default function OptionsSelling() {
     } catch (err) {
       console.error('Error fetching alerts:', err);
     }
+  };
+
+  // Fetch put selling opportunities (from database cache)
+  const fetchPutOpportunities = async (forceRefresh: boolean = false) => {
+    setPutLoading(true);
+    try {
+      const url = forceRefresh
+        ? '/api/v1/strategies/put-opportunities?refresh=true'
+        : '/api/v1/strategies/put-opportunities';
+      const response = await fetch(url, {
+        headers: getAuthHeaders()
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch put opportunities');
+      }
+      const result = await response.json();
+      setPutOpportunities(result.opportunities || []);
+      if (result.updated_at) {
+        setPutLastUpdated(new Date(result.updated_at));
+      }
+    } catch (err) {
+      console.error('Error fetching put opportunities:', err);
+    } finally {
+      setPutLoading(false);
+    }
+  };
+
+  // Load put opportunities on mount
+  useEffect(() => {
+    fetchPutOpportunities(false); // Load from cache on mount
+    fetchAcquisitionWatchlist(); // Load acquisition watchlist
+  }, []);
+
+  // Fetch acquisition watchlist
+  const fetchAcquisitionWatchlist = async () => {
+    setAcquisitionLoading(true);
+    try {
+      const response = await fetch('/api/v1/strategies/acquisition-watchlist', {
+        headers: getAuthHeaders()
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch acquisition watchlist');
+      }
+      const result = await response.json();
+      setAcquisitionWatchlist(result.watchlist || []);
+    } catch (err) {
+      console.error('Error fetching acquisition watchlist:', err);
+    } finally {
+      setAcquisitionLoading(false);
+    }
+  };
+
+  // Add to acquisition watchlist
+  const addToAcquisitionWatchlist = async () => {
+    if (!newAcquisitionSymbol.trim()) return;
+
+    try {
+      const response = await fetch('/api/v1/strategies/acquisition-watchlist', {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          symbol: newAcquisitionSymbol.toUpperCase(),
+          target_price: newAcquisitionTargetPrice ? parseFloat(newAcquisitionTargetPrice) : null,
+          notes: newAcquisitionNotes || null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to add to watchlist');
+      }
+
+      // Reset form and refresh
+      setNewAcquisitionSymbol('');
+      setNewAcquisitionTargetPrice('');
+      setNewAcquisitionNotes('');
+      setShowAddAcquisition(false);
+      fetchAcquisitionWatchlist();
+    } catch (err) {
+      console.error('Error adding to watchlist:', err);
+    }
+  };
+
+  // Remove from acquisition watchlist
+  const removeFromAcquisitionWatchlist = async (symbol: string) => {
+    try {
+      const response = await fetch(`/api/v1/strategies/acquisition-watchlist/${symbol}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to remove from watchlist');
+      }
+
+      fetchAcquisitionWatchlist();
+    } catch (err) {
+      console.error('Error removing from watchlist:', err);
+    }
+  };
+
+  // Sorted put opportunities
+  const sortedPutOpportunities = useMemo(() => {
+    return [...putOpportunities].sort((a, b) => {
+      const aVal = a[putSortField] || 0;
+      const bVal = b[putSortField] || 0;
+      return putSortDesc ? bVal - aVal : aVal - bVal;
+    });
+  }, [putOpportunities, putSortField, putSortDesc]);
+
+  // Helper for grade color
+  const getGradeColor = (grade: string) => {
+    if (grade === 'A+') return '#00D632';
+    if (grade === 'A') return '#4CAF50';
+    if (grade === 'B+') return '#8BC34A';
+    if (grade === 'B') return '#FFC107';
+    if (grade === 'C') return '#FF9800';
+    return '#F44336';
+  };
+
+  // Generate rationale tooltip for put opportunity
+  const getPutRationale = (opp: PutOpportunity) => {
+    const rsiDesc = opp.rsi < 30 ? 'oversold' : opp.rsi < 40 ? 'near oversold' : opp.rsi < 50 ? 'neutral-bullish' : 'neutral';
+    const bbDesc = opp.bb_position_pct < 20 ? 'at support (bottom of range)' :
+                   opp.bb_position_pct < 35 ? 'in lower half of range' :
+                   opp.bb_position_pct < 50 ? 'below middle' : 'at middle';
+
+    const probOtm = ((1 - Math.abs(opp.delta || 0.1)) * 100).toFixed(0);
+
+    return `Why ${opp.symbol} is a good put sell:
+
+📊 RSI at ${opp.rsi?.toFixed(0)} (${rsiDesc}) - Stock has pulled back
+📈 Bollinger Band at ${opp.bb_position_pct?.toFixed(0)}% (${bbDesc}) - Near lower support
+📉 Stock at $${opp.current_price?.toFixed(2)}, selling $${opp.strike?.toFixed(0)} put (${opp.otm_pct?.toFixed(1)}% below)
+
+💡 Recommendation: Sell the $${opp.strike?.toFixed(0)} put for $${opp.premium?.toFixed(0)} premium.
+• ${probOtm}% chance it expires worthless (you keep premium)
+• If assigned, you buy ${opp.symbol} at $${opp.strike?.toFixed(0)} (${opp.otm_pct?.toFixed(1)}% discount)
+• Capital required: $${(opp.capital_required || 0).toLocaleString()}`;
   };
 
 
@@ -958,56 +1175,91 @@ export default function OptionsSelling() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedSymbols.map((symbol) => (
-                    <tr key={symbol.symbol} className={symbol.utilization_status === 'none' ? styles.unsoldRow : ''}>
-                      <td>
-                        <div className={styles.symbolCell}>
-                          <strong>{symbol.symbol}</strong>
-                          <span className={styles.accountCount}>{symbol.account_count} account{symbol.account_count > 1 ? 's' : ''}</span>
-                        </div>
-                      </td>
-                      <td>{symbol.shares.toLocaleString()}</td>
-                      <td>{formatCurrency(symbol.price)}</td>
-                      <td>{formatCurrency(symbol.value)}</td>
-                      <td>
-                        <div className={styles.optionsCell}>
-                          <span className={`${styles.optionsBadge} ${
-                            symbol.utilization_status === 'full' ? styles.optionsFull :
-                            symbol.utilization_status === 'partial' ? styles.optionsPartial :
-                            styles.optionsNone
-                          }`}>
-                            {symbol.options}
-                          </span>
-                          {symbol.sold_contracts !== undefined && symbol.unsold_contracts !== undefined && (
-                            <div className={styles.soldUnsoldInfo}>
-                              {symbol.sold_contracts > 0 && (
-                                <span className={styles.soldCount} title="Sold">
-                                  <CheckCircle size={12} /> {symbol.sold_contracts}
-                                </span>
-                              )}
-                              {symbol.unsold_contracts > 0 && (
-                                <span className={styles.unsoldCount} title="Unsold">
-                                  <XCircle size={12} /> {symbol.unsold_contracts}
-                                </span>
+                  {sortedSymbols.map((symbol) => {
+                    const isHardcoded = symbol.premium_source === 'hardcoded' || symbol.premium_source === 'global_default';
+                    const isCashRow = symbol.is_cash_row || symbol.symbol === 'CASH';
+
+                    return (
+                      <tr
+                        key={symbol.symbol}
+                        className={`${symbol.utilization_status === 'none' ? styles.unsoldRow : ''} ${isCashRow ? styles.cashRow : ''}`}
+                      >
+                        <td>
+                          <div className={styles.symbolCell}>
+                            <strong>{symbol.symbol}</strong>
+                            <span className={styles.accountCount}>
+                              {isCashRow ? 'Cash-Secured Puts' : `${symbol.account_count} account${symbol.account_count > 1 ? 's' : ''}`}
+                            </span>
+                          </div>
+                        </td>
+                        <td>{isCashRow ? '-' : symbol.shares.toLocaleString()}</td>
+                        <td>{isCashRow ? '-' : formatCurrency(symbol.price)}</td>
+                        <td>{formatCurrency(symbol.value)}</td>
+                        <td>
+                          {isCashRow ? (
+                            <span className={styles.putsLabel}>Puts</span>
+                          ) : (
+                            <div className={styles.optionsCell}>
+                              <span className={`${styles.optionsBadge} ${
+                                symbol.utilization_status === 'full' ? styles.optionsFull :
+                                symbol.utilization_status === 'partial' ? styles.optionsPartial :
+                                styles.optionsNone
+                              }`}>
+                                {symbol.options}
+                              </span>
+                              {symbol.sold_contracts !== undefined && symbol.unsold_contracts !== undefined && (
+                                <div className={styles.soldUnsoldInfo}>
+                                  {symbol.sold_contracts > 0 && (
+                                    <span className={styles.soldCount} title="Sold">
+                                      <CheckCircle size={12} /> {symbol.sold_contracts}
+                                    </span>
+                                  )}
+                                  {symbol.unsold_contracts > 0 && (
+                                    <span className={styles.unsoldCount} title="Unsold">
+                                      <XCircle size={12} /> {symbol.unsold_contracts}
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
                           )}
-                        </div>
-                      </td>
-                      <td className={styles.incomeCell}>{formatCurrency(symbol.weekly)}</td>
-                      <td className={styles.incomeCell}>{formatCurrency(symbol.monthly)}</td>
-                      <td className={styles.incomeCell}>{formatCurrency(symbol.yearly)}</td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
+                          {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
+                          {formatCurrency(symbol.weekly)}
+                          <span className={styles.yieldPercent}>({(symbol.weekly / symbol.value * 100).toFixed(2)}%)</span>
+                        </td>
+                        <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
+                          {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
+                          {formatCurrency(symbol.monthly)}
+                          <span className={styles.yieldPercent}>({(symbol.monthly / symbol.value * 100).toFixed(2)}%)</span>
+                        </td>
+                        <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
+                          {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
+                          {formatCurrency(symbol.yearly)}
+                          <span className={styles.yieldPercent}>({(symbol.yearly / symbol.value * 100).toFixed(2)}%)</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   <tr className={styles.totalRow}>
                     <td><strong>TOTAL</strong></td>
                     <td></td>
                     <td></td>
                     <td><strong>{formatCurrency(portfolioTotals.total_value)}</strong></td>
                     <td><strong>{portfolioTotals.total_options}</strong></td>
-                    <td><strong>{formatCurrency(portfolioTotals.weekly_income)}</strong></td>
-                    <td><strong>{formatCurrency(portfolioTotals.monthly_income)}</strong></td>
-                    <td><strong>{formatCurrency(portfolioTotals.yearly_income)}</strong></td>
+                    <td>
+                      <strong>{formatCurrency(portfolioTotals.weekly_income)}</strong>
+                      <span className={styles.yieldPercent}>({(portfolioTotals.weekly_income / portfolioTotals.total_value * 100).toFixed(2)}%)</span>
+                    </td>
+                    <td>
+                      <strong>{formatCurrency(portfolioTotals.monthly_income)}</strong>
+                      <span className={styles.yieldPercent}>({(portfolioTotals.monthly_income / portfolioTotals.total_value * 100).toFixed(2)}%)</span>
+                    </td>
+                    <td>
+                      <strong>{formatCurrency(portfolioTotals.yearly_income)}</strong>
+                      <span className={styles.yieldPercent}>({(portfolioTotals.yearly_income / portfolioTotals.total_value * 100).toFixed(2)}%)</span>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -1114,58 +1366,93 @@ export default function OptionsSelling() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedHoldings.map((holding) => (
-                      <tr key={holding.symbol} className={holding.utilization_status === 'none' ? styles.unsoldRow : ''}>
-                        <td>
-                          <div className={styles.symbolCell}>
-                            <strong>{holding.symbol}</strong>
-                            {holding.utilization_status === 'none' && (
-                              <span className={styles.unsoldLabel}>Not Sold</span>
-                            )}
-                          </div>
-                        </td>
-                        <td>{holding.shares.toLocaleString()}</td>
-                        <td>{formatCurrency(holding.price)}</td>
-                        <td>{formatCurrency(holding.value)}</td>
-                        <td>
-                          <div className={styles.optionsCell}>
-                            <span className={`${styles.optionsBadge} ${
-                              holding.utilization_status === 'full' ? styles.optionsFull :
-                              holding.utilization_status === 'partial' ? styles.optionsPartial :
-                              styles.optionsNone
-                            }`}>
-                              {holding.options}
-                            </span>
-                            {holding.sold_contracts !== undefined && holding.unsold_contracts !== undefined && (
-                              <div className={styles.soldUnsoldInfo}>
-                                {holding.sold_contracts > 0 && (
-                                  <span className={styles.soldCount} title="Sold">
-                                    <CheckCircle size={12} /> {holding.sold_contracts}
-                                  </span>
-                                )}
-                                {holding.unsold_contracts > 0 && (
-                                  <span className={styles.unsoldCount} title="Unsold">
-                                    <XCircle size={12} /> {holding.unsold_contracts}
-                                  </span>
+                    {sortedHoldings.map((holding) => {
+                      const isHardcoded = holding.premium_source === 'hardcoded' || holding.premium_source === 'global_default';
+                      const isCashRow = holding.is_cash_row || holding.symbol === 'CASH';
+
+                      return (
+                        <tr
+                          key={holding.symbol}
+                          className={`${holding.utilization_status === 'none' ? styles.unsoldRow : ''} ${isCashRow ? styles.cashRow : ''}`}
+                        >
+                          <td>
+                            <div className={styles.symbolCell}>
+                              <strong>{holding.symbol}</strong>
+                              {isCashRow ? (
+                                <span className={styles.accountCount}>Cash-Secured Puts</span>
+                              ) : holding.utilization_status === 'none' ? (
+                                <span className={styles.unsoldLabel}>Not Sold</span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td>{isCashRow ? '-' : holding.shares.toLocaleString()}</td>
+                          <td>{isCashRow ? '-' : formatCurrency(holding.price)}</td>
+                          <td>{formatCurrency(holding.value)}</td>
+                          <td>
+                            {isCashRow ? (
+                              <span className={styles.putsLabel}>Puts</span>
+                            ) : (
+                              <div className={styles.optionsCell}>
+                                <span className={`${styles.optionsBadge} ${
+                                  holding.utilization_status === 'full' ? styles.optionsFull :
+                                  holding.utilization_status === 'partial' ? styles.optionsPartial :
+                                  styles.optionsNone
+                                }`}>
+                                  {holding.options}
+                                </span>
+                                {holding.sold_contracts !== undefined && holding.unsold_contracts !== undefined && (
+                                  <div className={styles.soldUnsoldInfo}>
+                                    {holding.sold_contracts > 0 && (
+                                      <span className={styles.soldCount} title="Sold">
+                                        <CheckCircle size={12} /> {holding.sold_contracts}
+                                      </span>
+                                    )}
+                                    {holding.unsold_contracts > 0 && (
+                                      <span className={styles.unsoldCount} title="Unsold">
+                                        <XCircle size={12} /> {holding.unsold_contracts}
+                                      </span>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             )}
-                          </div>
-                        </td>
-                        <td className={styles.incomeCell}>{formatCurrency(holding.weekly)}</td>
-                        <td className={styles.incomeCell}>{formatCurrency(holding.monthly)}</td>
-                        <td className={styles.incomeCell}>{formatCurrency(holding.yearly)}</td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
+                            {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
+                            {formatCurrency(holding.weekly)}
+                            <span className={styles.yieldPercent}>({(holding.weekly / holding.value * 100).toFixed(2)}%)</span>
+                          </td>
+                          <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
+                            {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
+                            {formatCurrency(holding.monthly)}
+                            <span className={styles.yieldPercent}>({(holding.monthly / holding.value * 100).toFixed(2)}%)</span>
+                          </td>
+                          <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
+                            {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
+                            {formatCurrency(holding.yearly)}
+                            <span className={styles.yieldPercent}>({(holding.yearly / holding.value * 100).toFixed(2)}%)</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     <tr className={styles.totalRow}>
                       <td><strong>TOTAL</strong></td>
                       <td></td>
                       <td></td>
                       <td><strong>{formatCurrency(account.total_value)}</strong></td>
                       <td><strong>{account.total_options}</strong></td>
-                      <td><strong>{formatCurrency(accountTotals.weekly)}</strong></td>
-                      <td><strong>{formatCurrency(accountTotals.monthly)}</strong></td>
-                      <td><strong>{formatCurrency(accountTotals.yearly)}</strong></td>
+                      <td>
+                        <strong>{formatCurrency(accountTotals.weekly)}</strong>
+                        <span className={styles.yieldPercent}>({(accountTotals.weekly / account.total_value * 100).toFixed(2)}%)</span>
+                      </td>
+                      <td>
+                        <strong>{formatCurrency(accountTotals.monthly)}</strong>
+                        <span className={styles.yieldPercent}>({(accountTotals.monthly / account.total_value * 100).toFixed(2)}%)</span>
+                      </td>
+                      <td>
+                        <strong>{formatCurrency(accountTotals.yearly)}</strong>
+                        <span className={styles.yieldPercent}>({(accountTotals.yearly / account.total_value * 100).toFixed(2)}%)</span>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -1612,6 +1899,340 @@ export default function OptionsSelling() {
                 </div>
               </div>
             )}
+
+            {/* Put Opportunities Section */}
+            <div className={styles.putOpportunitiesSection}>
+              <div className={styles.putOpportunitiesHeader}>
+                <div className={styles.putOpportunitiesTitle}>
+                  <Target size={24} />
+                  <div>
+                    <h2>Put Selling Opportunities</h2>
+                    <p>Stocks with favorable TA conditions for selling cash-secured puts</p>
+                  </div>
+                </div>
+                <div className={styles.putOpportunitiesActions}>
+                  {putLastUpdated && (
+                    <span className={styles.lastUpdated}>
+                      Updated: {putLastUpdated.toLocaleTimeString()}
+                    </span>
+                  )}
+                  <button
+                    className={styles.refreshPricesButton}
+                    onClick={() => fetchPutOpportunities(true)}
+                    disabled={putLoading}
+                    title="Recalculate from live TA data and options chains"
+                  >
+                    {putLoading ? (
+                      <RefreshCw size={16} className={styles.spinning} />
+                    ) : (
+                      <RefreshCw size={16} />
+                    )}
+                    {putLoading ? 'Analyzing...' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+
+              {putOpportunities.length === 0 && !putLoading && (
+                <div className={styles.emptyState}>
+                  <Target size={48} />
+                  <h3>No Put Opportunities Found</h3>
+                  <p>No stocks currently meet the criteria (Score ≥ 80, Grade A).</p>
+                  <p>Click below to analyze your portfolio stocks for put selling opportunities.</p>
+                  <button onClick={() => fetchPutOpportunities(true)} className={styles.refreshButton}>
+                    <RefreshCw size={16} />
+                    Analyze Now
+                  </button>
+                </div>
+              )}
+
+              {putLoading && (
+                <div className={styles.loadingState}>
+                  <RefreshCw size={32} className={styles.spinning} />
+                  <p>Analyzing portfolio stocks...</p>
+                </div>
+              )}
+
+              {sortedPutOpportunities.length > 0 && (
+                <div className={styles.putOpportunitiesTable}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Symbol</th>
+                        <th>Current</th>
+                        <th>Strike</th>
+                        <th>OTM%</th>
+                        <th
+                          className={styles.sortable}
+                          onClick={() => {
+                            if (putSortField === 'premium') setPutSortDesc(!putSortDesc);
+                            else { setPutSortField('premium'); setPutSortDesc(true); }
+                          }}
+                        >
+                          Premium {putSortField === 'premium' && (putSortDesc ? '↓' : '↑')}
+                        </th>
+                        <th>Grade</th>
+                        <th
+                          className={styles.sortable}
+                          onClick={() => {
+                            if (putSortField === 'score') setPutSortDesc(!putSortDesc);
+                            else { setPutSortField('score'); setPutSortDesc(true); }
+                          }}
+                        >
+                          Score {putSortField === 'score' && (putSortDesc ? '↓' : '↑')}
+                        </th>
+                        <th
+                          className={styles.sortable}
+                          onClick={() => {
+                            if (putSortField === 'roi_pct') setPutSortDesc(!putSortDesc);
+                            else { setPutSortField('roi_pct'); setPutSortDesc(true); }
+                          }}
+                        >
+                          ROI% {putSortField === 'roi_pct' && (putSortDesc ? '↓' : '↑')}
+                        </th>
+                        <th
+                          className={styles.sortable}
+                          onClick={() => {
+                            if (putSortField === 'capital_required') setPutSortDesc(!putSortDesc);
+                            else { setPutSortField('capital_required'); setPutSortDesc(false); }
+                          }}
+                        >
+                          Capital {putSortField === 'capital_required' && (putSortDesc ? '↓' : '↑')}
+                        </th>
+                        <th>RSI</th>
+                        <th>BB%</th>
+                        <th>Expiry</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedPutOpportunities.map((opp, idx) => (
+                        <tr
+                          key={`${opp.symbol}-${idx}`}
+                          className={styles.putRow}
+                          title={getPutRationale(opp)}
+                        >
+                          <td className={styles.symbolCell}>
+                            <div className={styles.symbolWithInfo}>
+                              {opp.symbol}
+                              <span className={styles.infoIcon} title={getPutRationale(opp)}>ⓘ</span>
+                            </div>
+                          </td>
+                          <td>${opp.current_price?.toFixed(2)}</td>
+                          <td>${opp.strike?.toFixed(0)}</td>
+                          <td>{opp.otm_pct?.toFixed(1)}%</td>
+                          <td className={styles.premiumCell}>${opp.premium?.toFixed(0)}</td>
+                          <td>
+                            <span
+                              className={styles.gradeBadge}
+                              style={{ backgroundColor: getGradeColor(opp.grade) }}
+                            >
+                              {opp.grade}
+                            </span>
+                          </td>
+                          <td>{opp.score?.toFixed(0)}</td>
+                          <td>{opp.roi_pct?.toFixed(2)}%</td>
+                          <td>${(opp.capital_required || 0).toLocaleString()}</td>
+                          <td>
+                            <span className={opp.rsi < 40 ? styles.goodRsi : ''}>
+                              {opp.rsi?.toFixed(0)}
+                            </span>
+                          </td>
+                          <td>
+                            <span className={opp.bb_position_pct < 35 ? styles.goodBb : ''}>
+                              {opp.bb_position_pct?.toFixed(0)}%
+                            </span>
+                          </td>
+                          <td>{opp.expiration ? new Date(opp.expiration).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className={styles.putLegend}>
+                <span><strong>Grade A+ (≥90):</strong> Strong recommend</span>
+                <span><strong>Grade A (≥80):</strong> Recommend</span>
+                <span><strong>RSI {'<'} 40:</strong> Near oversold (good)</span>
+                <span><strong>BB% {'<'} 35:</strong> Lower half (good)</span>
+              </div>
+            </div>
+
+            {/* Acquisition Puts Section */}
+            <div className={styles.acquisitionSection}>
+              <div className={styles.acquisitionHeader}>
+                <div className={styles.acquisitionTitle}>
+                  <Wallet size={24} />
+                  <div>
+                    <h2>Acquisition Puts</h2>
+                    <p>Stocks you want to buy - get paid while waiting for lower prices</p>
+                  </div>
+                </div>
+                <div className={styles.acquisitionActions}>
+                  <button
+                    className={styles.refreshPricesButton}
+                    onClick={fetchAcquisitionWatchlist}
+                    disabled={acquisitionLoading}
+                  >
+                    {acquisitionLoading ? (
+                      <RefreshCw size={16} className={styles.spinning} />
+                    ) : (
+                      <RefreshCw size={16} />
+                    )}
+                    Refresh
+                  </button>
+                  <button
+                    className={styles.addPositionButton}
+                    onClick={() => setShowAddAcquisition(!showAddAcquisition)}
+                  >
+                    <Plus size={16} />
+                    Add Stock
+                  </button>
+                </div>
+              </div>
+
+              {/* Add Stock Form */}
+              {showAddAcquisition && (
+                <div className={styles.addAcquisitionForm}>
+                  <div className={styles.formGrid}>
+                    <div className={styles.formField}>
+                      <label>Symbol</label>
+                      <input
+                        type="text"
+                        placeholder="LLY"
+                        value={newAcquisitionSymbol}
+                        onChange={(e) => setNewAcquisitionSymbol(e.target.value.toUpperCase())}
+                      />
+                    </div>
+                    <div className={styles.formField}>
+                      <label>Target Price (optional)</label>
+                      <input
+                        type="number"
+                        placeholder="1050"
+                        value={newAcquisitionTargetPrice}
+                        onChange={(e) => setNewAcquisitionTargetPrice(e.target.value)}
+                      />
+                    </div>
+                    <div className={styles.formField} style={{ gridColumn: 'span 2' }}>
+                      <label>Notes (optional)</label>
+                      <input
+                        type="text"
+                        placeholder="Why I want to own this stock..."
+                        value={newAcquisitionNotes}
+                        onChange={(e) => setNewAcquisitionNotes(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className={styles.formActions}>
+                    <button className={styles.cancelButton} onClick={() => setShowAddAcquisition(false)}>
+                      Cancel
+                    </button>
+                    <button
+                      className={styles.submitButton}
+                      onClick={addToAcquisitionWatchlist}
+                      disabled={!newAcquisitionSymbol.trim()}
+                    >
+                      <Plus size={16} />
+                      Add to Watchlist
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Watchlist Items */}
+              {acquisitionWatchlist.length === 0 && !acquisitionLoading && (
+                <div className={styles.emptyState}>
+                  <Wallet size={48} />
+                  <h3>No Stocks in Acquisition Watchlist</h3>
+                  <p>Add stocks you want to buy at a lower price.</p>
+                  <p>Sell puts to get paid while waiting!</p>
+                </div>
+              )}
+
+              {acquisitionLoading && (
+                <div className={styles.loadingState}>
+                  <RefreshCw size={32} className={styles.spinning} />
+                  <p>Loading acquisition targets...</p>
+                </div>
+              )}
+
+              {acquisitionWatchlist.length > 0 && (
+                <div className={styles.acquisitionList}>
+                  {acquisitionWatchlist.map((item) => (
+                    <div key={item.id} className={styles.acquisitionCard}>
+                      <div className={styles.acquisitionCardHeader}>
+                        <div className={styles.acquisitionSymbol}>
+                          <span className={styles.symbolName}>{item.symbol}</span>
+                          {item.current_price && (
+                            <span className={styles.currentPrice}>${item.current_price.toFixed(2)}</span>
+                          )}
+                          {item.target_price && (
+                            <span className={styles.targetPrice}>Target: ${item.target_price.toFixed(0)}</span>
+                          )}
+                        </div>
+                        <button
+                          className={styles.removeButton}
+                          onClick={() => removeFromAcquisitionWatchlist(item.symbol)}
+                          title="Remove from watchlist"
+                        >
+                          <XCircle size={18} />
+                        </button>
+                      </div>
+
+                      {item.notes && (
+                        <div className={styles.acquisitionNotes}>{item.notes}</div>
+                      )}
+
+                      {item.ta_summary && (
+                        <div className={styles.taSummary}>
+                          <span>RSI: {item.ta_summary.rsi.toFixed(0)} ({item.ta_summary.rsi_status})</span>
+                          <span>BB: {item.ta_summary.bb_position_pct.toFixed(0)}%</span>
+                          <span>Trend: {item.ta_summary.trend}</span>
+                        </div>
+                      )}
+
+                      {item.put_options.length > 0 ? (
+                        <div className={styles.putOptionsTable}>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Strike</th>
+                                <th>Premium</th>
+                                <th>If Assigned</th>
+                                <th>Discount</th>
+                                <th>Prob OTM</th>
+                                <th>Capital</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {item.put_options.map((opt, idx) => (
+                                <tr key={idx}>
+                                  <td>${opt.strike.toFixed(0)}</td>
+                                  <td className={styles.premiumCell}>${opt.premium.toFixed(0)}</td>
+                                  <td>${opt.effective_buy_price.toFixed(2)}</td>
+                                  <td className={styles.discountCell}>{opt.discount_pct.toFixed(1)}%</td>
+                                  <td>{opt.prob_otm}%</td>
+                                  <td>${opt.capital_required.toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className={styles.noPutOptions}>
+                          No put options available. Click Refresh to load.
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className={styles.acquisitionLegend}>
+                <span><strong>If Assigned:</strong> Effective buy price (strike - premium)</span>
+                <span><strong>Discount:</strong> How much below current price you'd buy</span>
+                <span><strong>Prob OTM:</strong> Chance put expires worthless (you keep premium)</span>
+              </div>
+            </div>
 
             {/* Info Section */}
             <div className={styles.infoSection}>

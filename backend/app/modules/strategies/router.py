@@ -350,11 +350,8 @@ async def get_buy_borrow_die_actuals(
     Uses the SAME database as the Income page for consistency.
     Income includes: Options, Dividends, Interest from investment_transactions
     Plus: Salary and Rental from their respective services
-    Spending: Tracked from brokerage withdrawals (ACH, Credit Card, Transfers)
+    Spending: Tracked from CASH_MOVEMENT transactions in the database (withdrawals, transfers to spending)
     """
-    import csv
-    import re
-    from pathlib import Path
     from app.modules.income import db_queries as income_db
     from app.modules.income.salary_service import get_salary_service
     from app.modules.income.rental_service import get_rental_service
@@ -415,57 +412,52 @@ async def get_buy_borrow_die_actuals(
         print(f"Error loading rental: {e}")
     
     # =========================================================================
-    # SPENDING: Get from brokerage transactions CSV
+    # SPENDING: Get from database (CASH_MOVEMENT transactions)
     # =========================================================================
+    # 
+    # Spending is tracked from CASH_MOVEMENT transactions with negative amounts:
+    # - ACH Withdrawal (negative amount + "Withdrawal" in description)
+    # - XENT: Brokerage to Spending (negative amount + "Brokerage to Spending")
+    # - XENT_CC: Credit Card balance payment (negative amount + "Credit Card")
+    # - RTP: Instant bank transfer (negative amount)
+    #
+    # NOT counted as spending:
+    # - ACH Deposit (positive = capital infusion)
+    # - XENT: Spending to Brokerage (positive = refund, but we ignore per user preference)
+    # - XENT_CC: Cash back (positive = small income, handled separately)
+    # - INTERNAL_TRANSFER: Between own accounts (e.g., IRA transfers)
+    # =========================================================================
+    
+    from app.modules.investments.models import InvestmentTransaction
+    from sqlalchemy import extract, func, and_, or_
     
     monthly_spending: Dict[int, float] = {}
     
-    # Try to find the best CSV file for spending data
-    robinhood_dir = Path(__file__).parent.parent.parent.parent.parent / "data" / "processed" / "investments" / "robinhood"
+    # Query spending transactions from database
+    # CASH_MOVEMENT with negative amount and spending-related descriptions
+    spending_query = db.query(
+        extract('month', InvestmentTransaction.transaction_date).label('month'),
+        func.sum(func.abs(InvestmentTransaction.amount)).label('total')
+    ).filter(
+        extract('year', InvestmentTransaction.transaction_date) == year,
+        InvestmentTransaction.transaction_type == 'CASH_MOVEMENT',
+        InvestmentTransaction.amount < 0,  # Money leaving the account
+        # Only count brokerage accounts (where spending happens), not retirement accounts
+        InvestmentTransaction.account_id.in_(['neel_brokerage', 'jaya_brokerage']),
+        # Filter for spending-related descriptions
+        or_(
+            InvestmentTransaction.description.ilike('%Withdrawal%'),
+            InvestmentTransaction.description.ilike('%Brokerage to Spending%'),
+            InvestmentTransaction.description.ilike('%Credit Card balance payment%'),
+            InvestmentTransaction.description.ilike('%bank transfer%'),
+        )
+    ).group_by(
+        extract('month', InvestmentTransaction.transaction_date)
+    )
     
-    # First try year-specific file, then try multi-year all-data file
-    csv_path = robinhood_dir / f"Neel Individual {year} complete.csv"
-    if not csv_path.exists():
-        csv_path = robinhood_dir / "Neel Individual 2021-2025 all data.csv"
-    
-    if csv_path.exists():
-        with open(csv_path, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                activity_date = row.get('Activity Date', '')
-                description = row.get('Description', '')
-                trans_code = row.get('Trans Code', '')
-                amount_str = row.get('Amount', '')
-                
-                if not activity_date or not amount_str:
-                    continue
-                
-                date_match = re.match(r'(\d+)/(\d+)/(\d+)', activity_date)
-                if not date_match:
-                    continue
-                    
-                month_num = int(date_match.group(1))
-                year_num = int(date_match.group(3))
-                
-                if year_num != year:
-                    continue
-                
-                amount_clean = amount_str.replace('$', '').replace(',', '').replace('(', '').replace(')', '')
-                try:
-                    amount = abs(float(amount_clean))
-                except ValueError:
-                    continue
-                
-                is_spending = False
-                if trans_code == 'ACH' and 'Withdrawal' in description:
-                    is_spending = True
-                elif trans_code == 'XENT_CC' and 'Credit Card balance payment' in description:
-                    is_spending = True
-                elif trans_code == 'XENT' and 'Brokerage to Spending' in description:
-                    is_spending = True
-                
-                if is_spending:
-                    monthly_spending[month_num] = monthly_spending.get(month_num, 0) + amount
+    for row in spending_query.all():
+        month_num = int(row.month)
+        monthly_spending[month_num] = float(row.total or 0)
     
     # =========================================================================
     # BUILD MONTHLY DATA
@@ -557,6 +549,74 @@ async def get_buy_borrow_die_actuals(
         annualized_income=round(annualized_income, 2),
         projected_annual_deficit=round(projected_annual_deficit, 2)
     )
+
+
+@router.get("/buy-borrow-die/spending-details/{year}")
+async def get_spending_details(
+    year: int = 2025,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get detailed spending transactions for Buy/Borrow/Die tracking.
+    Returns individual transactions with date, account, amount, and description.
+    """
+    from app.modules.investments.models import InvestmentTransaction
+    from sqlalchemy import extract, or_
+    
+    # Query spending transactions from database
+    spending_transactions = db.query(InvestmentTransaction).filter(
+        extract('year', InvestmentTransaction.transaction_date) == year,
+        InvestmentTransaction.transaction_type == 'CASH_MOVEMENT',
+        InvestmentTransaction.amount < 0,  # Money leaving the account
+        # Only count brokerage accounts (where spending happens)
+        InvestmentTransaction.account_id.in_(['neel_brokerage', 'jaya_brokerage']),
+        # Filter for spending-related descriptions
+        or_(
+            InvestmentTransaction.description.ilike('%Withdrawal%'),
+            InvestmentTransaction.description.ilike('%Brokerage to Spending%'),
+            InvestmentTransaction.description.ilike('%Credit Card balance payment%'),
+            InvestmentTransaction.description.ilike('%bank transfer%'),
+        )
+    ).order_by(InvestmentTransaction.transaction_date.desc()).all()
+    
+    # Format response
+    transactions = []
+    for txn in spending_transactions:
+        # Map account_id to friendly name
+        account_name = "Neel's Brokerage" if txn.account_id == 'neel_brokerage' else "Jaya's Brokerage"
+        
+        transactions.append({
+            "date": txn.transaction_date.isoformat(),
+            "account": account_name,
+            "amount": abs(float(txn.amount)),  # Return positive for display
+            "description": txn.description,
+            "type": _categorize_spending(txn.description),
+        })
+    
+    total = sum(t["amount"] for t in transactions)
+    
+    return {
+        "year": year,
+        "transactions": transactions,
+        "total_spending": round(total, 2),
+        "transaction_count": len(transactions),
+    }
+
+
+def _categorize_spending(description: str) -> str:
+    """Categorize spending transaction by description."""
+    desc_lower = description.lower()
+    if 'credit card' in desc_lower:
+        return 'Credit Card Payment'
+    elif 'brokerage to spending' in desc_lower:
+        return 'Transfer to Spending'
+    elif 'withdrawal' in desc_lower:
+        return 'ACH Withdrawal'
+    elif 'bank transfer' in desc_lower:
+        return 'Bank Transfer'
+    else:
+        return 'Other'
 
 
 @router.post("/options-selling/income-projection")
@@ -1340,17 +1400,77 @@ async def calculate_options_income_with_sold_status(
         "TSM": 50,
         "MSTR": 200,
     }
-    
+
     # Merge: database settings (auto-updated) -> defaults -> user overrides
     # User overrides take highest priority
     effective_premiums = {**default_symbol_premiums, **db_premiums, **symbol_premiums}
-    
+
+    def get_premium_with_source(symbol):
+        """Return (premium, source) where source is 'database', 'hardcoded', or 'global_default'."""
+        if symbol in symbol_premiums:
+            return symbol_premiums[symbol], "user_override"
+        elif symbol in db_premiums:
+            return db_premiums[symbol], "database"
+        elif symbol in default_symbol_premiums:
+            return default_symbol_premiums[symbol], "hardcoded"
+        else:
+            return default_premium, "global_default"
+
     def get_premium(symbol):
-        return effective_premiums.get(symbol, default_premium)
-    
+        return get_premium_with_source(symbol)[0]
+
+    # Load cash balances for put income calculation
+    from app.modules.strategies.models import AccountCashBalance
+    cash_balances = {}
+    try:
+        cash_balance_records = db.query(AccountCashBalance).all()
+        for cb in cash_balance_records:
+            cash_balances[cb.account_name] = float(cb.cash_balance)
+    except Exception:
+        pass  # Table might not exist yet
+
+    # Calculate put income from actual put transactions (4-week rolling average)
+    # Uses unique positions to avoid counting same position multiple times across snapshots
+    put_income_by_account = {}
+    try:
+        from datetime import datetime, timedelta
+        four_weeks_ago = datetime.now() - timedelta(weeks=4)
+
+        # Deduplicate puts by (account, symbol, strike, expiration) to get unique positions
+        put_income_result = db.execute(text("""
+            WITH unique_puts AS (
+                SELECT DISTINCT ON (sos.account_name, so.symbol, so.strike_price, so.expiration_date)
+                    sos.account_name,
+                    so.symbol,
+                    so.strike_price,
+                    so.expiration_date,
+                    so.contracts_sold,
+                    COALESCE(so.original_premium, so.premium_per_contract, 0) as premium_per_share
+                FROM sold_options so
+                JOIN sold_options_snapshots sos ON so.snapshot_id = sos.id
+                WHERE so.option_type = 'put'
+                AND sos.snapshot_date >= :four_weeks_ago
+                ORDER BY sos.account_name, so.symbol, so.strike_price, so.expiration_date, sos.snapshot_date DESC
+            )
+            SELECT
+                account_name,
+                SUM(premium_per_share * contracts_sold * 100) as total_premium
+            FROM unique_puts
+            GROUP BY account_name
+        """), {"four_weeks_ago": four_weeks_ago})
+
+        for row in put_income_result:
+            account = row[0]
+            total_premium = float(row[1]) if row[1] else 0
+            # Average over 4 weeks to get weekly income
+            put_income_by_account[account] = total_premium / 4
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not calculate put income: {e}")
+
     # Get all stock holdings by account
     result = db.execute(text("""
-        SELECT 
+        SELECT
             ia.account_id,
             ia.account_name,
             ia.account_type,
@@ -1361,14 +1481,14 @@ async def calculate_options_income_with_sold_status(
             ih.description
         FROM investment_holdings ih
         JOIN investment_accounts ia ON ih.account_id = ia.account_id AND ih.source = ia.source
-        WHERE ih.quantity > 0 
-        AND ih.symbol NOT LIKE '%CASH%' 
+        WHERE ih.quantity > 0
+        AND ih.symbol NOT LIKE '%CASH%'
         AND ih.symbol NOT LIKE '%MONEY%'
         AND ih.symbol NOT LIKE '%FDRXX%'
         AND ia.account_type IN ('brokerage', 'retirement', 'ira', 'roth_ira')
         ORDER BY ia.account_name, ih.market_value DESC
     """))
-    
+
     accounts = {}
     account_order = []
     symbols = {}
@@ -1385,6 +1505,8 @@ async def calculate_options_income_with_sold_status(
             
         options_count = int(qty // 100)
         
+        premium, premium_source = get_premium_with_source(symbol)
+
         if symbol not in symbols:
             symbols[symbol] = {
                 "symbol": symbol,
@@ -1393,19 +1515,20 @@ async def calculate_options_income_with_sold_status(
                 "price": price,
                 "value": 0,
                 "options": 0,
-                "premium_per_contract": get_premium(symbol),
+                "premium_per_contract": premium,
+                "premium_source": premium_source,
                 "weekly_income": 0,
                 "monthly_income": 0,
                 "yearly_income": 0,
                 "accounts": []
             }
-        
+
         symbols[symbol]["shares"] += qty
         symbols[symbol]["value"] += value
         symbols[symbol]["price"] = price
         if account_name not in symbols[symbol]["accounts"]:
             symbols[symbol]["accounts"].append(account_name)
-        
+
         if account_name not in accounts:
             account_order.append(account_name)
             accounts[account_name] = {
@@ -1420,18 +1543,17 @@ async def calculate_options_income_with_sold_status(
                 "monthly_income": 0,
                 "yearly_income": 0
             }
-        
-        symbol_premium = get_premium(symbol)
+
         existing = next((h for h in accounts[account_name]["holdings"] if h["symbol"] == symbol), None)
         if existing:
             existing["shares"] += qty
             existing["value"] += value
             existing["options"] = int(existing["shares"] // 100)
-            existing["weekly_income"] = existing["options"] * symbol_premium
+            existing["weekly_income"] = existing["options"] * premium
             existing["monthly_income"] = existing["weekly_income"] * 4
             existing["yearly_income"] = existing["weekly_income"] * weeks_per_year
         else:
-            weekly = options_count * symbol_premium
+            weekly = options_count * premium
             accounts[account_name]["holdings"].append({
                 "symbol": symbol,
                 "description": description or symbol,
@@ -1439,7 +1561,8 @@ async def calculate_options_income_with_sold_status(
                 "price": round(price, 2),
                 "value": round(value, 0),
                 "options": options_count,
-                "premium_per_contract": symbol_premium,
+                "premium_per_contract": premium,
+                "premium_source": premium_source,
                 "weekly_income": weekly,
                 "monthly_income": weekly * 4,
                 "yearly_income": weekly * weeks_per_year
@@ -1469,7 +1592,83 @@ async def calculate_options_income_with_sold_status(
         account["monthly_income"] = account["weekly_income"] * 4
         account["yearly_income"] = account["weekly_income"] * weeks_per_year
         account["total_value"] = round(account["total_value"], 0)
-    
+
+    # Add CASH row for accounts with cash balances (for put income)
+    total_cash = 0
+    cash_symbol_data = None
+
+    # Calculate TOTAL put income from ALL accounts for portfolio-level CASH row
+    total_put_weekly_all_accounts = sum(put_income_by_account.values())
+
+    for account_name, cash_balance in cash_balances.items():
+        if cash_balance <= 0:
+            continue
+
+        total_cash += cash_balance
+        # Get put income for this specific account
+        put_weekly = put_income_by_account.get(account_name, 0)
+
+        # Create or get account if it doesn't exist
+        if account_name not in accounts:
+            account_order.append(account_name)
+            accounts[account_name] = {
+                "account_id": f"cash_{account_name}",
+                "account_name": account_name,
+                "account_type": "brokerage",
+                "holdings": [],
+                "total_value": 0,
+                "total_shares": 0,
+                "total_options": 0,
+                "weekly_income": 0,
+                "monthly_income": 0,
+                "yearly_income": 0
+            }
+
+        # Add CASH row to this account's holdings
+        accounts[account_name]["holdings"].append({
+            "symbol": "CASH",
+            "description": "Cash-Secured Puts",
+            "shares": 0,
+            "price": 1.0,
+            "value": round(cash_balance, 0),
+            "options": 0,  # Puts don't have a fixed "options" count like calls
+            "premium_per_contract": put_weekly,  # Weekly put income for this account
+            "premium_source": "actual_puts",  # Indicates this is from real data
+            "weekly_income": put_weekly,
+            "monthly_income": put_weekly * 4,
+            "yearly_income": put_weekly * weeks_per_year,
+            "is_cash_row": True
+        })
+
+        # Update account totals to include put income
+        accounts[account_name]["total_value"] += cash_balance
+        accounts[account_name]["weekly_income"] += put_weekly
+        accounts[account_name]["monthly_income"] = accounts[account_name]["weekly_income"] * 4
+        accounts[account_name]["yearly_income"] = accounts[account_name]["weekly_income"] * weeks_per_year
+
+    # Add CASH to portfolio-level symbols if we have any cash OR any put income
+    if total_cash > 0 or total_put_weekly_all_accounts > 0:
+        cash_symbol_data = {
+            "symbol": "CASH",
+            "description": "Cash-Secured Puts",
+            "shares": 0,
+            "price": 1.0,
+            "value": round(total_cash, 0),
+            "options": 0,
+            "premium_per_contract": total_put_weekly_all_accounts,  # ALL put income
+            "premium_source": "actual_puts",
+            "weekly_income": total_put_weekly_all_accounts,  # ALL put income from all accounts
+            "monthly_income": total_put_weekly_all_accounts * 4,
+            "yearly_income": total_put_weekly_all_accounts * weeks_per_year,
+            "accounts": list(put_income_by_account.keys()),  # All accounts with put income
+            "account_count": len(put_income_by_account),
+            "sold_contracts": 0,
+            "unsold_contracts": 0,
+            "utilization_status": "full" if total_put_weekly_all_accounts > 0 else "none",
+            "is_cash_row": True
+        }
+        symbols_list.append(cash_symbol_data)
+
     # Portfolio totals
     total_options = sum(a["total_options"] for a in accounts.values())
     total_weekly = sum(a["weekly_income"] for a in accounts.values())
@@ -3907,4 +4106,335 @@ async def debug_all_accounts(
             "No duplicate account names found."
         )
     }
+
+
+# =============================================================================
+# PUT SELLING OPPORTUNITIES
+# =============================================================================
+
+@router.get("/put-opportunities")
+async def get_put_opportunities(
+    refresh: bool = Query(default=False, description="Set to true to recalculate from live data"),
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user)
+):
+    """
+    Get put selling opportunities for portfolio stocks.
+
+    By default, returns cached data from the database (fast).
+    Set refresh=true to recalculate from live TA data and options chains (slow but fresh).
+    """
+    from app.modules.strategies.strategies.cash_secured_put import CashSecuredPutStrategy
+    from app.modules.strategies.strategy_base import StrategyConfig
+
+    try:
+        # If not refreshing, load from database first
+        if not refresh:
+            # Query today's put opportunities from database
+            today = date.today()
+            results = db.execute(text("""
+                SELECT
+                    symbol, stock_price, strike, expiration,
+                    bid_price, ask_price, delta, premium_per_contract,
+                    otm_pct, score, grade, rsi, bb_position_pct,
+                    rsi_score, bb_score, premium_score, ta_score,
+                    trend, full_context, created_at
+                FROM put_opportunities
+                WHERE recommendation_date = :today
+                ORDER BY score DESC
+            """), {"today": today}).fetchall()
+
+            if results:
+                opportunities = []
+                for row in results:
+                    full_context = row.full_context or {}
+                    opportunities.append({
+                        "symbol": row.symbol,
+                        "current_price": float(row.stock_price) if row.stock_price else 0,
+                        "strike": float(row.strike) if row.strike else 0,
+                        "otm_pct": float(row.otm_pct) if row.otm_pct else 0,
+                        "bid": float(row.bid_price) if row.bid_price else 0,
+                        "ask": float(row.ask_price) if row.ask_price else 0,
+                        "premium": float(row.premium_per_contract) if row.premium_per_contract else 0,
+                        "grade": row.grade or "",
+                        "score": float(row.score) if row.score else 0,
+                        "roi_pct": full_context.get("roi_pct", 0),
+                        "capital_required": float(row.strike) * 100 if row.strike else 0,
+                        "expiration": row.expiration.isoformat() if row.expiration else "",
+                        "delta": float(row.delta) if row.delta else 0,
+                        "prob_otm": (1 - abs(float(row.delta))) * 100 if row.delta else 90,
+                        "rsi": float(row.rsi) if row.rsi else 0,
+                        "rsi_status": full_context.get("rsi_status", ""),
+                        "bb_position_pct": float(row.bb_position_pct) if row.bb_position_pct else 0,
+                        "bb_status": full_context.get("bb_status", ""),
+                        "ta_score": int(row.ta_score) if row.ta_score else 0,
+                        "premium_score": int(row.premium_score) if row.premium_score else 0,
+                        "trend": row.trend or "",
+                        "rationale": full_context.get("rationale", ""),
+                    })
+
+                # Get the most recent update time
+                latest_update = max(row.created_at for row in results) if results else None
+
+                return {
+                    "opportunities": opportunities,
+                    "count": len(opportunities),
+                    "updated_at": latest_update.isoformat() if latest_update else None,
+                    "from_cache": True,
+                }
+
+        # Refresh = true OR no cached data: Calculate fresh
+        logger.info("Calculating fresh put opportunities...")
+
+        config = StrategyConfig(
+            strategy_type="cash_secured_put",
+            name="Cash-Secured Put Strategy",
+            description="Put selling opportunities",
+            category="income_generation",
+            enabled=True,
+            notification_enabled=True,
+            parameters={}
+        )
+        strategy = CashSecuredPutStrategy(db, config)
+
+        # Generate recommendations (this does all the TA analysis and saves to DB)
+        recommendations = strategy.generate_recommendations({})
+
+        # Convert to response format
+        opportunities = []
+        for rec in recommendations:
+            context = rec.context if hasattr(rec, 'context') else {}
+            opportunities.append({
+                "symbol": context.get("symbol", ""),
+                "current_price": context.get("stock_price", 0),
+                "strike": context.get("strike", 0),
+                "otm_pct": context.get("otm_pct", 0),
+                "bid": context.get("bid", 0),
+                "ask": context.get("ask", 0),
+                "premium": context.get("premium_per_contract", 0),
+                "grade": context.get("grade", ""),
+                "score": context.get("combined_score", 0),
+                "roi_pct": context.get("roi_pct", 0),
+                "capital_required": context.get("capital_required", 0),
+                "expiration": context.get("expiration", ""),
+                "delta": context.get("delta", 0),
+                "prob_otm": context.get("prob_otm", 0),
+                "rsi": context.get("rsi", 0),
+                "rsi_status": context.get("rsi_status", ""),
+                "bb_position_pct": context.get("bb_position_pct", 0),
+                "bb_status": context.get("bb_status", ""),
+                "ta_score": context.get("ta_score", 0),
+                "premium_score": context.get("premium_score", 0),
+                "trend": context.get("trend", ""),
+                "rationale": rec.rationale if hasattr(rec, 'rationale') else "",
+            })
+
+        opportunities.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+        return {
+            "opportunities": opportunities,
+            "count": len(opportunities),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "from_cache": False,
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching put opportunities: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# ACQUISITION WATCHLIST (Stocks to buy via puts)
+# =============================================================================
+
+class AcquisitionWatchlistItem(BaseModel):
+    """Request model for adding a stock to acquisition watchlist."""
+    symbol: str
+    target_price: Optional[float] = None
+    notes: Optional[str] = None
+
+
+@router.get("/acquisition-watchlist")
+async def get_acquisition_watchlist(
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user)
+):
+    """Get all stocks in the acquisition watchlist with current put options."""
+    from app.modules.strategies.schwab_service import get_options_chain_schwab
+    from app.modules.strategies.technical_analysis import get_technical_analysis_service
+    from datetime import timedelta
+
+    try:
+        # Get watchlist items
+        results = db.execute(text("""
+            SELECT id, symbol, target_price, notes, active, created_at
+            FROM acquisition_watchlist
+            WHERE active = true
+            ORDER BY created_at DESC
+        """)).fetchall()
+
+        if not results:
+            return {"watchlist": [], "count": 0}
+
+        # Get next Friday for expiration
+        today = date.today()
+        days_ahead = 4 - today.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        next_friday = today + timedelta(days=days_ahead)
+
+        ta_service = get_technical_analysis_service()
+        watchlist = []
+
+        for row in results:
+            symbol = row.symbol
+            item = {
+                "id": row.id,
+                "symbol": symbol,
+                "target_price": float(row.target_price) if row.target_price else None,
+                "notes": row.notes,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "current_price": None,
+                "put_options": [],
+                "ta_summary": None,
+            }
+
+            # Get current price and TA
+            try:
+                indicators = ta_service.get_technical_indicators(symbol)
+                if indicators:
+                    item["current_price"] = indicators.current_price
+                    item["ta_summary"] = {
+                        "rsi": indicators.rsi_14,
+                        "rsi_status": indicators.rsi_status,
+                        "bb_position_pct": ((indicators.current_price - indicators.bb_lower) /
+                                           (indicators.bb_upper - indicators.bb_lower)) * 100
+                                           if indicators.bb_upper != indicators.bb_lower else 50,
+                        "trend": indicators.trend,
+                    }
+
+                    # Get put options near target price or 5-10% OTM
+                    target = row.target_price or (indicators.current_price * 0.95)
+                    chain = get_options_chain_schwab(symbol, next_friday.isoformat(), 'PUT')
+
+                    if chain and 'puts' in chain:
+                        for opt in chain['puts']:
+                            strike = opt.get('strike', 0)
+                            bid = opt.get('bid', 0) or 0
+                            delta = abs(opt.get('delta', 0) or 0)
+
+                            if strike <= 0 or bid <= 0:
+                                continue
+
+                            # Show strikes within 15% of current price
+                            otm_pct = ((indicators.current_price - strike) / indicators.current_price) * 100
+                            if 0 < otm_pct <= 15:
+                                premium = bid * 100
+                                effective_buy = strike - bid
+                                discount = ((indicators.current_price - effective_buy) / indicators.current_price) * 100
+
+                                item["put_options"].append({
+                                    "strike": strike,
+                                    "bid": bid,
+                                    "ask": opt.get('ask', 0) or 0,
+                                    "delta": delta,
+                                    "otm_pct": round(otm_pct, 1),
+                                    "premium": round(premium, 0),
+                                    "effective_buy_price": round(effective_buy, 2),
+                                    "discount_pct": round(discount, 1),
+                                    "capital_required": strike * 100,
+                                    "expiration": next_friday.isoformat(),
+                                    "prob_otm": round((1 - delta) * 100, 0),
+                                })
+
+                        # Sort by strike descending (closest to current price first)
+                        item["put_options"].sort(key=lambda x: x["strike"], reverse=True)
+                        # Limit to top 5 options
+                        item["put_options"] = item["put_options"][:5]
+
+            except Exception as e:
+                logger.warning(f"Error getting data for {symbol}: {e}")
+
+            watchlist.append(item)
+
+        return {
+            "watchlist": watchlist,
+            "count": len(watchlist),
+            "next_expiration": next_friday.isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching acquisition watchlist: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/acquisition-watchlist")
+async def add_to_acquisition_watchlist(
+    item: AcquisitionWatchlistItem,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user)
+):
+    """Add a stock to the acquisition watchlist."""
+    try:
+        # Check if already exists
+        existing = db.execute(text(
+            "SELECT id FROM acquisition_watchlist WHERE symbol = :symbol"
+        ), {"symbol": item.symbol.upper()}).fetchone()
+
+        if existing:
+            # Update existing entry
+            db.execute(text("""
+                UPDATE acquisition_watchlist
+                SET target_price = :target_price, notes = :notes, active = true, updated_at = NOW()
+                WHERE symbol = :symbol
+            """), {
+                "symbol": item.symbol.upper(),
+                "target_price": item.target_price,
+                "notes": item.notes,
+            })
+            db.commit()
+            return {"message": f"{item.symbol.upper()} updated in watchlist", "action": "updated"}
+        else:
+            # Insert new entry
+            db.execute(text("""
+                INSERT INTO acquisition_watchlist (symbol, target_price, notes, active, created_at)
+                VALUES (:symbol, :target_price, :notes, true, NOW())
+            """), {
+                "symbol": item.symbol.upper(),
+                "target_price": item.target_price,
+                "notes": item.notes,
+            })
+            db.commit()
+            return {"message": f"{item.symbol.upper()} added to watchlist", "action": "added"}
+
+    except Exception as e:
+        logger.error(f"Error adding to acquisition watchlist: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/acquisition-watchlist/{symbol}")
+async def remove_from_acquisition_watchlist(
+    symbol: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user)
+):
+    """Remove a stock from the acquisition watchlist."""
+    try:
+        result = db.execute(text(
+            "DELETE FROM acquisition_watchlist WHERE symbol = :symbol"
+        ), {"symbol": symbol.upper()})
+        db.commit()
+
+        if result.rowcount > 0:
+            return {"message": f"{symbol.upper()} removed from watchlist"}
+        else:
+            raise HTTPException(status_code=404, detail=f"{symbol.upper()} not found in watchlist")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing from acquisition watchlist: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 

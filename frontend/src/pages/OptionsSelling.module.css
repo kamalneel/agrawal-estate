@@ -715,6 +715,50 @@
   font-family: var(--font-mono);
 }
 
+.yieldPercent {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: normal;
+  margin-top: 2px;
+}
+
+/* Hardcoded Premium Indicator */
+.hardcodedIncome {
+  position: relative;
+}
+
+.hardcodedMarker {
+  color: var(--color-warning);
+  font-weight: bold;
+  margin-right: 2px;
+}
+
+.hardcodedIncome .yieldPercent {
+  color: var(--color-warning);
+  opacity: 0.8;
+}
+
+/* CASH Row for Put Income */
+.cashRow {
+  background: rgba(139, 92, 246, 0.08);
+  border-left: 3px solid var(--color-accent);
+}
+
+.cashRow td {
+  font-style: normal;
+}
+
+.putsLabel {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: rgba(139, 92, 246, 0.2);
+  color: var(--color-accent);
+}
+
 /* Account View */
 .accountView {
   animation: fadeIn 0.3s ease;
@@ -2394,4 +2438,373 @@
   font-size: var(--text-sm);
   margin-top: var(--space-2);
   color: var(--color-text-tertiary);
+}
+
+/* Put Opportunities Section */
+.putOpportunitiesSection {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-top: var(--space-6);
+}
+
+.putOpportunitiesHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.putOpportunitiesTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.putOpportunitiesTitle svg {
+  color: #10B981;
+}
+
+.putOpportunitiesTitle h2 {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.putOpportunitiesTitle p {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.putOpportunitiesActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.putOpportunitiesTable {
+  overflow-x: auto;
+  margin-top: var(--space-4);
+}
+
+.putOpportunitiesTable table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.putOpportunitiesTable th,
+.putOpportunitiesTable td {
+  padding: var(--space-3) var(--space-2);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.putOpportunitiesTable th {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--color-bg-tertiary);
+}
+
+.putOpportunitiesTable tbody tr:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable:hover {
+  color: var(--color-text-primary);
+}
+
+.symbolCell {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.premiumCell {
+  font-weight: var(--font-semibold);
+  color: #10B981;
+}
+
+.gradeBadge {
+  display: inline-block;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
+  color: white;
+}
+
+.goodRsi {
+  color: #10B981;
+  font-weight: var(--font-semibold);
+}
+
+.goodBb {
+  color: #10B981;
+  font-weight: var(--font-semibold);
+}
+
+.putLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.loadingState {
+  text-align: center;
+  padding: var(--space-8);
+  color: var(--color-text-secondary);
+}
+
+.loadingState svg {
+  margin-bottom: var(--space-3);
+  color: #10B981;
+}
+
+.refreshButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: #10B981;
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.refreshButton:hover {
+  background: #059669;
+}
+
+.lastUpdated {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.putRow {
+  cursor: help;
+}
+
+.symbolWithInfo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.infoIcon {
+  cursor: help;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  opacity: 0.7;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.infoIcon:hover {
+  opacity: 1;
+  color: #10B981;
+}
+
+/* Acquisition Puts Section */
+.acquisitionSection {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin-top: var(--space-6);
+}
+
+.acquisitionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.acquisitionTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.acquisitionTitle svg {
+  color: #8B5CF6;
+}
+
+.acquisitionTitle h2 {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.acquisitionTitle p {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.acquisitionActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.addAcquisitionForm {
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.acquisitionList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.acquisitionCard {
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.acquisitionCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.acquisitionSymbol {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.symbolName {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
+}
+
+.currentPrice {
+  font-size: var(--text-lg);
+  color: var(--color-text-secondary);
+}
+
+.targetPrice {
+  font-size: var(--text-sm);
+  color: #8B5CF6;
+  background: rgba(139, 92, 246, 0.1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.removeButton {
+  background: transparent;
+  border: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: var(--space-1);
+  transition: color 0.2s;
+}
+
+.removeButton:hover {
+  color: #EF4444;
+}
+
+.acquisitionNotes {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  font-style: italic;
+  margin-bottom: var(--space-3);
+  padding: var(--space-2);
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.taSummary {
+  display: flex;
+  gap: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2);
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.putOptionsTable {
+  overflow-x: auto;
+}
+
+.putOptionsTable table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.putOptionsTable th,
+.putOptionsTable td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.putOptionsTable th {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+}
+
+.putOptionsTable tbody tr:hover {
+  background: var(--color-bg-secondary);
+}
+
+.discountCell {
+  color: #10B981;
+  font-weight: var(--font-semibold);
+}
+
+.noPutOptions {
+  text-align: center;
+  padding: var(--space-4);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.acquisitionLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
 }
