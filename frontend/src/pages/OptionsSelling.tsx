@@ -117,6 +117,18 @@ interface SoldOptionsSnapshot {
   created_at: string;
 }
 
+interface IncomePeriod {
+  start: string;
+  end: string;
+  label: string;
+}
+
+interface IncomePeriods {
+  weekly?: IncomePeriod;
+  monthly?: IncomePeriod;
+  yearly?: IncomePeriod;
+}
+
 interface OptionsData {
   params: {
     default_premium: number;
@@ -125,6 +137,7 @@ interface OptionsData {
     weeks_per_year: number;
   };
   portfolio_summary: PortfolioSummary;
+  income_periods?: IncomePeriods;
   sold_options_snapshot?: SoldOptionsSnapshot | null;
   symbols: SymbolSummary[];
   accounts: Account[];
@@ -781,23 +794,24 @@ export default function OptionsSelling() {
     return { premium, weekly, monthly, yearly };
   };
 
-  // Calculate portfolio totals with current premiums
+  // Use actual income from backend (not projections)
+  // The backend now calculates income from actual historical transactions:
+  // - Weekly: Last complete week
+  // - Monthly: Last complete month
+  // - Yearly: Last complete year
   const portfolioTotals = useMemo(() => {
     if (!data) return null;
-    
-    let totalWeekly = 0;
-    data.symbols.forEach(sym => {
-      const { weekly } = getSymbolIncome(sym);
-      totalWeekly += weekly;
-    });
-    
-    const totalMonthly = totalWeekly * 4;
-    const totalYearly = totalWeekly * weeksPerYear;
-    const weeklyYield = data.portfolio_summary.total_value > 0 
-      ? (totalWeekly / data.portfolio_summary.total_value) * 100 
+
+    // Use the backend's actual income values directly
+    const totalWeekly = data.portfolio_summary.weekly_income;
+    const totalMonthly = data.portfolio_summary.monthly_income;
+    const totalYearly = data.portfolio_summary.yearly_income;
+
+    const weeklyYield = data.portfolio_summary.total_value > 0
+      ? (totalWeekly / data.portfolio_summary.total_value) * 100
       : 0;
-    const yearlyYield = data.portfolio_summary.total_value > 0 
-      ? (totalYearly / data.portfolio_summary.total_value) * 100 
+    const yearlyYield = data.portfolio_summary.total_value > 0
+      ? (totalYearly / data.portfolio_summary.total_value) * 100
       : 0;
 
     return {
@@ -809,19 +823,15 @@ export default function OptionsSelling() {
       weekly_yield_percent: weeklyYield,
       yearly_yield_percent: yearlyYield,
     };
-  }, [data, symbolPremiums, weeksPerYear]);
+  }, [data]);
 
-  // Calculate account totals with current premiums
+  // Use actual account income from backend (not projections)
   const getAccountTotals = (account: Account) => {
-    let totalWeekly = 0;
-    account.holdings.forEach(holding => {
-      const { weekly } = getHoldingIncome(holding);
-      totalWeekly += weekly;
-    });
+    // Use the backend's actual income values directly
     return {
-      weekly: totalWeekly,
-      monthly: totalWeekly * 4,
-      yearly: totalWeekly * weeksPerYear,
+      weekly: account.weekly_income,
+      monthly: account.monthly_income,
+      yearly: account.yearly_income,
     };
   };
 
@@ -1183,14 +1193,17 @@ export default function OptionsSelling() {
                     <th className={styles.sortableHeader} onClick={() => handleOverviewSort('options')}>
                       Options {getSortIcon('options', overviewSort)}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('weekly')}>
+                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('weekly')} title={data?.income_periods?.weekly?.label || 'Last complete week'}>
                       Weekly {getSortIcon('weekly', overviewSort)}
+                      {data?.income_periods?.weekly && <span className={styles.periodLabel}>{data.income_periods.weekly.label}</span>}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('monthly')}>
+                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('monthly')} title={data?.income_periods?.monthly?.label || 'Last complete month'}>
                       Monthly {getSortIcon('monthly', overviewSort)}
+                      {data?.income_periods?.monthly && <span className={styles.periodLabel}>{data.income_periods.monthly.label}</span>}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('yearly')}>
+                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('yearly')} title={data?.income_periods?.yearly?.label || 'Last complete year'}>
                       Yearly {getSortIcon('yearly', overviewSort)}
+                      {data?.income_periods?.yearly && <span className={styles.periodLabel}>{data.income_periods.yearly.label}</span>}
                     </th>
                   </tr>
                 </thead>
@@ -1374,14 +1387,17 @@ export default function OptionsSelling() {
                       <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'options')}>
                         Options {getSortIcon('options', accountSort)}
                       </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'weekly')}>
+                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'weekly')} title={data?.income_periods?.weekly?.label || 'Last complete week'}>
                         Weekly {getSortIcon('weekly', accountSort)}
+                        {data?.income_periods?.weekly && <span className={styles.periodLabel}>{data.income_periods.weekly.label}</span>}
                       </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'monthly')}>
+                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'monthly')} title={data?.income_periods?.monthly?.label || 'Last complete month'}>
                         Monthly {getSortIcon('monthly', accountSort)}
+                        {data?.income_periods?.monthly && <span className={styles.periodLabel}>{data.income_periods.monthly.label}</span>}
                       </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'yearly')}>
+                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'yearly')} title={data?.income_periods?.yearly?.label || 'Last complete year'}>
                         Yearly {getSortIcon('yearly', accountSort)}
+                        {data?.income_periods?.yearly && <span className={styles.periodLabel}>{data.income_periods.yearly.label}</span>}
                       </th>
                     </tr>
                   </thead>

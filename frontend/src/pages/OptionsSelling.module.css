@@ -606,6 +606,21 @@
   opacity: 1;
 }
 
+/* Period label under column headers showing actual date range */
+.periodLabel {
+  display: block;
+  font-size: 10px;
+  font-weight: normal;
+  color: var(--color-text-muted);
+  opacity: 0.7;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+.sortableHeader:hover .periodLabel {
+  color: var(--color-text-secondary);
+}
+
 .table td {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);

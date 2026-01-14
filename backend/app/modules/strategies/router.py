@@ -1358,6 +1358,166 @@ async def delete_options_snapshot(
     return {"success": True, "deleted_id": snapshot_id}
 
 
+# ============================================================================
+# ACTUAL INCOME CALCULATION HELPERS
+# ============================================================================
+# These functions calculate actual historical income from the InvestmentTransaction
+# table rather than projecting based on options * premium.
+
+def get_actual_options_income(db: Session, start_date: date, end_date: date) -> Dict[str, Dict[str, float]]:
+    """
+    Get actual options income (STO/BTC transactions) for a date range.
+
+    Returns:
+        Dict mapping account_name -> {symbol -> total_income}
+    """
+    from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
+    from sqlalchemy import and_
+
+    # Query STO (Sell To Open) and BTC (Buy To Close) transactions
+    # STO generates income (positive), BTC is buyback (usually negative)
+    results = db.query(
+        InvestmentAccount.account_name,
+        InvestmentTransaction.symbol,
+        func.sum(InvestmentTransaction.amount).label('total')
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+        InvestmentTransaction.transaction_date >= start_date,
+        InvestmentTransaction.transaction_date <= end_date
+    ).group_by(
+        InvestmentAccount.account_name,
+        InvestmentTransaction.symbol
+    ).all()
+
+    income_by_account: Dict[str, Dict[str, float]] = {}
+    for row in results:
+        account_name = row.account_name or 'Unknown'
+        symbol = row.symbol or 'OTHER'
+        amount = float(row.total or 0)
+
+        # Extract underlying symbol from option symbol (e.g., "TSLA 01/17/2026 450.00 C" -> "TSLA")
+        underlying = symbol.split()[0] if symbol else 'OTHER'
+
+        if account_name not in income_by_account:
+            income_by_account[account_name] = {}
+
+        if underlying not in income_by_account[account_name]:
+            income_by_account[account_name][underlying] = 0
+        income_by_account[account_name][underlying] += amount
+
+    return income_by_account
+
+
+def get_date_ranges_for_actuals() -> Dict[str, tuple]:
+    """
+    Calculate date ranges for actual income queries.
+
+    Returns date ranges for:
+    - last_week: The most recent complete week (Mon-Sun)
+    - last_month: The most recent complete month
+    - last_year: The most recent complete year
+
+    Example: If today is Jan 13, 2026 (Monday):
+    - last_week: Jan 6-12, 2026
+    - last_month: Dec 1-31, 2025
+    - last_year: Jan 1 - Dec 31, 2025
+    """
+    from datetime import timedelta
+    import calendar
+
+    today = date.today()
+
+    # Last full week (Monday to Sunday)
+    # Find the most recent Sunday (end of last week)
+    days_since_sunday = (today.weekday() + 1) % 7
+    if days_since_sunday == 0:
+        days_since_sunday = 7  # If today is Sunday, go back to last Sunday
+    last_sunday = today - timedelta(days=days_since_sunday)
+    last_monday = last_sunday - timedelta(days=6)
+
+    # Last full month
+    first_of_this_month = today.replace(day=1)
+    last_day_of_last_month = first_of_this_month - timedelta(days=1)
+    first_of_last_month = last_day_of_last_month.replace(day=1)
+
+    # Last full year
+    last_year = today.year - 1
+    first_of_last_year = date(last_year, 1, 1)
+    last_of_last_year = date(last_year, 12, 31)
+
+    return {
+        'last_week': (last_monday, last_sunday),
+        'last_month': (first_of_last_month, last_day_of_last_month),
+        'last_year': (first_of_last_year, last_of_last_year)
+    }
+
+
+def calculate_actual_income_for_holdings(
+    db: Session,
+    holdings_by_account: Dict[str, List[Dict]],
+    symbols_aggregate: Dict[str, Dict]
+) -> tuple:
+    """
+    Calculate actual weekly, monthly, and yearly income for all holdings.
+
+    Returns:
+        Tuple of (account_income, symbol_income, portfolio_totals)
+        - account_income: Dict[account_name -> {weekly, monthly, yearly}]
+        - symbol_income: Dict[symbol -> {weekly, monthly, yearly}]
+        - portfolio_totals: Dict with total weekly, monthly, yearly
+    """
+    date_ranges = get_date_ranges_for_actuals()
+
+    # Get actual income for each period
+    weekly_income = get_actual_options_income(db, *date_ranges['last_week'])
+    monthly_income = get_actual_options_income(db, *date_ranges['last_month'])
+    yearly_income = get_actual_options_income(db, *date_ranges['last_year'])
+
+    # Build account-level income
+    account_income = {}
+    for account_name in holdings_by_account:
+        account_income[account_name] = {
+            'weekly': sum(weekly_income.get(account_name, {}).values()),
+            'monthly': sum(monthly_income.get(account_name, {}).values()),
+            'yearly': sum(yearly_income.get(account_name, {}).values())
+        }
+
+    # Build symbol-level income (aggregate across all accounts)
+    all_symbols = set()
+    for symbols in weekly_income.values():
+        all_symbols.update(symbols.keys())
+    for symbols in monthly_income.values():
+        all_symbols.update(symbols.keys())
+    for symbols in yearly_income.values():
+        all_symbols.update(symbols.keys())
+
+    symbol_income = {}
+    for symbol in all_symbols:
+        weekly_total = sum(acct.get(symbol, 0) for acct in weekly_income.values())
+        monthly_total = sum(acct.get(symbol, 0) for acct in monthly_income.values())
+        yearly_total = sum(acct.get(symbol, 0) for acct in yearly_income.values())
+        symbol_income[symbol] = {
+            'weekly': weekly_total,
+            'monthly': monthly_total,
+            'yearly': yearly_total
+        }
+
+    # Calculate portfolio totals
+    portfolio_totals = {
+        'weekly': sum(a['weekly'] for a in account_income.values()),
+        'monthly': sum(a['monthly'] for a in account_income.values()),
+        'yearly': sum(a['yearly'] for a in account_income.values())
+    }
+
+    return account_income, symbol_income, portfolio_totals, date_ranges
+
+
 @router.post("/options-selling/income-projection-with-status")
 async def calculate_options_income_with_sold_status(
     params: dict,
@@ -1366,10 +1526,15 @@ async def calculate_options_income_with_sold_status(
 ):
     """
     Calculate potential income from selling covered calls WITH sold/unsold status.
-    
+
     This is an enhanced version of the income-projection endpoint that also
     includes information about which options are currently sold (from uploaded
     screenshots) vs unsold.
+
+    Income is calculated from ACTUAL historical transactions:
+    - Weekly: Actual income from the last complete week
+    - Monthly: Actual income from the last complete month
+    - Yearly: Actual income from the last complete year
     """
     
     # Default parameters
@@ -1581,16 +1746,63 @@ async def calculate_options_income_with_sold_status(
         symbols[sym]["value"] = round(symbols[sym]["value"], 0)
         symbols[sym]["shares"] = int(symbols[sym]["shares"])
         symbols[sym]["account_count"] = len(symbols[sym]["accounts"])
-    
+
     symbols_list = sorted(symbols.values(), key=lambda x: x["options"], reverse=True)
-    
+
+    # ============================================================================
+    # ACTUAL INCOME CALCULATION - Replace projections with historical actuals
+    # ============================================================================
+    # Get actual income from InvestmentTransaction table for:
+    # - Weekly: Last complete week (Mon-Sun)
+    # - Monthly: Last complete month
+    # - Yearly: Last complete year
+
+    date_ranges = None
+    actual_portfolio_totals = None
+    try:
+        actual_account_income, actual_symbol_income, actual_portfolio_totals, date_ranges = \
+            calculate_actual_income_for_holdings(db, accounts, symbols)
+
+        # Update symbol-level income with actuals
+        for sym in symbols_list:
+            symbol = sym["symbol"]
+            if symbol in actual_symbol_income:
+                sym["weekly_income"] = actual_symbol_income[symbol]["weekly"]
+                sym["monthly_income"] = actual_symbol_income[symbol]["monthly"]
+                sym["yearly_income"] = actual_symbol_income[symbol]["yearly"]
+
+        # Update each holding's income with actuals (per account per symbol)
+        for account_name in accounts:
+            for holding in accounts[account_name]["holdings"]:
+                symbol = holding["symbol"]
+                if symbol == "CASH":
+                    continue  # CASH row uses put income, handled separately
+                if symbol in actual_symbol_income:
+                    # Get actual income for this symbol across all accounts
+                    # Then prorate based on this account's share of total options for that symbol
+                    total_symbol_weekly = actual_symbol_income[symbol]["weekly"]
+                    total_symbol_options = symbols.get(symbol, {}).get("options", 0) or 1
+                    account_symbol_options = holding["options"] or 0
+
+                    # Prorate income based on options count
+                    if total_symbol_options > 0 and account_symbol_options > 0:
+                        ratio = account_symbol_options / total_symbol_options
+                        holding["weekly_income"] = round(total_symbol_weekly * ratio, 2)
+                        holding["monthly_income"] = round(actual_symbol_income[symbol]["monthly"] * ratio, 2)
+                        holding["yearly_income"] = round(actual_symbol_income[symbol]["yearly"] * ratio, 2)
+
+    except Exception as e:
+        # If actual income calculation fails, fall back to projections
+        logger.warning(f"Could not calculate actual income, using projections: {e}")
+        date_ranges = get_date_ranges_for_actuals()
+
     # Calculate totals for each account
     for account_name in accounts:
         account = accounts[account_name]
         account["total_options"] = sum(h["options"] for h in account["holdings"])
         account["weekly_income"] = sum(h["weekly_income"] for h in account["holdings"])
-        account["monthly_income"] = account["weekly_income"] * 4
-        account["yearly_income"] = account["weekly_income"] * weeks_per_year
+        account["monthly_income"] = sum(h["monthly_income"] for h in account["holdings"])
+        account["yearly_income"] = sum(h["yearly_income"] for h in account["holdings"])
         account["total_value"] = round(account["total_value"], 0)
 
     # Add CASH row for accounts with cash balances (for put income)
@@ -1669,16 +1881,16 @@ async def calculate_options_income_with_sold_status(
         }
         symbols_list.append(cash_symbol_data)
 
-    # Portfolio totals
+    # Portfolio totals - now using actual values (not multipliers)
     total_options = sum(a["total_options"] for a in accounts.values())
     total_weekly = sum(a["weekly_income"] for a in accounts.values())
-    total_monthly = total_weekly * 4
-    total_yearly = total_weekly * weeks_per_year
+    total_monthly = sum(a["monthly_income"] for a in accounts.values())
+    total_yearly = sum(a["yearly_income"] for a in accounts.values())
     total_value = sum(a["total_value"] for a in accounts.values())
-    
+
     weekly_yield = (total_weekly / total_value * 100) if total_value > 0 else 0
     yearly_yield = (total_yearly / total_value * 100) if total_value > 0 else 0
-    
+
     # ============ NEW: Get sold options data BY ACCOUNT ============
     sold_by_account = get_sold_options_by_account(db)
     sold_data = get_current_sold_options(db)  # For backward compatibility (snapshot info)
@@ -1775,6 +1987,27 @@ async def calculate_options_income_with_sold_status(
     total_unsold = sum(accounts[name].get("unsold_options", 0) for name in accounts)
     total_sold = total_options - total_unsold
     
+    # Format date ranges for API response
+    income_periods = {}
+    if date_ranges:
+        income_periods = {
+            "weekly": {
+                "start": date_ranges['last_week'][0].isoformat(),
+                "end": date_ranges['last_week'][1].isoformat(),
+                "label": f"{date_ranges['last_week'][0].strftime('%b %d')} - {date_ranges['last_week'][1].strftime('%b %d, %Y')}"
+            },
+            "monthly": {
+                "start": date_ranges['last_month'][0].isoformat(),
+                "end": date_ranges['last_month'][1].isoformat(),
+                "label": date_ranges['last_month'][0].strftime('%B %Y')
+            },
+            "yearly": {
+                "start": date_ranges['last_year'][0].isoformat(),
+                "end": date_ranges['last_year'][1].isoformat(),
+                "label": str(date_ranges['last_year'][0].year)
+            }
+        }
+
     return {
         "params": {
             "default_premium": default_premium,
@@ -1793,6 +2026,7 @@ async def calculate_options_income_with_sold_status(
             "weekly_yield_percent": round(weekly_yield, 3),
             "yearly_yield_percent": round(yearly_yield, 2)
         },
+        "income_periods": income_periods,
         "sold_options_snapshot": sold_data.get("snapshot"),
         "symbols": symbols_list,
         "accounts": [accounts[name] for name in account_order if accounts[name]["total_options"] > 0]
