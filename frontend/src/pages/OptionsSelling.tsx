@@ -746,6 +746,16 @@ export default function OptionsSelling() {
 
   // Calculate income based on current symbol premiums (real-time preview)
   const getSymbolIncome = (symbol: SymbolSummary) => {
+    // For CASH rows (put income), use the backend-calculated values directly
+    if (symbol.is_cash_row || symbol.symbol === 'CASH') {
+      return {
+        premium: symbol.premium_per_contract,
+        weekly: symbol.weekly_income,
+        monthly: symbol.monthly_income,
+        yearly: symbol.yearly_income
+      };
+    }
+    // For regular symbols, calculate from options * premium
     const premium = symbolPremiums[symbol.symbol] ?? symbol.premium_per_contract;
     const weekly = symbol.options * premium;
     const monthly = weekly * 4;
@@ -754,6 +764,16 @@ export default function OptionsSelling() {
   };
 
   const getHoldingIncome = (holding: Holding) => {
+    // For CASH rows (put income), use the backend-calculated values directly
+    if (holding.is_cash_row || holding.symbol === 'CASH') {
+      return {
+        premium: holding.premium_per_contract ?? 0,
+        weekly: holding.weekly_income,
+        monthly: holding.monthly_income,
+        yearly: holding.yearly_income
+      };
+    }
+    // For regular holdings, calculate from options * premium
     const premium = symbolPremiums[holding.symbol] ?? holding.premium_per_contract ?? 60;
     const weekly = holding.options * premium;
     const monthly = weekly * 4;
