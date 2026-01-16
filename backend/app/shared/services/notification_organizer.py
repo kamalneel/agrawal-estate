@@ -247,24 +247,28 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
         current_exp = context.get("current_expiration", context.get("expiration_date", ""))
         new_strike = context.get("new_strike", strike)
         new_exp = context.get("new_expiration", "")
+        net_cost = context.get("net_cost", 0)  # Positive = debit, negative = credit
 
-        # Format dates
-        current_exp_str = _format_date(current_exp)
-        new_exp_str = _format_date(new_exp)
-        new_dte = _calculate_dte(new_exp)
-        dte_str = f" ({new_dte}d)" if new_dte > 0 and new_exp else ""
+        # Format dates as short (e.g., "Jan 16")
+        new_exp_short = _format_date_short(new_exp)
 
-        line = f"ROLL: {symbol} {contracts}x ${old_strike} {opt_type}"
-        if current_exp_str:
-            line += f" {current_exp_str}"
-        if new_strike:
-            line += f" → ${float(new_strike):.0f} {opt_type}"
-        if new_exp_str:
-            line += f" {new_exp_str}{dte_str}"
-        if current_price:
-            line += f" · Stock ${current_price:.0f}"
+        # Build line: ROLL: PLTR $192.50→$188 Jan 23 · $0.50 debit · 82% captured
+        old_strike_str = f"${float(old_strike):.2f}" if old_strike and float(old_strike) < 100 else f"${float(old_strike):.0f}" if old_strike else ""
+        new_strike_str = f"${float(new_strike):.0f}" if new_strike else ""
+
+        line = f"ROLL: {symbol} {old_strike_str}→{new_strike_str} {new_exp_short}"
+
+        # Show net cost/credit
+        if net_cost:
+            if net_cost > 0:
+                line += f" · ${abs(net_cost):.2f} debit"
+            else:
+                line += f" · ${abs(net_cost):.2f} credit"
+
+        # Show profit captured
         if profit_pct:
-            line += f" ({profit_pct:.0f}%)"
+            line += f" · {profit_pct:.0f}% captured"
+
         if account_short:
             line += f" {account_short}"
         return line
@@ -274,44 +278,39 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
         rec_strike = context.get("strike_price", 0) or context.get("recommended_strike", strike)
         exp_date = context.get("expiration_date", "")
 
-        # Format expiration
-        exp_str = _format_date(exp_date)
-        if not exp_str:
+        # Format expiration as short date (e.g., "Jan 16")
+        exp_short = _format_date_short(exp_date)
+        if not exp_short:
             # Calculate next Friday
             today = date.today()
             days_ahead = 4 - today.weekday()
             if days_ahead <= 0:
                 days_ahead += 7
             next_friday = today + timedelta(days=days_ahead)
-            exp_str = next_friday.strftime('%b %d %Y')
+            exp_short = next_friday.strftime('%b %d')
 
-        # Calculate DTE
-        dte = _calculate_dte(exp_date) if exp_date else 0
-        dte_str = f" ({dte}d)" if dte > 0 else ""
-
+        # Build the line: SELL: 2 PLTR $182 Jan 16 calls · Stock $177 · Earn $66
         if rec_strike and float(rec_strike) > 0:
             strike_str = f"${float(rec_strike):.0f}" if float(rec_strike) >= 100 else f"${float(rec_strike):.2f}"
-            line = f"SELL: {unsold} {symbol} {strike_str} {opt_type}s {exp_str}{dte_str}"
+            line = f"SELL: {unsold} {symbol} {strike_str} {exp_short} {opt_type}s"
         else:
-            line = f"SELL: {unsold} {symbol} {opt_type}s {exp_str}{dte_str}"
+            line = f"SELL: {unsold} {symbol} {exp_short} {opt_type}s"
 
         if current_price:
             line += f" · Stock ${current_price:.0f}"
 
-        # Add premium info - prefer real-time data from context
+        # Add premium info as "Earn $X"
         premium_per_contract = context.get("premium_per_contract", 0)
         total_premium = context.get("total_premium", 0)
-        premium_source = context.get("premium_source", "")
 
-        if premium_per_contract and premium_per_contract > 0:
-            # Show per-contract premium (real-time when available)
-            if unsold > 1 and total_premium > 0:
-                line += f" (${premium_per_contract:.0f}/ct, ${total_premium:.0f} total)"
-            else:
-                line += f" (${premium_per_contract:.0f})"
+        if total_premium and total_premium > 0:
+            line += f" · Earn ${total_premium:.0f}"
+        elif premium_per_contract and premium_per_contract > 0:
+            # Calculate total from per-contract
+            earn_total = premium_per_contract * 100 * unsold  # options are per 100 shares
+            line += f" · Earn ${earn_total:.0f}"
         elif estimated_premium > 0:
-            # Fallback to estimated premium
-            line += f" (~${estimated_premium:.0f})"
+            line += f" · Earn ~${estimated_premium:.0f}"
 
         if account_short:
             line += f" {account_short}"
@@ -342,6 +341,20 @@ def _format_date(date_str: str) -> str:
         else:
             dt = datetime.strptime(date_str, '%Y-%m-%d')
         return dt.strftime('%b %d %Y')
+    except:
+        return date_str[5:10] if len(date_str) >= 10 else date_str
+
+
+def _format_date_short(date_str: str) -> str:
+    """Format a date string to 'Jan 16' format (without year)."""
+    if not date_str:
+        return ""
+    try:
+        if 'T' in date_str:
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        else:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+        return dt.strftime('%b %d')
     except:
         return date_str[5:10] if len(date_str) >= 10 else date_str
 
