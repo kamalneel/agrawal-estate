@@ -229,8 +229,15 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
     # Format based on recommendation type
     if rec_type == "close_early_opportunity":
         current_premium = context.get("current_premium", 0)
+        exp_date = context.get("expiration_date", "")
+        exp_str = _format_date(exp_date)
+        dte = _calculate_dte(exp_date)
+        dte_str = f" ({dte}d)" if dte > 0 and exp_date else ""
+
         price_str = f"@ ${current_premium:.2f}" if current_premium else ""
-        line = f"CLOSE: {contracts} {symbol} ${strike} {opt_type} {price_str} ({profit_pct:.0f}%)"
+        line = f"CLOSE: {contracts} {symbol} ${strike} {opt_type}s {exp_str}{dte_str} {price_str}"
+        if profit_pct:
+            line += f" ({profit_pct:.0f}%)"
         if account_short:
             line += f" {account_short}"
         return line
@@ -240,18 +247,20 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
         current_exp = context.get("current_expiration", context.get("expiration_date", ""))
         new_strike = context.get("new_strike", strike)
         new_exp = context.get("new_expiration", "")
-        
+
         # Format dates
         current_exp_str = _format_date(current_exp)
         new_exp_str = _format_date(new_exp)
-        
-        line = f"ROLL: {symbol} {contracts}x ${old_strike}"
+        new_dte = _calculate_dte(new_exp)
+        dte_str = f" ({new_dte}d)" if new_dte > 0 and new_exp else ""
+
+        line = f"ROLL: {symbol} {contracts}x ${old_strike} {opt_type}"
         if current_exp_str:
             line += f" {current_exp_str}"
         if new_strike:
-            line += f" → ${float(new_strike):.0f}"
+            line += f" → ${float(new_strike):.0f} {opt_type}"
         if new_exp_str:
-            line += f" {new_exp_str}"
+            line += f" {new_exp_str}{dte_str}"
         if current_price:
             line += f" · Stock ${current_price:.0f}"
         if profit_pct:
@@ -264,7 +273,7 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
         unsold = context.get("unsold_contracts", contracts)
         rec_strike = context.get("strike_price", 0) or context.get("recommended_strike", strike)
         exp_date = context.get("expiration_date", "")
-        
+
         # Format expiration
         exp_str = _format_date(exp_date)
         if not exp_str:
@@ -274,22 +283,26 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
             if days_ahead <= 0:
                 days_ahead += 7
             next_friday = today + timedelta(days=days_ahead)
-            exp_str = next_friday.strftime('%b %d')
-        
+            exp_str = next_friday.strftime('%b %d %Y')
+
+        # Calculate DTE
+        dte = _calculate_dte(exp_date) if exp_date else 0
+        dte_str = f" ({dte}d)" if dte > 0 else ""
+
         if rec_strike and float(rec_strike) > 0:
             strike_str = f"${float(rec_strike):.0f}" if float(rec_strike) >= 100 else f"${float(rec_strike):.2f}"
-            line = f"SELL: {unsold} {symbol} {strike_str} calls {exp_str}"
+            line = f"SELL: {unsold} {symbol} {strike_str} {opt_type}s {exp_str}{dte_str}"
         else:
-            line = f"SELL: {unsold} {symbol} calls {exp_str}"
-        
+            line = f"SELL: {unsold} {symbol} {opt_type}s {exp_str}{dte_str}"
+
         if current_price:
             line += f" · Stock ${current_price:.0f}"
-        
+
         # Add premium info - prefer real-time data from context
         premium_per_contract = context.get("premium_per_contract", 0)
         total_premium = context.get("total_premium", 0)
         premium_source = context.get("premium_source", "")
-        
+
         if premium_per_contract and premium_per_contract > 0:
             # Show per-contract premium (real-time when available)
             if unsold > 1 and total_premium > 0:
@@ -299,10 +312,10 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
         elif estimated_premium > 0:
             # Fallback to estimated premium
             line += f" (~${estimated_premium:.0f})"
-        
+
         if account_short:
             line += f" {account_short}"
-        
+
         return line
     
     elif rec_type in ["bull_put_spread", "mega_cap_bull_put"]:
@@ -320,7 +333,7 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
 
 
 def _format_date(date_str: str) -> str:
-    """Format a date string to 'Dec 26' format."""
+    """Format a date string to 'Dec 26 2025' format with year."""
     if not date_str:
         return ""
     try:
@@ -328,9 +341,26 @@ def _format_date(date_str: str) -> str:
             dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
         else:
             dt = datetime.strptime(date_str, '%Y-%m-%d')
-        return dt.strftime('%b %d')
+        return dt.strftime('%b %d %Y')
     except:
         return date_str[5:10] if len(date_str) >= 10 else date_str
+
+
+def _calculate_dte(date_str: str) -> int:
+    """Calculate days to expiration."""
+    if not date_str:
+        return 0
+    try:
+        if 'T' in date_str:
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        else:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+        today = date.today()
+        exp_date = dt.date() if hasattr(dt, 'date') else dt
+        dte = (exp_date - today).days
+        return max(0, dte)  # Don't show negative DTE
+    except:
+        return 0
 
 
 def format_grouped_message(recommendations: List[Dict[str, Any]]) -> str:

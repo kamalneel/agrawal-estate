@@ -22,7 +22,7 @@ from sqlalchemy import extract, and_, func
 from datetime import date
 import json
 
-from app.modules.tax.models import IncomeTaxReturn
+from app.modules.tax.models import IncomeTaxReturn, EstimatedTaxPayment
 from app.modules.income.models import W2Record, RetirementContribution
 from app.modules.income import db_queries
 from app.modules.income.salary_service import get_salary_service
@@ -57,6 +57,181 @@ QUARTERLY_PAYMENT_SCHEDULE = {
 }
 
 
+def _calculate_underpayment_penalty(
+    payment_schedule: List[Dict[str, Any]],
+    federal_safe_harbor: float,
+    state_safe_harbor: float,
+    prior_federal_tax: float,
+    prior_state_tax: float,
+    current_federal_tax: float,
+    current_state_tax: float,
+    year: int
+) -> Dict[str, Any]:
+    """
+    Calculate underpayment penalty for federal and state taxes.
+
+    IRS Form 2210 / CA Form 5805 methodology:
+    - Required payment each quarter is 25% of safe harbor amount (cumulative)
+    - Penalty is calculated on underpayment from due date to payment date
+    - Interest rate: 7% annually for federal (2025), similar for CA
+    """
+    # Interest rates for 2025 (annual)
+    FEDERAL_RATE = 0.07  # 7% for 2025
+    CA_RATE = 0.07  # California uses similar rates
+
+    # Required cumulative payments by quarter (25%, 50%, 75%, 100%)
+    quarterly_percentages = [0.25, 0.50, 0.75, 1.00]
+
+    federal_quarters = []
+    state_quarters = []
+    total_federal_penalty = 0
+    total_state_penalty = 0
+
+    cumulative_fed_paid = 0
+    cumulative_state_paid = 0
+
+    for i, payment in enumerate(payment_schedule):
+        quarter = payment["quarter"]
+        due_date = date.fromisoformat(payment["due_date"])
+
+        # Required cumulative payment by this quarter
+        fed_required = federal_safe_harbor * quarterly_percentages[i]
+        state_required = state_safe_harbor * quarterly_percentages[i]
+
+        # Actual cumulative payment by this quarter
+        fed_paid_this_q = (payment.get("quarter_w2_federal", 0) or 0) + (payment.get("est_federal_paid", 0) or 0)
+        state_paid_this_q = (payment.get("quarter_w2_state", 0) or 0) + (payment.get("est_state_paid", 0) or 0)
+        cumulative_fed_paid += fed_paid_this_q
+        cumulative_state_paid += state_paid_this_q
+
+        # Underpayment for this quarter
+        fed_underpayment = max(0, fed_required - cumulative_fed_paid)
+        state_underpayment = max(0, state_required - cumulative_state_paid)
+
+        # Calculate penalty days (from due date to next due date or April 15)
+        # Simplified: assume penalty accrues until April 15 of following year
+        april_15_next = date(year + 1, 4, 15)
+        if i < 3:
+            next_due = date.fromisoformat(payment_schedule[i + 1]["due_date"])
+            penalty_days = (next_due - due_date).days
+        else:
+            penalty_days = (april_15_next - due_date).days
+
+        # Calculate penalty (simple interest for this period)
+        fed_penalty = fed_underpayment * (FEDERAL_RATE * penalty_days / 365)
+        state_penalty = state_underpayment * (CA_RATE * penalty_days / 365)
+
+        total_federal_penalty += fed_penalty
+        total_state_penalty += state_penalty
+
+        federal_quarters.append({
+            "quarter": quarter,
+            "required": round(fed_required, 2),
+            "paid": round(cumulative_fed_paid, 2),
+            "underpayment": round(fed_underpayment, 2),
+            "penalty": round(fed_penalty, 2),
+            "days": penalty_days
+        })
+
+        state_quarters.append({
+            "quarter": quarter,
+            "required": round(state_required, 2),
+            "paid": round(cumulative_state_paid, 2),
+            "underpayment": round(state_underpayment, 2),
+            "penalty": round(state_penalty, 2),
+            "days": penalty_days
+        })
+
+    # Check if safe harbor was met (no penalty if paid enough)
+    total_fed_paid = cumulative_fed_paid
+    total_state_paid = cumulative_state_paid
+
+    # Safe harbor check: if paid >= safe harbor, no penalty
+    federal_safe_harbor_met = total_fed_paid >= federal_safe_harbor
+    state_safe_harbor_met = total_state_paid >= state_safe_harbor
+
+    # Also check: if balance due < $1000, no penalty
+    federal_balance_due = max(0, current_federal_tax - total_fed_paid)
+    state_balance_due = max(0, current_state_tax - total_state_paid)
+
+    federal_penalty_waived = federal_safe_harbor_met or federal_balance_due < 1000
+    state_penalty_waived = state_safe_harbor_met or state_balance_due < 500  # CA threshold is $500
+
+    return {
+        "federal": {
+            "safe_harbor": round(federal_safe_harbor, 2),
+            "safe_harbor_110_prior": round(prior_federal_tax * 1.10, 2),
+            "safe_harbor_90_current": round(current_federal_tax * 0.90, 2),
+            "total_paid": round(total_fed_paid, 2),
+            "safe_harbor_met": federal_safe_harbor_met,
+            "balance_due": round(federal_balance_due, 2),
+            "penalty_waived": federal_penalty_waived,
+            "estimated_penalty": round(total_federal_penalty, 2) if not federal_penalty_waived else 0,
+            "quarters": federal_quarters,
+            "interest_rate": f"{FEDERAL_RATE * 100:.0f}%"
+        },
+        "state": {
+            "safe_harbor": round(state_safe_harbor, 2),
+            "safe_harbor_110_prior": round(prior_state_tax * 1.10, 2),
+            "safe_harbor_90_current": round(current_state_tax * 0.90, 2),
+            "total_paid": round(total_state_paid, 2),
+            "safe_harbor_met": state_safe_harbor_met,
+            "balance_due": round(state_balance_due, 2),
+            "penalty_waived": state_penalty_waived,
+            "estimated_penalty": round(total_state_penalty, 2) if not state_penalty_waived else 0,
+            "quarters": state_quarters,
+            "interest_rate": f"{CA_RATE * 100:.0f}%"
+        },
+        "total_estimated_penalty": round(
+            (total_federal_penalty if not federal_penalty_waived else 0) +
+            (total_state_penalty if not state_penalty_waived else 0), 2
+        )
+    }
+
+
+def _get_estimated_payments(db: Session, year: int) -> Dict[str, Any]:
+    """
+    Get estimated tax payments made for a tax year.
+
+    Returns:
+        Dict with federal_payments, state_payments (lists), and totals
+    """
+    payments = db.query(EstimatedTaxPayment).filter(
+        EstimatedTaxPayment.tax_year == year
+    ).order_by(EstimatedTaxPayment.payment_date).all()
+
+    federal_payments = []
+    state_payments = []
+    total_federal_paid = 0
+    total_state_paid = 0
+
+    for payment in payments:
+        payment_data = {
+            "date": payment.payment_date.isoformat() if payment.payment_date else None,
+            "amount": float(payment.amount or 0),
+            "quarter": payment.quarter,
+            "method": payment.payment_method,
+            "confirmation": payment.confirmation_number,
+            "notes": payment.notes,
+        }
+
+        if payment.payment_type == 'federal':
+            federal_payments.append(payment_data)
+            total_federal_paid += float(payment.amount or 0)
+        elif payment.payment_type == 'state':
+            payment_data["state_code"] = payment.state_code
+            state_payments.append(payment_data)
+            total_state_paid += float(payment.amount or 0)
+
+    return {
+        "federal_payments": federal_payments,
+        "state_payments": state_payments,
+        "total_federal_paid": total_federal_paid,
+        "total_state_paid": total_state_paid,
+        "total_paid": total_federal_paid + total_state_paid,
+    }
+
+
 def _calculate_quarterly_payments(
     total_tax: float,
     federal_tax: float,
@@ -65,7 +240,9 @@ def _calculate_quarterly_payments(
     federal_withheld: float,
     state_withheld: float,
     income_by_month: Dict[int, float],
-    year: int
+    year: int,
+    w2_months: int = 10,  # Number of months W2 income was earned (for withholding distribution)
+    estimated_payments: Optional[Dict[str, Any]] = None  # Estimated payments already made
 ) -> List[Dict[str, Any]]:
     """
     Calculate quarterly estimated tax payments based on income timing.
@@ -74,6 +251,9 @@ def _calculate_quarterly_payments(
     California FTB also requires quarterly payments on the same schedule.
     This calculates how much should be paid each quarter based on when income
     was actually received, broken out by federal and state.
+    
+    Also tracks W2 withholding accumulated through each quarter to show
+    how much has already been paid via payroll vs additional estimated payments needed.
     
     Args:
         total_tax: Total estimated tax liability for the year
@@ -84,6 +264,7 @@ def _calculate_quarterly_payments(
         state_withheld: State withholding from W-2
         income_by_month: Dict mapping month number (1-12) to taxable income amount
         year: Tax year
+        w2_months: Number of months W2 income was earned (default 10 for Jan-Oct)
     
     Returns:
         List of quarterly payment details with due dates and amounts (federal + state)
@@ -108,6 +289,11 @@ def _calculate_quarterly_payments(
     # Calculate total annual income
     total_annual_income = sum(income_by_month.values()) if income_by_month else 0
     
+    # Estimate monthly W2 withholding (distributed over w2_months)
+    # This allows us to show how much has been withheld through each quarter
+    monthly_federal_withheld = federal_withheld / w2_months if w2_months > 0 else 0
+    monthly_state_withheld = state_withheld / w2_months if w2_months > 0 else 0
+    
     # Amount we need to pay via estimated payments (after W-2 withholding)
     # Break out federal and state separately
     estimated_tax_needed = max(0, total_tax - w2_withheld)
@@ -125,34 +311,61 @@ def _calculate_quarterly_payments(
             "estimated_payment": 0,
             "federal_payment": 0,
             "state_payment": 0,
+            "w2_federal_paid": round(federal_withheld),
+            "w2_state_paid": round(state_withheld),
             "cumulative_paid": 0,
             "status": "not_required",
             "note": "W-2 withholding covers tax liability"
         } for q in schedule]
     
+    # Parse estimated payments by quarter
+    estimated_by_quarter = {1: {"federal": 0, "state": 0}, 2: {"federal": 0, "state": 0},
+                           3: {"federal": 0, "state": 0}, 4: {"federal": 0, "state": 0}}
+    if estimated_payments:
+        for fp in estimated_payments.get("federal_payments", []):
+            q = fp.get("quarter")
+            if q and 1 <= q <= 4:
+                estimated_by_quarter[q]["federal"] += fp.get("amount", 0)
+        for sp in estimated_payments.get("state_payments", []):
+            q = sp.get("quarter")
+            if q and 1 <= q <= 4:
+                estimated_by_quarter[q]["state"] += sp.get("amount", 0)
+
     # Calculate quarterly income and payments
     payments = []
     cumulative_income = 0
     cumulative_paid = 0
     cumulative_federal_paid = 0
     cumulative_state_paid = 0
-    
+    cumulative_w2_federal = 0
+    cumulative_w2_state = 0
+    cumulative_est_federal_paid = 0
+    cumulative_est_state_paid = 0
+
     for q in schedule:
         # Calculate income for this quarter's months
         quarter_income = sum(income_by_month.get(m, 0) for m in q["months"])
         cumulative_income += quarter_income
         
+        # Calculate W2 withholding for this quarter (assume evenly distributed over w2_months)
+        # Count how many months in this quarter had W2 income
+        w2_months_in_quarter = sum(1 for m in q["months"] if m <= w2_months)
+        quarter_w2_federal = monthly_federal_withheld * w2_months_in_quarter
+        quarter_w2_state = monthly_state_withheld * w2_months_in_quarter
+        cumulative_w2_federal += quarter_w2_federal
+        cumulative_w2_state += quarter_w2_state
+        
         # Calculate proportional tax for this quarter based on income received
         if total_annual_income > 0:
             income_ratio = cumulative_income / total_annual_income
             
-            # Federal payment
+            # Federal payment (additional estimated payment beyond W2)
             cumulative_federal_due = federal_estimated_needed * income_ratio
             federal_payment = cumulative_federal_due - cumulative_federal_paid
             federal_payment = round(max(0, federal_payment))
             cumulative_federal_paid += federal_payment
             
-            # State payment (California FTB)
+            # State payment (California FTB - additional beyond W2)
             cumulative_state_due = state_estimated_needed * income_ratio
             state_payment = cumulative_state_due - cumulative_state_paid
             state_payment = round(max(0, state_payment))
@@ -179,6 +392,23 @@ def _calculate_quarterly_payments(
         else:
             status = "upcoming"
         
+        # Get estimated payments actually made for this quarter
+        quarter_num = q["quarter"]
+        est_federal_paid = estimated_by_quarter[quarter_num]["federal"]
+        est_state_paid = estimated_by_quarter[quarter_num]["state"]
+        cumulative_est_federal_paid += est_federal_paid
+        cumulative_est_state_paid += est_state_paid
+
+        # Calculate remaining amount due for this quarter (due - paid)
+        federal_remaining = max(0, federal_payment - est_federal_paid)
+        state_remaining = max(0, state_payment - est_state_paid)
+
+        # Update status based on whether payment has been made
+        if est_federal_paid >= federal_payment and est_state_paid >= state_payment:
+            status = "paid"
+        elif est_federal_paid > 0 or est_state_paid > 0:
+            status = "partial" if status == "past_due" else status
+
         payments.append({
             "quarter": q["quarter"],
             "period": q["period"],
@@ -188,9 +418,23 @@ def _calculate_quarterly_payments(
             "estimated_payment": payment_due,
             "federal_payment": federal_payment,
             "state_payment": state_payment,
+            # Per-quarter W2 withholding (for display)
+            "quarter_w2_federal": round(quarter_w2_federal, 2),
+            "quarter_w2_state": round(quarter_w2_state, 2),
+            # Cumulative W2 withholding (kept for backward compatibility)
+            "w2_federal_paid": round(cumulative_w2_federal, 2),
+            "w2_state_paid": round(cumulative_w2_state, 2),
             "cumulative_paid": round(cumulative_paid, 2),
             "cumulative_federal_paid": round(cumulative_federal_paid, 2),
             "cumulative_state_paid": round(cumulative_state_paid, 2),
+            # Estimated payments actually made for this quarter
+            "est_federal_paid": round(est_federal_paid, 2),
+            "est_state_paid": round(est_state_paid, 2),
+            "cumulative_est_federal_paid": round(cumulative_est_federal_paid, 2),
+            "cumulative_est_state_paid": round(cumulative_est_state_paid, 2),
+            # Remaining amounts due
+            "federal_remaining": round(federal_remaining, 2),
+            "state_remaining": round(state_remaining, 2),
             "status": status,
         })
     
@@ -266,6 +510,9 @@ def calculate_tax_forecast(
     state_withheld = forecast_income.get("w2_income", {}).get("state_withheld", 0)
     w2_withheld = federal_withheld + state_withheld
     
+    # Get estimated payments already made
+    estimated_payments = _get_estimated_payments(db, forecast_year)
+
     monthly_income = forecast_income.get("monthly_income", {})
     payment_schedule = _calculate_quarterly_payments(
         total_tax=total_tax,
@@ -275,19 +522,46 @@ def calculate_tax_forecast(
         federal_withheld=federal_withheld,
         state_withheld=state_withheld,
         income_by_month=monthly_income,
-        year=forecast_year
+        year=forecast_year,
+        estimated_payments=estimated_payments
     )
     
     # Calculate safe harbor amounts (to avoid underpayment penalties)
-    # Safe harbor: Pay 110% of prior year tax or 90% of current year tax
-    prior_year_tax = 0.0
-    if base_return:
-        prior_year_tax = float(base_return.federal_tax or 0) + float(base_return.state_tax or 0)
-    
-    safe_harbor_prior = prior_year_tax * 1.10  # 110% of prior year (for AGI > $150k)
-    safe_harbor_current = total_tax * 0.90  # 90% of current year
+    # Safe harbor: Pay 110% of prior year tax or 90% of current year tax (for AGI > $150k)
+    prior_federal_tax = float(base_return.federal_tax or 0) if base_return else 0
+    prior_state_tax = float(base_return.state_tax or 0) if base_return else 0
+    prior_year_tax = prior_federal_tax + prior_state_tax
+
+    # Federal safe harbor
+    federal_safe_harbor_prior = prior_federal_tax * 1.10
+    federal_safe_harbor_current = federal_tax * 0.90
+    federal_safe_harbor = min(federal_safe_harbor_prior, federal_safe_harbor_current) if prior_federal_tax > 0 else federal_safe_harbor_current
+
+    # State safe harbor (CA uses same rules for AGI $150k-$1M)
+    state_safe_harbor_prior = prior_state_tax * 1.10
+    state_safe_harbor_current = state_tax * 0.90
+    state_safe_harbor = min(state_safe_harbor_prior, state_safe_harbor_current) if prior_state_tax > 0 else state_safe_harbor_current
+
+    safe_harbor_prior = prior_year_tax * 1.10
+    safe_harbor_current = total_tax * 0.90
     safe_harbor_amount = min(safe_harbor_prior, safe_harbor_current) if prior_year_tax > 0 else safe_harbor_current
-    
+
+    # Calculate underpayment penalty
+    penalty_info = _calculate_underpayment_penalty(
+        payment_schedule=payment_schedule,
+        federal_safe_harbor=federal_safe_harbor,
+        state_safe_harbor=state_safe_harbor,
+        prior_federal_tax=prior_federal_tax,
+        prior_state_tax=prior_state_tax,
+        current_federal_tax=federal_tax,
+        current_state_tax=state_tax,
+        year=forecast_year
+    )
+
+    # Calculate remaining estimated tax needed after payments
+    total_estimated_paid = estimated_payments.get("total_paid", 0)
+    remaining_estimated_needed = max(0, total_tax - w2_withheld - total_estimated_paid)
+
     return {
         "tax_year": forecast_year,
         "agi": agi,
@@ -305,12 +579,20 @@ def calculate_tax_forecast(
             "state": forecast_income.get("w2_income", {}).get("state_withheld", 0),
             "total": w2_withheld
         },
+        "estimated_payments": {
+            "federal_paid": estimated_payments.get("total_federal_paid", 0),
+            "state_paid": estimated_payments.get("total_state_paid", 0),
+            "total_paid": total_estimated_paid,
+            "payments": estimated_payments.get("federal_payments", []) + estimated_payments.get("state_payments", [])
+        },
         "estimated_tax_needed": max(0, total_tax - w2_withheld),
+        "remaining_estimated_needed": remaining_estimated_needed,
         "safe_harbor": {
             "prior_year_110": round(safe_harbor_prior, 2),
             "current_year_90": round(safe_harbor_current, 2),
             "recommended": round(safe_harbor_amount, 2)
-        }
+        },
+        "underpayment_penalty": penalty_info
     }
 
 

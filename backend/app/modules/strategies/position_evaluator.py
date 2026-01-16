@@ -1340,14 +1340,20 @@ class PositionEvaluator:
             return None
         
         new_strike = strike_rec.recommended_strike
-        
-        # Get next Friday
+
+        # Get next Friday that is AFTER the current expiration
         today = date.today()
         days_to_friday = (4 - today.weekday()) % 7
         if days_to_friday == 0:
             days_to_friday = 7  # Next Friday if today is Friday
         new_expiration = today + timedelta(days=days_to_friday)
-        
+
+        # If the new expiration is the same as or before the current expiration,
+        # skip to the following Friday (can't roll to same/earlier date)
+        current_expiration = position.expiration_date if hasattr(position, 'expiration_date') else position.expiration
+        if current_expiration and new_expiration <= current_expiration:
+            new_expiration = new_expiration + timedelta(days=7)
+
         return EvaluationResult(
             action='ROLL_WEEKLY',
             position_id=self._get_position_id(position),

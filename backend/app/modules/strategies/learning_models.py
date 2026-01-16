@@ -113,16 +113,26 @@ class RecommendationExecutionMatch(Base):
     # ===== METADATA =====
     week_number = Column(Integer, nullable=True)  # ISO week number for grouping
     year = Column(Integer, nullable=True)
+    algorithm_version = Column(String(20), nullable=True)  # e.g., 'v3.4' - for epoch filtering
     reconciled_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     reconciled_by = Column(String(20), default='system')  # 'system' or 'manual'
     notes = Column(Text, nullable=True)
-    
+
+    # ===== RLHF DATA QUALITY =====
+    # For excluding erroneous data from learning without deleting
+    excluded_from_learning = Column(Boolean, default=False, nullable=False)
+    exclusion_reason = Column(String(50), nullable=True)
+    # Reasons: 'algorithm_bug', 'data_source_error', 'parsing_error',
+    #          'duplicate', 'test_data', 'manual_review'
+    exclusion_notes = Column(Text, nullable=True)
+    excluded_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
     outcome = relationship("PositionOutcome", back_populates="match", uselist=False)
-    
+
     __table_args__ = (
         Index('idx_rem_recommendation_id', 'recommendation_id'),
         Index('idx_rem_recommendation_date', 'recommendation_date'),
@@ -130,6 +140,7 @@ class RecommendationExecutionMatch(Base):
         Index('idx_rem_match_type', 'match_type'),
         Index('idx_rem_symbol', 'recommended_symbol'),
         Index('idx_rem_week', 'year', 'week_number'),
+        Index('idx_rem_excluded', 'excluded_from_learning'),
     )
 
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Download, FileText, AlertCircle, CheckCircle } from 'lucide-react';
 import styles from './TaxForms.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
@@ -34,6 +34,7 @@ interface Form1040 {
 
   // Payments (Lines 25-33)
   line_25d: number;
+  line_26: number;  // Estimated tax payments
   line_32: number;
   line_33: number;
   line_34: number;
@@ -83,6 +84,7 @@ interface CaliforniaForm540 {
   line_33: number;
   line_34: number;
   line_41: number;
+  line_42: number;  // Estimated tax payments
   line_44: number;
   line_46: number;
   line_49: number;
@@ -101,11 +103,20 @@ interface TaxFormPackage {
 
 export default function TaxForms() {
   const navigate = useNavigate();
-  const [taxYear, setTaxYear] = useState(2025);
+  const [searchParams] = useSearchParams();
+  const yearFromUrl = searchParams.get('year');
+  const [taxYear, setTaxYear] = useState(yearFromUrl ? parseInt(yearFromUrl) : 2025);
   const [forms, setForms] = useState<TaxFormPackage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'1040' | 'schedule1' | 'scheduleE' | 'scheduleD' | 'ca540'>('1040');
+
+  // Update taxYear when URL changes
+  useEffect(() => {
+    if (yearFromUrl) {
+      setTaxYear(parseInt(yearFromUrl));
+    }
+  }, [yearFromUrl]);
 
   useEffect(() => {
     loadTaxForms();
@@ -353,7 +364,10 @@ function Form1040View({ form, formatCurrency }: { form: Form1040; formatCurrency
 
       <div className={styles.formSection}>
         <h3>Payments</h3>
-        <FormLine line="25d" description="Federal income tax withheld" amount={form.line_25d} format={formatCurrency} />
+        <FormLine line="25d" description="Federal income tax withheld (W-2)" amount={form.line_25d} format={formatCurrency} />
+        {form.line_26 > 0 && (
+          <FormLine line="26" description="Estimated tax payments" amount={form.line_26} format={formatCurrency} />
+        )}
         <FormLine line="32" description="Total payments" amount={form.line_32} format={formatCurrency} highlight />
       </div>
 
@@ -505,7 +519,10 @@ function California540View({ form, formatCurrency }: { form: CaliforniaForm540; 
 
       <div className={styles.formSection}>
         <h3>Payments and Refund</h3>
-        <FormLine line="41" description="CA income tax withheld" amount={form.line_41} format={formatCurrency} />
+        <FormLine line="41" description="CA income tax withheld (W-2)" amount={form.line_41} format={formatCurrency} />
+        {form.line_42 > 0 && (
+          <FormLine line="42" description="Estimated tax payments" amount={form.line_42} format={formatCurrency} />
+        )}
         <FormLine line="44" description="Total payments" amount={form.line_44} format={formatCurrency} highlight />
         {form.line_46 > 0 ? (
           <FormLine line="46" description="Amount to be refunded" amount={form.line_46} format={formatCurrency} highlight success />

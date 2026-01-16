@@ -133,6 +133,21 @@ export default function BuyBorrowDie() {
   const [availableYears, setAvailableYears] = useState<number[]>([2025]); // Will be updated from API
   const [isCumulative, setIsCumulative] = useState(true); // Default to cumulative view
 
+  // Spending details modal
+  const [showSpendingDetails, setShowSpendingDetails] = useState(false);
+  const [spendingDetails, setSpendingDetails] = useState<{
+    transactions: Array<{
+      date: string;
+      account: string;
+      amount: number;
+      description: string;
+      type: string;
+    }>;
+    total_spending: number;
+    transaction_count: number;
+  } | null>(null);
+  const [spendingDetailsLoading, setSpendingDetailsLoading] = useState(false);
+
   // Parameters
   const [monthlyBorrowing, setMonthlyBorrowing] = useState(20000);
   const [growthRate, setGrowthRate] = useState(8);
@@ -246,6 +261,27 @@ export default function BuyBorrowDie() {
       console.error('Fetch all years error:', err);
     } finally {
       setActualsLoading(false);
+    }
+  };
+
+  const fetchSpendingDetails = async (year: number) => {
+    setSpendingDetailsLoading(true);
+    try {
+      const response = await fetch(`/api/v1/strategies/buy-borrow-die/spending-details/${year}`, {
+        headers: getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setSpendingDetails(data);
+      setShowSpendingDetails(true);
+    } catch (err) {
+      console.error('Fetch spending details error:', err);
+    } finally {
+      setSpendingDetailsLoading(false);
     }
   };
 
@@ -520,7 +556,7 @@ export default function BuyBorrowDie() {
                 {/* Summary Cards */}
                 <div className={styles.summaryGrid}>
                   <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Total Income (2025)</span>
+                    <span className={styles.summaryLabel}>Total Income ({selectedYear})</span>
                     <span className={`${styles.summaryValue} ${styles.positive}`}>{formatFullCurrency(actuals.total_income)}</span>
                     <span className={styles.summaryNote}>
                       Salary+Rental: {formatFullCurrency(actuals.total_salary_income)} • Options: {formatFullCurrency(actuals.total_options_income)} • Interest+Div: {formatFullCurrency(actuals.total_interest_income)}
@@ -539,10 +575,15 @@ export default function BuyBorrowDie() {
                       Options + Dividends + Interest + Rental (excludes salaries)
                     </span>
                   </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Total Spending (2025)</span>
+                  <div 
+                    className={styles.summaryCard}
+                    onClick={() => selectedYear !== 'all' && fetchSpendingDetails(selectedYear as number)}
+                    style={{ cursor: 'pointer' }}
+                    title="Click to see spending details"
+                  >
+                    <span className={styles.summaryLabel}>Total Spending ({selectedYear}) 🔍</span>
                     <span className={`${styles.summaryValue} ${styles.negative}`}>{formatFullCurrency(actuals.total_spending)}</span>
-                    <span className={styles.summaryNote}>From brokerage account</span>
+                    <span className={styles.summaryNote}>Click to see details • From brokerage accounts</span>
                   </div>
                   <div className={`${styles.summaryCard} ${actuals.projected_annual_deficit > 0 ? styles.danger : styles.success}`}>
                     <span className={styles.summaryLabel}>Projected Annual Gap</span>
@@ -811,6 +852,119 @@ export default function BuyBorrowDie() {
           </div>
         )}
       </div>
+
+      {/* Spending Details Modal */}
+      {showSpendingDetails && spendingDetails && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={() => setShowSpendingDetails(false)}
+        >
+          <div 
+            style={{
+              backgroundColor: 'var(--color-bg-secondary)',
+              borderRadius: '12px',
+              padding: '24px',
+              maxWidth: '800px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflow: 'auto',
+              border: '1px solid var(--color-border)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0 }}>Spending Details ({selectedYear})</h2>
+              <button 
+                onClick={() => setShowSpendingDetails(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: 'var(--color-text-secondary)',
+                }}
+              >
+                ×
+              </button>
+            </div>
+            
+            <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: 'var(--color-bg-tertiary)', borderRadius: '8px' }}>
+              <strong>Total: {formatFullCurrency(spendingDetails.total_spending)}</strong>
+              <span style={{ marginLeft: '16px', color: 'var(--color-text-secondary)' }}>
+                {spendingDetails.transaction_count} transactions
+              </span>
+            </div>
+
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
+                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Date</th>
+                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Account</th>
+                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Type</th>
+                  <th style={{ textAlign: 'right', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Amount</th>
+                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {spendingDetails.transactions.map((txn, idx) => (
+                  <tr key={idx} style={{ borderBottom: '1px solid var(--color-border-light)' }}>
+                    <td style={{ padding: '10px 8px' }}>{new Date(txn.date).toLocaleDateString()}</td>
+                    <td style={{ padding: '10px 8px' }}>
+                      <span style={{
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        fontSize: '12px',
+                        backgroundColor: txn.account.includes('Neel') ? 'rgba(59, 130, 246, 0.2)' : 'rgba(168, 85, 247, 0.2)',
+                        color: txn.account.includes('Neel') ? '#60A5FA' : '#C084FC',
+                      }}>
+                        {txn.account}
+                      </span>
+                    </td>
+                    <td style={{ padding: '10px 8px', color: 'var(--color-text-secondary)' }}>{txn.type}</td>
+                    <td style={{ padding: '10px 8px', textAlign: 'right', color: '#EF4444', fontWeight: '500' }}>
+                      {formatFullCurrency(txn.amount)}
+                    </td>
+                    <td style={{ padding: '10px 8px', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+                      {txn.description.length > 40 ? txn.description.substring(0, 40) + '...' : txn.description}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Loading overlay for spending details */}
+      {spendingDetailsLoading && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <RefreshCw size={32} className={styles.spinner} />
+        </div>
+      )}
     </div>
   );
 }

@@ -127,6 +127,269 @@ async def clear_all_matches(
     }
 
 
+@router.delete("/clear-old-matches")
+async def clear_old_matches(
+    before_date: date = Query(..., description="Delete matches before this date (exclusive)"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Clear RLHF matches before a specific date.
+    
+    Use this when starting a new learning epoch after algorithm version changes.
+    Keeps recent data while clearing old, irrelevant data.
+    
+    Example: /clear-old-matches?before_date=2026-01-07
+    """
+    from app.modules.strategies.learning_models import PositionOutcome
+    
+    # Get match IDs that will be deleted (for cascading to outcomes)
+    old_match_ids = [m.id for m in db.query(RecommendationExecutionMatch.id).filter(
+        RecommendationExecutionMatch.recommendation_date < before_date
+    ).all()]
+    
+    # Count before deletion
+    match_count = len(old_match_ids)
+    outcome_count = db.query(PositionOutcome).filter(
+        PositionOutcome.match_id.in_(old_match_ids)
+    ).count() if old_match_ids else 0
+    
+    # Delete outcomes first (FK constraint)
+    if old_match_ids:
+        db.query(PositionOutcome).filter(
+            PositionOutcome.match_id.in_(old_match_ids)
+        ).delete(synchronize_session=False)
+    
+    # Delete old matches
+    deleted = db.query(RecommendationExecutionMatch).filter(
+        RecommendationExecutionMatch.recommendation_date < before_date
+    ).delete(synchronize_session=False)
+    
+    db.commit()
+    
+    logger.info(f"Cleared old RLHF data before {before_date}: {deleted} matches, {outcome_count} outcomes")
+    
+    return {
+        "status": "success",
+        "message": f"Cleared RLHF data before {before_date}",
+        "deleted": {
+            "matches": deleted,
+            "outcomes": outcome_count
+        },
+        "remaining": db.query(RecommendationExecutionMatch).count()
+    }
+
+
+@router.delete("/cleanup-duplicates")
+async def cleanup_duplicate_matches(
+    dry_run: bool = Query(default=True, description="If true, only report what would be deleted without deleting"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Find and remove duplicate RLHF matches.
+
+    Duplicates are matches with the same recommendation_record_id on the same date.
+    Keeps the most recently reconciled match and removes older duplicates.
+
+    Use dry_run=true first to see what would be deleted, then dry_run=false to execute.
+    """
+    from sqlalchemy import func as sql_func
+
+    # Find duplicate groups (same recommendation_record_id + date)
+    # Only consider matches that have a recommendation_record_id
+    duplicates_query = db.query(
+        RecommendationExecutionMatch.recommendation_record_id,
+        RecommendationExecutionMatch.recommendation_date,
+        sql_func.count(RecommendationExecutionMatch.id).label('count'),
+        sql_func.max(RecommendationExecutionMatch.id).label('keep_id')
+    ).filter(
+        RecommendationExecutionMatch.recommendation_record_id.isnot(None)
+    ).group_by(
+        RecommendationExecutionMatch.recommendation_record_id,
+        RecommendationExecutionMatch.recommendation_date
+    ).having(
+        sql_func.count(RecommendationExecutionMatch.id) > 1
+    ).all()
+
+    duplicate_groups = []
+    ids_to_delete = []
+
+    for rec_id, rec_date, count, keep_id in duplicates_query:
+        # Find all matches in this group
+        group_matches = db.query(RecommendationExecutionMatch).filter(
+            RecommendationExecutionMatch.recommendation_record_id == rec_id,
+            RecommendationExecutionMatch.recommendation_date == rec_date
+        ).order_by(RecommendationExecutionMatch.reconciled_at.desc()).all()
+
+        # Keep the first one (most recently reconciled), mark others for deletion
+        for i, match in enumerate(group_matches):
+            if i > 0:
+                ids_to_delete.append(match.id)
+
+        duplicate_groups.append({
+            "recommendation_record_id": rec_id,
+            "date": rec_date.isoformat() if rec_date else None,
+            "total_count": count,
+            "keeping_id": keep_id,
+            "deleting_ids": [m.id for m in group_matches[1:]]
+        })
+
+    result = {
+        "duplicate_groups_found": len(duplicate_groups),
+        "total_duplicates_to_remove": len(ids_to_delete),
+        "groups": duplicate_groups[:20],  # Limit response size
+        "dry_run": dry_run
+    }
+
+    if not dry_run and ids_to_delete:
+        from app.modules.strategies.learning_models import PositionOutcome
+
+        # Delete outcomes for duplicates first
+        outcome_count = db.query(PositionOutcome).filter(
+            PositionOutcome.match_id.in_(ids_to_delete)
+        ).delete(synchronize_session=False)
+
+        # Delete the duplicate matches
+        deleted = db.query(RecommendationExecutionMatch).filter(
+            RecommendationExecutionMatch.id.in_(ids_to_delete)
+        ).delete(synchronize_session=False)
+
+        db.commit()
+
+        result["deleted_matches"] = deleted
+        result["deleted_outcomes"] = outcome_count
+        result["status"] = "success"
+        result["message"] = f"Removed {deleted} duplicate matches and {outcome_count} associated outcomes"
+
+        logger.info(f"Cleaned up {deleted} duplicate RLHF matches, {outcome_count} outcomes")
+    elif dry_run:
+        result["status"] = "dry_run"
+        result["message"] = f"Would delete {len(ids_to_delete)} duplicate matches. Run with dry_run=false to execute."
+    else:
+        result["status"] = "no_duplicates"
+        result["message"] = "No duplicates found"
+
+    return result
+
+
+@router.get("/data-health")
+async def check_data_health(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Check the health of RLHF data and report any issues.
+
+    Returns statistics about the data and identifies potential problems like:
+    - Duplicate matches
+    - Orphaned outcomes (no parent match)
+    - Matches with missing timestamps
+    - Data outside the current epoch
+    """
+    from app.modules.strategies.algorithm_config import get_rlhf_config
+    from app.modules.strategies.learning_models import PositionOutcome
+    from sqlalchemy import func as sql_func
+
+    rlhf_config = get_rlhf_config()
+    min_valid_date = rlhf_config["min_valid_date"]
+
+    # Total counts
+    total_matches = db.query(RecommendationExecutionMatch).count()
+    total_outcomes = db.query(PositionOutcome).count()
+
+    # Matches by type
+    type_counts = db.query(
+        RecommendationExecutionMatch.match_type,
+        sql_func.count(RecommendationExecutionMatch.id)
+    ).group_by(RecommendationExecutionMatch.match_type).all()
+
+    # Find duplicates
+    duplicate_count = db.query(sql_func.count()).select_from(
+        db.query(
+            RecommendationExecutionMatch.recommendation_record_id,
+            RecommendationExecutionMatch.recommendation_date
+        ).filter(
+            RecommendationExecutionMatch.recommendation_record_id.isnot(None)
+        ).group_by(
+            RecommendationExecutionMatch.recommendation_record_id,
+            RecommendationExecutionMatch.recommendation_date
+        ).having(
+            sql_func.count(RecommendationExecutionMatch.id) > 1
+        ).subquery()
+    ).scalar()
+
+    # Matches outside current epoch
+    outside_epoch = db.query(RecommendationExecutionMatch).filter(
+        RecommendationExecutionMatch.recommendation_date < min_valid_date
+    ).count()
+
+    # Matches with missing recommendation_time
+    missing_time = db.query(RecommendationExecutionMatch).filter(
+        RecommendationExecutionMatch.recommendation_id.isnot(None),
+        RecommendationExecutionMatch.recommendation_time.is_(None)
+    ).count()
+
+    # Orphaned outcomes (match was deleted but outcome remains)
+    match_ids_with_outcomes = db.query(PositionOutcome.match_id).distinct()
+    orphaned_outcomes = db.query(PositionOutcome).filter(
+        ~PositionOutcome.match_id.in_(
+            db.query(RecommendationExecutionMatch.id)
+        )
+    ).count()
+
+    issues = []
+    if duplicate_count > 0:
+        issues.append(f"{duplicate_count} duplicate match groups found - run /cleanup-duplicates to fix")
+    if outside_epoch > 0:
+        issues.append(f"{outside_epoch} matches before epoch start ({min_valid_date}) - run /clear-old-matches?before_date={min_valid_date} to remove")
+    if missing_time > 0:
+        issues.append(f"{missing_time} matches with recommendation but no timestamp")
+    if orphaned_outcomes > 0:
+        issues.append(f"{orphaned_outcomes} orphaned outcomes without parent match")
+
+    return {
+        "status": "healthy" if not issues else "issues_found",
+        "epoch": {
+            "algorithm_version": rlhf_config["algorithm_version"],
+            "min_valid_date": min_valid_date.isoformat(),
+        },
+        "counts": {
+            "total_matches": total_matches,
+            "total_outcomes": total_outcomes,
+            "by_type": {t: c for t, c in type_counts},
+        },
+        "issues": issues,
+        "details": {
+            "duplicate_groups": duplicate_count,
+            "outside_epoch": outside_epoch,
+            "missing_timestamp": missing_time,
+            "orphaned_outcomes": orphaned_outcomes,
+        }
+    }
+
+
+@router.get("/epoch-config")
+async def get_epoch_config(
+    user=Depends(get_current_user)
+):
+    """
+    Get the current RLHF epoch configuration.
+    
+    Returns the algorithm version and minimum valid date for learning.
+    """
+    from app.modules.strategies.algorithm_config import get_rlhf_config
+    
+    config = get_rlhf_config()
+    return {
+        "algorithm_version": config["algorithm_version"],
+        "min_valid_date": config["min_valid_date"].isoformat(),
+        "pattern_detection_max_days": config["pattern_detection_max_days"],
+        "min_modifications_for_pattern": config["min_modifications_for_pattern"],
+        "min_rejections_for_pattern": config["min_rejections_for_pattern"],
+    }
+
+
 @router.post("/track-outcomes")
 async def trigger_outcome_tracking(
     as_of_date: Optional[date] = Query(default=None, description="Track outcomes as of this date"),
@@ -157,6 +420,7 @@ async def get_matches(
     end_date: Optional[date] = Query(default=None, description="End date filter"),
     match_type: Optional[str] = Query(default=None, description="Filter by match type"),
     symbol: Optional[str] = Query(default=None, description="Filter by symbol"),
+    respect_epoch: bool = Query(default=True, description="If true, only include data from current epoch"),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0),
     db: Session = Depends(get_db),
@@ -166,8 +430,17 @@ async def get_matches(
     Get reconciliation matches with optional filters.
     
     Returns list of recommendation-to-execution matches.
+    By default, only returns matches from the current learning epoch.
     """
+    from app.modules.strategies.algorithm_config import get_rlhf_config
+    
     query = db.query(RecommendationExecutionMatch)
+    
+    # Apply epoch filter by default
+    if respect_epoch:
+        rlhf_config = get_rlhf_config()
+        min_valid_date = rlhf_config["min_valid_date"]
+        query = query.filter(RecommendationExecutionMatch.recommendation_date >= min_valid_date)
     
     if start_date:
         query = query.filter(RecommendationExecutionMatch.recommendation_date >= start_date)
@@ -268,6 +541,15 @@ async def get_matches(
         
         # Extract contracts and account_name from match or recommendation context
         rec_contracts = m.recommended_contracts
+        # Get full context from match or recommendation record FIRST
+        # (we need this for account extraction below)
+        full_context = m.recommendation_context
+        if not full_context and m.recommendation_record_id:
+            rec = recommendations_by_id.get(m.recommendation_record_id)
+            if rec and rec.context_snapshot:
+                full_context = rec.context_snapshot
+        
+        # Extract account - try multiple sources
         rec_account = None
         if m.recommendation_record_id:
             rec = recommendations_by_id.get(m.recommendation_record_id)
@@ -281,6 +563,10 @@ async def get_matches(
                 if rec_contracts is None and rec.context_snapshot:
                     context = rec.context_snapshot
                     rec_contracts = context.get('contracts') or context.get('unsold_contracts')
+        
+        # Fallback: get account from full_context if still not found
+        if not rec_account and full_context:
+            rec_account = full_context.get('account_name') or full_context.get('account')
         
         match_data = {
             "id": m.id,
@@ -299,12 +585,14 @@ async def get_matches(
                 "account": rec_account,
                 "priority": m.recommendation_priority,
                 "date": m.recommendation_date.isoformat() if m.recommendation_date else None,
-                "time": m.recommendation_time.isoformat() if m.recommendation_time else None,
+                "time": format_datetime_for_api(m.recommendation_time),
+                # Full context for expanded view
+                "context": full_context,
             } if m.recommendation_id else None,
             "execution": {
                 "id": m.execution_id,
                 "date": m.execution_date.isoformat() if m.execution_date else None,
-                "time": m.execution_time.isoformat() if m.execution_time else None,
+                "time": format_datetime_for_api(m.execution_time),
                 "action": m.execution_action,
                 "symbol": m.execution_symbol,
                 "strike": float(m.execution_strike) if m.execution_strike else None,
@@ -316,7 +604,7 @@ async def get_matches(
             "modification": m.modification_details if m.modification_details else None,
             "hours_to_execution": float(m.hours_to_execution) if m.hours_to_execution else None,
             "user_reason": m.user_reason_code,
-            "reviewed_at": m.reviewed_at.isoformat() if m.reviewed_at else None,
+            "reviewed_at": format_datetime_for_api(m.reviewed_at),
             "week": f"{m.year}-W{m.week_number}" if m.year and m.week_number else None,
         }
         matches_data.append(match_data)
@@ -412,17 +700,11 @@ async def update_match_reason(
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
     
-    valid_codes = [
-        'timing', 'premium_low', 'iv_low', 'earnings_concern',
-        'gut_feeling', 'better_opportunity', 'risk_too_high',
-        'already_exposed', 'other', 'skipped'
-    ]
-    
-    if reason_code not in valid_codes:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid reason code. Must be one of: {valid_codes}"
-        )
+    # Accept any reason code - let the frontend define what codes to use
+    # This allows flexibility for different match types (reject, modify, independent)
+    # Common codes: premium_too_low, wrong_timing, position_size, different_strategy,
+    #               missed_window, better_strike, different_expiry, adjusted_size,
+    #               market_moved, opportunity, closing_position, rebalancing, custom, skipped
     
     match.user_reason_code = reason_code
     match.user_reason_text = reason_text
@@ -782,6 +1064,7 @@ async def decide_on_v4_candidate(
 @router.get("/analytics/divergence-rate")
 async def get_divergence_rate(
     days: int = Query(default=30, le=365),
+    respect_epoch: bool = Query(default=True, description="If true, only include data from current epoch (after min_valid_date)"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
@@ -789,8 +1072,18 @@ async def get_divergence_rate(
     Calculate the divergence rate over a period.
     
     Divergence = (modify + reject) / total recommendations
+    
+    If respect_epoch is True (default), only includes data from the current
+    learning epoch (after min_valid_date in RLHF config).
     """
+    from app.modules.strategies.algorithm_config import get_rlhf_config
+    
+    rlhf_config = get_rlhf_config()
     start_date = date.today() - timedelta(days=days)
+    
+    # Respect the minimum valid date from current epoch
+    if respect_epoch and rlhf_config["min_valid_date"] > start_date:
+        start_date = rlhf_config["min_valid_date"]
     
     # Get all matches in the period
     all_matches = db.query(RecommendationExecutionMatch).filter(
@@ -798,7 +1091,12 @@ async def get_divergence_rate(
     ).all()
     
     if not all_matches:
-        return {"divergence_rate": 0, "sample_size": 0}
+        return {
+            "divergence_rate": 0, 
+            "sample_size": 0,
+            "epoch_start": rlhf_config["min_valid_date"].isoformat() if respect_epoch else None,
+            "algorithm_version": rlhf_config["algorithm_version"]
+        }
     
     # Count each type
     consent = sum(1 for m in all_matches if m.match_type == 'consent')
@@ -815,6 +1113,9 @@ async def get_divergence_rate(
     
     return {
         "period_days": days,
+        "effective_start_date": start_date.isoformat(),
+        "epoch_start": rlhf_config["min_valid_date"].isoformat() if respect_epoch else None,
+        "algorithm_version": rlhf_config["algorithm_version"],
         "total_recommendations": total_with_rec,
         "total_matches": len(all_matches),  # Total including independent
         "consent": consent,

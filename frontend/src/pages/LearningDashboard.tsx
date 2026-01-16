@@ -4,6 +4,7 @@ import {
   TrendingUp,
   TrendingDown,
   CheckCircle,
+  Check,
   Edit3,
   XCircle,
   Zap,
@@ -13,6 +14,7 @@ import {
   AlertTriangle,
   AlertCircle,
   ChevronRight,
+  ChevronDown,
   BarChart3,
   GitBranch,
   Lightbulb,
@@ -21,9 +23,61 @@ import {
   Clock,
   Filter,
   MessageCircle,
+  Activity,
+  DollarSign,
+  Info,
 } from 'lucide-react';
 import styles from './LearningDashboard.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
+
+interface RecommendationContext {
+  // Core recommendation info
+  reasoning?: string;
+  headline?: string;
+  
+  // Position info
+  current_price?: number;
+  strike?: number;
+  strike_price?: number;
+  expiration?: string;
+  expiration_date?: string;
+  option_type?: string;
+  contracts?: number;
+  
+  // For rolls
+  current_strike?: number;
+  target_strike?: number;
+  new_strike?: number;
+  current_expiration?: string;
+  target_expiration?: string;
+  new_expiration?: string;
+  roll_cost?: number;
+  net_credit?: number;
+  net_debit?: number;
+  
+  // Technical indicators
+  itm_percent?: number;
+  days_to_expiration?: number;
+  dte?: number;
+  bollinger_position?: number;
+  bollinger_bands?: { lower: number; middle: number; upper: number };
+  rsi?: number;
+  support?: number;
+  resistance?: number;
+  
+  // Premium info
+  premium?: number;
+  premium_per_contract?: number;
+  estimated_premium?: number;
+  total_premium?: number;
+  
+  // Account info
+  account_name?: string;
+  account?: string;
+  
+  // Other context
+  [key: string]: any;
+}
 
 interface Match {
   id: number;
@@ -43,6 +97,7 @@ interface Match {
     priority: string;
     date: string | null;
     time: string | null;
+    context: RecommendationContext | null;
   } | null;
   execution: {
     id: number;
@@ -109,6 +164,14 @@ interface DivergenceAnalytics {
   by_week: { week: string; consent: number; modify: number; reject: number }[];
 }
 
+interface EpochConfig {
+  algorithm_version: string;
+  min_valid_date: string;
+  pattern_detection_max_days: number;
+  min_modifications_for_pattern: number;
+  min_rejections_for_pattern: number;
+}
+
 const matchTypeConfig = {
   consent: { icon: CheckCircle, color: '#10B981', label: 'Consent', bg: 'rgba(16, 185, 129, 0.1)' },
   modify: { icon: Edit3, color: '#F59E0B', label: 'Modified', bg: 'rgba(245, 158, 11, 0.1)' },
@@ -127,6 +190,7 @@ export default function LearningDashboard() {
   const [weeklySummaries, setWeeklySummaries] = useState<WeeklySummary[]>([]);
   const [v4Candidates, setV4Candidates] = useState<V4Candidate[]>([]);
   const [divergenceAnalytics, setDivergenceAnalytics] = useState<DivergenceAnalytics | null>(null);
+  const [epochConfig, setEpochConfig] = useState<EpochConfig | null>(null);
   
   // Filter states
   const [matchTypeFilter, setMatchTypeFilter] = useState<string>('all');
@@ -154,8 +218,19 @@ export default function LearningDashboard() {
       fetchWeeklySummaries(),
       fetchV4Candidates(),
       fetchDivergenceAnalytics(),
+      fetchEpochConfig(),
     ]);
     setLoading(false);
+  };
+
+  const fetchEpochConfig = async () => {
+    try {
+      const response = await fetch('/api/v1/strategies/learning/epoch-config', { headers: getAuthHeaders() });
+      const data = await response.json();
+      setEpochConfig(data);
+    } catch (error) {
+      console.error('Error fetching epoch config:', error);
+    }
   };
 
   const fetchMatches = async (filter: string) => {
@@ -306,16 +381,16 @@ export default function LearningDashboard() {
   const submitMatchFeedback = async (matchId: number, reasonCode: string, reasonText?: string) => {
     const params = new URLSearchParams({ reason_code: reasonCode });
     if (reasonText) params.append('reason_text', reasonText);
-    
+
     const response = await fetch(`/api/v1/strategies/learning/matches/${matchId}/reason?${params}`, {
-      method: 'PUT',
+      method: 'PATCH',
       headers: getAuthHeaders(),
     });
-    
+
     if (!response.ok) {
       throw new Error('Failed to save feedback');
     }
-    
+
     // Refresh matches to show updated feedback
     await fetchMatches(matchTypeFilter);
   };
@@ -323,7 +398,7 @@ export default function LearningDashboard() {
   const skipMatchFeedback = async (matchId: number) => {
     // Mark as "skipped" - user doesn't remember
     const response = await fetch(`/api/v1/strategies/learning/matches/${matchId}/reason?reason_code=skipped`, {
-      method: 'PUT',
+      method: 'PATCH',
       headers: getAuthHeaders(),
     });
     
@@ -458,6 +533,48 @@ export default function LearningDashboard() {
           )}
         </div>
       </div>
+
+      {/* Epoch Info Banner */}
+      {epochConfig && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '1rem',
+          padding: '0.75rem 1rem',
+          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+          borderRadius: '8px',
+          border: '1px solid rgba(59, 130, 246, 0.2)',
+          marginBottom: '1.5rem',
+          fontSize: '0.875rem',
+        }}>
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '0.5rem',
+            color: '#3B82F6',
+            fontWeight: 600,
+          }}>
+            <Brain size={18} />
+            Learning Epoch
+          </div>
+          <div style={{ 
+            display: 'flex', 
+            gap: '1.5rem', 
+            color: '#9CA3AF',
+            flexWrap: 'wrap',
+          }}>
+            <span>
+              <strong style={{ color: '#F9FAFB' }}>Algorithm:</strong> {epochConfig.algorithm_version}
+            </span>
+            <span>
+              <strong style={{ color: '#F9FAFB' }}>Data from:</strong> {new Date(epochConfig.min_valid_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            </span>
+            <span>
+              <strong style={{ color: '#F9FAFB' }}>Pattern window:</strong> {epochConfig.pattern_detection_max_days} days
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className={styles.summaryCards}>
@@ -836,6 +953,479 @@ const parseRecommendationId = (id: string): { strike?: number; account?: string 
   return { strike, account };
 };
 
+// ============================================================================
+// EXPANDABLE MATCH ROW COMPONENT
+// Shows compact summary when collapsed, full context when expanded
+// ============================================================================
+
+// Common feedback reasons for quick selection
+const FEEDBACK_REASONS = {
+  reject: [
+    { code: 'premium_too_low', label: 'Premium too low for risk' },
+    { code: 'wrong_timing', label: 'Bad timing / market conditions' },
+    { code: 'position_size', label: 'Position size concerns' },
+    { code: 'different_strategy', label: 'Preferred different strategy' },
+    { code: 'missed_window', label: 'Missed the execution window' },
+  ],
+  modify: [
+    { code: 'better_strike', label: 'Found a better strike' },
+    { code: 'different_expiry', label: 'Preferred different expiry' },
+    { code: 'adjusted_size', label: 'Adjusted position size' },
+    { code: 'market_moved', label: 'Market moved, adjusted' },
+  ],
+  independent: [
+    { code: 'opportunity', label: 'Saw an opportunity' },
+    { code: 'closing_position', label: 'Closing existing position' },
+    { code: 'rebalancing', label: 'Rebalancing portfolio' },
+  ],
+};
+
+function ExpandableMatchRow({
+  match,
+  borderColor,
+  formatDateTimeCompact,
+  formatDateCompact,
+  onMarkReviewed,
+  onFeedbackSubmit,
+}: {
+  match: Match;
+  borderColor: string;
+  formatDateTimeCompact: (dateStr: string | null | undefined, timeStr: string | null | undefined) => string;
+  formatDateCompact: (dateStr: string | null | undefined) => string;
+  onMarkReviewed: (matchId: number) => Promise<void>;
+  onFeedbackSubmit?: (matchId: number, reasonCode: string, reasonText?: string) => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  
+  const rec = match.recommendation;
+  const exec = match.execution;
+  const ctx = rec?.context;
+  const isUnreviewed = !match.reviewed_at;
+  const hasFeedback = !!match.user_reason;
+  
+  // Get applicable feedback reasons based on match type
+  const feedbackReasons = FEEDBACK_REASONS[match.match_type as keyof typeof FEEDBACK_REASONS] || [];
+
+  const handleFeedbackSubmit = async (reasonCode: string, customText?: string) => {
+    if (!onFeedbackSubmit) return;
+    setSubmittingFeedback(true);
+    try {
+      await onFeedbackSubmit(match.id, reasonCode, customText || feedbackText);
+      setFeedbackText('');
+    } finally {
+      setSubmittingFeedback(false);
+    }
+  };
+
+  // Build compact recommendation string
+  const recDateTime = formatDateTimeCompact(rec?.date || match.date, rec?.time || null);
+  const recStr = rec 
+    ? `Rec [${recDateTime}]: ${formatAction(rec.action)} ${rec.symbol} $${rec.strike || '?'} exp ${formatDateCompact(rec.expiration) || '?'} | ${rec.contracts ? `${rec.contracts}x @ ` : ''}$${rec.premium?.toFixed(2) || '?'}${rec.account ? ` (${rec.account})` : ''}`
+    : '—';
+  
+  // Build compact execution string
+  const execDateTime = formatDateTimeCompact(exec?.date || match.date, exec?.time || null);
+  const execStr = exec
+    ? `Act [${execDateTime}]: ${formatAction(exec.action)} ${exec.symbol?.split(' ')[0]} $${exec.strike || '?'} exp ${formatDateCompact(exec.expiration) || '?'} | ${exec.contracts}x @ $${(exec.premium && exec.contracts ? exec.premium / exec.contracts : 0).toFixed(2)} | $${exec.premium?.toFixed(2) || '?'}`
+    : '—';
+
+  // Extract context values with fallbacks
+  const getCtxValue = (key: string, ...altKeys: string[]): any => {
+    if (!ctx) return null;
+    if (ctx[key] !== undefined && ctx[key] !== null) return ctx[key];
+    for (const k of altKeys) {
+      if (ctx[k] !== undefined && ctx[k] !== null) return ctx[k];
+    }
+    return null;
+  };
+
+  // Build headline from context
+  const buildHeadline = (): string | null => {
+    if (ctx?.headline) return ctx.headline;
+    if (ctx?.recommendation_headline) return ctx.recommendation_headline;
+    
+    // Build from parts for rolls
+    if (rec?.action?.toLowerCase().includes('roll')) {
+      const fromStrike = getCtxValue('current_strike', 'strike');
+      const toStrike = getCtxValue('target_strike', 'new_strike');
+      const toExp = getCtxValue('target_expiration', 'new_expiration');
+      const cost = getCtxValue('roll_cost', 'net_debit', 'net_credit');
+      if (fromStrike && toStrike && toExp) {
+        const costStr = cost ? ` · $${Math.abs(cost).toFixed(2)} ${cost > 0 ? 'credit' : 'debit'}` : '';
+        return `ROLL: ${rec.symbol} $${fromStrike}→$${toStrike} ${formatDateCompact(toExp)}${costStr}`;
+      }
+    }
+    return null;
+  };
+
+  const headline = buildHeadline();
+  const reasoning = getCtxValue('reasoning', 'reason', 'rationale', 'recommendation_reason');
+  const currentPrice = getCtxValue('current_price', 'stock_price', 'price');
+  const itmPercent = getCtxValue('itm_percent', 'itm_percentage', 'itm_pct');
+  const dte = getCtxValue('days_to_expiration', 'dte', 'days_to_exp');
+  const bollingerPos = getCtxValue('bollinger_position', 'bb_position');
+  const bollingerBands = getCtxValue('bollinger_bands');
+  const rsi = getCtxValue('rsi', 'rsi_14');
+  const support = getCtxValue('support', 'support_level');
+  const resistance = getCtxValue('resistance', 'resistance_level');
+
+  // Determine if this item needs attention (no feedback yet for non-consent matches)
+  const needsFeedback = !hasFeedback && feedbackReasons.length > 0;
+  
+  return (
+    <div 
+      className={styles.compactMatchRow}
+      style={{ 
+        borderLeftColor: hasFeedback ? '#10B981' : borderColor,  // Green border if feedback given
+        opacity: hasFeedback ? 0.5 : (isUnreviewed ? 1 : 0.7),   // Fade out if feedback given
+        background: needsFeedback ? 'rgba(139, 92, 246, 0.05)' : 'transparent',
+        cursor: 'pointer',
+      }}
+      onClick={() => setExpanded(!expanded)}
+    >
+      {/* Collapsed View */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+          {/* Feedback status icon */}
+          <div style={{ 
+            marginTop: '0.125rem',
+            color: hasFeedback ? '#10B981' : '#6B7280',
+            transition: 'transform 0.2s',
+            transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+          }}>
+            {hasFeedback ? <Check size={14} /> : <ChevronRight size={14} />}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: '#93C5FD', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
+              {recStr}
+            </div>
+            <div style={{ color: '#86EFAC', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
+              {execStr}
+            </div>
+          </div>
+        </div>
+        {/* Only show "Got it" for consent matches - reject/modify/independent should use feedback */}
+        {isUnreviewed && match.match_type === 'consent' && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onMarkReviewed(match.id);
+            }}
+            style={{
+              background: 'rgba(16, 185, 129, 0.1)',
+              border: '1px solid rgba(16, 185, 129, 0.3)',
+              color: '#10B981',
+              padding: '0.25rem 0.5rem',
+              borderRadius: '4px',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+            title="Mark as reviewed"
+          >
+            Got it ✓
+          </button>
+        )}
+      </div>
+
+      {/* Expanded View */}
+      {expanded && ctx && (
+        <div 
+          style={{ 
+            marginTop: '0.75rem',
+            paddingTop: '0.75rem',
+            borderTop: '1px solid rgba(255,255,255,0.1)',
+            marginLeft: '1.25rem',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Headline */}
+          {headline && (
+            <div style={{ 
+              fontSize: '0.9375rem', 
+              fontWeight: 600, 
+              color: '#F9FAFB',
+              marginBottom: '0.75rem',
+            }}>
+              {headline}
+            </div>
+          )}
+
+          {/* Reasoning/Why */}
+          {reasoning && (
+            <div style={{ marginBottom: '0.75rem' }}>
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '0.5rem', 
+                color: '#9CA3AF',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                marginBottom: '0.25rem',
+                textTransform: 'uppercase',
+              }}>
+                <Lightbulb size={12} />
+                Why This Recommendation
+              </div>
+              <div style={{ 
+                color: '#D1D5DB', 
+                fontSize: '0.8125rem',
+                lineHeight: 1.5,
+                padding: '0.5rem 0.75rem',
+                background: 'rgba(255,255,255,0.03)',
+                borderRadius: '6px',
+                borderLeft: '3px solid #F59E0B',
+              }}>
+                {reasoning}
+              </div>
+            </div>
+          )}
+
+          {/* Technical Snapshot Grid */}
+          <div style={{ 
+            display: 'grid', 
+            gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
+            gap: '0.5rem',
+            fontSize: '0.75rem',
+          }}>
+            {currentPrice && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Current Price</div>
+                <div style={{ color: '#F9FAFB', fontWeight: 600 }}>${currentPrice.toFixed(2)}</div>
+              </div>
+            )}
+            {rec?.strike && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Strike</div>
+                <div style={{ color: '#F9FAFB', fontWeight: 600 }}>${rec.strike}</div>
+              </div>
+            )}
+            {itmPercent !== null && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Status</div>
+                <div style={{ 
+                  color: itmPercent > 0 ? '#EF4444' : '#10B981', 
+                  fontWeight: 600 
+                }}>
+                  {itmPercent > 0 ? `${itmPercent.toFixed(1)}% ITM` : `${Math.abs(itmPercent).toFixed(1)}% OTM`}
+                </div>
+              </div>
+            )}
+            {dte !== null && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Days to Exp</div>
+                <div style={{ color: '#F9FAFB', fontWeight: 600 }}>{dte} days</div>
+              </div>
+            )}
+            {bollingerPos !== null && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Bollinger Pos</div>
+                <div style={{ color: '#F9FAFB', fontWeight: 600 }}>{(bollingerPos * 100).toFixed(0)}%</div>
+              </div>
+            )}
+            {bollingerBands && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Bollinger Bands</div>
+                <div style={{ color: '#9CA3AF', fontSize: '0.6875rem' }}>
+                  ${bollingerBands.lower?.toFixed(0)} / ${bollingerBands.middle?.toFixed(0)} / ${bollingerBands.upper?.toFixed(0)}
+                </div>
+              </div>
+            )}
+            {rsi !== null && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>RSI (14)</div>
+                <div style={{ 
+                  color: rsi > 70 ? '#EF4444' : rsi < 30 ? '#10B981' : '#F9FAFB', 
+                  fontWeight: 600 
+                }}>
+                  {rsi.toFixed(1)} {rsi > 70 ? '(overbought)' : rsi < 30 ? '(oversold)' : ''}
+                </div>
+              </div>
+            )}
+            {support && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Support</div>
+                <div style={{ color: '#10B981', fontWeight: 600 }}>${support.toFixed(2)}</div>
+              </div>
+            )}
+            {resistance && (
+              <div style={{ padding: '0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>
+                <div style={{ color: '#6B7280', fontSize: '0.625rem', textTransform: 'uppercase' }}>Resistance</div>
+                <div style={{ color: '#EF4444', fontWeight: 600 }}>${resistance.toFixed(2)}</div>
+              </div>
+            )}
+          </div>
+
+          {/* Feedback Section - for reject/modify/independent matches */}
+          {onFeedbackSubmit && !hasFeedback && feedbackReasons.length > 0 && (
+            <div style={{ 
+              marginTop: '1rem',
+              paddingTop: '0.75rem',
+              borderTop: '1px solid rgba(255,255,255,0.1)',
+            }}>
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '0.5rem', 
+                color: '#9CA3AF',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                marginBottom: '0.5rem',
+                textTransform: 'uppercase',
+              }}>
+                <MessageCircle size={12} />
+                {match.match_type === 'reject' ? 'Why didn\'t you execute?' : 
+                 match.match_type === 'modify' ? 'Why did you modify?' :
+                 'Why did you do this independently?'}
+              </div>
+              
+              {/* Quick reason buttons - directly clickable */}
+              <div style={{ 
+                display: 'flex', 
+                flexWrap: 'wrap', 
+                gap: '0.5rem',
+                marginBottom: '0.75rem',
+              }}>
+                {feedbackReasons.filter(r => r.code !== 'other').map(reason => (
+                  <button
+                    key={reason.code}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleFeedbackSubmit(reason.code, reason.label);
+                    }}
+                    disabled={submittingFeedback}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      background: 'rgba(236, 72, 153, 0.15)',
+                      border: '1px solid rgba(236, 72, 153, 0.3)',
+                      borderRadius: '9999px',
+                      color: '#F472B6',
+                      cursor: submittingFeedback ? 'wait' : 'pointer',
+                      transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(236, 72, 153, 0.3)';
+                      e.currentTarget.style.borderColor = 'rgba(236, 72, 153, 0.5)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(236, 72, 153, 0.15)';
+                      e.currentTarget.style.borderColor = 'rgba(236, 72, 153, 0.3)';
+                    }}
+                  >
+                    {reason.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Custom feedback input - always visible */}
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <input
+                  type="text"
+                  value={feedbackText}
+                  onChange={(e) => setFeedbackText(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  placeholder="Or type your own reason..."
+                  style={{
+                    flex: 1,
+                    padding: '0.5rem 0.75rem',
+                    fontSize: '0.8125rem',
+                    background: 'rgba(0,0,0,0.3)',
+                    border: '1px solid rgba(255,255,255,0.15)',
+                    borderRadius: '6px',
+                    color: '#F9FAFB',
+                    outline: 'none',
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && feedbackText.trim()) {
+                      e.stopPropagation();
+                      handleFeedbackSubmit('custom', feedbackText);
+                    }
+                  }}
+                />
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleFeedbackSubmit('custom', feedbackText);
+                  }}
+                  disabled={!feedbackText.trim() || submittingFeedback}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    fontSize: '0.8125rem',
+                    background: feedbackText.trim() ? '#EC4899' : 'rgba(255,255,255,0.1)',
+                    border: 'none',
+                    borderRadius: '6px',
+                    color: feedbackText.trim() ? 'white' : '#6B7280',
+                    cursor: feedbackText.trim() && !submittingFeedback ? 'pointer' : 'not-allowed',
+                    fontWeight: 600,
+                  }}
+                >
+                  {submittingFeedback ? '...' : 'Submit'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Show existing feedback */}
+          {hasFeedback && (
+            <div style={{ 
+              marginTop: '1rem',
+              padding: '0.5rem 0.75rem',
+              background: 'rgba(16, 185, 129, 0.1)',
+              borderRadius: '6px',
+              borderLeft: '3px solid #10B981',
+              fontSize: '0.8125rem',
+              color: '#10B981',
+            }}>
+              <strong>Your feedback:</strong> {match.user_reason}
+            </div>
+          )}
+
+          {/* Show raw context for debugging (collapsed by default) */}
+          <details style={{ marginTop: '0.75rem', fontSize: '0.6875rem', color: '#6B7280' }}>
+            <summary style={{ cursor: 'pointer', userSelect: 'none' }}>
+              View raw context data
+            </summary>
+            <pre style={{ 
+              marginTop: '0.5rem',
+              padding: '0.5rem',
+              background: 'rgba(0,0,0,0.3)',
+              borderRadius: '4px',
+              overflow: 'auto',
+              maxHeight: '200px',
+              fontSize: '0.625rem',
+            }}>
+              {JSON.stringify(ctx, null, 2)}
+            </pre>
+          </details>
+        </div>
+      )}
+
+      {/* No context available message */}
+      {expanded && !ctx && (
+        <div 
+          style={{ 
+            marginTop: '0.75rem',
+            paddingTop: '0.75rem',
+            borderTop: '1px solid rgba(255,255,255,0.1)',
+            marginLeft: '1.25rem',
+            color: '#6B7280',
+            fontSize: '0.8125rem',
+            fontStyle: 'italic',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Info size={14} style={{ display: 'inline', marginRight: '0.5rem' }} />
+          No detailed context available for this match.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Matches Tab Component
 function MatchesTab({
   matches,
@@ -858,13 +1448,15 @@ function MatchesTab({
   onMarkReviewed: (matchId: number) => Promise<void>;
   onMarkAllReviewed: () => Promise<void>;
 }) {
-  // Format helpers for compact display
+  // Format helpers for compact display - using month names for clarity
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  
   const formatDateTimeCompact = (dateStr: string | null | undefined, timeStr: string | null | undefined): string => {
     if (!dateStr) return '';
     try {
       const date = new Date(dateStr);
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
+      const month = MONTH_NAMES[date.getMonth()];
+      const day = date.getDate();
       
       let timePart = '';
       if (timeStr) {
@@ -881,7 +1473,7 @@ function MatchesTab({
         }
       }
       
-      return `${month}/${day}${timePart}`;
+      return `${month} ${day}${timePart}`;
     } catch (e) {
       return dateStr;
     }
@@ -890,8 +1482,13 @@ function MatchesTab({
   const formatDateCompact = (dateStr: string | null | undefined): string => {
     if (!dateStr) return '';
     try {
+      // Parse as local date to avoid timezone issues
+      if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        return `${MONTH_NAMES[month - 1]} ${day}`;
+      }
       const d = new Date(dateStr);
-      return `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`;
+      return `${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
     } catch {
       return dateStr || '';
     }
@@ -999,7 +1596,7 @@ function MatchesTab({
               )}
             </div>
             <span style={{ color: '#6B7280', fontSize: '0.75rem' }}>
-              Each row shows: My recommendation (Rec) vs Your action (Act). "—" means no action taken.
+              Each row shows: My recommendation (Rec) vs Your action (Act). Click to expand and see full context. "—" means no action taken.
             </span>
           </div>
           {unreviewedCount > 0 && (
@@ -1034,67 +1631,234 @@ function MatchesTab({
             No matches found for this filter.
           </p>
         ) : (
-          filteredMatches.slice(0, 100).map((m) => {
-            const rec = m.recommendation;
-            const exec = m.execution;
-            const colors: Record<string, string> = { consent: '#10B981', modify: '#F59E0B', reject: '#EF4444', independent: '#8B5CF6' };
-            const borderColor = colors[m.match_type] || '#6B7280';
-            const isUnreviewed = !m.reviewed_at;
+          // Group matches by date, then by account (like Notifications page)
+          (() => {
+            // Define account order (same as notifications)
+            const ACCOUNT_ORDER = [
+              "Neel's Brokerage",
+              "Neel's Retirement", 
+              "Neel's Roth",
+              "Jaya's Brokerage",
+              "Jaya's Retirement",
+              "Jaya's Roth",
+            ];
             
-            // Build compact recommendation string with date/time prefix
-            const recDateTime = formatDateTimeCompact(rec?.date || m.date, rec?.time || null);
-            const recStr = rec 
-              ? `Rec [${recDateTime}]: ${formatAction(rec.action)} ${rec.symbol} ${formatDateCompact(rec.date || m.date)}→${formatDateCompact(rec.expiration)} | $${rec.strike || '?'} | ${rec.contracts ? `${rec.contracts}x @ ` : ''}$${rec.premium?.toFixed(2) || '?'}${rec.account ? ` (${rec.account})` : ''}`
-              : '—';
+            // Format account names nicely
+            const formatAccountName = (raw: string): string => {
+              if (!raw || raw === 'Unknown Account') return raw;
+              
+              // Already formatted nicely?
+              if (raw.includes("'s ")) return raw;
+              
+              // Convert snake_case or other formats to nice names
+              const normalized = raw.toLowerCase().replace(/[_-]/g, ' ');
+              
+              // Map common patterns
+              const accountMap: Record<string, string> = {
+                'neel brokerage': "Neel's Brokerage",
+                'neels brokerage': "Neel's Brokerage",
+                'neel retirement': "Neel's Retirement",
+                'neels retirement': "Neel's Retirement",
+                'neel roth': "Neel's Roth",
+                'neel roth ira': "Neel's Roth",
+                'neels roth': "Neel's Roth",
+                'jaya brokerage': "Jaya's Brokerage",
+                'jayas brokerage': "Jaya's Brokerage",
+                'jaya retirement': "Jaya's Retirement",
+                'jayas retirement': "Jaya's Retirement",
+                'jaya roth': "Jaya's Roth",
+                'jaya roth ira': "Jaya's Roth",
+                'jayas roth': "Jaya's Roth",
+              };
+              
+              return accountMap[normalized] || raw;
+            };
             
-            // Build compact execution string with date/time prefix
-            const execDateTime = formatDateTimeCompact(exec?.date || m.date, exec?.time || null);
-            const execStr = exec
-              ? `Act [${execDateTime}]: ${formatAction(exec.action)} ${exec.symbol?.split(' ')[0]} ${formatDateCompact(exec.date || m.date)}→${formatDateCompact(exec.expiration)} | $${exec.strike || '?'} | ${exec.contracts}x @ $${(exec.premium && exec.contracts ? exec.premium / exec.contracts : 0).toFixed(2)} | $${exec.premium?.toFixed(2) || '?'}`
-              : '—';
+            // Get account from match, with fallback to context
+            const getAccount = (m: Match): string => {
+              let account = m.recommendation?.account || m.execution?.account;
+              
+              // Fallback: try to get from context
+              if (!account && m.recommendation?.context) {
+                account = m.recommendation.context.account_name || m.recommendation.context.account;
+              }
+              
+              return formatAccountName(account || 'Unknown Account');
+            };
             
-            return (
-              <div 
-                key={m.id} 
-                className={styles.compactMatchRow}
-                style={{ 
-                  borderLeftColor: borderColor,
-                  opacity: isUnreviewed ? 1 : 0.6,
-                  background: isUnreviewed ? 'rgba(139, 92, 246, 0.05)' : 'transparent',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ color: '#93C5FD', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
-                      {recStr}
+            // Group by date first
+            const byDate: Record<string, Match[]> = {};
+            filteredMatches.slice(0, 150).forEach(m => {
+              const dateKey = m.date || 'Unknown';
+              if (!byDate[dateKey]) byDate[dateKey] = [];
+              byDate[dateKey].push(m);
+            });
+            
+            // Sort dates (newest first)
+            const sortedDates = Object.keys(byDate).sort((a, b) => 
+              new Date(b).getTime() - new Date(a).getTime()
+            );
+            
+            const colors: Record<string, string> = { 
+              consent: '#10B981', 
+              modify: '#F59E0B', 
+              reject: '#EF4444', 
+              independent: '#8B5CF6' 
+            };
+
+            return sortedDates.map(dateKey => {
+              const matchesForDate = byDate[dateKey];
+              
+              // Group by account within this date
+              const byAccount: Record<string, Match[]> = {};
+              matchesForDate.forEach(m => {
+                const account = getAccount(m);
+                if (!byAccount[account]) byAccount[account] = [];
+                byAccount[account].push(m);
+              });
+              
+              // Sort accounts by predefined order
+              const sortedAccounts = Object.keys(byAccount).sort((a, b) => {
+                const aIdx = ACCOUNT_ORDER.indexOf(a);
+                const bIdx = ACCOUNT_ORDER.indexOf(b);
+                if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+                if (aIdx === -1) return 1;
+                if (bIdx === -1) return -1;
+                return aIdx - bIdx;
+              });
+
+              // Format date header - parse as local date (not UTC) to avoid off-by-one
+              // dateKey is "YYYY-MM-DD", parse parts to avoid timezone issues
+              const [year, month, day] = dateKey.split('-').map(Number);
+              const dateObj = new Date(year, month - 1, day); // month is 0-indexed
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              const yesterday = new Date(today);
+              yesterday.setDate(yesterday.getDate() - 1);
+              
+              let dateLabel = '';
+              if (dateObj.getTime() === today.getTime()) {
+                dateLabel = 'Today';
+              } else if (dateObj.getTime() === yesterday.getTime()) {
+                dateLabel = 'Yesterday';
+              } else {
+                dateLabel = dateObj.toLocaleDateString('en-US', { 
+                  weekday: 'short', 
+                  month: 'short', 
+                  day: 'numeric' 
+                });
+              }
+
+              // Count by type for this date
+              const typeCounts = matchesForDate.reduce((acc, m) => {
+                acc[m.match_type] = (acc[m.match_type] || 0) + 1;
+                return acc;
+              }, {} as Record<string, number>);
+
+              return (
+                <div key={dateKey} style={{ marginBottom: '1.5rem' }}>
+                  {/* Date Header */}
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '0.5rem 0',
+                    borderBottom: '1px solid rgba(255,255,255,0.1)',
+                    marginBottom: '0.75rem',
+                  }}>
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.5rem',
+                      color: '#9CA3AF',
+                      fontSize: '0.8125rem',
+                    }}>
+                      <Calendar size={14} />
+                      <span style={{ fontWeight: 600, color: '#F9FAFB' }}>{dateLabel}</span>
                     </div>
-                    <div style={{ color: '#86EFAC', fontSize: '0.8125rem', fontFamily: 'monospace' }}>
-                      {execStr}
+                    <div style={{ 
+                      display: 'flex', 
+                      gap: '0.75rem',
+                      fontSize: '0.75rem',
+                    }}>
+                      <span style={{ color: '#9CA3AF' }}>{matchesForDate.length} matches</span>
+                      {typeCounts.consent > 0 && (
+                        <span style={{ color: '#10B981' }}>✓ {typeCounts.consent}</span>
+                      )}
+                      {typeCounts.modify > 0 && (
+                        <span style={{ color: '#F59E0B' }}>✎ {typeCounts.modify}</span>
+                      )}
+                      {typeCounts.reject > 0 && (
+                        <span style={{ color: '#EF4444' }}>✗ {typeCounts.reject}</span>
+                      )}
+                      {typeCounts.independent > 0 && (
+                        <span style={{ color: '#8B5CF6' }}>⚡ {typeCounts.independent}</span>
+                      )}
                     </div>
                   </div>
-                  {isUnreviewed && (
-                    <button
-                      onClick={() => onMarkReviewed(m.id)}
-                      style={{
-                        background: 'rgba(16, 185, 129, 0.1)',
-                        border: '1px solid rgba(16, 185, 129, 0.3)',
-                        color: '#10B981',
-                        padding: '0.25rem 0.5rem',
-                        borderRadius: '4px',
-                        fontSize: '0.7rem',
-                        cursor: 'pointer',
-                        whiteSpace: 'nowrap',
-                        flexShrink: 0,
-                      }}
-                      title="Mark as reviewed"
-                    >
-                      Got it ✓
-                    </button>
-                  )}
+
+                  {/* Account Groups */}
+                  {sortedAccounts.map(account => {
+                    const accountMatches = byAccount[account];
+                    // Sort: items needing feedback first, then items with feedback
+                    const sortedMatches = [...accountMatches].sort((a, b) => {
+                      const aHasFeedback = !!a.user_reason;
+                      const bHasFeedback = !!b.user_reason;
+                      if (aHasFeedback === bHasFeedback) return 0;
+                      return aHasFeedback ? 1 : -1;  // Items without feedback first
+                    });
+                    const pendingCount = sortedMatches.filter(m => !m.user_reason).length;
+                    
+                    return (
+                      <div key={account} style={{ marginBottom: '1rem' }}>
+                        {/* Account Header */}
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '0.375rem 0.5rem',
+                          marginBottom: '0.5rem',
+                          borderLeft: '3px solid #EC4899',
+                          background: 'rgba(236, 72, 153, 0.05)',
+                        }}>
+                          <span style={{ 
+                            color: '#EC4899', 
+                            fontSize: '0.8125rem',
+                            fontWeight: 600,
+                          }}>
+                            {account}
+                          </span>
+                          <span style={{ 
+                            color: '#6B7280', 
+                            fontSize: '0.75rem',
+                          }}>
+                            {pendingCount > 0 ? (
+                              <><span style={{ color: '#F59E0B' }}>{pendingCount} pending</span> / {sortedMatches.length}</>
+                            ) : (
+                              <span style={{ color: '#10B981' }}>✓ {sortedMatches.length} done</span>
+                            )}
+                          </span>
+                        </div>
+
+                        {/* Matches for this account - pending first */}
+                        {sortedMatches.map(m => (
+                          <ExpandableMatchRow
+                            key={m.id}
+                            match={m}
+                            borderColor={colors[m.match_type] || '#6B7280'}
+                            formatDateTimeCompact={formatDateTimeCompact}
+                            formatDateCompact={formatDateCompact}
+                            onMarkReviewed={onMarkReviewed}
+                            onFeedbackSubmit={onFeedbackSubmit}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            );
-          })
+              );
+            });
+          })()
         )}
       </div>
 

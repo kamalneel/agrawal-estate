@@ -470,26 +470,25 @@ class RecommendationScheduler:
         else:
             logger.info("[VERBOSE MODE] No recommendations to send")
         
-        # 2. SMART MODE: Send filtered recommendations
-        if all_to_send:
-            logger.info(f"[SMART MODE] Sending {len(all_to_send)} filtered recommendation(s)")
-            smart_results = notification_service.send_recommendation_notification(
-                all_to_send,
-                priority_filter=None,
-                notification_mode='smart'
-            )
-            self._record_notifications(db, all_to_send, smart_results, notification_mode='smart')
-            sent_count = len(all_to_send)
-            # Don't add to sent_recommendations again (already added in verbose)
-            logger.info(f"[SMART MODE] Sent {sent_count} notification(s)")
-        else:
-            logger.info("[SMART MODE] No new/changed notifications to send")
-        
+        # 2. SMART MODE: DISABLED - Only sending verbose mode to mobile
+        # User requested to remove smart mode notifications for mobile (2026-01-13)
+        # if all_to_send:
+        #     logger.info(f"[SMART MODE] Sending {len(all_to_send)} filtered recommendation(s)")
+        #     smart_results = notification_service.send_recommendation_notification(
+        #         all_to_send,
+        #         priority_filter=None,
+        #         notification_mode='smart'
+        #     )
+        #     self._record_notifications(db, all_to_send, smart_results, notification_mode='smart')
+        #     sent_count = len(all_to_send)
+        #     logger.info(f"[SMART MODE] Sent {sent_count} notification(s)")
+        # else:
+        #     logger.info("[SMART MODE] No new/changed notifications to send")
+
         total_verbose = len(all_for_verbose) if all_for_verbose else 0
-        total_smart = len(all_to_send) if all_to_send else 0
-        
-        if total_verbose > 0 or total_smart > 0:
-            logger.info(f"Total notifications sent: {total_verbose} verbose + {total_smart} smart")
+
+        if total_verbose > 0:
+            logger.info(f"Total notifications sent: {total_verbose} (verbose mode only)")
         else:
             logger.info("No notifications to send")
         
@@ -788,25 +787,25 @@ class RecommendationScheduler:
                                 message_id=message_id
                             )
             
-            # Send SMART mode notification
-            if notifications['smart']:
-                smart_message = v2_service.format_telegram_message(
-                    notifications['smart'], 
-                    mode='smart'
-                )
-                if smart_message and notification_service.telegram_enabled:
-                    success, message_id = notification_service._send_telegram(smart_message)
-                    if success:
-                        logger.info(f"[V2] Sent SMART notification ({smart_count} items)")
-                        # Mark snapshots as notified
-                        for notif in notifications['smart']:
-                            v2_service.mark_snapshot_notified(
-                                notif['snapshot_id'], 
-                                mode='smart',
-                                message_id=message_id
-                            )
-            
-            logger.info("[V2] V2-native notification check complete")
+            # Send SMART mode notification - DISABLED
+            # User requested to remove smart mode notifications for mobile (2026-01-13)
+            # if notifications['smart']:
+            #     smart_message = v2_service.format_telegram_message(
+            #         notifications['smart'],
+            #         mode='smart'
+            #     )
+            #     if smart_message and notification_service.telegram_enabled:
+            #         success, message_id = notification_service._send_telegram(smart_message)
+            #         if success:
+            #             logger.info(f"[V2] Sent SMART notification ({smart_count} items)")
+            #             for notif in notifications['smart']:
+            #                 v2_service.mark_snapshot_notified(
+            #                     notif['snapshot_id'],
+            #                     mode='smart',
+            #                     message_id=message_id
+            #                 )
+
+            logger.info("[V2] V2-native notification check complete (verbose mode only)")
             
         except Exception as e:
             logger.error(f"[V2] Error in V2 recommendation check: {e}", exc_info=True)

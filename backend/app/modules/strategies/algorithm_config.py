@@ -50,6 +50,47 @@ ALGORITHM_VERSION = _load_algorithm_version()
 logger.info(f"Algorithm version: {ALGORITHM_VERSION}")
 
 # =============================================================================
+# RLHF LEARNING CONFIGURATION
+# Controls which data is used for RLHF learning
+# =============================================================================
+from datetime import date
+
+RLHF_CONFIG = {
+    # Current algorithm version for tagging matches
+    # Update this when algorithm changes significantly
+    "algorithm_version": "v3.4",
+    
+    # Only data after this date is considered for learning
+    # Update this when starting a new "learning epoch" (major algorithm change)
+    "min_valid_date": date(2026, 1, 7),
+    
+    # Maximum age in days for data to be included in pattern detection
+    # Even within valid epoch, older data is weighted less
+    "pattern_detection_max_days": 30,
+    
+    # Minimum feedback needed before generating V4 candidates
+    # Quality over quantity - don't need feedback on everything
+    "min_modifications_for_pattern": 3,
+    "min_rejections_for_pattern": 3,
+}
+
+def get_rlhf_config():
+    """Get RLHF configuration."""
+    return RLHF_CONFIG
+
+def start_new_rlhf_epoch(version: str, min_date: date):
+    """
+    Start a new RLHF learning epoch.
+    
+    Call this when algorithm version changes significantly.
+    This updates the config - old data won't be used for learning.
+    """
+    global RLHF_CONFIG
+    RLHF_CONFIG["algorithm_version"] = version
+    RLHF_CONFIG["min_valid_date"] = min_date
+    logger.info(f"Started new RLHF epoch: {version} from {min_date}")
+
+# =============================================================================
 # V1 CONFIGURATION (Original - December 2024)
 # Documentation: docs/OPTIONS-NOTIFICATION-ALGORITHM-V1.md
 # =============================================================================

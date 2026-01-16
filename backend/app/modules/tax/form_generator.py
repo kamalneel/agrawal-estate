@@ -156,10 +156,14 @@ def _generate_form_1040(forecast: Dict[str, Any], base_return: IncomeTaxReturn) 
     # Total tax
     total_tax = forecast.get("total_tax", 0)
 
-    # Calculate refund or amount owed
-    total_payments = total_federal_withheld
-    overpayment = max(0, total_payments - total_tax)
-    amount_owed = max(0, total_tax - total_payments)
+    # Get estimated tax payments made
+    estimated_payments = forecast.get("estimated_payments", {})
+    est_federal_paid = estimated_payments.get("federal_paid", 0) if isinstance(estimated_payments, dict) else 0
+
+    # Calculate refund or amount owed (include both W-2 withholding and estimated payments)
+    total_payments = total_federal_withheld + est_federal_paid
+    overpayment = max(0, total_payments - federal_tax)
+    amount_owed = max(0, federal_tax - total_payments)
 
     # Determine filing status name
     filing_status_map = {
@@ -212,7 +216,8 @@ def _generate_form_1040(forecast: Dict[str, Any], base_return: IncomeTaxReturn) 
         # Payments (Lines 25-33)
         line_25a=total_federal_withheld,
         line_25d=total_federal_withheld,
-        line_32=total_payments,
+        line_26=est_federal_paid,  # Estimated tax payments made
+        line_32=total_payments,  # Total payments (W-2 withholding + estimated)
         line_33=overpayment,
 
         # Refund or Amount Owed
@@ -387,9 +392,16 @@ def _generate_california_540(
     # Withholding
     total_state_withheld = sum(w2.get("state_withheld", 0) for w2 in w2_breakdown)
 
+    # Get estimated state tax payments made
+    estimated_payments = forecast.get("estimated_payments", {})
+    est_state_paid = estimated_payments.get("state_paid", 0) if isinstance(estimated_payments, dict) else 0
+
+    # Total state payments (W-2 withholding + estimated)
+    total_state_payments = total_state_withheld + est_state_paid
+
     # Calculate refund or amount owed
-    overpayment = max(0, total_state_withheld - total_ca_tax)
-    amount_owed = max(0, total_ca_tax - total_state_withheld)
+    overpayment = max(0, total_state_payments - total_ca_tax)
+    amount_owed = max(0, total_ca_tax - total_state_payments)
 
     # Filing status
     filing_status_map = {
@@ -433,7 +445,8 @@ def _generate_california_540(
 
         # Payments
         line_41=total_state_withheld,
-        line_44=total_state_withheld,
+        line_42=est_state_paid,  # Estimated tax payments made
+        line_44=total_state_payments,  # Total payments (W-2 withholding + estimated)
 
         # Refund or Owed
         line_45=overpayment,

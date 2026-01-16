@@ -293,6 +293,7 @@ async def get_tax_forecast(
             "w2_withholding": w2_withholding,
             "estimated_tax_needed": forecast.get("estimated_tax_needed", 0),
             "safe_harbor": forecast.get("safe_harbor", {}),
+            "underpayment_penalty": forecast.get("underpayment_penalty", {}),
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -118,6 +118,45 @@ class IncomeTaxReturn(BaseModel):
     )
 
 
+class EstimatedTaxPayment(BaseModel):
+    """
+    Estimated tax payments made directly to IRS or state tax agencies.
+
+    These are payments made outside of W-2 withholding, typically for:
+    - Quarterly estimated tax payments
+    - Extension payments
+    - Underpayment catch-up payments
+    """
+
+    __tablename__ = "estimated_tax_payments"
+
+    tax_year = Column(Integer, nullable=False)  # Tax year the payment applies to
+
+    payment_date = Column(Date, nullable=False)  # Date payment was made
+
+    # Payment destination
+    payment_type = Column(String(20), nullable=False)  # 'federal' or 'state'
+    state_code = Column(String(2), nullable=True)  # 'CA', 'NY', etc. (for state payments)
+
+    # Amount
+    amount = Column(Numeric(18, 2), nullable=False)
+
+    # Optional: which quarter this applies to (1-4)
+    quarter = Column(Integer, nullable=True)
+
+    # Payment method/confirmation
+    payment_method = Column(String(50), nullable=True)  # 'IRS Direct Pay', 'EFTPS', 'CA FTB Web Pay', etc.
+    confirmation_number = Column(String(100), nullable=True)
+
+    notes = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index('idx_estimated_tax_year', 'tax_year'),
+        Index('idx_estimated_payment_date', 'payment_date'),
+        Index('idx_estimated_payment_type', 'payment_type'),
+    )
+
+
 class StockLot(Base, TimestampMixin):
     """
     Stock lot for cost basis tracking.

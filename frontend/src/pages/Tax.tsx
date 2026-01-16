@@ -72,10 +72,23 @@ interface QuarterlyPayment {
   estimated_payment: number;
   federal_payment: number;
   state_payment: number;
+  // Per-quarter W2 withholding (for display)
+  quarter_w2_federal?: number;
+  quarter_w2_state?: number;
+  // Cumulative W2 withholding
+  w2_federal_paid: number;
+  w2_state_paid: number;
   cumulative_paid: number;
   cumulative_federal_paid?: number;
   cumulative_state_paid?: number;
-  status: 'past_due' | 'due_soon' | 'upcoming' | 'not_required';
+  // Estimated payments made
+  est_federal_paid?: number;
+  est_state_paid?: number;
+  cumulative_est_federal_paid?: number;
+  cumulative_est_state_paid?: number;
+  federal_remaining?: number;
+  state_remaining?: number;
+  status: 'past_due' | 'due_soon' | 'upcoming' | 'not_required' | 'paid' | 'partial';
   note?: string;
 }
 
@@ -102,11 +115,64 @@ interface TaxDetails {
     state: number;
     total: number;
   };
+  estimated_payments?: {
+    federal_paid: number;
+    state_paid: number;
+    total_paid: number;
+    payments: Array<{
+      date: string;
+      amount: number;
+      quarter: number;
+      method?: string;
+    }>;
+  };
   estimated_tax_needed?: number;
+  remaining_estimated_needed?: number;
   safe_harbor?: {
     prior_year_110: number;
     current_year_90: number;
     recommended: number;
+  };
+  underpayment_penalty?: {
+    federal: {
+      safe_harbor: number;
+      safe_harbor_110_prior: number;
+      safe_harbor_90_current: number;
+      total_paid: number;
+      safe_harbor_met: boolean;
+      balance_due: number;
+      penalty_waived: boolean;
+      estimated_penalty: number;
+      interest_rate: string;
+      quarters: Array<{
+        quarter: number;
+        required: number;
+        paid: number;
+        underpayment: number;
+        penalty: number;
+        days: number;
+      }>;
+    };
+    state: {
+      safe_harbor: number;
+      safe_harbor_110_prior: number;
+      safe_harbor_90_current: number;
+      total_paid: number;
+      safe_harbor_met: boolean;
+      balance_due: number;
+      penalty_waived: boolean;
+      estimated_penalty: number;
+      interest_rate: string;
+      quarters: Array<{
+        quarter: number;
+        required: number;
+        paid: number;
+        underpayment: number;
+        penalty: number;
+        days: number;
+      }>;
+    };
+    total_estimated_penalty: number;
   };
   details: {
     income_sources?: Array<{ source: string; amount: number }>;
@@ -347,6 +413,18 @@ export default function Tax() {
             </div>
           </div>
 
+          {/* Year-specific action buttons */}
+          <div className={styles.detailActions}>
+            <button className={styles.heroButton} onClick={() => navigate(`/tax/forms?year=${yearDetails.year}`)}>
+              <FileText size={18} />
+              View Tax Forms
+            </button>
+            <button className={styles.heroButton} onClick={() => navigate(`/tax/cost-basis?year=${yearDetails.year}`)}>
+              <TrendingUp size={18} />
+              Cost Basis Tracker
+            </button>
+          </div>
+
           <div className={styles.taxBreakdown}>
             <div className={styles.breakdownBar}>
               <div 
@@ -395,7 +473,7 @@ export default function Tax() {
           <section className={styles.detailSection}>
             <h3><Calendar size={18} /> Quarterly Estimated Tax Payments</h3>
             
-            {/* Withholding Summary */}
+            {/* Withholding & Payments Summary */}
             {yearDetails.w2_withholding && (
               <div className={styles.detailGrid} style={{ marginBottom: '1.5rem' }}>
                 <div className={styles.detailItem}>
@@ -404,16 +482,34 @@ export default function Tax() {
                 </div>
                 <div className={styles.detailItem}>
                   <span className={styles.detailItemLabel}>↳ Federal Withheld</span>
-                  <span className={styles.detailItemValue} style={{ fontSize: '0.9rem' }}>{formatCurrency(yearDetails.w2_withholding.federal)}</span>
+                  <span className={styles.detailItemValue}>{formatCurrency(yearDetails.w2_withholding.federal)}</span>
                 </div>
                 <div className={styles.detailItem}>
                   <span className={styles.detailItemLabel}>↳ State Withheld</span>
-                  <span className={styles.detailItemValue} style={{ fontSize: '0.9rem' }}>{formatCurrency(yearDetails.w2_withholding.state)}</span>
+                  <span className={styles.detailItemValue}>{formatCurrency(yearDetails.w2_withholding.state)}</span>
                 </div>
                 <div className={styles.detailItem}>
-                  <span className={styles.detailItemLabel}>Estimated Tax Needed</span>
-                  <span className={`${styles.detailItemValue} ${(yearDetails.estimated_tax_needed || 0) > 0 ? styles.negative : styles.positive}`}>
-                    {formatCurrency(yearDetails.estimated_tax_needed || 0)}
+                  <span className={styles.detailItemLabel}>Estimated Payments Made</span>
+                  <span className={`${styles.detailItemValue} ${styles.positive}`}>
+                    {formatCurrency(yearDetails.estimated_payments?.total_paid || 0)}
+                  </span>
+                </div>
+                <div className={styles.detailItem}>
+                  <span className={styles.detailItemLabel}>↳ Federal Est. Paid</span>
+                  <span className={`${styles.detailItemValue} ${styles.positive}`}>
+                    {formatCurrency(yearDetails.estimated_payments?.federal_paid || 0)}
+                  </span>
+                </div>
+                <div className={styles.detailItem}>
+                  <span className={styles.detailItemLabel}>↳ State Est. Paid</span>
+                  <span className={`${styles.detailItemValue} ${styles.positive}`}>
+                    {formatCurrency(yearDetails.estimated_payments?.state_paid || 0)}
+                  </span>
+                </div>
+                <div className={styles.detailItem}>
+                  <span className={styles.detailItemLabel}>Remaining Due</span>
+                  <span className={`${styles.detailItemValue} ${(yearDetails.remaining_estimated_needed || 0) > 0 ? styles.negative : styles.positive}`}>
+                    {formatCurrency(yearDetails.remaining_estimated_needed || 0)}
                   </span>
                 </div>
                 {yearDetails.safe_harbor && (
@@ -428,72 +524,201 @@ export default function Tax() {
             {/* Payment Schedule Table */}
             <div className={`${styles.employerTable} ${styles.paymentScheduleTable}`}>
               <div className={styles.employerHeader}>
-                <span>Quarter</span>
-                <span>Period</span>
+                <span>Qtr</span>
                 <span>Due Date</span>
-                <span>Federal (IRS)</span>
-                <span>State (FTB)</span>
-                <span>Total Due</span>
-                <span>Status</span>
+                <span className={styles.taxDue}>Fed Due</span>
+                <span className={styles.taxPaid}>Fed Paid</span>
+                <span className={styles.taxDelta}>Fed Delta</span>
+                <span className={styles.taxDue}>State Due</span>
+                <span className={styles.taxPaid}>State Paid</span>
+                <span className={styles.taxDelta}>State Delta</span>
               </div>
-              {yearDetails.payment_schedule.map((payment, i) => (
-                <div key={i} className={styles.employerRow}>
-                  <span className={styles.employerName}>Q{payment.quarter}</span>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{payment.period}</span>
-                  <span style={{ fontWeight: 500 }}>
-                    {new Date(payment.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </span>
-                  <span className={payment.federal_payment > 0 ? styles.negative : styles.positive}>
-                    {formatCurrency(payment.federal_payment || 0)}
-                  </span>
-                  <span className={payment.state_payment > 0 ? styles.negative : styles.positive}>
-                    {formatCurrency(payment.state_payment || 0)}
-                  </span>
-                  <span className={payment.estimated_payment > 0 ? styles.negative : styles.positive} style={{ fontWeight: 600 }}>
-                    {formatCurrency(payment.estimated_payment)}
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    {payment.status === 'past_due' && (
-                      <>
-                        <AlertTriangle size={14} style={{ color: '#ef4444' }} />
-                        <span style={{ color: '#ef4444', fontSize: '0.85rem' }}>Past Due</span>
-                      </>
-                    )}
-                    {payment.status === 'due_soon' && (
-                      <>
-                        <Clock size={14} style={{ color: '#f59e0b' }} />
-                        <span style={{ color: '#f59e0b', fontSize: '0.85rem' }}>Due Soon</span>
-                      </>
-                    )}
-                    {payment.status === 'upcoming' && (
-                      <>
-                        <Calendar size={14} style={{ color: '#10b981' }} />
-                        <span style={{ color: '#10b981', fontSize: '0.85rem' }}>Upcoming</span>
-                      </>
-                    )}
-                    {payment.status === 'not_required' && (
-                      <>
-                        <CheckCircle2 size={14} style={{ color: '#6b7280' }} />
-                        <span style={{ color: '#6b7280', fontSize: '0.85rem' }}>N/A</span>
-                      </>
-                    )}
-                  </span>
-                </div>
-              ))}
+              {yearDetails.payment_schedule.map((payment, i) => {
+                // Calculate totals for this quarter
+                const w2Fed = payment.quarter_w2_federal || 0;
+                const estFedPaid = payment.est_federal_paid || 0;
+                const fedDue = w2Fed + (payment.federal_payment || 0);
+                const fedPaid = w2Fed + estFedPaid;
+                const fedDelta = fedDue - fedPaid;
+
+                const w2State = payment.quarter_w2_state || 0;
+                const estStatePaid = payment.est_state_paid || 0;
+                const stateDue = w2State + (payment.state_payment || 0);
+                const statePaid = w2State + estStatePaid;
+                const stateDelta = stateDue - statePaid;
+
+                // Format paid column to show breakdown
+                const formatPaidBreakdown = (w2: number, est: number) => {
+                  if (est > 0) {
+                    return `${formatCurrency(w2)} + ${formatCurrency(est)}`;
+                  }
+                  return formatCurrency(w2);
+                };
+
+                return (
+                  <div key={i} className={styles.employerRow}>
+                    <span className={styles.employerName}>Q{payment.quarter}</span>
+                    <span>{new Date(payment.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })}</span>
+                    <span className={styles.taxDue}>{formatCurrency(fedDue)}</span>
+                    <span className={styles.taxPaid}>{formatPaidBreakdown(w2Fed, estFedPaid)}</span>
+                    <span className={fedDelta > 0 ? styles.taxDelta : styles.estPaid}>
+                      {fedDelta > 0 ? formatCurrency(fedDelta) : fedDelta < 0 ? `(${formatCurrency(Math.abs(fedDelta))})` : '$0'}
+                    </span>
+                    <span className={styles.taxDue}>{formatCurrency(stateDue)}</span>
+                    <span className={styles.taxPaid}>{formatPaidBreakdown(w2State, estStatePaid)}</span>
+                    <span className={stateDelta > 0 ? styles.taxDelta : styles.estPaid}>
+                      {stateDelta > 0 ? formatCurrency(stateDelta) : stateDelta < 0 ? `(${formatCurrency(Math.abs(stateDelta))})` : '$0'}
+                    </span>
+                  </div>
+                );
+              })}
+
+              {/* Totals Row */}
+              {(() => {
+                const totalW2Fed = yearDetails.w2_withholding?.federal || 0;
+                // Sum estimated payments from quarters (more reliable than separate field)
+                const totalEstFedPaid = yearDetails.payment_schedule.reduce((sum, p) => sum + (p.est_federal_paid || 0), 0);
+                const totalFedDue = yearDetails.federal_tax;
+                const totalFedPaid = totalW2Fed + totalEstFedPaid;
+                const totalFedDelta = totalFedDue - totalFedPaid;
+
+                const totalW2State = yearDetails.w2_withholding?.state || 0;
+                const totalEstStatePaid = yearDetails.payment_schedule.reduce((sum, p) => sum + (p.est_state_paid || 0), 0);
+                const totalStateDue = yearDetails.state_tax;
+                const totalStatePaid = totalW2State + totalEstStatePaid;
+                const totalStateDelta = totalStateDue - totalStatePaid;
+
+                const formatPaidBreakdown = (w2: number, est: number) => {
+                  if (est > 0) {
+                    return `${formatCurrency(w2)} + ${formatCurrency(est)}`;
+                  }
+                  return formatCurrency(w2);
+                };
+
+                return (
+                  <div className={`${styles.employerRow} ${styles.totalsRow}`}>
+                    <span className={styles.employerName}>Total</span>
+                    <span></span>
+                    <span className={styles.taxDue}>{formatCurrency(totalFedDue)}</span>
+                    <span className={styles.taxPaid}>{formatPaidBreakdown(totalW2Fed, totalEstFedPaid)}</span>
+                    <span className={totalFedDelta > 0 ? styles.taxDelta : styles.estPaid}>
+                      {totalFedDelta > 0 ? formatCurrency(totalFedDelta) : totalFedDelta < 0 ? `(${formatCurrency(Math.abs(totalFedDelta))})` : '$0'}
+                    </span>
+                    <span className={styles.taxDue}>{formatCurrency(totalStateDue)}</span>
+                    <span className={styles.taxPaid}>{formatPaidBreakdown(totalW2State, totalEstStatePaid)}</span>
+                    <span className={totalStateDelta > 0 ? styles.taxDelta : styles.estPaid}>
+                      {totalStateDelta > 0 ? formatCurrency(totalStateDelta) : totalStateDelta < 0 ? `(${formatCurrency(Math.abs(totalStateDelta))})` : '$0'}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
-            {/* Safe Harbor Note */}
-            {yearDetails.safe_harbor && (yearDetails.estimated_tax_needed || 0) > 0 && (
-              <div style={{ 
-                marginTop: '1rem', 
-                padding: '0.75rem 1rem', 
-                background: 'rgba(16, 185, 129, 0.1)', 
-                borderRadius: '8px',
-                fontSize: '0.875rem',
-                color: 'var(--text-secondary)'
+            {/* Legend */}
+            <div style={{
+              marginTop: '1rem',
+              fontSize: '1rem',
+              color: 'var(--text-secondary)',
+              display: 'flex',
+              gap: '2.5rem',
+              flexWrap: 'wrap'
+            }}>
+              <span><span className={styles.taxDue}>●</span> Due = Tax owed for the quarter</span>
+              <span><span className={styles.taxPaid}>●</span> Paid = W2 withholding + estimated payments made</span>
+              <span><span className={styles.taxDelta}>●</span> Delta = Still owed (red) or overpaid (green)</span>
+            </div>
+
+            {/* Underpayment Penalty Analysis */}
+            {yearDetails.underpayment_penalty && (
+              <div style={{
+                marginTop: '1.5rem',
+                padding: '1.25rem',
+                background: 'rgba(0, 0, 0, 0.3)',
+                borderRadius: '12px',
+                border: '1px solid rgba(255, 255, 255, 0.1)'
               }}>
-                <strong>💡 Safe Harbor Tip:</strong> To avoid underpayment penalties, pay at least {formatCurrency(yearDetails.safe_harbor.recommended)} in total 
-                (either 110% of prior year tax or 90% of current year tax, whichever is less).
+                <h4 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: '#fff' }}>
+                  Underpayment Penalty Analysis
+                </h4>
+
+                {/* Summary Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+                  {/* Federal Summary */}
+                  <div style={{ padding: '1rem', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
+                    <div style={{ fontSize: '0.85rem', color: '#9CA3AF', marginBottom: '0.5rem' }}>FEDERAL (IRS)</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span>Safe Harbor (110% of 2024):</span>
+                      <span style={{ fontWeight: 600 }}>{formatCurrency(yearDetails.underpayment_penalty.federal.safe_harbor_110_prior)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span>Total Paid (W2 + Est.):</span>
+                      <span style={{ fontWeight: 600, color: '#10B981' }}>{formatCurrency(yearDetails.underpayment_penalty.federal.total_paid)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span>Safe Harbor Met:</span>
+                      <span style={{ fontWeight: 600, color: yearDetails.underpayment_penalty.federal.safe_harbor_met ? '#10B981' : '#EF4444' }}>
+                        {yearDetails.underpayment_penalty.federal.safe_harbor_met ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                      <span>Estimated Penalty:</span>
+                      <span style={{ fontWeight: 700, fontSize: '1.1rem', color: yearDetails.underpayment_penalty.federal.estimated_penalty > 0 ? '#EF4444' : '#10B981' }}>
+                        {yearDetails.underpayment_penalty.federal.penalty_waived ? '$0 (waived)' : formatCurrency(yearDetails.underpayment_penalty.federal.estimated_penalty)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* State Summary */}
+                  <div style={{ padding: '1rem', background: 'rgba(234, 179, 8, 0.1)', borderRadius: '8px', border: '1px solid rgba(234, 179, 8, 0.2)' }}>
+                    <div style={{ fontSize: '0.85rem', color: '#9CA3AF', marginBottom: '0.5rem' }}>CALIFORNIA (FTB)</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span>Safe Harbor (110% of 2024):</span>
+                      <span style={{ fontWeight: 600 }}>{formatCurrency(yearDetails.underpayment_penalty.state.safe_harbor_110_prior)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span>Total Paid (W2 + Est.):</span>
+                      <span style={{ fontWeight: 600, color: '#10B981' }}>{formatCurrency(yearDetails.underpayment_penalty.state.total_paid)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span>Safe Harbor Met:</span>
+                      <span style={{ fontWeight: 600, color: yearDetails.underpayment_penalty.state.safe_harbor_met ? '#10B981' : '#EF4444' }}>
+                        {yearDetails.underpayment_penalty.state.safe_harbor_met ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                      <span>Estimated Penalty:</span>
+                      <span style={{ fontWeight: 700, fontSize: '1.1rem', color: yearDetails.underpayment_penalty.state.estimated_penalty > 0 ? '#EF4444' : '#10B981' }}>
+                        {yearDetails.underpayment_penalty.state.penalty_waived ? '$0 (waived)' : formatCurrency(yearDetails.underpayment_penalty.state.estimated_penalty)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Total Penalty */}
+                <div style={{
+                  padding: '1rem',
+                  background: yearDetails.underpayment_penalty.total_estimated_penalty > 0 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}>
+                  <span style={{ fontSize: '1rem', fontWeight: 500 }}>Total Estimated Underpayment Penalty:</span>
+                  <span style={{
+                    fontSize: '1.25rem',
+                    fontWeight: 700,
+                    color: yearDetails.underpayment_penalty.total_estimated_penalty > 0 ? '#EF4444' : '#10B981'
+                  }}>
+                    {formatCurrency(yearDetails.underpayment_penalty.total_estimated_penalty)}
+                  </span>
+                </div>
+
+                {/* Explanation */}
+                <div style={{ marginTop: '1rem', fontSize: '0.85rem', color: '#9CA3AF' }}>
+                  <strong>How this is calculated:</strong> The IRS and CA FTB require quarterly estimated payments.
+                  If you paid at least 110% of your 2024 tax liability by the due dates, no penalty applies (safe harbor rule).
+                  Otherwise, a penalty of ~{yearDetails.underpayment_penalty.federal.interest_rate} annually is charged on the underpayment from each due date until paid.
+                </div>
               </div>
             )}
           </section>
@@ -816,14 +1041,6 @@ export default function Tax() {
           </div>
         </div>
         <div className={styles.heroButtons}>
-          <button className={styles.heroButton} onClick={() => navigate('/tax/forms')}>
-            <FileText size={18} />
-            View Tax Forms
-          </button>
-          <button className={styles.heroButton} onClick={() => navigate('/tax/cost-basis')}>
-            <TrendingUp size={18} />
-            Cost Basis Tracker
-          </button>
           <button className={styles.heroRefresh} onClick={fetchTaxHistory}>
             <RefreshCw size={18} />
           </button>

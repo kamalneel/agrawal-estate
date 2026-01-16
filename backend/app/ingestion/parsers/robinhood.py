@@ -196,7 +196,7 @@ class RobinhoodParser(BaseParser):
             return None
         
         # Map Robinhood trans codes to our types
-        # Include ALL transaction types for proper income tracking
+        # Include ALL transaction types for proper income/spending tracking
         trans_type_map = {
             # Stock transactions
             "BUY": "BUY",
@@ -214,11 +214,21 @@ class RobinhoodParser(BaseParser):
             # Interest and other income
             "INT": "INTEREST",
             "SLIP": "SLIP",  # Stock Lending Income Program
+            "GDBP": "INTEREST",  # Gold Deposit Boost Payment (small income)
+            # Cash movements - for spending tracking
+            # Use description + amount sign to determine spending vs deposit
+            "XENT": "CASH_MOVEMENT",      # Brokerage <-> Spending account transfers
+            "XENT_CC": "CASH_MOVEMENT",   # Credit card payments (out) or cashback (in)
+            "RTP": "CASH_MOVEMENT",       # Instant bank transfer (withdrawal)
+            "ACH": "CASH_MOVEMENT",       # ACH deposits/withdrawals
+            # Internal transfers (not spending)
+            "ITRF": "INTERNAL_TRANSFER",  # Between own accounts (e.g., Brokerage to IRA)
+            "DRFRO": "INTERNAL_TRANSFER", # Direct Rollover
+            "FUTSWP": "INTERNAL_TRANSFER",# Event Contracts Inter-Entity Cash Transfer
+            # Fees
+            "GOLD": "FEE",                # Gold subscription fee
             # Other types
             "SPL": "SPLIT",
-            "ACH": "TRANSFER",
-            "DRFRO": "TRANSFER",  # Direct Rollover
-            "FUTSWP": "TRANSFER",  # Event Contracts Inter-Entity Cash Transfer
         }
         
         trans_type = trans_type_map.get(trans_code, "OTHER")

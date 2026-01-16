@@ -792,30 +792,42 @@ class TechnicalAnalysisService:
         if chain_result:
             recommended_strike, actual_delta, probability_otm = chain_result
             pct_otm = ((recommended_strike / current_price) - 1) * 100 if option_type.lower() == "call" else ((current_price / recommended_strike) - 1) * 100
-            
-            rationale = (
-                f"Delta {actual_delta:.2f} strike from live options chain "
-                f"({probability_otm:.0f}% probability OTM, {abs(pct_otm):.1f}% {'above' if option_type.lower() == 'call' else 'below'} ${current_price:.2f})"
-            )
-            
-            logger.info(f"{symbol}: Using LIVE options chain - ${recommended_strike} strike (delta {actual_delta:.2f})")
-            
-            # Round to nearest standard strike
-            if recommended_strike > 100:
-                recommended_strike = round(recommended_strike)
+
+            # SANITY CHECK: Reject strikes that are unreasonably far OTM
+            # For weekly options targeting delta 10, the strike should be within ~15% OTM
+            # Allow up to 30% for high-IV stocks, but anything beyond that is likely bad data
+            MAX_REASONABLE_OTM_PCT = 30.0
+            if abs(pct_otm) > MAX_REASONABLE_OTM_PCT:
+                logger.warning(
+                    f"[STRIKE_SANITY] {symbol}: Rejecting strike ${recommended_strike} from options chain - "
+                    f"{abs(pct_otm):.1f}% OTM exceeds maximum {MAX_REASONABLE_OTM_PCT}% threshold "
+                    f"(stock at ${current_price:.2f}, delta {actual_delta:.2f}). Using fallback calculation."
+                )
+                chain_result = None  # Fall through to fallback below
             else:
-                recommended_strike = round(recommended_strike * 2) / 2
-            
-            return StrikeRecommendation(
-                symbol=symbol,
-                option_type=option_type,
-                recommended_strike=recommended_strike,
-                rationale=rationale,
-                probability_otm=probability_otm,
-                expiration_suggestion=f"Expiring {expiration_date}",
-                source="options_chain"
-            )
-        
+                rationale = (
+                    f"Delta {actual_delta:.2f} strike from live options chain "
+                    f"({probability_otm:.0f}% probability OTM, {abs(pct_otm):.1f}% {'above' if option_type.lower() == 'call' else 'below'} ${current_price:.2f})"
+                )
+
+                logger.info(f"{symbol}: Using LIVE options chain - ${recommended_strike} strike (delta {actual_delta:.2f})")
+
+                # Round to nearest standard strike
+                if recommended_strike > 100:
+                    recommended_strike = round(recommended_strike)
+                else:
+                    recommended_strike = round(recommended_strike * 2) / 2
+
+                return StrikeRecommendation(
+                    symbol=symbol,
+                    option_type=option_type,
+                    recommended_strike=recommended_strike,
+                    rationale=rationale,
+                    probability_otm=probability_otm,
+                    expiration_suggestion=f"Expiring {expiration_date}",
+                    source="options_chain"
+                )
+
         # ===== PRIORITY 2: Fall back to hardcoded volatility estimates =====
         logger.info(f"[STRIKE_DEBUG] {symbol}: Options chain returned None - USING FALLBACK volatility estimate")
         

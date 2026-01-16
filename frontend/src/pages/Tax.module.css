@@ -455,6 +455,12 @@
   color: #FFFFFF;
 }
 
+.detailActions {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
 .taxBreakdown {
   margin-bottom: 1.5rem;
 }
@@ -608,6 +614,82 @@
   color: #EF4444;
 }
 
+/* Global color classes for table cells */
+.positive {
+  color: #10B981;
+}
+
+.negative {
+  color: #EF4444;
+}
+
+.muted {
+  color: #6b7280;
+}
+
+/* Tax payment table colors */
+.taxDue {
+  color: #3B82F6; /* Blue - what you owe */
+}
+
+.taxPaid {
+  color: #10B981; /* Green - W2 withholding */
+}
+
+.taxDelta {
+  color: #EF4444; /* Red - estimated payment needed */
+}
+
+.estPaid {
+  color: #22C55E; /* Bright green - estimated payment made */
+  font-weight: 600;
+}
+
+/* Status badges - base style */
+.statusBadge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: center;
+  background: rgba(100, 100, 100, 0.2);
+  color: #9CA3AF;
+}
+
+/* Status badge variants - standalone classes */
+.statusPaid {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22C55E;
+}
+
+.statusPartial {
+  background: rgba(234, 179, 8, 0.2);
+  color: #EAB308;
+}
+
+.statusPastDue {
+  background: rgba(239, 68, 68, 0.2);
+  color: #EF4444;
+}
+
+.statusDueSoon {
+  background: rgba(234, 179, 8, 0.2);
+  color: #EAB308;
+}
+
+.statusUpcoming {
+  background: rgba(100, 100, 100, 0.2);
+  color: #9CA3AF;
+}
+
+/* Totals row */
+.totalsRow {
+  background: rgba(255, 255, 255, 0.05);
+  font-weight: 600;
+  border-top: 2px solid rgba(255, 255, 255, 0.1);
+}
+
 /* Employer Table */
 .employerTable {
   background: rgba(0, 0, 0, 0.2);
@@ -637,12 +719,27 @@
   color: #e5e5e5;
 }
 
-/* 7-column layout for quarterly payment schedule */
+/* 8-column layout for quarterly payment schedule - uses full width */
+.paymentScheduleTable {
+  width: 100%;
+}
+
 .paymentScheduleTable .employerHeader,
 .paymentScheduleTable .employerRow {
-  grid-template-columns: 50px 140px 100px 90px 90px 90px 100px;
-  gap: 0.25rem;
-  font-size: 0.75rem;
+  grid-template-columns: 50px 110px 1fr 1fr 1fr 1fr 1fr 1fr;
+  gap: 1rem;
+  font-size: 1.1rem;
+  align-items: center;
+}
+
+.paymentScheduleTable .employerHeader {
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 1.25rem 1.5rem;
+}
+
+.paymentScheduleTable .employerRow {
+  padding: 1.25rem 1.5rem;
 }
 
 .employerName {
@@ -809,15 +906,15 @@
     display: none;
   }
   
-  /* Payment schedule: keep all columns but make more compact on mobile */
+  /* Payment schedule: 8 columns on mobile */
   .paymentScheduleTable .employerHeader,
   .paymentScheduleTable .employerRow {
-    grid-template-columns: 35px 1fr 75px 65px 65px 70px 75px;
-    gap: 0.15rem;
-    font-size: 0.65rem;
-    padding: 0.5rem;
+    grid-template-columns: 40px 70px repeat(6, 1fr);
+    gap: 0.4rem;
+    font-size: 0.7rem;
+    padding: 0.75rem;
   }
-  
+
   .paymentScheduleTable .employerHeader span,
   .paymentScheduleTable .employerRow span {
     display: block !important;

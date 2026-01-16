@@ -44,6 +44,7 @@ from app.modules.strategies.recommendation_models import (
     generate_recommendation_id,
 )
 from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
+from app.modules.strategies.algorithm_config import get_rlhf_config
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ class V2SnapshotAdapter:
     def context_snapshot(self) -> Dict[str, Any]:
         """Build V1-compatible context from V2 snapshot fields."""
         context = self.snapshot.full_context or {}
-        
+
         # Ensure key fields are present from snapshot fields
         if self.snapshot.target_strike:
             context['target_strike'] = float(self.snapshot.target_strike)
@@ -138,10 +139,54 @@ class V2SnapshotAdapter:
             context['current_expiration'] = str(self.position.source_expiration)
         if self.position.source_contracts:
             context['contracts'] = self.position.source_contracts
-        
+
         context['account_name'] = self.position.account_name
         context['symbol'] = self.position.symbol
-        
+
+        # Add reasoning and decision context
+        if self.snapshot.reason:
+            context['reasoning'] = self.snapshot.reason
+            context['reason'] = self.snapshot.reason
+        if self.snapshot.decision_state:
+            context['decision_state'] = self.snapshot.decision_state
+
+        # Add market conditions at time of recommendation
+        if self.snapshot.stock_price:
+            context['stock_price'] = float(self.snapshot.stock_price)
+            context['current_price'] = float(self.snapshot.stock_price)
+        if self.snapshot.current_premium:
+            context['current_premium'] = float(self.snapshot.current_premium)
+        if self.snapshot.profit_pct:
+            context['profit_pct'] = float(self.snapshot.profit_pct)
+
+        # Add ITM status
+        if self.snapshot.is_itm is not None:
+            context['is_itm'] = self.snapshot.is_itm
+        if self.snapshot.itm_pct:
+            context['itm_percent'] = float(self.snapshot.itm_pct)
+            context['itm_pct'] = float(self.snapshot.itm_pct)
+
+        # Add DTE
+        if self.snapshot.days_to_expiration:
+            context['days_to_expiration'] = self.snapshot.days_to_expiration
+            context['dte'] = self.snapshot.days_to_expiration
+
+        # Add technical indicators
+        if self.snapshot.rsi:
+            context['rsi'] = float(self.snapshot.rsi)
+        if self.snapshot.bollinger_position:
+            context['bollinger_position'] = self.snapshot.bollinger_position
+        if self.snapshot.trend:
+            context['trend'] = self.snapshot.trend
+        if self.snapshot.support_level:
+            context['support'] = float(self.snapshot.support_level)
+        if self.snapshot.resistance_level:
+            context['resistance'] = float(self.snapshot.resistance_level)
+
+        # Add snapshot metadata for identification
+        context['snapshot_number'] = self.snapshot.snapshot_number
+        context['priority'] = self.snapshot.priority
+
         return context
 
 
@@ -347,12 +392,26 @@ class ReconciliationService:
                     hours_to_execution=hours_to_exec
                 ))
             else:
-                # No good match - mark as reject
-                matches.append(MatchResult(
-                    match_type=MatchType.REJECT,
-                    confidence=100.0,
-                    recommendation=rec
-                ))
+                # No execution found for this recommendation
+                # Check if the recommendation was to WAIT/HOLD - in that case, no action = CONSENT
+                action_type = rec.action_type.upper() if rec.action_type else ''
+                is_wait_recommendation = action_type in ['WAIT', 'HOLD', 'MONITOR', 'WATCH']
+                
+                if is_wait_recommendation:
+                    # User followed the WAIT advice by not acting - this is CONSENT
+                    matches.append(MatchResult(
+                        match_type=MatchType.CONSENT,
+                        confidence=100.0,
+                        recommendation=rec,
+                        modification_details={'followed_wait_advice': True}
+                    ))
+                else:
+                    # User didn't act on an actionable recommendation - this is REJECT
+                    matches.append(MatchResult(
+                        match_type=MatchType.REJECT,
+                        confidence=100.0,
+                        recommendation=rec
+                    ))
         
         return matches
     
@@ -401,20 +460,41 @@ class ReconciliationService:
         
         # Extract recommendation details from context
         context = rec.context_snapshot or {}
-        rec_strike = (
-            context.get('strike') or 
-            context.get('recommended_strike') or 
-            context.get('strike_price') or  # Used in sell_unsold_contracts and new_covered_call
-            context.get('target_strike') or
-            context.get('new_strike')  # For roll recommendations
-        )
-        rec_expiration = (
-            context.get('expiration') or 
-            context.get('recommended_expiration') or
-            context.get('expiration_date') or  # Common key in context
-            context.get('target_expiration') or
-            context.get('new_expiration')  # For roll recommendations
-        )
+        rec_action = rec.action_type or ''
+        is_roll = 'roll' in rec_action.lower()
+        
+        # For rolls, prioritize target/new values (what we're rolling TO)
+        if is_roll:
+            rec_strike = (
+                context.get('target_strike') or
+                context.get('new_strike') or  # For roll recommendations
+                context.get('strike') or 
+                context.get('recommended_strike') or 
+                context.get('strike_price')
+            )
+            rec_expiration = (
+                context.get('target_expiration') or
+                context.get('new_expiration') or  # For roll recommendations
+                context.get('expiration') or 
+                context.get('recommended_expiration') or
+                context.get('expiration_date')
+            )
+        else:
+            rec_strike = (
+                context.get('strike') or 
+                context.get('recommended_strike') or 
+                context.get('strike_price') or  # Used in sell_unsold_contracts and new_covered_call
+                context.get('target_strike') or
+                context.get('new_strike')
+            )
+            rec_expiration = (
+                context.get('expiration') or 
+                context.get('recommended_expiration') or
+                context.get('expiration_date') or  # Common key in context
+                context.get('target_expiration') or
+                context.get('new_expiration')
+            )
+        
         # Try premium_per_contract first (per-contract value)
         rec_premium = (
             context.get('premium') or 
@@ -540,39 +620,57 @@ class ReconciliationService:
     ) -> MatchType:
         """
         Classify the match type based on differences.
-        
-        Consent: Close enough to recommendation
+
+        Consent: Close enough to recommendation, or followed WAIT advice
         Modify: Same symbol but different parameters
+        Reject: Didn't follow WAIT advice (executed when told to wait)
         """
+        # Check if this was a WAIT/HOLD recommendation
+        action_type = rec.action_type.upper() if rec.action_type else ''
+        is_wait_recommendation = action_type in ['WAIT', 'HOLD', 'MONITOR', 'WATCH']
+        
+        if is_wait_recommendation:
+            # User was told to WAIT but they executed a trade - this is REJECT
+            # They didn't follow the wait advice
+            return MatchType.REJECT
+        
+        # For actionable recommendations (SELL, ROLL, etc.)
         # If no significant modifications, it's consent
         if not details:
             return MatchType.CONSENT
-        
+
         # Check if modifications are significant
         significant = False
-        
+
         strike_diff = abs(details.get('strike_diff', 0))
         exp_diff = abs(details.get('expiration_diff_days', 0))
-        
+
         # Strike diff > 3% or expiration diff > 2 days = modification
         if strike_diff > 0 or exp_diff > 2:
             significant = True
-        
+
         return MatchType.MODIFY if significant else MatchType.CONSENT
     
     def _determine_no_execution_type(self, rec: Any) -> MatchType:
         """
-        Determine if no execution means reject or no_action.
+        Determine if no execution means consent, reject, or no_action.
         
+        Consent: User followed WAIT/HOLD advice by not acting
         No action: Position resolved itself (expired worthless, hit target, etc.)
-        Reject: User chose not to act on recommendation
+        Reject: User chose not to act on actionable recommendation
         """
+        # Check if this was a WAIT/HOLD recommendation
+        # If user was told to wait and didn't trade, they FOLLOWED the advice = CONSENT
+        action_type = rec.action_type.upper() if rec.action_type else ''
+        if action_type in ['WAIT', 'HOLD', 'MONITOR', 'WATCH']:
+            return MatchType.CONSENT
+        
         # Check if this was an informational recommendation
         if rec.recommendation_type in ['earnings_alert', 'dividend_alert', 'monitor']:
             return MatchType.NO_ACTION
         
         # Check if position status changed (would need to check sold_options table)
-        # For now, default to reject if no execution found
+        # For now, default to reject if no execution found for actionable recommendations
         return MatchType.REJECT
     
     def _calculate_hours_to_execution(
@@ -607,21 +705,41 @@ class ReconciliationService:
                 
                 if rec:
                     context = rec.context_snapshot or {}
+                    rec_action = rec.action_type or ''
+                    is_roll = 'roll' in rec_action.lower()
+                    
                     # Check multiple key names since different recommendation types use different keys
-                    rec_strike = (
-                        context.get('strike') or 
-                        context.get('recommended_strike') or 
-                        context.get('strike_price') or  # Used in sell_unsold_contracts and new_covered_call
-                        context.get('target_strike') or
-                        context.get('new_strike')  # For roll recommendations
-                    )
-                    rec_expiration = (
-                        context.get('expiration') or 
-                        context.get('recommended_expiration') or 
-                        context.get('expiration_date') or  # Common key in context
-                        context.get('target_expiration') or
-                        context.get('new_expiration')  # For roll recommendations
-                    )
+                    # For rolls, prioritize target/new values (what we're rolling TO)
+                    if is_roll:
+                        rec_strike = (
+                            context.get('target_strike') or
+                            context.get('new_strike') or  # For roll recommendations
+                            context.get('strike') or 
+                            context.get('recommended_strike') or 
+                            context.get('strike_price')
+                        )
+                        rec_expiration = (
+                            context.get('target_expiration') or
+                            context.get('new_expiration') or  # For roll recommendations
+                            context.get('expiration') or 
+                            context.get('recommended_expiration') or 
+                            context.get('expiration_date')
+                        )
+                    else:
+                        rec_strike = (
+                            context.get('strike') or 
+                            context.get('recommended_strike') or 
+                            context.get('strike_price') or  # Used in sell_unsold_contracts and new_covered_call
+                            context.get('target_strike') or
+                            context.get('new_strike')
+                        )
+                        rec_expiration = (
+                            context.get('expiration') or 
+                            context.get('recommended_expiration') or 
+                            context.get('expiration_date') or  # Common key in context
+                            context.get('target_expiration') or
+                            context.get('new_expiration')
+                        )
                     # Try premium_per_contract first (per-contract value)
                     # For roll recommendations, prioritize new_premium (premium for the new position)
                     rec_premium = (
@@ -780,6 +898,7 @@ class ReconciliationService:
                         # Week tracking
                         year=iso_cal.year,
                         week_number=iso_cal.week,
+                        algorithm_version=get_rlhf_config()["algorithm_version"],
                         reconciled_at=datetime.utcnow(),
                     )
                     
@@ -860,6 +979,7 @@ class ReconciliationService:
                         # Week tracking
                         year=iso_cal.year,
                         week_number=iso_cal.week,
+                        algorithm_version=get_rlhf_config()["algorithm_version"],
                         reconciled_at=datetime.utcnow(),
                     )
                     

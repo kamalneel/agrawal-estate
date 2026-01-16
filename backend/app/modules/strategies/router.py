@@ -1364,9 +1364,15 @@ async def delete_options_snapshot(
 # These functions calculate actual historical income from the InvestmentTransaction
 # table rather than projecting based on options * premium.
 
-def get_actual_options_income(db: Session, start_date: date, end_date: date) -> Dict[str, Dict[str, float]]:
+def get_actual_options_income(db: Session, start_date: date, end_date: date, option_type: str = 'call') -> Dict[str, Dict[str, float]]:
     """
     Get actual options income (STO/BTC transactions) for a date range.
+
+    Args:
+        db: Database session
+        start_date: Start of date range
+        end_date: End of date range
+        option_type: 'call' or 'put' - filters by description containing 'Call' or 'Put'
 
     Returns:
         Dict mapping account_name -> {symbol -> total_income}
@@ -1374,8 +1380,12 @@ def get_actual_options_income(db: Session, start_date: date, end_date: date) -> 
     from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
     from sqlalchemy import and_
 
+    # Filter pattern based on option type
+    type_filter = 'Call' if option_type == 'call' else 'Put'
+
     # Query STO (Sell To Open) and BTC (Buy To Close) transactions
     # STO generates income (positive), BTC is buyback (usually negative)
+    # Filter by description to separate calls from puts
     results = db.query(
         InvestmentAccount.account_name,
         InvestmentTransaction.symbol,
@@ -1389,7 +1399,8 @@ def get_actual_options_income(db: Session, start_date: date, end_date: date) -> 
     ).filter(
         InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
         InvestmentTransaction.transaction_date >= start_date,
-        InvestmentTransaction.transaction_date <= end_date
+        InvestmentTransaction.transaction_date <= end_date,
+        InvestmentTransaction.description.ilike(f'%{type_filter}%')
     ).group_by(
         InvestmentAccount.account_name,
         InvestmentTransaction.symbol
@@ -1412,6 +1423,39 @@ def get_actual_options_income(db: Session, start_date: date, end_date: date) -> 
         income_by_account[account_name][underlying] += amount
 
     return income_by_account
+
+
+def get_actual_put_income(db: Session, start_date: date, end_date: date) -> Dict[str, float]:
+    """
+    Get actual put income (STO/BTC transactions for puts) for a date range.
+
+    Returns income by account only (not by symbol) since puts go to CASH row.
+
+    Returns:
+        Dict mapping account_name -> total_put_income
+    """
+    from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
+    from sqlalchemy import and_
+
+    results = db.query(
+        InvestmentAccount.account_name,
+        func.sum(InvestmentTransaction.amount).label('total')
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+        InvestmentTransaction.transaction_date >= start_date,
+        InvestmentTransaction.transaction_date <= end_date,
+        InvestmentTransaction.description.ilike('%Put%')
+    ).group_by(
+        InvestmentAccount.account_name
+    ).all()
+
+    return {row.account_name: float(row.total or 0) for row in results}
 
 
 def get_date_ranges_for_actuals() -> Dict[str, tuple]:
@@ -1466,56 +1510,83 @@ def calculate_actual_income_for_holdings(
     """
     Calculate actual weekly, monthly, and yearly income for all holdings.
 
+    Separates CALL income (goes to equity rows) from PUT income (goes to CASH row).
+
     Returns:
-        Tuple of (account_income, symbol_income, portfolio_totals)
-        - account_income: Dict[account_name -> {weekly, monthly, yearly}]
-        - symbol_income: Dict[symbol -> {weekly, monthly, yearly}]
-        - portfolio_totals: Dict with total weekly, monthly, yearly
+        Tuple of (account_income, symbol_income, portfolio_totals, date_ranges, put_income_by_account)
+        - account_income: Dict[account_name -> {weekly, monthly, yearly}] for CALLS only
+        - symbol_income: Dict[symbol -> {weekly, monthly, yearly}] for CALLS only
+        - portfolio_totals: Dict with total weekly, monthly, yearly (CALLS + PUTS)
+        - date_ranges: The date ranges used for calculations
+        - put_income_by_account: Dict[account_name -> {weekly, monthly, yearly}] for PUTS only
     """
     date_ranges = get_date_ranges_for_actuals()
 
-    # Get actual income for each period
-    weekly_income = get_actual_options_income(db, *date_ranges['last_week'])
-    monthly_income = get_actual_options_income(db, *date_ranges['last_month'])
-    yearly_income = get_actual_options_income(db, *date_ranges['last_year'])
+    # Get actual CALL income for each period (for equity rows)
+    weekly_call_income = get_actual_options_income(db, *date_ranges['last_week'], option_type='call')
+    monthly_call_income = get_actual_options_income(db, *date_ranges['last_month'], option_type='call')
+    yearly_call_income = get_actual_options_income(db, *date_ranges['last_year'], option_type='call')
 
-    # Build account-level income
+    # Get actual PUT income for each period (for CASH row)
+    weekly_put_income = get_actual_put_income(db, *date_ranges['last_week'])
+    monthly_put_income = get_actual_put_income(db, *date_ranges['last_month'])
+    yearly_put_income = get_actual_put_income(db, *date_ranges['last_year'])
+
+    # Build account-level CALL income
     account_income = {}
     for account_name in holdings_by_account:
         account_income[account_name] = {
-            'weekly': sum(weekly_income.get(account_name, {}).values()),
-            'monthly': sum(monthly_income.get(account_name, {}).values()),
-            'yearly': sum(yearly_income.get(account_name, {}).values())
+            'weekly': sum(weekly_call_income.get(account_name, {}).values()),
+            'monthly': sum(monthly_call_income.get(account_name, {}).values()),
+            'yearly': sum(yearly_call_income.get(account_name, {}).values())
         }
 
-    # Build symbol-level income (aggregate across all accounts)
+    # Build account-level PUT income (for CASH rows)
+    put_income_by_account = {}
+    all_put_accounts = set(weekly_put_income.keys()) | set(monthly_put_income.keys()) | set(yearly_put_income.keys())
+    for account_name in all_put_accounts:
+        put_income_by_account[account_name] = {
+            'weekly': weekly_put_income.get(account_name, 0),
+            'monthly': monthly_put_income.get(account_name, 0),
+            'yearly': yearly_put_income.get(account_name, 0)
+        }
+
+    # Build symbol-level CALL income (aggregate across all accounts)
     all_symbols = set()
-    for symbols in weekly_income.values():
+    for symbols in weekly_call_income.values():
         all_symbols.update(symbols.keys())
-    for symbols in monthly_income.values():
+    for symbols in monthly_call_income.values():
         all_symbols.update(symbols.keys())
-    for symbols in yearly_income.values():
+    for symbols in yearly_call_income.values():
         all_symbols.update(symbols.keys())
 
     symbol_income = {}
     for symbol in all_symbols:
-        weekly_total = sum(acct.get(symbol, 0) for acct in weekly_income.values())
-        monthly_total = sum(acct.get(symbol, 0) for acct in monthly_income.values())
-        yearly_total = sum(acct.get(symbol, 0) for acct in yearly_income.values())
+        weekly_total = sum(acct.get(symbol, 0) for acct in weekly_call_income.values())
+        monthly_total = sum(acct.get(symbol, 0) for acct in monthly_call_income.values())
+        yearly_total = sum(acct.get(symbol, 0) for acct in yearly_call_income.values())
         symbol_income[symbol] = {
             'weekly': weekly_total,
             'monthly': monthly_total,
             'yearly': yearly_total
         }
 
-    # Calculate portfolio totals
+    # Calculate portfolio totals (CALLS + PUTS combined)
+    total_call_weekly = sum(a['weekly'] for a in account_income.values())
+    total_call_monthly = sum(a['monthly'] for a in account_income.values())
+    total_call_yearly = sum(a['yearly'] for a in account_income.values())
+
+    total_put_weekly = sum(weekly_put_income.values())
+    total_put_monthly = sum(monthly_put_income.values())
+    total_put_yearly = sum(yearly_put_income.values())
+
     portfolio_totals = {
-        'weekly': sum(a['weekly'] for a in account_income.values()),
-        'monthly': sum(a['monthly'] for a in account_income.values()),
-        'yearly': sum(a['yearly'] for a in account_income.values())
+        'weekly': total_call_weekly + total_put_weekly,
+        'monthly': total_call_monthly + total_put_monthly,
+        'yearly': total_call_yearly + total_put_yearly
     }
 
-    return account_income, symbol_income, portfolio_totals, date_ranges
+    return account_income, symbol_income, portfolio_totals, date_ranges, put_income_by_account
 
 
 @router.post("/options-selling/income-projection-with-status")
@@ -1586,52 +1657,20 @@ async def calculate_options_income_with_sold_status(
 
     # Load cash balances for put income calculation
     from app.modules.strategies.models import AccountCashBalance
+    from app.core.account_aliases import normalize_account_name
     cash_balances = {}
     try:
         cash_balance_records = db.query(AccountCashBalance).all()
         for cb in cash_balance_records:
-            cash_balances[cb.account_name] = float(cb.cash_balance)
+            # Normalize account name to handle aliases (e.g., "Neel's IRA" -> "Neel's Retirement")
+            normalized_name = normalize_account_name(cb.account_name)
+            cash_balances[normalized_name] = float(cb.cash_balance)
     except Exception:
         pass  # Table might not exist yet
 
-    # Calculate put income from actual put transactions (4-week rolling average)
-    # Uses unique positions to avoid counting same position multiple times across snapshots
+    # Put income is now calculated from actual transactions (not 4-week rolling average)
+    # It will be populated later by calculate_actual_income_for_holdings()
     put_income_by_account = {}
-    try:
-        from datetime import datetime, timedelta
-        four_weeks_ago = datetime.now() - timedelta(weeks=4)
-
-        # Deduplicate puts by (account, symbol, strike, expiration) to get unique positions
-        put_income_result = db.execute(text("""
-            WITH unique_puts AS (
-                SELECT DISTINCT ON (sos.account_name, so.symbol, so.strike_price, so.expiration_date)
-                    sos.account_name,
-                    so.symbol,
-                    so.strike_price,
-                    so.expiration_date,
-                    so.contracts_sold,
-                    COALESCE(so.original_premium, so.premium_per_contract, 0) as premium_per_share
-                FROM sold_options so
-                JOIN sold_options_snapshots sos ON so.snapshot_id = sos.id
-                WHERE so.option_type = 'put'
-                AND sos.snapshot_date >= :four_weeks_ago
-                ORDER BY sos.account_name, so.symbol, so.strike_price, so.expiration_date, sos.snapshot_date DESC
-            )
-            SELECT
-                account_name,
-                SUM(premium_per_share * contracts_sold * 100) as total_premium
-            FROM unique_puts
-            GROUP BY account_name
-        """), {"four_weeks_ago": four_weeks_ago})
-
-        for row in put_income_result:
-            account = row[0]
-            total_premium = float(row[1]) if row[1] else 0
-            # Average over 4 weeks to get weekly income
-            put_income_by_account[account] = total_premium / 4
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Could not calculate put income: {e}")
 
     # Get all stock holdings by account
     result = db.execute(text("""
@@ -1760,7 +1799,7 @@ async def calculate_options_income_with_sold_status(
     date_ranges = None
     actual_portfolio_totals = None
     try:
-        actual_account_income, actual_symbol_income, actual_portfolio_totals, date_ranges = \
+        actual_account_income, actual_symbol_income, actual_portfolio_totals, date_ranges, put_income_by_account = \
             calculate_actual_income_for_holdings(db, accounts, symbols)
 
         # Update symbol-level income with actuals
@@ -1810,15 +1849,21 @@ async def calculate_options_income_with_sold_status(
     cash_symbol_data = None
 
     # Calculate TOTAL put income from ALL accounts for portfolio-level CASH row
-    total_put_weekly_all_accounts = sum(put_income_by_account.values())
+    # put_income_by_account is now {account_name: {weekly, monthly, yearly}}
+    total_put_weekly_all_accounts = sum(v.get('weekly', 0) for v in put_income_by_account.values())
+    total_put_monthly_all_accounts = sum(v.get('monthly', 0) for v in put_income_by_account.values())
+    total_put_yearly_all_accounts = sum(v.get('yearly', 0) for v in put_income_by_account.values())
 
     for account_name, cash_balance in cash_balances.items():
         if cash_balance <= 0:
             continue
 
         total_cash += cash_balance
-        # Get put income for this specific account
-        put_weekly = put_income_by_account.get(account_name, 0)
+        # Get put income for this specific account (now has weekly/monthly/yearly)
+        account_put_income = put_income_by_account.get(account_name, {})
+        put_weekly = account_put_income.get('weekly', 0)
+        put_monthly = account_put_income.get('monthly', 0)
+        put_yearly = account_put_income.get('yearly', 0)
 
         # Create or get account if it doesn't exist
         if account_name not in accounts:
@@ -1845,18 +1890,18 @@ async def calculate_options_income_with_sold_status(
             "value": round(cash_balance, 0),
             "options": 0,  # Puts don't have a fixed "options" count like calls
             "premium_per_contract": put_weekly,  # Weekly put income for this account
-            "premium_source": "actual_puts",  # Indicates this is from real data
+            "premium_source": "actual_puts",  # Indicates this is from actual transactions
             "weekly_income": put_weekly,
-            "monthly_income": put_weekly * 4,
-            "yearly_income": put_weekly * weeks_per_year,
+            "monthly_income": put_monthly,
+            "yearly_income": put_yearly,
             "is_cash_row": True
         })
 
         # Update account totals to include put income
         accounts[account_name]["total_value"] += cash_balance
         accounts[account_name]["weekly_income"] += put_weekly
-        accounts[account_name]["monthly_income"] = accounts[account_name]["weekly_income"] * 4
-        accounts[account_name]["yearly_income"] = accounts[account_name]["weekly_income"] * weeks_per_year
+        accounts[account_name]["monthly_income"] += put_monthly
+        accounts[account_name]["yearly_income"] += put_yearly
 
     # Add CASH to portfolio-level symbols if we have any cash OR any put income
     if total_cash > 0 or total_put_weekly_all_accounts > 0:
@@ -1870,8 +1915,8 @@ async def calculate_options_income_with_sold_status(
             "premium_per_contract": total_put_weekly_all_accounts,  # ALL put income
             "premium_source": "actual_puts",
             "weekly_income": total_put_weekly_all_accounts,  # ALL put income from all accounts
-            "monthly_income": total_put_weekly_all_accounts * 4,
-            "yearly_income": total_put_weekly_all_accounts * weeks_per_year,
+            "monthly_income": total_put_monthly_all_accounts,
+            "yearly_income": total_put_yearly_all_accounts,
             "accounts": list(put_income_by_account.keys()),  # All accounts with put income
             "account_count": len(put_income_by_account),
             "sold_contracts": 0,
@@ -2062,30 +2107,34 @@ async def add_monitored_position(
 ):
     """
     Add a new option position for early roll monitoring.
-    
+
     This creates a standalone position entry for monitoring, separate from
     the screenshot-based tracking. Use this when you want precise control
     over the original premium for profit calculations.
     """
     from app.modules.strategies.models import SoldOptionsSnapshot, SoldOption
-    
+    from app.core.account_aliases import normalize_account_name
+
+    # Normalize account name to handle aliases (e.g., "Neel's IRA" -> "Neel's Retirement")
+    account_name = normalize_account_name(position.account_name) if position.account_name else None
+
     # Parse expiration date
     try:
         exp_date = datetime.strptime(position.expiration_date, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    
+
     # Create or get a snapshot for manual entries
     snapshot = db.query(SoldOptionsSnapshot).filter(
         SoldOptionsSnapshot.source == 'manual',
-        SoldOptionsSnapshot.account_name == position.account_name,
+        SoldOptionsSnapshot.account_name == account_name,
         SoldOptionsSnapshot.parsing_status == 'success'
     ).order_by(SoldOptionsSnapshot.snapshot_date.desc()).first()
-    
+
     if not snapshot:
         snapshot = SoldOptionsSnapshot(
             source='manual',
-            account_name=position.account_name,
+            account_name=account_name,
             snapshot_date=datetime.utcnow(),
             parsing_status='success',
             notes='Manually entered positions for roll monitoring'

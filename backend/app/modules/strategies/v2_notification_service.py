@@ -453,24 +453,21 @@ class V2NotificationService:
         """
         if not notifications:
             return ""
-        
-        # Add mode header
-        if mode == 'verbose':
-            lines = ["📢 *VERBOSE MODE* - All Snapshots", "─────────────────────", ""]
-        else:
-            lines = ["🧠 *SMART MODE* - Changes Only", "─────────────────────", ""]
-        
+
+        # Add header (smart mode disabled as of 2026-01-13, only verbose mode used)
+        lines = ["📢 *Options Recommendations*", "─────────────────────", ""]
+
         # Group by account
         by_account = defaultdict(list)
         for notif in notifications:
             account = notif.get('account_name') or 'Other'
             by_account[account].append(notif)
-        
+
         # Format each account group using NEO order (Neel's first, then Jaya's, then others)
         for account in sorted(by_account.keys(), key=lambda x: get_account_sort_order(x or 'Other')):
             items = by_account[account]
             lines.append(f"*{account} - {len(items)} Recommendation{'s' if len(items) > 1 else ''}:*")
-            
+
             for item in items:
                 action = item.get('action', '')
                 symbol = item.get('symbol', '')
@@ -479,21 +476,35 @@ class V2NotificationService:
                 target_exp = item.get('target_expiration')
                 stock_price = item.get('stock_price')
                 snap_num = item.get('snapshot_number', 1)
-                
+                option_type = item.get('option_type', 'call')
+
                 # Get premium/cost data
                 net_cost = item.get('net_cost')
                 target_premium = item.get('target_premium')
                 contracts = item.get('contracts') or 1
-                
+
+                # Calculate DTE for target expiration
+                dte = 0
+                if target_exp:
+                    try:
+                        if isinstance(target_exp, str):
+                            exp_date = datetime.fromisoformat(target_exp).date()
+                        else:
+                            exp_date = target_exp
+                        dte = max(0, (exp_date - date.today()).days)
+                    except:
+                        dte = 0
+
                 # Format line based on action type
                 if action.upper().startswith('ROLL'):
                     if target_strike and target_exp:
-                        exp_display = datetime.fromisoformat(target_exp).strftime('%b %d') if target_exp else ''
-                        line = f"• {action}: {symbol} ${source_strike}→${target_strike} {exp_display}"
+                        exp_display = datetime.fromisoformat(target_exp).strftime('%b %d %Y') if isinstance(target_exp, str) else target_exp.strftime('%b %d %Y')
+                        dte_str = f" ({dte}d)" if dte > 0 else ""
+                        line = f"• {action}: {symbol} ${source_strike} {option_type}→${target_strike} {option_type} {exp_display}{dte_str}"
                     elif target_strike:
-                        line = f"• {action}: {symbol} ${source_strike}→${target_strike}"
+                        line = f"• {action}: {symbol} ${source_strike} {option_type}→${target_strike} {option_type}"
                     else:
-                        line = f"• {action}: {symbol} ${source_strike}"
+                        line = f"• {action}: {symbol} ${source_strike} {option_type}"
                     # Add net cost/credit
                     if net_cost:
                         if net_cost > 0:
@@ -501,12 +512,21 @@ class V2NotificationService:
                         elif net_cost < 0:
                             line += f" (${abs(net_cost):.2f} credit)"
                 elif action.upper() == 'CLOSE':
-                    line = f"• CLOSE: {symbol} ${source_strike}"
-                elif action.upper() == 'SELL':
-                    if target_strike:
-                        line = f"• SELL: {symbol} ${target_strike} calls"
+                    if target_exp:
+                        exp_display = datetime.fromisoformat(target_exp).strftime('%b %d %Y') if isinstance(target_exp, str) else target_exp.strftime('%b %d %Y')
+                        dte_str = f" ({dte}d)" if dte > 0 else ""
+                        line = f"• CLOSE: {symbol} ${source_strike} {option_type}s {exp_display}{dte_str}"
                     else:
-                        line = f"• SELL: {symbol} calls"
+                        line = f"• CLOSE: {symbol} ${source_strike} {option_type}s"
+                elif action.upper() == 'SELL':
+                    if target_strike and target_exp:
+                        exp_display = datetime.fromisoformat(target_exp).strftime('%b %d %Y') if isinstance(target_exp, str) else target_exp.strftime('%b %d %Y')
+                        dte_str = f" ({dte}d)" if dte > 0 else ""
+                        line = f"• SELL: {contracts} {symbol} ${target_strike} {option_type}s {exp_display}{dte_str}"
+                    elif target_strike:
+                        line = f"• SELL: {contracts} {symbol} ${target_strike} {option_type}s"
+                    else:
+                        line = f"• SELL: {contracts} {symbol} {option_type}s"
                     # Add premium (or indicate unavailable)
                     if target_premium and contracts:
                         total_premium = target_premium * contracts
@@ -523,14 +543,14 @@ class V2NotificationService:
                         line = f"• ⏸️ WAIT: {symbol} - {reason_short}"
                 else:
                     line = f"• {action}: {symbol}"
-                
+
                 # Add stock price if available
                 if stock_price:
                     line += f" · Stock ${stock_price:.0f}"
-                
+
                 # Add snapshot info
                 line += f" _(snap #{snap_num})_"
-                
+
                 # Add change indicators
                 if item.get('action_changed'):
                     line += " ⚡"
@@ -538,15 +558,15 @@ class V2NotificationService:
                     line += " 🎯"
                 if item.get('priority_changed'):
                     line += " ⬆️"
-                
+
                 lines.append(line)
-            
+
             lines.append("")  # Blank line between accounts
-        
+
         # Add timestamp
         now = datetime.now()
         lines.append(f"_{now.strftime('%I:%M %p')}_")
-        
+
         return "\n".join(lines)
     
     def get_new_sell_opportunities(self) -> List[Dict[str, Any]]:
