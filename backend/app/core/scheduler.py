@@ -151,7 +151,27 @@ class RecommendationScheduler:
         # Market is closed, no action can be taken
         
         logger.info("V3 Schedule configured: 5 daily scans (6AM, 8AM, 12PM, 12:45PM, 8PM) weekdays only")
-        
+
+        # =================================================================
+        # EXPENSE NOTIFICATIONS
+        # =================================================================
+        # Purpose: Remind user to transfer money for upcoming expenses
+        # Runs daily at 6:00 AM PT (7 days/week, before main scan)
+        # Checks for expenses due tomorrow and sends Telegram notification
+        self.scheduler.add_job(
+            self.send_expense_notifications,
+            trigger=CronTrigger(
+                hour=6,
+                minute=0,
+                timezone=PT
+            ),
+            id='expense_notifications_daily',
+            name='Expense Notifications (6:00 AM PT Daily)',
+            replace_existing=True
+        )
+
+        logger.info("Expense notifications configured: daily check at 6:00 AM PT (7 days/week)")
+
         # =================================================================
         # RLHF LEARNING JOBS
         # =================================================================
@@ -886,26 +906,56 @@ class RecommendationScheduler:
     def run_outcome_tracking(self):
         """
         Track outcomes for completed positions.
-        
+
         Called at 10 PM PT daily.
         """
         from datetime import date
         db: Session = SessionLocal()
         try:
             logger.info("Running outcome tracking...")
-            
+
             from app.modules.strategies.reconciliation_service import get_reconciliation_service
-            
+
             service = get_reconciliation_service(db)
             result = service.track_position_outcomes(date.today())
-            
+
             logger.info(f"Outcome tracking complete: {result}")
-            
+
         except Exception as e:
             logger.error(f"Error in outcome tracking: {e}", exc_info=True)
         finally:
             db.close()
-    
+
+    def send_expense_notifications(self):
+        """
+        Check for expenses due tomorrow and send notifications.
+
+        Called at 6:00 AM PT daily (7 days/week).
+        Sends mobile notifications one day before forecasted expenses are due.
+        """
+        db: Session = SessionLocal()
+        try:
+            logger.info("Checking for expenses due tomorrow...")
+
+            from app.modules.strategies.expense_notification_service import get_expense_notification_service
+
+            service = get_expense_notification_service()
+            result = service.send_expense_notifications(db)
+
+            if result.get('notification_sent'):
+                total = result.get('total_amount', 0)
+                count = result.get('expenses_found', 0)
+                logger.info(f"Expense notification sent: {count} expense(s), total ${total:,.0f}")
+            elif result.get('expenses_found', 0) > 0:
+                logger.warning(f"Found {result['expenses_found']} expense(s) but notification failed: {result.get('error')}")
+            else:
+                logger.debug("No expenses due tomorrow")
+
+        except Exception as e:
+            logger.error(f"Error in expense notifications: {e}", exc_info=True)
+        finally:
+            db.close()
+
     def _send_weekly_learning_notification(self, summary):
         """Send notification with weekly learning summary."""
         try:
