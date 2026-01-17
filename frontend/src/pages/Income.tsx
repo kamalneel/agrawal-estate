@@ -2310,18 +2310,27 @@ export function Income() {
   const filteredInterestTotal = filterChartData(interestChartData).reduce((sum, d) => sum + d.value, 0)
 
   // Note: filteredRentalData is calculated later, so we compute rental separately here
-  // Rental data doesn't have monthly breakdown - prorate by dividing by 12 for single month
+  // Uses monthly_income data when filtering by specific month, converting gross to net
   const filteredRentalTotal = (() => {
     if (!rentalData?.properties) return 0
     let filteredProperties = mainSelectedYear === 'all'
       ? rentalData.properties
       : rentalData.properties.filter(p => p.year === mainSelectedYear)
-    const yearlyTotal = filteredProperties.reduce((sum, p) => sum + p.net_income, 0)
-    // If filtering by a specific month, prorate by dividing by 12
+
+    // If filtering by a specific month, use actual monthly_income data
     if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
-      return yearlyTotal / 12
+      const monthStr = `${mainSelectedYear}-${String(mainSelectedMonth).padStart(2, '0')}`
+      return filteredProperties.reduce((sum, p) => {
+        const monthData = p.monthly_income?.find(m => m.month === monthStr)
+        if (!monthData) return sum
+        // Convert gross to net using the property's expense ratio
+        const expenseRatio = p.gross_income > 0 ? p.total_expenses / p.gross_income : 0
+        const netAmount = monthData.amount * (1 - expenseRatio)
+        return sum + netAmount
+      }, 0)
     }
-    return yearlyTotal
+
+    return filteredProperties.reduce((sum, p) => sum + p.net_income, 0)
   })()
 
   // Compute salary total separately as well

@@ -205,6 +205,11 @@ class MonthlyActual(BaseModel):
     cumulative_net: float  # running total of net cash flow
     cumulative_spending: float
     cumulative_income: float
+    # Taxable income (excludes IRA, Roth IRA, retirement accounts)
+    taxable_options_income: float = 0.0
+    taxable_dividend_income: float = 0.0
+    taxable_interest_income: float = 0.0
+    taxable_income: float = 0.0  # Sum of taxable options + dividend + interest + rental
 
 
 class BuyBorrowDieActuals(BaseModel):
@@ -223,6 +228,8 @@ class BuyBorrowDieActuals(BaseModel):
     annualized_spending: float
     annualized_income: float
     projected_annual_deficit: float
+    # Taxable income (excludes IRA, Roth IRA, retirement accounts)
+    total_taxable_income: float = 0.0
 
 
 class YearSummary(BaseModel):
@@ -364,15 +371,28 @@ async def get_buy_borrow_die_actuals(
     # =========================================================================
     # INCOME: Get from database (same source as Income page)
     # =========================================================================
-    
-    # Get options income by month from database
+
+    # Get options income by month from database (all accounts)
     options_monthly = income_db.get_options_income_monthly(db, year=year)
-    
-    # Get dividend income by month from database
+
+    # Get dividend income by month from database (all accounts)
     dividends_monthly = income_db.get_dividend_income_monthly(db, year=year)
-    
-    # Get interest income by month from database
+
+    # Get interest income by month from database (all accounts)
     interest_monthly = income_db.get_interest_income_monthly(db, year=year)
+
+    # =========================================================================
+    # TAXABLE INCOME: Exclude IRA, Roth IRA, and retirement accounts
+    # =========================================================================
+
+    # Get taxable options income (excludes IRA, Roth IRA, retirement)
+    taxable_options_monthly = income_db.get_options_income_monthly(db, year=year, taxable_only=True)
+
+    # Get taxable dividend income
+    taxable_dividends_monthly = income_db.get_dividend_income_monthly(db, year=year, taxable_only=True)
+
+    # Get taxable interest income
+    taxable_interest_monthly = income_db.get_interest_income_monthly(db, year=year, taxable_only=True)
     
     # Get salary income from SalaryService (same as Income page)
     # Use get_salary_by_year() for simpler data access
@@ -393,21 +413,30 @@ async def get_buy_borrow_die_actuals(
         print(f"Error loading salary: {e}")
     
     # Get rental income from RentalService (same as Income page)
-    # Filter by year to get only rental income for the requested year
+    # Use actual monthly data instead of dividing annual by 12
     rental_monthly: Dict[int, float] = {}
     try:
         rental_service = get_rental_service()
         rental_summary = rental_service.get_rental_summary()
-        # Sum net_income only for properties in the requested year
-        annual_rental = 0.0
+
         for prop in rental_summary.get('properties', []):
             if prop.get('year') == year:
-                annual_rental += prop.get('net_income', 0)
-        
-        if annual_rental > 0:
-            monthly_rental = annual_rental / 12
-            for m in range(1, 13):
-                rental_monthly[m] = monthly_rental
+                # Get expense ratio to convert gross monthly to net
+                gross_income = prop.get('gross_income', 0)
+                expense_ratio = prop.get('total_expenses', 0) / gross_income if gross_income > 0 else 0
+
+                # Use actual monthly_income data
+                for monthly in prop.get('monthly_income', []):
+                    month_str = monthly.get('month', '')  # e.g., "2026-01"
+                    if month_str:
+                        try:
+                            month_num = int(month_str.split('-')[1])
+                            gross_amount = monthly.get('amount', 0)
+                            # Convert gross to net using expense ratio
+                            net_amount = gross_amount * (1 - expense_ratio)
+                            rental_monthly[month_num] = rental_monthly.get(month_num, 0) + net_amount
+                        except (IndexError, ValueError):
+                            pass
     except Exception as e:
         print(f"Error loading rental: {e}")
     
@@ -468,42 +497,51 @@ async def get_buy_borrow_die_actuals(
     cumulative_income = 0.0
     cumulative_net = 0.0
     months_with_data = 0
-    
+
     total_options = 0.0
     total_dividends = 0.0
     total_interest = 0.0
     total_salary = 0.0
     total_rental = 0.0
-    
+    total_taxable = 0.0
+
     for month in range(1, 13):
         month_key = f"{year}-{month:02d}"
-        
+
         spending = monthly_spending.get(month, 0.0)
         options_income = options_monthly.get(month_key, 0.0)
         dividend_income = dividends_monthly.get(month_key, 0.0)
         interest_income = interest_monthly.get(month_key, 0.0)
         salary_income = salary_monthly.get(month, 0.0)
         rental_income = rental_monthly.get(month, 0.0)
-        
+
+        # Taxable income (excludes IRA, Roth IRA, retirement accounts)
+        taxable_options = taxable_options_monthly.get(month_key, 0.0)
+        taxable_dividends = taxable_dividends_monthly.get(month_key, 0.0)
+        taxable_interest = taxable_interest_monthly.get(month_key, 0.0)
+        # Rental income is always taxable
+        taxable_month = taxable_options + taxable_dividends + taxable_interest + rental_income
+
         # Track totals
         total_options += options_income
         total_dividends += dividend_income
         total_interest += interest_income
         total_salary += salary_income
         total_rental += rental_income
-        
+        total_taxable += taxable_month
+
         total_month_income = options_income + dividend_income + interest_income + salary_income + rental_income
-        
+
         has_activity = spending > 0 or total_month_income > 0
         if has_activity:
             months_with_data += 1
-        
+
         net_cash_flow = total_month_income - spending
-        
+
         cumulative_spending += spending
         cumulative_income += total_month_income
         cumulative_net += net_cash_flow
-        
+
         monthly_data.append(MonthlyActual(
             year=year,
             month=month,
@@ -511,14 +549,19 @@ async def get_buy_borrow_die_actuals(
             spending=round(spending, 2),
             income=round(total_month_income, 2),
             options_income=round(options_income, 2),
-            dividend_income=round(dividend_income, 2),  # Separate dividend income
-            interest_income=round(interest_income, 2),  # Separate interest income
-            rental_income=round(rental_income, 2),  # Separate rental income
-            salary_income=round(salary_income, 2),  # Salary only (not including rental)
+            dividend_income=round(dividend_income, 2),
+            interest_income=round(interest_income, 2),
+            rental_income=round(rental_income, 2),
+            salary_income=round(salary_income, 2),
             net_cash_flow=round(net_cash_flow, 2),
             cumulative_net=round(cumulative_net, 2),
             cumulative_spending=round(cumulative_spending, 2),
-            cumulative_income=round(cumulative_income, 2)
+            cumulative_income=round(cumulative_income, 2),
+            # Taxable income fields
+            taxable_options_income=round(taxable_options, 2),
+            taxable_dividend_income=round(taxable_dividends, 2),
+            taxable_interest_income=round(taxable_interest, 2),
+            taxable_income=round(taxable_month, 2)
         ))
     
     # Calculate totals
@@ -547,7 +590,8 @@ async def get_buy_borrow_die_actuals(
         months_of_data=months_with_data,
         annualized_spending=round(annualized_spending, 2),
         annualized_income=round(annualized_income, 2),
-        projected_annual_deficit=round(projected_annual_deficit, 2)
+        projected_annual_deficit=round(projected_annual_deficit, 2),
+        total_taxable_income=round(total_taxable, 2)
     )
 
 
@@ -1607,7 +1651,6 @@ async def calculate_options_income_with_sold_status(
     - Monthly: Actual income from the last complete month
     - Yearly: Actual income from the last complete year
     """
-    
     # Default parameters
     default_premium = params.get("default_premium", 60)
     symbol_premiums = params.get("symbol_premiums", {})
@@ -2053,7 +2096,7 @@ async def calculate_options_income_with_sold_status(
             }
         }
 
-    return {
+    result = {
         "params": {
             "default_premium": default_premium,
             "symbol_premiums": {s["symbol"]: s["premium_per_contract"] for s in symbols_list},
@@ -2076,6 +2119,8 @@ async def calculate_options_income_with_sold_status(
         "symbols": symbols_list,
         "accounts": [accounts[name] for name in account_order if accounts[name]["total_options"] > 0]
     }
+
+    return result
 
 
 # ============================================================================

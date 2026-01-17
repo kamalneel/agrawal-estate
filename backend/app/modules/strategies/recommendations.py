@@ -750,14 +750,23 @@ class OptionsStrategyRecommendationService:
             account_name = context.get('account_name') or context.get('account', 'Unknown')
             
             # Get source position details (what we're advising on)
-            source_strike = context.get('current_strike') or context.get('strike_price')
+            # Try multiple keys for strike (different recommendation types use different keys)
+            source_strike = (
+                context.get('current_strike') or
+                context.get('strike_price') or
+                context.get('strike')  # Used by cash_secured_put recommendations
+            )
             # Try multiple keys for expiration (different recommendation types use different keys)
             source_expiration_str = (
-                context.get('current_expiration') or 
+                context.get('current_expiration') or
                 context.get('expiration_date') or
-                context.get('expiration')  # Used by roll_options recommendations
+                context.get('expiration')  # Used by roll_options and cash_secured_put recommendations
             )
             option_type = context.get('option_type', 'call')
+
+            # For cash_secured_put, the option_type is PUT
+            if rec.type == 'cash_secured_put':
+                option_type = 'put'
             
             # Skip if we don't have required fields
             if not source_strike or not source_expiration_str:
@@ -792,11 +801,17 @@ class OptionsStrategyRecommendationService:
                 recommendation = existing
                 snapshot_number = (recommendation.total_snapshots or 0) + 1
             else:
+                # Determine position_type based on recommendation type
+                position_type = 'sold_option'  # Default for existing positions
+                if rec.type == 'cash_secured_put':
+                    position_type = 'put_opportunity'
+
                 # Create new recommendation
                 recommendation = PositionRecommendation(
                     recommendation_id=rec_id,
                     symbol=symbol,
                     account_name=account_name,
+                    position_type=position_type,
                     source_strike=Decimal(str(source_strike)),
                     source_expiration=source_expiration,
                     option_type=option_type,
@@ -830,6 +845,8 @@ class OptionsStrategyRecommendationService:
                 action = 'PULL_BACK'
             elif 'close' in rec.type.lower():
                 action = 'CLOSE'
+            elif rec.type == 'cash_secured_put' or rec.action_type == 'sell_put':
+                action = 'SELL_PUT'
             
             # Detect changes
             action_changed = prev_snapshot and prev_snapshot.recommended_action != action
@@ -862,7 +879,8 @@ class OptionsStrategyRecommendationService:
                 
                 target_strike=Decimal(str(target_strike)) if target_strike else None,
                 target_expiration=target_expiration,
-                target_premium=Decimal(str(context.get('target_premium'))) if context.get('target_premium') else None,
+                # For cash_secured_put, use 'bid' as the premium per share
+                target_premium=Decimal(str(context.get('target_premium') or context.get('bid'))) if (context.get('target_premium') or context.get('bid')) else None,
                 net_cost=Decimal(str(context.get('net_cost'))) if context.get('net_cost') else None,
                 
                 current_premium=Decimal(str(context.get('current_premium') or context.get('buy_back_cost'))) if context.get('current_premium') or context.get('buy_back_cost') else None,

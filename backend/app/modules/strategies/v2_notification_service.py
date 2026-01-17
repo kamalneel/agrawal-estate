@@ -136,13 +136,25 @@ class V2NotificationService:
         is_uncovered = rec.position_type == 'uncovered' or rec.source_strike is None
         
         if action.upper().startswith('ROLL'):
+            # Get contracts and option type
+            contracts = rec.source_contracts or 1
+            opt_type = (rec.option_type or 'call').upper()
+
+            # Format source expiration
+            source_exp_str = ""
+            if rec.source_expiration:
+                source_exp_str = rec.source_expiration.strftime('%m/%d')
+
             if snapshot.target_strike:
-                title = f"{action_display}: {rec.symbol} ${rec.source_strike}→${snapshot.target_strike}"
+                # Format: ROLL: 3 HOOD PUT Options from $110.00 01/16 → $109.00 01/23
+                target_exp_str = ""
                 if snapshot.target_expiration:
-                    title += f" {snapshot.target_expiration.strftime('%m/%d')}"
+                    target_exp_str = f" {snapshot.target_expiration.strftime('%m/%d')}"
+
+                title = f"{action_display}: {contracts} {rec.symbol} {opt_type} Options from ${rec.source_strike} {source_exp_str} → ${snapshot.target_strike}{target_exp_str}"
             else:
-                title = f"{action_display}: {rec.symbol} ${rec.source_strike}"
-            
+                title = f"{action_display}: {contracts} {rec.symbol} {opt_type} Options ${rec.source_strike} {source_exp_str}"
+
             # Add net cost/credit for ROLL
             if snapshot.net_cost:
                 net_cost = float(snapshot.net_cost)
@@ -162,10 +174,15 @@ class V2NotificationService:
             if is_uncovered:
                 # Uncovered position - show contracts and target
                 contracts = rec.source_contracts or 1
+                # Format expiration date as MM/DD
+                exp_str = ""
+                if snapshot.target_expiration:
+                    exp_str = f" for {snapshot.target_expiration.strftime('%m/%d')}"
+
                 if snapshot.target_strike:
-                    title = f"SELL: {contracts} {rec.symbol} ${snapshot.target_strike:.0f} calls"
+                    title = f"SELL: {contracts} {rec.symbol} ${snapshot.target_strike:.0f} calls{exp_str}"
                 else:
-                    title = f"SELL: {rec.symbol} calls"
+                    title = f"SELL: {rec.symbol} calls{exp_str}"
                 if snapshot.stock_price:
                     title += f" · Stock ${snapshot.stock_price:.0f}"
                 # Add premium for SELL (or indicate unavailable)
@@ -176,10 +193,30 @@ class V2NotificationService:
                     # Premium data not available - be transparent about it
                     title += f" · Premium not available"
             else:
+                # Format expiration date as MM/DD
+                exp_str = ""
+                if snapshot.target_expiration:
+                    exp_str = f" for {snapshot.target_expiration.strftime('%m/%d')}"
+
                 if snapshot.target_strike:
-                    title = f"SELL: {rec.symbol} ${snapshot.target_strike} calls"
+                    title = f"SELL: {rec.symbol} ${snapshot.target_strike} calls{exp_str}"
                 else:
-                    title = f"SELL: {rec.symbol} calls · Stock ${snapshot.stock_price:.0f}" if snapshot.stock_price else f"SELL: {rec.symbol} calls"
+                    title = f"SELL: {rec.symbol} calls{exp_str} · Stock ${snapshot.stock_price:.0f}" if snapshot.stock_price else f"SELL: {rec.symbol} calls{exp_str}"
+        elif action.upper() == 'SELL_PUT':
+            # Cash-secured put recommendation
+            exp_str = ""
+            if rec.source_expiration:
+                exp_str = f" {rec.source_expiration.strftime('%m/%d')}"
+
+            if rec.source_strike:
+                title = f"SELL PUT: {rec.symbol} ${rec.source_strike}{exp_str}"
+            else:
+                title = f"SELL PUT: {rec.symbol}{exp_str}"
+            if snapshot.stock_price:
+                title += f" · Stock ${snapshot.stock_price:.0f}"
+            # Add premium for SELL PUT
+            if snapshot.target_premium:
+                title += f" · Earn ${float(snapshot.target_premium) * 100:.0f}"
         elif action.upper() == 'WAIT':
             # WAIT recommendation for uncovered position
             contracts = rec.source_contracts or 1
@@ -376,6 +413,7 @@ class V2NotificationService:
             'CLOSE_CATASTROPHIC': 'CLOSE',
             'CLOSE': 'CLOSE',
             'SELL': 'SELL',
+            'SELL_PUT': 'SELL PUT',
             'HOLD': 'HOLD',
             'NO_ACTION': 'HOLD',
         }

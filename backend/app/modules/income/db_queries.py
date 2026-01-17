@@ -63,14 +63,22 @@ def get_options_income_summary(
     }
 
 
+# Account types that are tax-advantaged (not taxable)
+TAX_ADVANTAGED_ACCOUNT_TYPES = ['ira', 'roth_ira', 'retirement']
+
+
 def get_options_income_monthly(
     db: Session,
     year: Optional[int] = None,
-    account_id: Optional[str] = None
+    account_id: Optional[str] = None,
+    taxable_only: bool = False
 ) -> Dict[str, float]:
     """
     Get monthly options income breakdown.
-    
+
+    Args:
+        taxable_only: If True, exclude IRA, Roth IRA, and retirement accounts
+
     Returns:
         Dict mapping 'YYYY-MM' to total amount
     """
@@ -86,14 +94,16 @@ def get_options_income_monthly(
     ).filter(
         InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
     )
-    
+
     if year:
         query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
     if account_id:
         query = query.filter(InvestmentTransaction.account_id == account_id)
-    
+    if taxable_only:
+        query = query.filter(~InvestmentAccount.account_type.in_(TAX_ADVANTAGED_ACCOUNT_TYPES))
+
     query = query.group_by('month').order_by('month')
-    
+
     return {row.month: float(row.total or 0) for row in query.all()}
 
 
@@ -218,9 +228,14 @@ def get_dividend_income_summary(
 def get_dividend_income_monthly(
     db: Session,
     year: Optional[int] = None,
-    account_id: Optional[str] = None
+    account_id: Optional[str] = None,
+    taxable_only: bool = False
 ) -> Dict[str, float]:
-    """Get monthly dividend income breakdown."""
+    """Get monthly dividend income breakdown.
+
+    Args:
+        taxable_only: If True, exclude IRA, Roth IRA, and retirement accounts
+    """
     query = db.query(
         func.to_char(InvestmentTransaction.transaction_date, 'YYYY-MM').label('month'),
         func.sum(InvestmentTransaction.amount).label('total')
@@ -233,14 +248,16 @@ def get_dividend_income_monthly(
     ).filter(
         InvestmentTransaction.transaction_type.in_(['DIVIDEND', 'CDIV', 'QUAL DIV REINVEST', 'REINVEST DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND']),
     )
-    
+
     if year:
         query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
     if account_id:
         query = query.filter(InvestmentTransaction.account_id == account_id)
-    
+    if taxable_only:
+        query = query.filter(~InvestmentAccount.account_type.in_(TAX_ADVANTAGED_ACCOUNT_TYPES))
+
     query = query.group_by('month').order_by('month')
-    
+
     return {row.month: float(row.total or 0) for row in query.all()}
 
 
@@ -308,9 +325,14 @@ def get_interest_income_summary(
 def get_interest_income_monthly(
     db: Session,
     year: Optional[int] = None,
-    account_id: Optional[str] = None
+    account_id: Optional[str] = None,
+    taxable_only: bool = False
 ) -> Dict[str, float]:
-    """Get monthly interest income breakdown."""
+    """Get monthly interest income breakdown.
+
+    Args:
+        taxable_only: If True, exclude IRA, Roth IRA, and retirement accounts
+    """
     query = db.query(
         func.to_char(InvestmentTransaction.transaction_date, 'YYYY-MM').label('month'),
         func.sum(InvestmentTransaction.amount).label('total')
@@ -323,14 +345,16 @@ def get_interest_income_monthly(
     ).filter(
         InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']),
     )
-    
+
     if year:
         query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
     if account_id:
         query = query.filter(InvestmentTransaction.account_id == account_id)
-    
+    if taxable_only:
+        query = query.filter(~InvestmentAccount.account_type.in_(TAX_ADVANTAGED_ACCOUNT_TYPES))
+
     query = query.group_by('month').order_by('month')
-    
+
     return {row.month: float(row.total or 0) for row in query.all()}
 
 
@@ -480,27 +504,41 @@ def get_income_summary(
 ) -> Dict[str, Any]:
     """
     Get complete income summary across all types.
-    
+
     This is the SINGLE source of truth for income totals.
     """
+    from app.modules.income.rental_service import get_rental_service
+
     options = get_options_income_summary(db, year=year)
     dividends = get_dividend_income_summary(db, year=year)
     interest = get_interest_income_summary(db, year=year)
-    
+
+    # Get rental income from rental service
+    rental_income = 0.0
+    try:
+        rental_service = get_rental_service()
+        rental_summary = rental_service.get_rental_summary()
+        # Sum net_income for the specified year (or all years if year is None)
+        for prop in rental_summary.get('properties', []):
+            if year is None or prop.get('year') == year:
+                rental_income += prop.get('gross_income', 0)
+    except Exception as e:
+        print(f"Error loading rental income: {e}")
+
     # Get account-level breakdown
     accounts = db.query(InvestmentAccount).filter(
         InvestmentAccount.is_active == 'Y'
     ).all()
-    
+
     account_summaries = []
     for account in accounts:
         acc_options = get_options_income_summary(db, year=year, account_id=account.account_id)
         acc_dividends = get_dividend_income_summary(db, year=year, account_id=account.account_id)
         acc_interest = get_interest_income_summary(db, year=year, account_id=account.account_id)
-        
+
         # Derive owner from account_name
         owner = account.account_name.split("'")[0] if account.account_name and "'" in account.account_name else 'Unknown'
-        
+
         account_summaries.append({
             'name': account.account_name,
             'account_id': account.account_id,
@@ -511,15 +549,18 @@ def get_income_summary(
             'interest_income': acc_interest['total_income'],
             'total': acc_options['total_income'] + acc_dividends['total_income'] + acc_interest['total_income']
         })
-    
+
     # Sort by total descending
     account_summaries.sort(key=lambda x: x['total'], reverse=True)
-    
+
+    total_income = options['total_income'] + dividends['total_income'] + interest['total_income'] + rental_income
+
     return {
         'options_income': options['total_income'],
         'dividend_income': dividends['total_income'],
         'interest_income': interest['total_income'],
-        'total_income': options['total_income'] + dividends['total_income'] + interest['total_income'],
+        'rental_income': rental_income,
+        'total_income': total_income,
         'accounts': account_summaries
     }
 

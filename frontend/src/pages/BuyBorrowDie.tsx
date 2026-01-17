@@ -65,14 +65,19 @@ interface MonthlyActual {
   spending: number;
   income: number;
   options_income: number;
-  dividend_income: number;  // Separate dividend income
-  interest_income: number;  // Separate interest income (not including dividends)
-  rental_income: number;  // Separate rental income
-  salary_income: number;  // Salary only (not including rental)
+  dividend_income: number;
+  interest_income: number;
+  rental_income: number;
+  salary_income: number;
   net_cash_flow: number;
   cumulative_net: number;
   cumulative_spending: number;
   cumulative_income: number;
+  // Taxable income (excludes IRA, Roth IRA, retirement accounts)
+  taxable_options_income?: number;
+  taxable_dividend_income?: number;
+  taxable_interest_income?: number;
+  taxable_income?: number;
 }
 
 interface ActualsData {
@@ -90,6 +95,7 @@ interface ActualsData {
   annualized_spending: number;
   annualized_income: number;
   projected_annual_deficit: number;
+  total_taxable_income?: number;
 }
 
 interface YearSummary {
@@ -563,16 +569,16 @@ export default function BuyBorrowDie() {
                     </span>
                   </div>
                   <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Income from Option + dividend + interest + rental</span>
+                    <span className={styles.summaryLabel}>Taxable Income ({selectedYear})</span>
                     <span className={`${styles.summaryValue} ${styles.positive}`}>
                       {formatFullCurrency(
-                        actuals.monthly_data.reduce((sum, m) => 
-                          sum + m.options_income + m.dividend_income + m.interest_income + m.rental_income, 0
+                        actuals.monthly_data.reduce((sum, m) =>
+                          sum + (m.taxable_income || 0), 0
                         )
                       )}
                     </span>
                     <span className={styles.summaryNote}>
-                      Options + Dividends + Interest + Rental (excludes salaries)
+                      Options + Dividends + Interest + Rental (excludes IRA accounts)
                     </span>
                   </div>
                   <div 
@@ -602,7 +608,7 @@ export default function BuyBorrowDie() {
                     <div>
                       <h3 className={styles.chartTitle}>Income vs Spending by Month</h3>
                       <p className={styles.chartSubtitle}>
-                        Green bars = Income • Purple bars = Income from Option + dividend + interest + rental • Red bars = Spending
+                        Green bars = Income • Purple bars = Taxable Income • Red bars = Spending
                       </p>
                     </div>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -650,25 +656,24 @@ export default function BuyBorrowDie() {
                           let cumulativeSpending = 0;
                           
                           return filtered.map(m => {
-                            // Income from Options + Dividends + Interest + Rental (excluding salaries)
-                            const incomeFromOptionsDividendInterestRental = 
-                              m.options_income + m.dividend_income + m.interest_income + m.rental_income;
-                            
+                            // Use taxable_income from the API (excludes IRA accounts)
+                            const taxableIncome = m.taxable_income || 0;
+
                             if (isCumulative) {
                               cumulativeIncome += m.income;
-                              cumulativeIncomeFromOptions += incomeFromOptionsDividendInterestRental;
+                              cumulativeIncomeFromOptions += taxableIncome;
                               cumulativeSpending += m.spending;
-                              
+
                               return {
                                 ...m,
                                 income: cumulativeIncome,
-                                income_from_options_dividend_interest_rental: cumulativeIncomeFromOptions,
+                                taxable_income: cumulativeIncomeFromOptions,
                                 spending: cumulativeSpending,
                               };
                             } else {
                               return {
                                 ...m,
-                                income_from_options_dividend_interest_rental: incomeFromOptionsDividendInterestRental,
+                                taxable_income: taxableIncome,
                               };
                             }
                           });
@@ -707,14 +712,14 @@ export default function BuyBorrowDie() {
                           strokeWidth={2}
                           name="Income"
                         />
-                        <Area 
+                        <Area
                           yAxisId="left"
-                          type="monotone" 
-                          dataKey="income_from_options_dividend_interest_rental" 
-                          fill="rgba(168, 85, 247, 0.3)" 
-                          stroke="#A855F7" 
+                          type="monotone"
+                          dataKey="taxable_income"
+                          fill="rgba(168, 85, 247, 0.3)"
+                          stroke="#A855F7"
                           strokeWidth={2}
-                          name="Income from Option + dividend + interest + rental"
+                          name="Taxable Income"
                         />
                         <Area 
                           yAxisId="left"
@@ -755,7 +760,7 @@ export default function BuyBorrowDie() {
                               {month.spending > 0 ? formatFullCurrency(month.spending) : '-'}
                             </td>
                             <td>{month.options_income > 0 ? formatFullCurrency(month.options_income) : '-'}</td>
-                            <td>{month.salary_income > 0 ? formatFullCurrency(month.salary_income) : '-'}</td>
+                            <td>{(month.salary_income + month.rental_income) > 0 ? formatFullCurrency(month.salary_income + month.rental_income) : '-'}</td>
                             <td>{month.interest_income > 0 ? formatFullCurrency(month.interest_income) : '-'}</td>
                             <td className={styles.income}>{formatFullCurrency(month.income)}</td>
                             <td className={month.net_cash_flow >= 0 ? styles.positive : styles.negative}>

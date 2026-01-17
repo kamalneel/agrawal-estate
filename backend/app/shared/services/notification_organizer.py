@@ -249,14 +249,19 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
         new_exp = context.get("new_expiration", "")
         net_cost = context.get("net_cost", 0)  # Positive = debit, negative = credit
 
-        # Format dates as short (e.g., "Jan 16")
-        new_exp_short = _format_date_short(new_exp)
+        # Format dates as MM/DD
+        old_exp_mmdd = _format_date_mmdd(current_exp)
+        new_exp_mmdd = _format_date_mmdd(new_exp)
 
-        # Build line: ROLL: PLTR $192.50→$188 Jan 23 · $0.50 debit · 82% captured
+        # Format strikes
         old_strike_str = f"${float(old_strike):.2f}" if old_strike and float(old_strike) < 100 else f"${float(old_strike):.0f}" if old_strike else ""
-        new_strike_str = f"${float(new_strike):.0f}" if new_strike else ""
+        new_strike_str = f"${float(new_strike):.2f}" if new_strike and float(new_strike) < 100 else f"${float(new_strike):.0f}" if new_strike else ""
 
-        line = f"ROLL: {symbol} {old_strike_str}→{new_strike_str} {new_exp_short}"
+        # Get option type (PUT or CALL)
+        option_type = (opt_type or "call").upper()
+
+        # Build line: ROLL: 3 HOOD PUT Options from $110.00 01/16 → $109.00 01/23 · $1.47 credit
+        line = f"ROLL: {contracts} {symbol} {option_type} Options from {old_strike_str} {old_exp_mmdd} → {new_strike_str} {new_exp_mmdd}"
 
         # Show net cost/credit
         if net_cost:
@@ -265,8 +270,8 @@ def format_single_recommendation(rec: Dict[str, Any], include_account: bool = Tr
             else:
                 line += f" · ${abs(net_cost):.2f} credit"
 
-        # Show profit captured
-        if profit_pct:
+        # Show profit captured (only if significant)
+        if profit_pct and profit_pct >= 50:
             line += f" · {profit_pct:.0f}% captured"
 
         if account_short:
@@ -355,6 +360,22 @@ def _format_date_short(date_str: str) -> str:
         else:
             dt = datetime.strptime(date_str, '%Y-%m-%d')
         return dt.strftime('%b %d')
+    except:
+        return date_str[5:10] if len(date_str) >= 10 else date_str
+
+
+def _format_date_mmdd(date_str: str) -> str:
+    """Format a date string to 'MM/DD' format (e.g., '01/16')."""
+    if not date_str:
+        return ""
+    try:
+        if isinstance(date_str, date):
+            return date_str.strftime('%m/%d')
+        if 'T' in date_str:
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        else:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+        return dt.strftime('%m/%d')
     except:
         return date_str[5:10] if len(date_str) >= 10 else date_str
 

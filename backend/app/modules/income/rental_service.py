@@ -1,8 +1,12 @@
 """
 Rental Income Service - Load rental income from database.
+
+For the current year, if no data exists, projects income based on previous year's
+monthly average. Income is only counted for months that have passed (up to and
+including the current month).
 """
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
@@ -127,15 +131,93 @@ class RentalIncomeService:
                         ))
                     
                     self.properties.append(prop)
-            
+
+            # Project current year's rental income if no data exists
+            self._project_current_year_income(db)
+
             self._loaded = True
-            
+
         except Exception as e:
             print(f"Error loading rental data from database: {e}")
         finally:
             db.close()
-        
+
         return self.properties
+
+    def _project_current_year_income(self, db) -> None:
+        """
+        Project current year's rental income based on previous year's data.
+
+        For each property, if the current year has no data:
+        - Uses the previous year's monthly average
+        - Only includes months that have passed (up to current month)
+        """
+        current_year = date.today().year
+        current_month = date.today().month
+
+        # Check if we have data for the current year
+        current_year_props = [p for p in self.properties if p.year == current_year]
+
+        if current_year_props:
+            # Already have data for current year, no need to project
+            return
+
+        # Get all active properties
+        db_properties = db.query(RentalPropertyModel).filter(
+            RentalPropertyModel.is_active == 'Y'
+        ).all()
+
+        for db_prop in db_properties:
+            # Find the most recent year's data for this property
+            prev_year_props = [p for p in self.properties
+                               if p.address == (db_prop.property_address or '')]
+
+            if not prev_year_props:
+                continue
+
+            # Sort by year descending and get the most recent
+            prev_year_props.sort(key=lambda x: x.year, reverse=True)
+            prev_prop = prev_year_props[0]
+
+            # Calculate monthly average from previous year
+            if prev_prop.monthly_income:
+                monthly_avg = sum(m.amount for m in prev_prop.monthly_income) / len(prev_prop.monthly_income)
+            elif prev_prop.gross_income > 0:
+                monthly_avg = prev_prop.gross_income / 12
+            else:
+                continue  # No data to project from
+
+            # Create projected property for current year
+            projected_gross = monthly_avg * current_month
+            # Use same expense ratio as previous year
+            expense_ratio = prev_prop.total_expenses / prev_prop.gross_income if prev_prop.gross_income > 0 else 0
+            projected_expenses = projected_gross * expense_ratio
+            projected_net = projected_gross - projected_expenses
+
+            prop = RentalProperty(
+                address=db_prop.property_address or '',
+                year=current_year,
+                gross_income=projected_gross,
+                total_expenses=projected_expenses,
+                net_income=projected_net,
+                property_tax=prev_prop.property_tax * (current_month / 12),
+                hoa=prev_prop.hoa * (current_month / 12),
+                maintenance=prev_prop.maintenance * (current_month / 12),
+                cost_basis=float(db_prop.purchase_price or 0),
+            )
+
+            # Add monthly income for each passed month
+            for month in range(1, current_month + 1):
+                month_key = f"{current_year}-{month:02d}"
+                month_name = MONTH_NAMES.get(month, 'Unk')
+                prop.monthly_income.append(MonthlyRent(
+                    month=month_key,
+                    month_name=month_name,
+                    amount=monthly_avg,
+                    year=current_year
+                ))
+
+            self.properties.append(prop)
 
     def load_all_properties(self) -> List[RentalProperty]:
         """Load all rental properties from database."""
