@@ -65,19 +65,14 @@ interface MonthlyActual {
   spending: number;
   income: number;
   options_income: number;
-  dividend_income: number;
-  interest_income: number;
-  rental_income: number;
-  salary_income: number;
+  dividend_income: number;  // Separate dividend income
+  interest_income: number;  // Separate interest income (not including dividends)
+  rental_income: number;  // Separate rental income
+  salary_income: number;  // Salary only (not including rental)
   net_cash_flow: number;
   cumulative_net: number;
   cumulative_spending: number;
   cumulative_income: number;
-  // Taxable income (excludes IRA, Roth IRA, retirement accounts)
-  taxable_options_income?: number;
-  taxable_dividend_income?: number;
-  taxable_interest_income?: number;
-  taxable_income?: number;
 }
 
 interface ActualsData {
@@ -95,7 +90,6 @@ interface ActualsData {
   annualized_spending: number;
   annualized_income: number;
   projected_annual_deficit: number;
-  total_taxable_income?: number;
 }
 
 interface YearSummary {
@@ -105,6 +99,55 @@ interface YearSummary {
   net_position: number;
   cumulative_gap: number;
   months_of_data: number;
+}
+
+interface PredictedExpense {
+  description: string;
+  predicted_date: string;
+  predicted_amount: number;
+  confidence: number;
+  frequency: string;
+  historical_occurrences: number;
+  amount_range: {
+    min: number;
+    max: number;
+  };
+}
+
+interface ForecastedMonth {
+  year: number;
+  month: number;
+  month_name: string;
+  predicted_expenses: PredictedExpense[];
+  total_predicted: number;
+  num_predicted_expenses: number;
+}
+
+interface RecurringPattern {
+  description: string;
+  avg_amount: number;
+  frequency: string;
+  avg_day_of_month: number;
+  confidence: number;
+  occurrences: number;
+}
+
+interface ExpenseForecast {
+  forecast_period: {
+    start_month: ForecastedMonth | null;
+    end_month: ForecastedMonth | null;
+    months_ahead: number;
+  };
+  forecasted_months: ForecastedMonth[];
+  summary: {
+    total_recurring_expenses_identified: number;
+    avg_monthly_recurring_spending: number;
+    historical_years_analyzed: number;
+    total_transactions_analyzed: number;
+  };
+  recurring_patterns: RecurringPattern[];
+  error?: string;
+  note?: string;
 }
 
 const formatCurrency = (value: number) => {
@@ -129,30 +172,17 @@ export default function BuyBorrowDie() {
   const [projection, setProjection] = useState<ProjectionData | null>(null);
   const [actuals, setActuals] = useState<ActualsData | null>(null);
   const [allYearsData, setAllYearsData] = useState<YearSummary[] | null>(null);
+  const [forecast, setForecast] = useState<ExpenseForecast | null>(null);
   const [loading, setLoading] = useState(true);
   const [actualsLoading, setActualsLoading] = useState(false);
+  const [forecastLoading, setForecastLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'projection' | 'actuals' | 'settings'>('actuals');  // Default to Actuals
+  const [activeTab, setActiveTab] = useState<'projection' | 'actuals' | 'forecast' | 'settings'>('actuals');  // Default to Actuals
 
   // Year selection for Actuals
   const [selectedYear, setSelectedYear] = useState<number | 'all'>(2025); // Default to 2025, will update when years load
   const [availableYears, setAvailableYears] = useState<number[]>([2025]); // Will be updated from API
   const [isCumulative, setIsCumulative] = useState(true); // Default to cumulative view
-
-  // Spending details modal
-  const [showSpendingDetails, setShowSpendingDetails] = useState(false);
-  const [spendingDetails, setSpendingDetails] = useState<{
-    transactions: Array<{
-      date: string;
-      account: string;
-      amount: number;
-      description: string;
-      type: string;
-    }>;
-    total_spending: number;
-    transaction_count: number;
-  } | null>(null);
-  const [spendingDetailsLoading, setSpendingDetailsLoading] = useState(false);
 
   // Parameters
   const [monthlyBorrowing, setMonthlyBorrowing] = useState(20000);
@@ -270,26 +300,47 @@ export default function BuyBorrowDie() {
     }
   };
 
-  const fetchSpendingDetails = async (year: number) => {
-    setSpendingDetailsLoading(true);
+  const fetchForecast = async (monthsAhead: number = 3, historicalYears: number = 2) => {
+    setForecastLoading(true);
     try {
-      const response = await fetch(`/api/v1/strategies/buy-borrow-die/spending-details/${year}`, {
-        headers: getAuthHeaders(),
-      });
+      const response = await fetch(
+        `/api/v1/strategies/buy-borrow-die/expense-forecast?months_ahead=${monthsAhead}&historical_years=${historicalYears}`,
+        { headers: getAuthHeaders() }
+      );
 
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
       }
 
       const data = await response.json();
-      setSpendingDetails(data);
-      setShowSpendingDetails(true);
+      setForecast(data);
     } catch (err) {
-      console.error('Fetch spending details error:', err);
+      console.error('Fetch forecast error:', err);
+      // Set empty forecast on error
+      setForecast({
+        forecast_period: { start_month: null, end_month: null, months_ahead: monthsAhead },
+        forecasted_months: [],
+        summary: {
+          total_recurring_expenses_identified: 0,
+          avg_monthly_recurring_spending: 0,
+          historical_years_analyzed: historicalYears,
+          total_transactions_analyzed: 0
+        },
+        recurring_patterns: [],
+        error: 'Failed to load forecast',
+        note: 'No expense data available for forecasting.'
+      });
     } finally {
-      setSpendingDetailsLoading(false);
+      setForecastLoading(false);
     }
   };
+
+  // Fetch forecast when forecast tab is selected
+  useEffect(() => {
+    if (activeTab === 'forecast' && !forecast) {
+      fetchForecast();
+    }
+  }, [activeTab]);
 
   // Chart data
   const chartData = projection?.projections.map(p => ({
@@ -353,6 +404,12 @@ export default function BuyBorrowDie() {
           onClick={() => setActiveTab('actuals')}
         >
           📈 Actuals
+        </button>
+        <button
+          className={`${styles.tab} ${activeTab === 'forecast' ? styles.activeTab : ''}`}
+          onClick={() => setActiveTab('forecast')}
+        >
+          🔮 Forecast
         </button>
         <button
           className={`${styles.tab} ${activeTab === 'settings' ? styles.activeTab : ''}`}
@@ -562,34 +619,29 @@ export default function BuyBorrowDie() {
                 {/* Summary Cards */}
                 <div className={styles.summaryGrid}>
                   <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Total Income ({selectedYear})</span>
+                    <span className={styles.summaryLabel}>Total Income (2025)</span>
                     <span className={`${styles.summaryValue} ${styles.positive}`}>{formatFullCurrency(actuals.total_income)}</span>
                     <span className={styles.summaryNote}>
                       Salary+Rental: {formatFullCurrency(actuals.total_salary_income)} • Options: {formatFullCurrency(actuals.total_options_income)} • Interest+Div: {formatFullCurrency(actuals.total_interest_income)}
                     </span>
                   </div>
                   <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Taxable Income ({selectedYear})</span>
+                    <span className={styles.summaryLabel}>Income from Option + dividend + interest + rental</span>
                     <span className={`${styles.summaryValue} ${styles.positive}`}>
                       {formatFullCurrency(
-                        actuals.monthly_data.reduce((sum, m) =>
-                          sum + (m.taxable_income || 0), 0
+                        actuals.monthly_data.reduce((sum, m) => 
+                          sum + m.options_income + m.dividend_income + m.interest_income + m.rental_income, 0
                         )
                       )}
                     </span>
                     <span className={styles.summaryNote}>
-                      Options + Dividends + Interest + Rental (excludes IRA accounts)
+                      Options + Dividends + Interest + Rental (excludes salaries)
                     </span>
                   </div>
-                  <div 
-                    className={styles.summaryCard}
-                    onClick={() => selectedYear !== 'all' && fetchSpendingDetails(selectedYear as number)}
-                    style={{ cursor: 'pointer' }}
-                    title="Click to see spending details"
-                  >
-                    <span className={styles.summaryLabel}>Total Spending ({selectedYear}) 🔍</span>
+                  <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Total Spending (2025)</span>
                     <span className={`${styles.summaryValue} ${styles.negative}`}>{formatFullCurrency(actuals.total_spending)}</span>
-                    <span className={styles.summaryNote}>Click to see details • From brokerage accounts</span>
+                    <span className={styles.summaryNote}>From brokerage account</span>
                   </div>
                   <div className={`${styles.summaryCard} ${actuals.projected_annual_deficit > 0 ? styles.danger : styles.success}`}>
                     <span className={styles.summaryLabel}>Projected Annual Gap</span>
@@ -608,7 +660,7 @@ export default function BuyBorrowDie() {
                     <div>
                       <h3 className={styles.chartTitle}>Income vs Spending by Month</h3>
                       <p className={styles.chartSubtitle}>
-                        Green bars = Income • Purple bars = Taxable Income • Red bars = Spending
+                        Green bars = Income • Purple bars = Income from Option + dividend + interest + rental • Red bars = Spending
                       </p>
                     </div>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -656,24 +708,25 @@ export default function BuyBorrowDie() {
                           let cumulativeSpending = 0;
                           
                           return filtered.map(m => {
-                            // Use taxable_income from the API (excludes IRA accounts)
-                            const taxableIncome = m.taxable_income || 0;
-
+                            // Income from Options + Dividends + Interest + Rental (excluding salaries)
+                            const incomeFromOptionsDividendInterestRental = 
+                              m.options_income + m.dividend_income + m.interest_income + m.rental_income;
+                            
                             if (isCumulative) {
                               cumulativeIncome += m.income;
-                              cumulativeIncomeFromOptions += taxableIncome;
+                              cumulativeIncomeFromOptions += incomeFromOptionsDividendInterestRental;
                               cumulativeSpending += m.spending;
-
+                              
                               return {
                                 ...m,
                                 income: cumulativeIncome,
-                                taxable_income: cumulativeIncomeFromOptions,
+                                income_from_options_dividend_interest_rental: cumulativeIncomeFromOptions,
                                 spending: cumulativeSpending,
                               };
                             } else {
                               return {
                                 ...m,
-                                taxable_income: taxableIncome,
+                                income_from_options_dividend_interest_rental: incomeFromOptionsDividendInterestRental,
                               };
                             }
                           });
@@ -712,14 +765,14 @@ export default function BuyBorrowDie() {
                           strokeWidth={2}
                           name="Income"
                         />
-                        <Area
+                        <Area 
                           yAxisId="left"
-                          type="monotone"
-                          dataKey="taxable_income"
-                          fill="rgba(168, 85, 247, 0.3)"
-                          stroke="#A855F7"
+                          type="monotone" 
+                          dataKey="income_from_options_dividend_interest_rental" 
+                          fill="rgba(168, 85, 247, 0.3)" 
+                          stroke="#A855F7" 
                           strokeWidth={2}
-                          name="Taxable Income"
+                          name="Income from Option + dividend + interest + rental"
                         />
                         <Area 
                           yAxisId="left"
@@ -760,7 +813,7 @@ export default function BuyBorrowDie() {
                               {month.spending > 0 ? formatFullCurrency(month.spending) : '-'}
                             </td>
                             <td>{month.options_income > 0 ? formatFullCurrency(month.options_income) : '-'}</td>
-                            <td>{(month.salary_income + month.rental_income) > 0 ? formatFullCurrency(month.salary_income + month.rental_income) : '-'}</td>
+                            <td>{month.salary_income > 0 ? formatFullCurrency(month.salary_income) : '-'}</td>
                             <td>{month.interest_income > 0 ? formatFullCurrency(month.interest_income) : '-'}</td>
                             <td className={styles.income}>{formatFullCurrency(month.income)}</td>
                             <td className={month.net_cash_flow >= 0 ? styles.positive : styles.negative}>
@@ -794,6 +847,208 @@ export default function BuyBorrowDie() {
                       <RefreshCw size={16} />
                       Refresh Data
                     </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {activeTab === 'forecast' && (
+          <>
+            {forecastLoading && (
+              <div className={styles.loadingState}>
+                <RefreshCw size={32} className={styles.spinner} />
+                <p>Analyzing expense patterns...</p>
+              </div>
+            )}
+
+            {!forecastLoading && forecast && (
+              <>
+                {/* Summary Cards */}
+                <div className={styles.summaryGrid}>
+                  <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Recurring Expenses Identified</span>
+                    <span className={styles.summaryValue}>{forecast.summary.total_recurring_expenses_identified}</span>
+                    <span className={styles.summaryNote}>Based on {forecast.summary.historical_years_analyzed} years of data</span>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Avg Monthly Recurring</span>
+                    <span className={`${styles.summaryValue} ${styles.negative}`}>
+                      {formatFullCurrency(forecast.summary.avg_monthly_recurring_spending)}
+                    </span>
+                    <span className={styles.summaryNote}>From {forecast.summary.total_transactions_analyzed} transactions</span>
+                  </div>
+                  <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Forecast Period</span>
+                    <span className={styles.summaryValue}>{forecast.forecast_period.months_ahead} months</span>
+                    <span className={styles.summaryNote}>
+                      {forecast.forecasted_months[0]?.month_name} - {forecast.forecasted_months[forecast.forecasted_months.length - 1]?.month_name}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Forecasted Expenses by Month */}
+                <div className={styles.chartCard}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <h3 className={styles.chartTitle}>Forecasted Expenses by Month</h3>
+                    <button
+                      className={styles.refreshButton}
+                      onClick={() => fetchForecast()}
+                      style={{ padding: '8px 16px', fontSize: '14px' }}
+                    >
+                      <RefreshCw size={16} />
+                      Refresh Forecast
+                    </button>
+                  </div>
+
+                  {forecast.forecasted_months.length === 0 ? (
+                    <div className={styles.emptyState}>
+                      <p>No forecast data available. Import more transaction history to enable forecasting.</p>
+                    </div>
+                  ) : (
+                    <div className={styles.tableContainer}>
+                      <table className={styles.actualsTable}>
+                        <thead>
+                          <tr>
+                            <th>Month</th>
+                            <th>Expense</th>
+                            <th>Predicted Date</th>
+                            <th>Amount</th>
+                            <th>Confidence</th>
+                            <th>Frequency</th>
+                            <th>Occurrences</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {forecast.forecasted_months.map((month) => (
+                            month.predicted_expenses.map((expense, idx) => (
+                              <tr key={`${month.month}-${idx}`}>
+                                {idx === 0 && (
+                                  <td rowSpan={month.predicted_expenses.length} style={{
+                                    fontWeight: 'bold',
+                                    borderRight: '1px solid rgba(255,255,255,0.1)',
+                                    verticalAlign: 'top',
+                                    paddingTop: '16px'
+                                  }}>
+                                    <div>
+                                      {month.month_name} {month.year}
+                                      <div style={{ fontSize: '0.85em', color: '#a3a3a3', marginTop: '4px' }}>
+                                        Total: {formatFullCurrency(month.total_predicted)}
+                                      </div>
+                                    </div>
+                                  </td>
+                                )}
+                                <td style={{ fontSize: '0.9em' }}>{expense.description}</td>
+                                <td>{new Date(expense.predicted_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
+                                <td className={styles.spending}>
+                                  {formatFullCurrency(expense.predicted_amount)}
+                                  {expense.amount_range && (
+                                    <div style={{ fontSize: '0.75em', color: '#737373' }}>
+                                      Range: {formatCurrency(expense.amount_range.min)} - {formatCurrency(expense.amount_range.max)}
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  <div style={{
+                                    display: 'inline-block',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.85em',
+                                    backgroundColor: expense.confidence >= 70 ? 'rgba(16, 185, 129, 0.2)' :
+                                                     expense.confidence >= 50 ? 'rgba(255, 184, 0, 0.2)' :
+                                                     'rgba(239, 68, 68, 0.2)',
+                                    color: expense.confidence >= 70 ? '#10B981' :
+                                           expense.confidence >= 50 ? '#FFB800' :
+                                           '#EF4444'
+                                  }}>
+                                    {expense.confidence.toFixed(0)}%
+                                  </div>
+                                </td>
+                                <td style={{ textTransform: 'capitalize' }}>{expense.frequency}</td>
+                                <td style={{ textAlign: 'center' }}>{expense.historical_occurrences}</td>
+                              </tr>
+                            ))
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Recurring Patterns */}
+                {forecast.recurring_patterns.length > 0 && (
+                  <div className={styles.chartCard}>
+                    <h3 className={styles.chartTitle}>Identified Recurring Patterns</h3>
+                    <p className={styles.chartSubtitle}>
+                      These expense patterns were identified from your transaction history
+                    </p>
+                    <div className={styles.tableContainer}>
+                      <table className={styles.actualsTable}>
+                        <thead>
+                          <tr>
+                            <th>Description</th>
+                            <th>Avg Amount</th>
+                            <th>Frequency</th>
+                            <th>Avg Day</th>
+                            <th>Confidence</th>
+                            <th>Occurrences</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {forecast.recurring_patterns
+                            .sort((a, b) => b.avg_amount - a.avg_amount)
+                            .map((pattern, idx) => (
+                              <tr key={idx}>
+                                <td style={{ fontWeight: '500' }}>{pattern.description}</td>
+                                <td className={styles.spending}>{formatFullCurrency(pattern.avg_amount)}</td>
+                                <td style={{ textTransform: 'capitalize' }}>{pattern.frequency}</td>
+                                <td>Day {pattern.avg_day_of_month}</td>
+                                <td>
+                                  <div style={{
+                                    display: 'inline-block',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.85em',
+                                    backgroundColor: pattern.confidence >= 70 ? 'rgba(16, 185, 129, 0.2)' :
+                                                     pattern.confidence >= 50 ? 'rgba(255, 184, 0, 0.2)' :
+                                                     'rgba(239, 68, 68, 0.2)',
+                                    color: pattern.confidence >= 70 ? '#10B981' :
+                                           pattern.confidence >= 50 ? '#FFB800' :
+                                           '#EF4444'
+                                  }}>
+                                    {pattern.confidence.toFixed(0)}%
+                                  </div>
+                                </td>
+                                <td style={{ textAlign: 'center' }}>{pattern.occurrences}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Info Card */}
+                <div className={styles.insightCard}>
+                  <Info size={24} className={styles.insightIcon} />
+                  <div>
+                    <h4 className={styles.insightTitle}>How Forecasting Works</h4>
+                    <p className={styles.insightText}>
+                      The system analyzes your historical Robinhood spending transactions to identify recurring patterns.
+                      Expenses with similar descriptions and amounts (within 15% tolerance) are grouped together.
+                      <br/><br/>
+                      <strong>Confidence Score:</strong> Based on consistency of amounts and timing. Higher scores mean more predictable expenses.
+                      <br/>
+                      <strong>Frequency:</strong> Determined from the gaps between occurrences (monthly, quarterly, or annual).
+                      <br/><br/>
+                      {forecast.error && (
+                        <span style={{ color: '#EF4444' }}>⚠️ {forecast.error}</span>
+                      )}
+                      {forecast.note && (
+                        <span style={{ color: '#FFB800' }}>💡 {forecast.note}</span>
+                      )}
+                    </p>
                   </div>
                 </div>
               </>
@@ -857,119 +1112,6 @@ export default function BuyBorrowDie() {
           </div>
         )}
       </div>
-
-      {/* Spending Details Modal */}
-      {showSpendingDetails && spendingDetails && (
-        <div 
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.8)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-          }}
-          onClick={() => setShowSpendingDetails(false)}
-        >
-          <div 
-            style={{
-              backgroundColor: 'var(--color-bg-secondary)',
-              borderRadius: '12px',
-              padding: '24px',
-              maxWidth: '800px',
-              width: '90%',
-              maxHeight: '80vh',
-              overflow: 'auto',
-              border: '1px solid var(--color-border)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ margin: 0 }}>Spending Details ({selectedYear})</h2>
-              <button 
-                onClick={() => setShowSpendingDetails(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '24px',
-                  cursor: 'pointer',
-                  color: 'var(--color-text-secondary)',
-                }}
-              >
-                ×
-              </button>
-            </div>
-            
-            <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: 'var(--color-bg-tertiary)', borderRadius: '8px' }}>
-              <strong>Total: {formatFullCurrency(spendingDetails.total_spending)}</strong>
-              <span style={{ marginLeft: '16px', color: 'var(--color-text-secondary)' }}>
-                {spendingDetails.transaction_count} transactions
-              </span>
-            </div>
-
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
-                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Date</th>
-                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Account</th>
-                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Type</th>
-                  <th style={{ textAlign: 'right', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Amount</th>
-                  <th style={{ textAlign: 'left', padding: '12px 8px', color: 'var(--color-text-secondary)' }}>Description</th>
-                </tr>
-              </thead>
-              <tbody>
-                {spendingDetails.transactions.map((txn, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid var(--color-border-light)' }}>
-                    <td style={{ padding: '10px 8px' }}>{new Date(txn.date).toLocaleDateString()}</td>
-                    <td style={{ padding: '10px 8px' }}>
-                      <span style={{
-                        padding: '2px 8px',
-                        borderRadius: '4px',
-                        fontSize: '12px',
-                        backgroundColor: txn.account.includes('Neel') ? 'rgba(59, 130, 246, 0.2)' : 'rgba(168, 85, 247, 0.2)',
-                        color: txn.account.includes('Neel') ? '#60A5FA' : '#C084FC',
-                      }}>
-                        {txn.account}
-                      </span>
-                    </td>
-                    <td style={{ padding: '10px 8px', color: 'var(--color-text-secondary)' }}>{txn.type}</td>
-                    <td style={{ padding: '10px 8px', textAlign: 'right', color: '#EF4444', fontWeight: '500' }}>
-                      {formatFullCurrency(txn.amount)}
-                    </td>
-                    <td style={{ padding: '10px 8px', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
-                      {txn.description.length > 40 ? txn.description.substring(0, 40) + '...' : txn.description}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Loading overlay for spending details */}
-      {spendingDetailsLoading && (
-        <div 
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-          }}
-        >
-          <RefreshCw size={32} className={styles.spinner} />
-        </div>
-      )}
     </div>
   );
 }
