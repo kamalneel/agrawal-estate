@@ -810,6 +810,62 @@ async def get_current_capital(
     }
 
 
+@router.get("/buy-borrow-die/expense-forecast")
+async def get_expense_forecast(
+    months_ahead: int = Query(default=3, ge=1, le=12, description="Months to forecast"),
+    historical_years: int = Query(default=2, ge=1, le=5, description="Years of history to analyze"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Forecast future expenses based on historical spending patterns.
+
+    Analyzes recurring expense patterns (similar amounts, regular timing)
+    and predicts future expenses with dates and confidence levels.
+
+    Query parameters:
+    - months_ahead: How many months to forecast (1-12, default 3)
+    - historical_years: Years of history to analyze (1-5, default 2)
+
+    Returns:
+    - Forecasted expenses by month with predicted amounts and dates
+    - Recurring expense patterns identified
+    - Confidence levels based on consistency
+    """
+    from app.modules.strategies.expense_forecasting_service import ExpenseForecastingService
+
+    try:
+        current_year = datetime.now().year
+        service = ExpenseForecastingService()
+
+        forecast = service.forecast_expenses(
+            year=current_year,
+            months_ahead=months_ahead,
+            historical_years=historical_years
+        )
+
+        return forecast
+    except Exception as e:
+        # If CSV files don't exist or other error, return empty forecast
+        return {
+            "forecast_period": {
+                "start_month": None,
+                "end_month": None,
+                "months_ahead": months_ahead
+            },
+            "forecasted_months": [],
+            "summary": {
+                "total_recurring_expenses_identified": 0,
+                "avg_monthly_recurring_spending": 0,
+                "historical_years_analyzed": historical_years,
+                "total_transactions_analyzed": 0
+            },
+            "recurring_patterns": [],
+            "error": str(e),
+            "note": "No expense data available for forecasting. Import transactions to enable forecasting."
+        }
+
+
 # Retirement contribution limits (2015-2026)
 # Historical data for accurate tracking
 RETIREMENT_LIMITS = {
