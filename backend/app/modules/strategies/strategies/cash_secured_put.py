@@ -524,7 +524,7 @@ class CashSecuredPutStrategy(BaseStrategy):
                         :premium_per_contract, :stock_price, :otm_pct,
                         :rsi, :bb_position_pct, :bb_lower, :bb_upper, :trend,
                         :rsi_score, :bb_score, :premium_score, :ta_score,
-                        'recommended', :full_context::jsonb, NOW()
+                        'recommended', CAST(:full_context AS jsonb), NOW()
                     )
                     ON CONFLICT DO NOTHING
                 """),

@@ -207,6 +207,127 @@ async def get_holdings_live(db: Session = Depends(get_db)):
     return get_holdings_with_live_prices(db)
 
 
+@router.get("/option-income")
+async def get_option_income(db: Session = Depends(get_db)):
+    """
+    Get net option income (STO - BTC) grouped by symbol for covered calls,
+    and total put income separately. Also returns total cash balances.
+    """
+    from sqlalchemy import text
+    from datetime import date
+
+    # Net covered call income per symbol (aggregated)
+    call_rows = db.execute(text(
+        "SELECT symbol, SUM(amount) as net_income "
+        "FROM investment_transactions "
+        "WHERE transaction_type IN ('STO', 'BTC') "
+        "AND description ILIKE '%Call%' "
+        "GROUP BY symbol "
+        "ORDER BY net_income DESC"
+    )).fetchall()
+
+    call_income = {row[0]: float(row[1]) for row in call_rows}
+
+    # Net covered call income per account per symbol
+    acct_call_rows = db.execute(text(
+        "SELECT account_id, symbol, SUM(amount) as net_income "
+        "FROM investment_transactions "
+        "WHERE transaction_type IN ('STO', 'BTC') "
+        "AND description ILIKE '%Call%' "
+        "GROUP BY account_id, symbol"
+    )).fetchall()
+
+    call_income_by_account: dict = {}
+    for row in acct_call_rows:
+        acct = row[0]
+        if acct not in call_income_by_account:
+            call_income_by_account[acct] = {}
+        call_income_by_account[acct][row[1]] = float(row[2])
+
+    # Total put income
+    put_row = db.execute(text(
+        "SELECT COALESCE(SUM(amount), 0) "
+        "FROM investment_transactions "
+        "WHERE transaction_type IN ('STO', 'BTC') "
+        "AND description ILIKE '%Put%'"
+    )).fetchone()
+    put_income = float(put_row[0]) if put_row else 0.0
+
+    # Total cash balances
+    cash_rows = db.execute(text(
+        "SELECT COALESCE(SUM(cash_balance), 0) FROM account_cash_balances"
+    )).fetchone()
+    total_cash = float(cash_rows[0]) if cash_rows else 0.0
+
+    # 4-week income: last 4 completed Mon-Fri business weeks
+    from datetime import timedelta
+
+    today = date.today()
+    weekday = today.weekday()  # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
+
+    if weekday >= 5:
+        # Saturday/Sunday: most recent completed week ended this Friday
+        end_friday = today - timedelta(days=weekday - 4)
+    else:
+        # Monday-Friday: we're mid-week, last completed week ended prev Friday
+        end_friday = today - timedelta(days=weekday + 3)
+
+    # 4 complete weeks: Monday of oldest week to Friday of newest week
+    start_monday = end_friday - timedelta(days=25)
+
+    params = {'start': start_monday.isoformat(), 'end': end_friday.isoformat()}
+
+    # 4-week call income per symbol
+    weekly_call_rows = db.execute(text(
+        "SELECT symbol, SUM(amount) as net_income "
+        "FROM investment_transactions "
+        "WHERE transaction_type IN ('STO', 'BTC') "
+        "AND description ILIKE '%Call%' "
+        "AND transaction_date >= :start AND transaction_date <= :end "
+        "GROUP BY symbol"
+    ), params).fetchall()
+
+    monthly_call_income = {row[0]: float(row[1]) for row in weekly_call_rows}
+
+    # 4-week put income total
+    weekly_put_row = db.execute(text(
+        "SELECT COALESCE(SUM(amount), 0) "
+        "FROM investment_transactions "
+        "WHERE transaction_type IN ('STO', 'BTC') "
+        "AND description ILIKE '%Put%' "
+        "AND transaction_date >= :start AND transaction_date <= :end"
+    ), params).fetchone()
+    monthly_put_income = float(weekly_put_row[0]) if weekly_put_row else 0.0
+
+    # 4-week call income per account per symbol
+    weekly_acct_rows = db.execute(text(
+        "SELECT account_id, symbol, SUM(amount) as net_income "
+        "FROM investment_transactions "
+        "WHERE transaction_type IN ('STO', 'BTC') "
+        "AND description ILIKE '%Call%' "
+        "AND transaction_date >= :start AND transaction_date <= :end "
+        "GROUP BY account_id, symbol"
+    ), params).fetchall()
+
+    monthly_call_by_account: dict = {}
+    for row in weekly_acct_rows:
+        acct = row[0]
+        if acct not in monthly_call_by_account:
+            monthly_call_by_account[acct] = {}
+        monthly_call_by_account[acct][row[1]] = float(row[2])
+
+    return {
+        "callIncomeBySymbol": call_income,
+        "callIncomeByAccount": call_income_by_account,
+        "putIncomeTotal": put_income,
+        "totalCash": total_cash,
+        "monthlyCallBySymbol": monthly_call_income,
+        "monthlyCallByAccount": monthly_call_by_account,
+        "monthlyPutTotal": monthly_put_income,
+        "fourWeekRange": f"{start_monday.isoformat()} to {end_friday.isoformat()}",
+    }
+
+
 @router.post("/holdings/refresh-prices")
 async def refresh_all_prices(db: Session = Depends(get_db)):
     """
@@ -358,55 +479,439 @@ async def list_transactions(
     }
 
 
+@router.post("/snapshot/daily")
+async def trigger_daily_snapshot(db: Session = Depends(get_db)):
+    """
+    Manually trigger a daily portfolio snapshot.
+
+    Takes a snapshot of all holdings with current prices and writes to
+    portfolio_snapshots and investment_holdings_history tables.
+    Idempotent via upsert — safe to call multiple times per day.
+    """
+    from app.modules.investments.snapshot_service import take_daily_snapshot
+
+    stats = take_daily_snapshot(db)
+    return {
+        "success": True,
+        "message": f"Snapshot complete: {stats['accounts_snapshot']} accounts, "
+                   f"{stats['holdings_snapshot']} holdings",
+        "stats": stats,
+    }
+
+
+@router.get("/capital-events")
+async def get_capital_events(
+    db: Session = Depends(get_db),
+    period: Optional[str] = Query(None, description="Time period: 30d, 90d, ytd, 1y, 2y, 5y, or omit for all"),
+    min_amount: float = Query(5000, description="Minimum absolute amount to include"),
+):
+    """
+    Get BUY/SELL capital events for chart overlay and transaction table.
+    Returns individual events and monthly summaries.
+    """
+    from sqlalchemy import func
+    from datetime import timedelta
+    from collections import defaultdict
+
+    # Calculate cutoff date based on period
+    filters = [InvestmentTransaction.transaction_type.in_(['BUY', 'SELL'])]
+    if period:
+        today = date.today()
+        period_days = {'1d': 1, '1w': 7, '30d': 30, '90d': 90, '1y': 365, '2y': 730, '5y': 1825}
+        if period == 'ytd':
+            cutoff = date(today.year, 1, 1)
+        elif period in period_days:
+            cutoff = today - timedelta(days=period_days[period])
+        else:
+            cutoff = None
+        if cutoff:
+            filters.append(InvestmentTransaction.transaction_date >= cutoff)
+
+    if min_amount > 0:
+        filters.append(
+            func.abs(InvestmentTransaction.amount) >= min_amount
+        )
+
+    # Query transactions joined with accounts for account_name
+    rows = db.query(
+        InvestmentTransaction,
+        InvestmentAccount.account_name,
+    ).outerjoin(
+        InvestmentAccount,
+        InvestmentTransaction.account_id == InvestmentAccount.account_id,
+    ).filter(*filters).order_by(
+        InvestmentTransaction.transaction_date.desc()
+    ).all()
+
+    events = []
+    for txn, account_name in rows:
+        d = txn.transaction_date
+        amt = float(txn.amount) if txn.amount else 0
+        events.append({
+            "date": d.isoformat(),
+            "formatted": d.strftime("%b %d, %Y"),
+            "month_key": d.strftime("%b %Y"),
+            "date_key": d.isoformat(),
+            "type": txn.transaction_type,
+            "symbol": txn.symbol,
+            "quantity": float(txn.quantity) if txn.quantity else None,
+            "amount": abs(amt),
+            "price_per_share": float(txn.price_per_share) if txn.price_per_share else None,
+            "account_id": txn.account_id,
+            "account_name": account_name or txn.account_id,
+            "description": txn.description or "",
+        })
+
+    # Build monthly summary
+    monthly = defaultdict(lambda: {
+        "total_buys": 0, "total_sells": 0, "buy_count": 0, "sell_count": 0,
+        "buy_symbols": [], "sell_symbols": [],
+    })
+    for e in events:
+        mk = e["month_key"]
+        if e["type"] == "BUY":
+            monthly[mk]["total_buys"] += e["amount"]
+            monthly[mk]["buy_count"] += 1
+            if e["symbol"] not in monthly[mk]["buy_symbols"]:
+                monthly[mk]["buy_symbols"].append(e["symbol"])
+        else:
+            monthly[mk]["total_sells"] += e["amount"]
+            monthly[mk]["sell_count"] += 1
+            if e["symbol"] not in monthly[mk]["sell_symbols"]:
+                monthly[mk]["sell_symbols"].append(e["symbol"])
+
+    monthly_summary = []
+    for month, data in monthly.items():
+        monthly_summary.append({
+            "month": month,
+            "total_buys": round(data["total_buys"], 2),
+            "total_sells": round(data["total_sells"], 2),
+            "net_flow": round(data["total_buys"] - data["total_sells"], 2),
+            "buy_count": data["buy_count"],
+            "sell_count": data["sell_count"],
+            "top_buys": ", ".join(data["buy_symbols"][:3]),
+            "top_sells": ", ".join(data["sell_symbols"][:3]),
+        })
+
+    return {
+        "events": events,
+        "monthly_summary": monthly_summary,
+    }
+
+
+import re
+
+OPTION_RE = re.compile(r'(Put|Call)\s+\$?([\d,.]+)')
+
+
+def _parse_option_type_strike(desc: str):
+    """Parse option type (Put/Call) and strike price from option description."""
+    m = OPTION_RE.search(desc or '')
+    return (m.group(1), float(m.group(2).replace(',', ''))) if m else (None, None)
+
+
+@router.get("/capital-events/option-chains")
+async def get_option_chains(
+    db: Session = Depends(get_db),
+    period: Optional[str] = Query(None, description="Time period: 30d, 90d, ytd, 1y, 2y, 5y, or omit for all"),
+    min_amount: float = Query(5000, description="Minimum absolute amount to include"),
+):
+    """
+    Get option chain analysis for forced capital events (put/call assignments).
+    Returns net premium earned, roll count, and full trade history for each chain.
+    """
+    from sqlalchemy import text, func
+    from datetime import timedelta
+
+    # 1. Get BUY/SELL events matching filters (same as capital-events)
+    filters = [InvestmentTransaction.transaction_type.in_(['BUY', 'SELL'])]
+    if period:
+        today = date.today()
+        period_days = {'1d': 1, '1w': 7, '30d': 30, '90d': 90, '1y': 365, '2y': 730, '5y': 1825}
+        if period == 'ytd':
+            cutoff = date(today.year, 1, 1)
+        elif period in period_days:
+            cutoff = today - timedelta(days=period_days[period])
+        else:
+            cutoff = None
+        if cutoff:
+            filters.append(InvestmentTransaction.transaction_date >= cutoff)
+
+    if min_amount > 0:
+        filters.append(func.abs(InvestmentTransaction.amount) >= min_amount)
+
+    rows = db.query(InvestmentTransaction).filter(*filters).order_by(
+        InvestmentTransaction.transaction_date.desc()
+    ).all()
+
+    option_chains = {}
+
+    for txn in rows:
+        desc = txn.description or ""
+        # Check if this is a forced (option-assigned) transaction
+        if 'option' not in desc.lower() or 'assigned' not in desc.lower():
+            continue
+
+        d = txn.transaction_date
+        key = f"{d.isoformat()}|{txn.symbol}|{txn.account_id}|{txn.transaction_type}"
+
+        # 2. Find OASGN record to get assignment details
+        oasgn = db.query(InvestmentTransaction).filter(
+            InvestmentTransaction.account_id == txn.account_id,
+            InvestmentTransaction.symbol == txn.symbol,
+            InvestmentTransaction.transaction_type == 'OASGN',
+            InvestmentTransaction.transaction_date.between(
+                d - timedelta(days=1), d + timedelta(days=1)
+            ),
+        ).first()
+
+        if oasgn:
+            oasgn_desc = oasgn.description or ""
+            option_type, final_strike = _parse_option_type_strike(oasgn_desc)
+            if not option_type:
+                continue
+            contracts = abs(int(oasgn.quantity)) if oasgn.quantity else 1
+        else:
+            # Fallback: infer from the BUY/SELL transaction itself
+            # SELL = call assignment, BUY = put assignment
+            option_type = "Call" if txn.transaction_type == "SELL" else "Put"
+            # Parse contract count from description: "3 PLTR Options Assigned"
+            contract_match = re.search(r'(\d+)\s+\w+\s+Options?\s+Assigned', desc, re.IGNORECASE)
+            contracts = int(contract_match.group(1)) if contract_match else 1
+            # final_strike will be determined from nearby STO/BTC trades
+            final_strike = None
+
+        # 3. Get all STO/BTC for this symbol+account, filter by option type
+        sto_btc = db.query(InvestmentTransaction).filter(
+            InvestmentTransaction.account_id == txn.account_id,
+            InvestmentTransaction.symbol == txn.symbol,
+            InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+            InvestmentTransaction.description.ilike(f'%{option_type}%'),
+        ).order_by(InvestmentTransaction.transaction_date.asc()).all()
+
+        # 4. Filter by contract count to separate chains with different sizes
+        #    (e.g., RKLB $80 with 5 contracts vs RKLB $84 with 3 contracts)
+        chain_trades = []
+        for t in sto_btc:
+            t_desc = t.description or ""
+            t_type, t_strike = _parse_option_type_strike(t_desc)
+            if t_type != option_type:
+                continue
+            t_contracts = abs(int(t.quantity)) if t.quantity else 1
+            # Only include trades with matching contract count
+            if t_contracts != contracts:
+                continue
+            # Only include trades before/on the assignment date
+            if t.transaction_date > d:
+                continue
+            chain_trades.append(t)
+
+        if not chain_trades:
+            continue
+
+        # If final_strike unknown (no OASGN), infer from the last STO expiring near assignment
+        if final_strike is None and chain_trades:
+            # Find the STO closest to assignment date (the final position)
+            last_sto = None
+            for t in reversed(chain_trades):
+                if t.transaction_type == 'STO':
+                    last_sto = t
+                    break
+            if last_sto:
+                _, final_strike = _parse_option_type_strike(last_sto.description or "")
+            if final_strike is None:
+                final_strike = 0
+
+        # 5. Trace chain backward from final strike
+        # Build the chain by following BTC→STO date pairs
+        filtered_trades = []
+        current_strikes = {final_strike}
+
+        # Work backward through trades
+        for t in reversed(chain_trades):
+            t_desc = t.description or ""
+            _, t_strike = _parse_option_type_strike(t_desc)
+            if t_strike is None:
+                continue
+
+            if t.transaction_type == 'BTC':
+                # BTC closes a position at this strike
+                if t_strike in current_strikes:
+                    filtered_trades.append(t)
+                    # After closing, we need to find the STO that opened it
+                    # The STO could be at a different strike (if rolled)
+            elif t.transaction_type == 'STO':
+                # STO opens a position
+                # Check if a BTC for this strike's successor is already in the chain
+                # or if this is the original/rolled position
+                filtered_trades.append(t)
+                current_strikes.add(t_strike)
+
+        # If chain tracing didn't reduce much, just use all matching trades
+        # (the contract count filter already provides good separation)
+        trades_to_use = chain_trades
+
+        # 6. Compute chain metrics
+        net_premium = sum(float(t.amount) for t in trades_to_use if t.amount)
+        sto_trades = [t for t in trades_to_use if t.transaction_type == 'STO']
+        btc_trades = [t for t in trades_to_use if t.transaction_type == 'BTC']
+        rolls_count = len(btc_trades)
+
+        first_date = trades_to_use[0].transaction_date if trades_to_use else d
+        _, starting_strike = _parse_option_type_strike(
+            sto_trades[0].description if sto_trades else ""
+        )
+        duration_days = (d - first_date).days if first_date else 0
+
+        # Build trades list
+        trades_list = []
+        for t in trades_to_use:
+            t_desc = t.description or ""
+            _, t_strike = _parse_option_type_strike(t_desc)
+            # Extract expiry from description (format: "SYMBOL M/D/YYYY Put/Call $XXX")
+            expiry_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', t_desc)
+            expiry = expiry_match.group(1) if expiry_match else ""
+            t_contracts = abs(int(t.quantity)) if t.quantity else 1
+            trades_list.append({
+                "date": t.transaction_date.isoformat(),
+                "formatted": t.transaction_date.strftime("%b %d, %Y"),
+                "type": t.transaction_type,
+                "strike": t_strike,
+                "expiry": expiry,
+                "amount": round(float(t.amount), 2) if t.amount else 0,
+                "contracts": t_contracts,
+            })
+
+        option_chains[key] = {
+            "is_forced": True,
+            "option_type": option_type.lower(),
+            "net_premium": round(net_premium, 2),
+            "rolls": rolls_count,
+            "chain_start_date": first_date.isoformat() if first_date else None,
+            "starting_strike": starting_strike,
+            "final_strike": final_strike,
+            "duration_days": duration_days,
+            "contracts": contracts,
+            "trades": trades_list,
+        }
+
+    return {"option_chains": option_chains}
+
+
 @router.get("/portfolio-history")
 async def get_portfolio_history(
     db: Session = Depends(get_db),
     owner: Optional[str] = None,
     account_id: Optional[str] = None,
+    period: Optional[str] = Query(None, description="Time period: 1d, 1w, 30d, 90d, or omit for all"),
 ):
     """
     Get historical portfolio values from statement snapshots.
-    Returns monthly data points for the chart.
-    Can filter by owner (all accounts for that person) or account_id (specific account).
+    For monthly ('all') view: takes the latest snapshot per account per month,
+    then sums across accounts. This ensures every account is represented even
+    when they don't all have snapshots on the same calendar date.
+    For period views (1d, 1w, 30d, 90d): sums across accounts per date.
     """
-    from sqlalchemy import func
-    
-    query = db.query(
-        PortfolioSnapshot.statement_date,
-        func.sum(PortfolioSnapshot.portfolio_value).label('total_value')
-    ).group_by(
-        PortfolioSnapshot.statement_date
-    ).order_by(PortfolioSnapshot.statement_date)
-    
-    # Filter by specific account if provided (takes precedence)
+    from sqlalchemy import func, and_
+    from datetime import timedelta
+
+    # Only include snapshots from active, known accounts
+    active_account_ids = {
+        a.account_id for a in db.query(InvestmentAccount.account_id).filter(
+            InvestmentAccount.is_active == 'Y'
+        ).all()
+    }
+
+    # Build base filters
+    filters = [PortfolioSnapshot.account_id.in_(active_account_ids)]
     if account_id:
-        query = query.filter(PortfolioSnapshot.account_id == account_id)
+        filters.append(PortfolioSnapshot.account_id == account_id)
     elif owner:
-        query = query.filter(PortfolioSnapshot.owner == owner)
-    
-    snapshots = query.all()
-    
-    # Group by date for total portfolio value
-    date_totals = {}
-    for snapshot in snapshots:
-        date_str = snapshot.statement_date.strftime("%Y-%m")
-        if date_str not in date_totals:
-            date_totals[date_str] = 0
-        date_totals[date_str] += float(snapshot.total_value)
-    
-    # Format for chart
-    history = [
-        {
-            "month": date_str,
-            "value": round(value, 2),
-            "formatted": f"{datetime.strptime(date_str, '%Y-%m').strftime('%b %Y')}"
-        }
-        for date_str, value in sorted(date_totals.items())
-    ]
-    
+        filters.append(PortfolioSnapshot.owner == owner)
+
+    # Calculate cutoff date based on period
+    if period:
+        today = date.today()
+        period_days = {'1d': 1, '1w': 7, '30d': 30, '90d': 90, '1y': 365, '2y': 730, '5y': 1825}
+        if period == 'ytd':
+            cutoff = date(today.year, 1, 1)
+        elif period in period_days:
+            cutoff = today - timedelta(days=period_days[period])
+        else:
+            cutoff = None
+        if cutoff:
+            filters.append(PortfolioSnapshot.statement_date >= cutoff)
+
+    # Short periods (1d, 1w, 30d, 90d): daily data points
+    # Longer periods (ytd, 1y, 2y, 5y, all): monthly aggregation using
+    # latest snapshot per account per month to avoid missing-account gaps
+    use_daily = period in ('1d', '1w', '30d', '90d')
+
+    if not use_daily:
+        # Monthly aggregation: latest snapshot per account per month, then sum
+        latest_dates_q = db.query(
+            PortfolioSnapshot.account_id,
+            PortfolioSnapshot.source,
+            func.to_char(PortfolioSnapshot.statement_date, 'YYYY-MM').label('month'),
+            func.max(PortfolioSnapshot.statement_date).label('max_date'),
+        )
+        for f in filters:
+            latest_dates_q = latest_dates_q.filter(f)
+        latest_dates = latest_dates_q.group_by(
+            PortfolioSnapshot.account_id,
+            PortfolioSnapshot.source,
+            func.to_char(PortfolioSnapshot.statement_date, 'YYYY-MM'),
+        ).subquery()
+
+        rows = db.query(
+            latest_dates.c.month,
+            PortfolioSnapshot.portfolio_value,
+        ).join(
+            latest_dates,
+            and_(
+                PortfolioSnapshot.account_id == latest_dates.c.account_id,
+                PortfolioSnapshot.source == latest_dates.c.source,
+                PortfolioSnapshot.statement_date == latest_dates.c.max_date,
+            )
+        ).order_by(latest_dates.c.month).all()
+
+        monthly: dict = {}
+        for r in rows:
+            monthly[r.month] = monthly.get(r.month, 0) + float(r.portfolio_value)
+
+        history = [
+            {
+                "month": k,
+                "value": round(v, 2),
+                "formatted": datetime.strptime(k, "%Y-%m").strftime("%b %Y"),
+            }
+            for k, v in sorted(monthly.items())
+        ]
+    else:
+        # Daily view for short periods
+        query = db.query(
+            PortfolioSnapshot.statement_date,
+            func.sum(PortfolioSnapshot.portfolio_value).label('total_value')
+        )
+        for f in filters:
+            query = query.filter(f)
+        query = query.group_by(
+            PortfolioSnapshot.statement_date
+        ).order_by(PortfolioSnapshot.statement_date)
+
+        snapshots = query.all()
+        history = []
+        for snapshot in snapshots:
+            d = snapshot.statement_date
+            history.append({
+                "month": d.strftime("%Y-%m-%d"),
+                "value": round(float(snapshot.total_value), 2),
+                "formatted": d.strftime("%b %d, %Y"),
+            })
+
     return {
         "history": history,
-        "total_snapshots": len(snapshots),
+        "total_snapshots": len(history),
     }
 
 
@@ -473,32 +978,42 @@ async def get_growth_summary(db: Session = Depends(get_db)):
     today = date.today()
     periods = {}
     
-    # Define time periods to calculate
+    # Define time periods: 1D (yesterday), YTD (Jan 1), 1Y
     period_configs = [
-        ("30d", 30, "30 Days"),
-        ("90d", 90, "90 Days"),
+        ("1d", 1, "1 Day"),
+        ("ytd", None, "YTD"),
         ("1y", 365, "1 Year"),
     ]
-    
+
     for period_key, days, label in period_configs:
-        target_date = today - timedelta(days=days)
-        
-        # Find the closest snapshot to the target date (looking back)
+        if period_key == 'ytd':
+            target_date = date(today.year, 1, 1)
+        else:
+            target_date = today - timedelta(days=days)
+
+        # Find the closest snapshot to the target date
         closest_snapshot = None
         min_diff = float('inf')
-        
+
         for s in snapshots:
-            # Only consider snapshots older than target date
-            diff = (target_date - s.statement_date).days
-            if diff >= 0 and diff < min_diff:
-                min_diff = diff
-                closest_snapshot = s
-        
+            diff = abs((target_date - s.statement_date).days)
+            # For 1D, find closest snapshot (could be today or yesterday)
+            # For others, find snapshot on or before target date
+            if period_key == '1d':
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_snapshot = s
+            else:
+                back_diff = (target_date - s.statement_date).days
+                if back_diff >= 0 and back_diff < min_diff:
+                    min_diff = back_diff
+                    closest_snapshot = s
+
         if closest_snapshot:
             past_value = float(closest_snapshot.total_value)
             change = current_value - past_value
             change_percent = (change / past_value * 100) if past_value > 0 else 0
-            
+
             periods[period_key] = {
                 "label": label,
                 "past_value": round(past_value, 2),
@@ -786,6 +1301,59 @@ async def recalculate_cost_basis(
         "message": "Cost basis recalculation completed",
         "stats": stats
     }
+
+
+@router.get("/stock-growth")
+def get_stock_growth(db: Session = Depends(get_db)):
+    """
+    Get 1Y/5Y stock growth and holding period for all held symbols.
+    """
+    from app.modules.investments.price_service import get_stock_growth_data
+    from sqlalchemy import func as sqlfunc
+
+    # Get unique symbols with quantity > 0
+    symbols_query = db.query(InvestmentHolding.symbol).filter(
+        InvestmentHolding.quantity > 0,
+        InvestmentHolding.symbol != 'CASH',
+        InvestmentHolding.symbol.isnot(None),
+    ).distinct().all()
+    symbols = [row[0] for row in symbols_query if row[0]]
+
+    if not symbols:
+        return {}
+
+    # Get growth data from yfinance
+    growth_data = get_stock_growth_data(symbols)
+
+    # Get earliest purchase date per symbol from transactions
+    earliest_dates = db.query(
+        InvestmentTransaction.symbol,
+        sqlfunc.min(InvestmentTransaction.transaction_date).label('earliest_date')
+    ).filter(
+        InvestmentTransaction.symbol.in_(symbols),
+        InvestmentTransaction.transaction_type.in_(['BUY', 'REINVEST']),
+    ).group_by(InvestmentTransaction.symbol).all()
+
+    date_map = {row.symbol: row.earliest_date for row in earliest_dates}
+    today = date.today()
+
+    result = {}
+    for symbol in symbols:
+        entry = growth_data.get(symbol, {})
+        earliest = date_map.get(symbol)
+        holding_days = None
+        if earliest:
+            delta = today - (earliest.date() if hasattr(earliest, 'date') else earliest)
+            holding_days = delta.days
+
+        result[symbol] = {
+            'growth_ytd': entry.get('growth_ytd'),
+            'growth_1y': entry.get('growth_1y'),
+            'growth_5y': entry.get('growth_5y'),
+            'holding_period_days': holding_days,
+        }
+
+    return result
 
 
 @router.get("/holdings/{account_id}/{symbol}/cost-basis")

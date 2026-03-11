@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  ArrowLeft, 
-  RefreshCw, 
+import {
+  ArrowLeft,
+  RefreshCw,
   ChevronRight,
   AlertCircle,
   FileText,
@@ -18,7 +18,10 @@ import {
   Calendar,
   Clock,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Upload,
+  FileCheck,
+  ExternalLink
 } from 'lucide-react';
 import {
   AreaChart,
@@ -44,6 +47,7 @@ interface TaxYear {
   federal_rate: number | null;
   state_rate: number | null;
   other_rate: number | null;
+  is_forecast?: boolean;
 }
 
 interface TaxHistory {
@@ -175,7 +179,7 @@ interface TaxDetails {
     total_estimated_penalty: number;
   };
   details: {
-    income_sources?: Array<{ source: string; amount: number }>;
+    income_sources?: Array<{ source: string; amount: number; note?: string; raw_net?: number; closure_rate?: number }>;
     w2_breakdown?: Array<{
       employer: string;
       wages: number;
@@ -199,6 +203,10 @@ interface TaxDetails {
       short_term?: number;
       long_term?: number;
       loss_carryover?: number;
+      options_realized?: number;
+      options_closure_rate?: number;
+      stock_lot_st?: number;
+      stock_lot_lt?: number;
     };
     rental_properties?: Array<{
       address: string;
@@ -264,22 +272,21 @@ export default function Tax() {
     setDetailLoading(true);
     try {
       // First try to get actual tax return, if not found use forecast
-      // Years 2025 and later are forecasts until a real tax return is filed
       const currentYear = new Date().getFullYear();
-      
-      // For years >= currentYear-1 (e.g., 2025 when it's 2026), we likely need forecast
-      // because tax returns aren't filed until April of the following year
-      const likelyForecast = year >= currentYear - 1;
-      
-      // Try returns first for past years, forecast for recent/future years
-      let endpoint = likelyForecast 
+
+      // Only the current year (and future) are definitely forecasts
+      // Prior years should try actual returns first
+      const likelyForecast = year >= currentYear;
+
+      // Try forecast first for current/future years, returns first for past years
+      let endpoint = likelyForecast
         ? `/api/v1/tax/forecast/${year}?base_year=2024`
         : `/api/v1/tax/returns/${year}`;
-      
+
       let response = await fetch(endpoint, {
         headers: getAuthHeaders(),
       });
-      
+
       // If returns 404 for a past year, try forecast
       if (!response.ok && !likelyForecast) {
         endpoint = `/api/v1/tax/forecast/${year}?base_year=2024`;
@@ -415,6 +422,14 @@ export default function Tax() {
 
           {/* Year-specific action buttons */}
           <div className={styles.detailActions}>
+            <button className={styles.heroButton} onClick={() => navigate(`/tax/documents?year=${yearDetails.year}`)}>
+              <Upload size={18} />
+              Tax Documents
+            </button>
+            <button className={styles.heroButton} onClick={() => navigate(`/tax/actual?year=${yearDetails.year}`)}>
+              <FileCheck size={18} />
+              Actual Tax File
+            </button>
             <button className={styles.heroButton} onClick={() => navigate(`/tax/forms?year=${yearDetails.year}`)}>
               <FileText size={18} />
               View Tax Forms
@@ -729,12 +744,48 @@ export default function Tax() {
           <section className={styles.detailSection}>
             <h3><DollarSign size={18} /> Income Sources</h3>
             <div className={styles.detailGrid}>
-              {yearDetails.details.income_sources.map((source, i) => (
-                <div key={i} className={styles.detailItem}>
-                  <span className={styles.detailItemLabel}>{source.source}</span>
-                  <span className={styles.detailItemValue}>{formatCurrency(source.amount)}</span>
-                </div>
-              ))}
+              {yearDetails.details.income_sources.map((source, i) => {
+                // Map each income source to its detail page
+                const linkTarget = (() => {
+                  const s = source.source.toLowerCase()
+                  if (s.includes('rental')) return '/real-estate'
+                  if (s.includes('option premium')) return `/income?year=${yearDetails.year}&section=options`
+                  if (s.includes('stock sale')) return `/tax/cost-basis?year=${yearDetails.year}`
+                  if (s.includes('dividend')) return `/income?year=${yearDetails.year}&section=dividends`
+                  if (s.includes('interest')) return `/income?year=${yearDetails.year}&section=interest`
+                  if (s.includes('capital gains') || s.includes('schedule d')) return `/tax/cost-basis?year=${yearDetails.year}`
+                  if (s.includes('w-2')) return undefined // no drill-down for W-2 summary
+                  return undefined
+                })()
+
+                return (
+                  <div
+                    key={i}
+                    className={`${styles.detailItem} ${source.note ? styles.hasTooltip : ''} ${linkTarget ? styles.clickableItem : ''}`}
+                    onClick={linkTarget ? () => navigate(linkTarget) : undefined}
+                  >
+                    <span className={styles.detailItemLabel}>{source.source}</span>
+                    <span className={styles.detailItemValue}>{formatCurrency(source.amount)}</span>
+                    {source.note && (
+                      <div className={styles.tooltip}>
+                        {source.raw_net != null && (
+                          <div className={styles.tooltipRow}>
+                            <span>Taxable net (STO+BTC):</span>
+                            <span>{formatCurrency(source.raw_net)}</span>
+                          </div>
+                        )}
+                        {source.closure_rate != null && (
+                          <div className={styles.tooltipRow}>
+                            <span>Closure rate (BTC/STO):</span>
+                            <span>{Math.round(source.closure_rate * 100)}%</span>
+                          </div>
+                        )}
+                        <div className={styles.tooltipNote}>{source.note}</div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </section>
         )}
@@ -765,7 +816,10 @@ export default function Tax() {
         {/* Options Income by Account */}
         {yearDetails.details.options_by_account && yearDetails.details.options_by_account.length > 0 && (
           <section className={styles.detailSection}>
-            <h3><TrendingUp size={18} /> Options Income by Account</h3>
+            <h3 className={styles.clickableHeader} onClick={() => navigate(`/income?year=${yearDetails.year}&section=options`)}>
+              <TrendingUp size={18} /> Options Income by Account
+              <ExternalLink size={14} className={styles.linkIcon} />
+            </h3>
             <div className={styles.employerTable}>
               <div className={styles.employerHeader}>
                 <span>Account</span>
@@ -773,7 +827,7 @@ export default function Tax() {
                 <span>Amount</span>
               </div>
               {yearDetails.details.options_by_account.map((acct, i) => (
-                <div key={i} className={styles.employerRow}>
+                <div key={i} className={`${styles.employerRow} ${styles.clickableRow}`} onClick={() => navigate(`/income?year=${yearDetails.year}&section=options`)}>
                   <span className={styles.employerName}>{acct.account_name}</span>
                   <span>{acct.source}</span>
                   <span className={styles.positive}>{formatCurrency(acct.amount)}</span>
@@ -786,7 +840,10 @@ export default function Tax() {
         {/* Dividends by Account */}
         {yearDetails.details.dividends_by_account && yearDetails.details.dividends_by_account.length > 0 && (
           <section className={styles.detailSection}>
-            <h3><PiggyBank size={18} /> Dividend Income by Account</h3>
+            <h3 className={styles.clickableHeader} onClick={() => navigate(`/income?year=${yearDetails.year}&section=dividends`)}>
+              <PiggyBank size={18} /> Dividend Income by Account
+              <ExternalLink size={14} className={styles.linkIcon} />
+            </h3>
             <div className={styles.employerTable}>
               <div className={styles.employerHeader}>
                 <span>Account</span>
@@ -794,7 +851,7 @@ export default function Tax() {
                 <span>Amount</span>
               </div>
               {yearDetails.details.dividends_by_account.map((acct, i) => (
-                <div key={i} className={styles.employerRow}>
+                <div key={i} className={`${styles.employerRow} ${styles.clickableRow}`} onClick={() => navigate(`/income?year=${yearDetails.year}&section=dividends`)}>
                   <span className={styles.employerName}>{acct.account_name}</span>
                   <span>{acct.source}</span>
                   <span className={styles.positive}>{formatCurrency(acct.amount)}</span>
@@ -807,7 +864,10 @@ export default function Tax() {
         {/* Interest by Account */}
         {yearDetails.details.interest_by_account && yearDetails.details.interest_by_account.length > 0 && (
           <section className={styles.detailSection}>
-            <h3><Banknote size={18} /> Interest Income by Account</h3>
+            <h3 className={styles.clickableHeader} onClick={() => navigate(`/income?year=${yearDetails.year}&section=interest`)}>
+              <Banknote size={18} /> Interest Income by Account
+              <ExternalLink size={14} className={styles.linkIcon} />
+            </h3>
             <div className={styles.employerTable}>
               <div className={styles.employerHeader}>
                 <span>Account</span>
@@ -815,7 +875,7 @@ export default function Tax() {
                 <span>Amount</span>
               </div>
               {yearDetails.details.interest_by_account.map((acct, i) => (
-                <div key={i} className={styles.employerRow}>
+                <div key={i} className={`${styles.employerRow} ${styles.clickableRow}`} onClick={() => navigate(`/income?year=${yearDetails.year}&section=interest`)}>
                   <span className={styles.employerName}>{acct.account_name}</span>
                   <span>{acct.source}</span>
                   <span className={styles.positive}>{formatCurrency(acct.amount)}</span>
@@ -851,22 +911,56 @@ export default function Tax() {
         {/* Stock Sales */}
         {yearDetails.details.capital_gains && (
           <section className={styles.detailSection}>
-            <h3><TrendingUp size={18} /> Stock Sales</h3>
+            <h3 className={styles.clickableHeader} onClick={() => navigate(`/tax/cost-basis?year=${yearDetails.year}`)}>
+              <TrendingUp size={18} /> Stock Sales
+              <ExternalLink size={14} className={styles.linkIcon} />
+            </h3>
             <div className={styles.detailGrid}>
               {yearDetails.details.capital_gains.short_term !== undefined && (
-                <div className={styles.detailItem}>
+                <div className={`${styles.detailItem} ${styles.clickableItem} ${styles.hasTooltip}`} onClick={() => navigate(`/tax/cost-basis?year=${yearDetails.year}&term=short`)}>
                   <span className={styles.detailItemLabel}>Short-Term (held ≤1 year)</span>
                   <span className={`${styles.detailItemValue} ${yearDetails.details.capital_gains.short_term >= 0 ? styles.positive : styles.negative}`}>
                     {formatCurrency(yearDetails.details.capital_gains.short_term)}
                   </span>
+                  {(yearDetails.details.capital_gains.options_realized != null || yearDetails.details.capital_gains.stock_lot_st != null) && (
+                    <div className={styles.tooltip}>
+                      {yearDetails.details.capital_gains.options_realized != null && (
+                        <div className={styles.tooltipRow}>
+                          <span>Realized options (taxable):</span>
+                          <span>{formatCurrency(yearDetails.details.capital_gains.options_realized)}</span>
+                        </div>
+                      )}
+                      {yearDetails.details.capital_gains.options_closure_rate != null && (
+                        <div className={styles.tooltipRow}>
+                          <span>Closure rate:</span>
+                          <span>{Math.round(yearDetails.details.capital_gains.options_closure_rate * 100)}%</span>
+                        </div>
+                      )}
+                      {yearDetails.details.capital_gains.stock_lot_st != null && yearDetails.details.capital_gains.stock_lot_st !== 0 && (
+                        <div className={styles.tooltipRow}>
+                          <span>Stock lot ST gains:</span>
+                          <span>{formatCurrency(yearDetails.details.capital_gains.stock_lot_st)}</span>
+                        </div>
+                      )}
+                      <div className={styles.tooltipNote}>Only taxable accounts; retirement excluded</div>
+                    </div>
+                  )}
                 </div>
               )}
               {yearDetails.details.capital_gains.long_term !== undefined && (
-                <div className={styles.detailItem}>
+                <div className={`${styles.detailItem} ${styles.clickableItem} ${styles.hasTooltip}`} onClick={() => navigate(`/tax/cost-basis?year=${yearDetails.year}&term=long`)}>
                   <span className={styles.detailItemLabel}>Long-Term (held &gt;1 year)</span>
                   <span className={`${styles.detailItemValue} ${yearDetails.details.capital_gains.long_term >= 0 ? styles.positive : styles.negative}`}>
                     {formatCurrency(yearDetails.details.capital_gains.long_term)}
                   </span>
+                  {yearDetails.details.capital_gains.stock_lot_lt != null && yearDetails.details.capital_gains.stock_lot_lt !== 0 && (
+                    <div className={styles.tooltip}>
+                      <div className={styles.tooltipRow}>
+                        <span>Stock lot LT gains:</span>
+                        <span>{formatCurrency(yearDetails.details.capital_gains.stock_lot_lt)}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {yearDetails.details.capital_gains.loss_carryover !== undefined && (
@@ -884,7 +978,10 @@ export default function Tax() {
         {/* Rental Properties */}
         {yearDetails.details.rental_properties && yearDetails.details.rental_properties.length > 0 && (
           <section className={styles.detailSection}>
-            <h3><Home size={18} /> Rental Properties</h3>
+            <h3 className={styles.clickableHeader} onClick={() => navigate('/real-estate')}>
+              <Home size={18} /> Rental Properties
+              <ExternalLink size={14} className={styles.linkIcon} />
+            </h3>
             {yearDetails.details.rental_properties.map((rental, i) => (
               <div key={i} className={styles.propertyCard}>
                 <div className={styles.propertyAddress}>{rental.address}</div>
@@ -998,8 +1095,8 @@ export default function Tax() {
     );
   }
 
-  // Chart data - reverse to show oldest first
-  const chartData = [...taxHistory.years].reverse().map(year => ({
+  // Chart data - sort oldest first for chronological display
+  const chartData = [...taxHistory.years].sort((a, b) => a.year - b.year).map(year => ({
     year: year.year,
     federal: year.federal_tax,
     state: year.state_tax,
@@ -1128,10 +1225,8 @@ export default function Tax() {
       <div className={styles.yearsSection}>
         <h2>Tax Returns by Year</h2>
         <div className={styles.yearsGrid}>
-          {taxHistory.years.map((year, index) => {
-            // Years >= currentYear-1 are likely forecasts (2025 when it's 2026)
-            const currentYear = new Date().getFullYear();
-            const isForecast = year.year >= currentYear - 1;
+          {[...taxHistory.years].sort((a, b) => b.year - a.year).map((year, index) => {
+            const isForecast = year.is_forecast === true;
             return (
             <button
               key={year.year}

@@ -12,6 +12,25 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from collections import defaultdict
 
+# Mapping of equivalent transaction types for deduplication
+# These are different codes that represent the same type of transaction
+EQUIVALENT_TRANSACTION_TYPES = {
+    # Dividend types - all represent cash dividends
+    'CDIV': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    'DIVIDEND': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    'CASH DIVIDEND': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    'QUALIFIED DIVIDEND': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    # Interest types - all represent interest income
+    'INT': ['INT', 'INTEREST', 'SLIP'],
+    'INTEREST': ['INT', 'INTEREST', 'SLIP'],
+    'SLIP': ['INT', 'INTEREST', 'SLIP'],  # Sweep interest
+}
+
+
+def _get_equivalent_types(transaction_type: str) -> list:
+    """Get list of equivalent transaction types for deduplication."""
+    return EQUIVALENT_TRANSACTION_TYPES.get(transaction_type, [transaction_type])
+
 
 @dataclass
 class OptionsTransaction:
@@ -100,7 +119,7 @@ class IncomeService:
     """Service to parse and aggregate income from Robinhood transaction files."""
 
     # Transaction codes that represent options activity
-    OPTIONS_CODES = {'STO', 'BTC', 'OEXP', 'OASGN'}
+    OPTIONS_CODES = {'STO', 'BTC', 'STC', 'BTO', 'OEXP', 'OASGN'}
     
     # Transaction codes for dividends
     DIVIDEND_CODES = {'CDIV'}
@@ -1008,108 +1027,149 @@ class IncomeService:
         """
         Get weekly breakdown of options income for a specific account and month.
         Returns data organized by symbol and week.
+        Uses Mon-Fri trading weeks and separates puts from calls.
         """
+        import calendar
+        import re
+        from datetime import date, timedelta
+
         if not self.accounts:
             self.load_all_transactions()
-        
+
+        # Compute trading weeks that overlap this month
+        first_day = date(year, month, 1)
+        last_day = date(year, month, calendar.monthrange(year, month)[1])
+
+        first_monday = first_day - timedelta(days=first_day.weekday())
+
+        weeks_list = []
+        monday = first_monday
+        week_index = 1
+        while monday <= last_day:
+            friday = monday + timedelta(days=4)
+            week_start_in_month = max(monday, first_day)
+            week_end_in_month = min(friday, last_day)
+
+            if week_start_in_month <= week_end_in_month:
+                month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                m_abbr = month_names[week_start_in_month.month - 1]
+                if week_start_in_month == week_end_in_month:
+                    label = f"{m_abbr} {week_start_in_month.day}"
+                    range_str = label
+                else:
+                    end_m_abbr = month_names[week_end_in_month.month - 1]
+                    if week_start_in_month.month == week_end_in_month.month:
+                        label = f"{m_abbr} {week_start_in_month.day}-{week_end_in_month.day}"
+                    else:
+                        label = f"{m_abbr} {week_start_in_month.day}-{end_m_abbr} {week_end_in_month.day}"
+                    range_str = label
+
+                weeks_list.append({
+                    'key': f'week{week_index}',
+                    'label': label,
+                    'range': range_str,
+                    'monday': monday,
+                })
+                week_index += 1
+
+            monday += timedelta(days=7)
+
+        week_keys = [w['key'] for w in weeks_list]
+        monday_to_week = {w['monday']: w['key'] for w in weeks_list}
+
+        month_key = f"{year}-{month:02d}"
+
         if account_name not in self.accounts:
             return {
                 'account_name': account_name,
-                'month': f"{year}-{month:02d}",
+                'month': month_key,
                 'error': 'Account not found',
                 'weekly_data': {},
                 'symbols': [],
-                'totals': {'week1': 0, 'week2': 0, 'week3': 0, 'week4': 0, 'week5': 0},
+                'weeks': [{'key': w['key'], 'label': w['label'], 'range': w['range']} for w in weeks_list],
+                'weekly_totals': {k: 0 for k in week_keys},
+                'weekly_counts': {k: 0 for k in week_keys},
             }
-        
+
         account = self.accounts[account_name]
-        month_key = f"{year}-{month:02d}"
-        
+
         # Filter transactions for the specified month
         month_transactions = [
             txn for txn in account.options_transactions
             if txn.date.year == year and txn.date.month == month
         ]
-        
-        # Organize by symbol and week
-        # Week 1: days 1-7, Week 2: days 8-14, Week 3: days 15-21, Week 4: days 22-28, Week 5: days 29-31
-        def get_week(day: int) -> str:
-            if day <= 7:
-                return 'week1'
-            elif day <= 14:
-                return 'week2'
-            elif day <= 21:
-                return 'week3'
-            elif day <= 28:
-                return 'week4'
-            else:
-                return 'week5'
-        
+
         # Initialize data structures
-        symbols_data = defaultdict(lambda: {
-            'week1': {'count': 0, 'amount': 0.0, 'transactions': []},
-            'week2': {'count': 0, 'amount': 0.0, 'transactions': []},
-            'week3': {'count': 0, 'amount': 0.0, 'transactions': []},
-            'week4': {'count': 0, 'amount': 0.0, 'transactions': []},
-            'week5': {'count': 0, 'amount': 0.0, 'transactions': []},
-            'total_count': 0,
-            'total_amount': 0.0,
-        })
-        
-        weekly_totals = {
-            'week1': {'count': 0, 'amount': 0.0},
-            'week2': {'count': 0, 'amount': 0.0},
-            'week3': {'count': 0, 'amount': 0.0},
-            'week4': {'count': 0, 'amount': 0.0},
-            'week5': {'count': 0, 'amount': 0.0},
-        }
-        
+        weekly_totals = {k: {'count': 0, 'amount': 0.0} for k in week_keys}
+
+        def _make_symbol_entry():
+            entry = {k: {'count': 0, 'amount': 0.0, 'transactions': []} for k in week_keys}
+            entry['total_count'] = 0
+            entry['total_amount'] = 0.0
+            return entry
+
+        symbols_data = defaultdict(_make_symbol_entry)
+
+        def _is_put(description: str) -> bool:
+            if not description:
+                return False
+            return bool(re.search(r'\bPut\b', description, re.IGNORECASE))
+
         month_total = 0.0
-        
+
         for txn in month_transactions:
-            week = get_week(txn.date.day)
-            symbol = txn.symbol or 'UNKNOWN'
-            
-            # Add to symbol data
-            symbols_data[symbol][week]['count'] += abs(txn.quantity) if txn.quantity else 1
-            symbols_data[symbol][week]['amount'] += txn.amount
-            symbols_data[symbol][week]['transactions'].append({
-                'date': txn.date.isoformat(),
+            base_symbol = txn.symbol or 'UNKNOWN'
+            desc = getattr(txn, 'description', '') or ''
+            if _is_put(desc):
+                symbol = f"{base_symbol} (Put)"
+            else:
+                symbol = base_symbol
+
+            txn_date = txn.date
+            if isinstance(txn_date, datetime):
+                txn_date = txn_date.date()
+            txn_monday = txn_date - timedelta(days=txn_date.weekday())
+            week_key = monday_to_week.get(txn_monday)
+            if not week_key:
+                closest = min(weeks_list, key=lambda w: abs((w['monday'] - txn_monday).days))
+                week_key = closest['key']
+
+            is_sto = getattr(txn, 'trans_code', None) == 'STO'
+            contract_count = abs(txn.quantity) if txn.quantity else 1
+
+            if is_sto:
+                symbols_data[symbol][week_key]['count'] += contract_count
+                symbols_data[symbol]['total_count'] += contract_count
+                weekly_totals[week_key]['count'] += contract_count
+            symbols_data[symbol][week_key]['amount'] += txn.amount
+            symbols_data[symbol][week_key]['transactions'].append({
+                'date': txn_date.isoformat(),
                 'description': txn.description,
                 'trans_code': txn.trans_code,
                 'quantity': txn.quantity,
                 'amount': txn.amount,
                 'option_type': txn.option_type,
             })
-            symbols_data[symbol]['total_count'] += abs(txn.quantity) if txn.quantity else 1
             symbols_data[symbol]['total_amount'] += txn.amount
-            
-            # Add to weekly totals
-            weekly_totals[week]['count'] += abs(txn.quantity) if txn.quantity else 1
-            weekly_totals[week]['amount'] += txn.amount
-            
+
+            weekly_totals[week_key]['amount'] += txn.amount
             month_total += txn.amount
-        
-        # Convert to serializable format and sort symbols by total amount
+
+        # Convert to serializable format
         weekly_data = {}
         for symbol, data in symbols_data.items():
-            weekly_data[symbol] = {
-                'week1': {'count': data['week1']['count'], 'amount': data['week1']['amount']},
-                'week2': {'count': data['week2']['count'], 'amount': data['week2']['amount']},
-                'week3': {'count': data['week3']['count'], 'amount': data['week3']['amount']},
-                'week4': {'count': data['week4']['count'], 'amount': data['week4']['amount']},
-                'week5': {'count': data['week5']['count'], 'amount': data['week5']['amount']},
-                'total_count': data['total_count'],
-                'total_amount': data['total_amount'],
-            }
-        
-        # Sort symbols by total amount descending
+            entry = {k: {'count': data[k]['count'], 'amount': data[k]['amount']} for k in week_keys}
+            entry['total_count'] = data['total_count']
+            entry['total_amount'] = data['total_amount']
+            weekly_data[symbol] = entry
+
         sorted_symbols = sorted(
             weekly_data.keys(),
             key=lambda s: weekly_data[s]['total_amount'],
             reverse=True
         )
-        
+
         return {
             'account_name': account_name,
             'month': month_key,
@@ -1117,20 +1177,9 @@ class IncomeService:
             'month_total': month_total,
             'weekly_data': weekly_data,
             'symbols': sorted_symbols,
-            'weekly_totals': {
-                'week1': weekly_totals['week1']['amount'],
-                'week2': weekly_totals['week2']['amount'],
-                'week3': weekly_totals['week3']['amount'],
-                'week4': weekly_totals['week4']['amount'],
-                'week5': weekly_totals['week5']['amount'],
-            },
-            'weekly_counts': {
-                'week1': weekly_totals['week1']['count'],
-                'week2': weekly_totals['week2']['count'],
-                'week3': weekly_totals['week3']['count'],
-                'week4': weekly_totals['week4']['count'],
-                'week5': weekly_totals['week5']['count'],
-            },
+            'weeks': [{'key': w['key'], 'label': w['label'], 'range': w['range']} for w in weeks_list],
+            'weekly_totals': {k: weekly_totals[k]['amount'] for k in week_keys},
+            'weekly_counts': {k: weekly_totals[k]['count'] for k in week_keys},
             'transaction_count': len(month_transactions),
         }
 
@@ -1184,7 +1233,7 @@ class IncomeService:
                 }
             
             # Check for income-related transactions in database
-            income_types = ['STO', 'BTC', 'OEXP', 'OASGN', 'CDIV', 'DIVIDEND', 'INT', 'INTEREST', 'SLIP', 'SELL']
+            income_types = ['STO', 'BTC', 'STC', 'BTO', 'OEXP', 'OASGN', 'CDIV', 'DIVIDEND', 'INT', 'INTEREST', 'SLIP', 'SELL']
             
             transactions = db.query(InvestmentTransaction).filter(
                 InvestmentTransaction.transaction_type.in_(income_types)
@@ -1266,7 +1315,7 @@ class IncomeService:
                 month_key = date.strftime('%Y-%m')
                 
                 # Process based on transaction type
-                if trans_type in ('STO', 'BTC', 'OEXP', 'OASGN'):
+                if trans_type in ('STO', 'BTC', 'STC', 'BTO', 'OEXP', 'OASGN'):
                     # Options transaction
                     option_type, expiry, strike = self._parse_option_description(description)
                     
@@ -1452,36 +1501,38 @@ class IncomeService:
                         
                         txn_date = date.date() if hasattr(date, 'date') else date
                         
-                        # Create a business key for deduplication (date, type, symbol, amount)
+                        # Create a business key for deduplication including description
                         # This identifies the same transaction across different CSV files
-                        business_key = f"{account_id}|{txn_date}|{trans_code}|{symbol}|{amount:.2f}"
-                        
+                        # Description is critical for options - same day/symbol/amount can be different contracts
+                        business_key = f"{account_id}|{txn_date}|{trans_code}|{symbol}|{amount:.2f}|{description}"
+
                         # Skip if we've already seen this business key in this import batch
                         if business_key in seen_hashes:
                             stats['records_skipped'] += 1
                             continue
                         seen_hashes.add(business_key)
-                        
-                        # Skip STO/BTC for accounts that already have options data
-                        # This prevents duplicates from multiple overlapping CSV files
-                        if trans_code in ('STO', 'BTC') and account_id in accounts_with_options:
+
+                        # Check database for existing transaction (all transaction types)
+                        # Use equivalent types to catch CDIV/DIVIDEND, INT/INTEREST duplicates
+                        # Include description to distinguish different option contracts on same day
+                        equivalent_types = _get_equivalent_types(trans_code)
+                        symbol_variants = [symbol]
+                        if symbol == "" or symbol == "UNKNOWN" or symbol is None:
+                            symbol_variants = ["", "UNKNOWN"]
+
+                        existing = db.query(InvestmentTransaction).filter(
+                            InvestmentTransaction.account_id == account_id,
+                            InvestmentTransaction.transaction_date == txn_date,
+                            InvestmentTransaction.transaction_type.in_(equivalent_types),
+                            InvestmentTransaction.symbol.in_(symbol_variants),
+                            InvestmentTransaction.amount == amount_decimal,
+                            InvestmentTransaction.description == description
+                        ).first()
+
+                        if existing:
                             stats['records_skipped'] += 1
                             continue
-                        
-                        # For other transaction types, check database directly
-                        if trans_code not in ('STO', 'BTC'):
-                            existing = db.query(InvestmentTransaction).filter(
-                                InvestmentTransaction.account_id == account_id,
-                                InvestmentTransaction.transaction_date == txn_date,
-                                InvestmentTransaction.transaction_type == trans_code,
-                                InvestmentTransaction.symbol == symbol,
-                                InvestmentTransaction.amount == amount_decimal
-                            ).first()
-                            
-                            if existing:
-                                stats['records_skipped'] += 1
-                                continue
-                        
+
                         # Generate hash for new record
                         hash_input = f"robinhood|{business_key}|{quantity or ''}"
                         record_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:32]

@@ -203,7 +203,7 @@ export function IndiaInvestments() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showAddAccount, setShowAddAccount] = useState(false)
-  const [selectedOwner, setSelectedOwner] = useState<'Neel' | 'Father'>('Father')
+  const [selectedOwner, setSelectedOwner] = useState<'Neel' | 'Father' | 'Mother'>('Father')
   const [showSettings, setShowSettings] = useState(false)
 
   useEffect(() => {
@@ -371,6 +371,12 @@ export function IndiaInvestments() {
           Father's Accounts
         </button>
         <button
+          className={selectedOwner === 'Mother' ? styles.active : ''}
+          onClick={() => setSelectedOwner('Mother')}
+        >
+          Mother's Accounts
+        </button>
+        <button
           className={selectedOwner === 'Neel' ? styles.active : ''}
           onClick={() => setSelectedOwner('Neel')}
         >
@@ -408,6 +414,11 @@ export function IndiaInvestments() {
         {activeTab === 'stocks' && (
           selectedOwner === 'Father' ? (
             <StockHoldingsSection owner="Father" />
+          ) : selectedOwner === 'Mother' ? (
+            <div className={styles.emptyState}>
+              <TrendingUp size={48} />
+              <p>No stock holdings for Mother</p>
+            </div>
           ) : (
           <StocksSection
             stocks={filteredSummary.stocks}
@@ -753,7 +764,7 @@ const FUND_NAME_MAPPING: { [key: string]: { properName: string; category: string
 // Mutual Fund Holdings Section Component (supports both Father and Neel)
 type MFHoldingSortColumn = 'nrank' | 'investment_date' | 'fund_name' | 'folio_number' | 'initial_invested_amount' | 'amount_march_2025' | 'current_amount' | 'return_1y' | 'return_3y' | 'return_5y' | null
 
-function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
+function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Mother' | 'Neel' }) {
   const [holdings, setHoldings] = useState<FatherMutualFundHolding[]>([])
   const [summary, setSummary] = useState<FatherMutualFundSummary | null>(null)
   const [loading, setLoading] = useState(true)
@@ -764,6 +775,7 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
   const [selectedFundForDetails, setSelectedFundForDetails] = useState<FatherMutualFundHolding | null>(null)
   const [refreshingReturns, setRefreshingReturns] = useState(false)
+  const [refreshingAmounts, setRefreshingAmounts] = useState(false)
   const [enrichingData, setEnrichingData] = useState(false)
   const [showDetailsModal, setShowDetailsModal] = useState(false)
 
@@ -917,9 +929,8 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
     setLoading(true)
     setError(null)
     try {
-      // For now, only Father has holdings - Neel's will show empty
-      if (owner === 'Father') {
-        const response = await fetch(`${API_BASE}/father-mutual-funds`, {
+      if (owner === 'Father' || owner === 'Mother') {
+        const response = await fetch(`${API_BASE}/father-mutual-funds?owner=${owner}`, {
           headers: getAuthHeaders(),
         })
         if (!response.ok) {
@@ -941,7 +952,7 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
   }
 
   const handleRefreshReturns = async () => {
-    if (owner !== 'Father') return
+    if (owner !== 'Father' && owner !== 'Mother') return
     
     setRefreshingReturns(true)
     try {
@@ -967,8 +978,28 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
     }
   }
 
+  const handleRefreshAmounts = async () => {
+    if (owner !== 'Father' && owner !== 'Mother') return
+    setRefreshingAmounts(true)
+    try {
+      const response = await fetch(`${API_BASE}/father-mutual-funds/refresh-amounts`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      })
+      if (!response.ok) throw new Error('Failed to refresh amounts')
+      const data = await response.json()
+      console.log(`Refreshed MF amounts: ${data.updated} updated, ${data.errors} errors`)
+      await fetchHoldings()
+    } catch (err) {
+      console.error('Failed to refresh amounts:', err)
+      alert(err instanceof Error ? err.message : 'Failed to refresh amounts')
+    } finally {
+      setRefreshingAmounts(false)
+    }
+  }
+
   const handleEnrichHoldings = async () => {
-    if (owner !== 'Father') return
+    if (owner !== 'Father' && owner !== 'Mother') return
     
     setEnrichingData(true)
     try {
@@ -1010,7 +1041,7 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
           ...getAuthHeaders(),
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(holdingData),
+        body: JSON.stringify({ ...holdingData, owner }),
       })
 
       if (!response.ok) {
@@ -1184,10 +1215,19 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
       {/* Header with Action Buttons */}
       <div className={styles.researchHeader}>
         <div className={styles.searchBox}>
-          {owner === 'Father' && (
+          {(owner === 'Father' || owner === 'Mother') && (
             <>
-              <button 
-                onClick={handleEnrichHoldings} 
+              <button
+                onClick={handleRefreshAmounts}
+                className={styles.searchButton}
+                disabled={refreshingAmounts}
+                title="Fetch latest NAV and recalculate current amounts"
+              >
+                <RefreshCw size={18} className={refreshingAmounts ? styles.spinner : ''} />
+                {refreshingAmounts ? 'Refreshing...' : 'Refresh Amounts'}
+              </button>
+              <button
+                onClick={handleEnrichHoldings}
                 className={styles.searchButton}
                 disabled={enrichingData}
                 title="Fetch latest returns, AUM, Expense Ratio, Ratings from Kuvera"
@@ -1240,7 +1280,7 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
           <FileText size={48} />
           <p>No mutual fund holdings added yet</p>
           <p className={styles.emptyStateSubtext}>Add mutual fund holdings to track performance</p>
-          {owner === 'Father' && (
+          {(owner === 'Father' || owner === 'Mother') && (
             <button onClick={() => setShowAddModal(true)} className={styles.addButton}>
               <Plus size={18} />
               Add First Holding
@@ -1426,9 +1466,9 @@ function MutualFundHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
 }
 
 // Stock Holdings Section Component (for Father's stocks)
-type StockHoldingSortColumn = 'investment_date' | 'symbol' | 'company_name' | 'quantity' | 'initial_invested_amount' | 'amount_march_2025' | 'current_amount' | null
+type StockHoldingSortColumn = 'investment_date' | 'symbol' | 'company_name' | 'quantity' | 'initial_invested_amount' | 'amount_march_2025' | 'current_amount' | 'current_price' | null
 
-function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
+function StockHoldingsSection({ owner }: { owner: 'Father' | 'Mother' | 'Neel' }) {
   const [holdings, setHoldings] = useState<FatherStockHolding[]>([])
   const [summary, setSummary] = useState<FatherStockSummary | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1437,6 +1477,7 @@ function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
   const [editingHolding, setEditingHolding] = useState<FatherStockHolding | null>(null)
   const [sortColumn, setSortColumn] = useState<StockHoldingSortColumn>('investment_date')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
+  const [refreshingPrices, setRefreshingPrices] = useState(false)
 
   useEffect(() => {
     fetchHoldings()
@@ -1467,13 +1508,33 @@ function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
     }
   }
 
+  const handleRefreshPrices = async () => {
+    if (owner !== 'Father') return
+    setRefreshingPrices(true)
+    try {
+      const response = await fetch(`${API_BASE}/father-stocks/refresh-prices`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      })
+      if (!response.ok) throw new Error('Failed to refresh prices')
+      const data = await response.json()
+      console.log(`Refreshed stock prices: ${data.updated} updated, ${data.errors} errors`)
+      await fetchHoldings()
+    } catch (err) {
+      console.error('Failed to refresh prices:', err)
+      alert(err instanceof Error ? err.message : 'Failed to refresh prices')
+    } finally {
+      setRefreshingPrices(false)
+    }
+  }
+
   const handleSaveHolding = async (holdingData: Partial<FatherStockHolding>) => {
     try {
-      const url = editingHolding 
+      const url = editingHolding
         ? `${API_BASE}/father-stocks/${editingHolding.id}`
         : `${API_BASE}/father-stocks`
       const method = editingHolding ? 'PUT' : 'POST'
-      
+
       const response = await fetch(url, {
         method,
         headers: {
@@ -1482,11 +1543,11 @@ function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
         },
         body: JSON.stringify(holdingData),
       })
-      
+
       if (!response.ok) {
         throw new Error('Failed to save holding')
       }
-      
+
       await fetchHoldings()
       setShowAddModal(false)
       setEditingHolding(null)
@@ -1594,10 +1655,21 @@ function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
       <div className={styles.researchHeader}>
         <div className={styles.searchBox}>
           {owner === 'Father' && (
-            <button onClick={() => { setEditingHolding(null); setShowAddModal(true); }} className={styles.searchButton}>
-              <Plus size={18} />
-              Add Stock
-            </button>
+            <>
+              <button
+                onClick={handleRefreshPrices}
+                className={styles.searchButton}
+                disabled={refreshingPrices}
+                title="Fetch latest stock prices from Yahoo Finance"
+              >
+                <RefreshCw size={18} className={refreshingPrices ? styles.spinner : ''} />
+                {refreshingPrices ? 'Refreshing...' : 'Refresh Prices'}
+              </button>
+              <button onClick={() => { setEditingHolding(null); setShowAddModal(true); }} className={styles.searchButton}>
+                <Plus size={18} />
+                Add Stock
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1614,9 +1686,15 @@ function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
             <div className={styles.summaryCardValue}>{formatCurrencyINR(summary.total_invested)}</div>
           </div>
           <div className={styles.summaryCard}>
-            <div className={styles.summaryCardLabel}>Value (Mar 31, 2025)</div>
+            <div className={styles.summaryCardLabel}>Value (Mar 2025)</div>
             <div className={styles.summaryCardValue}>{formatCurrencyINR(summary.total_march_2025)}</div>
           </div>
+          {summary.total_current > 0 && (
+            <div className={styles.summaryCard}>
+              <div className={styles.summaryCardLabel}>Current Value</div>
+              <div className={styles.summaryCardValue}>{formatCurrencyINR(summary.total_current)}</div>
+            </div>
+          )}
           <div className={styles.summaryCard}>
             <div className={styles.summaryCardLabel}>Total Gain/Loss</div>
             <div className={`${styles.summaryCardValue} ${(summary.total_gain_loss || 0) >= 0 ? styles.profit : styles.loss}`}>
@@ -1662,6 +1740,9 @@ function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
                 <th className={styles.sortableHeader} onClick={() => handleSort('amount_march_2025')}>
                   <span className={styles.headerContent}>Mar 2025 <SortIndicator column="amount_march_2025" /></span>
                 </th>
+                <th className={styles.sortableHeader} onClick={() => handleSort('current_amount')}>
+                  <span className={styles.headerContent}>Current <SortIndicator column="current_amount" /></span>
+                </th>
                 <th>CAGR</th>
                 <th>Edit</th>
               </tr>
@@ -1684,6 +1765,9 @@ function StockHoldingsSection({ owner }: { owner: 'Father' | 'Neel' }) {
                     <td className={styles.mono}>{formatCurrencyINR(holding.initial_invested_amount)}</td>
                     <td className={styles.mono}>
                       {holding.amount_march_2025 ? formatCurrencyINR(holding.amount_march_2025) : '-'}
+                    </td>
+                    <td className={styles.mono}>
+                      {holding.current_amount ? formatCurrencyINR(holding.current_amount) : '-'}
                     </td>
                     <td className={styles.mono}>
                       {cagr !== null ? (

@@ -160,14 +160,28 @@ class StrategyService:
         logger = logging.getLogger(__name__)
         
         # =====================================================================
-        # V3: Use unified PositionEvaluator instead of multiple strategies
+        # V5: V4 + LIFE_SUPPORT category for stuck positions
         # =====================================================================
         from app.modules.strategies.algorithm_config import ALGORITHM_VERSION
-        
+
+        if ALGORITHM_VERSION.lower() == 'v5':
+            logger.info("V5 MODE: Using V5PositionEvaluator with LIFE_SUPPORT")
+            return self.generate_v5_recommendations(params)
+
+        # =====================================================================
+        # V4: Conviction-based evaluator with intrinsic/time value model
+        # =====================================================================
+        if ALGORITHM_VERSION.lower() == 'v4':
+            logger.info("V4 MODE: Using conviction-based V4PositionEvaluator")
+            return self.generate_v4_recommendations(params)
+
+        # =====================================================================
+        # V3: Use unified PositionEvaluator instead of multiple strategies
+        # =====================================================================
         if ALGORITHM_VERSION.lower() == 'v3':
             logger.info("V3 MODE: Using unified PositionEvaluator")
             return self.generate_v3_recommendations(params)
-        
+
         # =====================================================================
         # V1/V2: Legacy mode - run multiple strategies (DEPRECATED)
         # =====================================================================
@@ -540,9 +554,492 @@ class StrategyService:
         }
     
     # =========================================================================
+    # V5 LIFE_SUPPORT EVALUATOR
+    # =========================================================================
+
+    def generate_v5_recommendations(
+        self,
+        params: Optional[Dict[str, Any]] = None
+    ) -> List[StrategyRecommendation]:
+        """
+        V5 recommendation generation with LIFE_SUPPORT category.
+
+        Extends V4 with:
+        - LIFE_SUPPORT category for stuck positions
+        - ROLL_BIWEEKLY action (when weekly = $0, biweekly = credit)
+        - ROLL_MONTHLY action (when biweekly = $0, monthly = credit)
+        - IV-based stuck thresholds
+        - Tracks stuck_category (HEALTHY, STUCK, LIFE_SUPPORT, DROWNING)
+
+        Philosophy (inherited from V4):
+        1. Believe in holdings
+        2. Hold forever
+        3. Mean reversion is inevitable
+        4. Primary goal: weekly options income
+        5. Tactical timing (sell high, buy low)
+        6. Avoid forced assignment
+        7. LIFE_SUPPORT - extend duration when weekly fails
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if params is None:
+            params = {}
+
+        all_recommendations: List[StrategyRecommendation] = []
+
+        # Get SmartScanFilter to prevent duplicates
+        scan_filter = get_scan_filter()
+
+        # =====================================================================
+        # STEP 1: Evaluate all options positions with V5 PositionEvaluator
+        # =====================================================================
+        logger.info("V5: Running V5PositionEvaluator with LIFE_SUPPORT for all positions")
+
+        try:
+            positions = get_positions_from_db(self.db)
+            logger.info(f"V5: Found {len(positions)} open positions to evaluate")
+
+            # Get cost basis and weekly income maps
+            from app.modules.strategies.v5_notification_service import get_v5_notification_service
+            v5_service = get_v5_notification_service(self.db)
+
+            cost_basis_map = self._get_cost_basis_map()
+            weekly_income_map = self._get_weekly_income_map()
+
+            life_support_count = 0
+
+            for position in positions:
+                try:
+                    # Evaluate with V5
+                    result = v5_service.evaluator.evaluate(
+                        position,
+                        cost_basis=cost_basis_map.get(position.symbol),
+                        weekly_income=weekly_income_map.get(position.symbol)
+                    )
+
+                    if result:
+                        # Track LIFE_SUPPORT actions
+                        if result.action in ('ROLL_BIWEEKLY', 'ROLL_MONTHLY'):
+                            life_support_count += 1
+
+                        # Check if we should send (not a duplicate)
+                        position_id = f"{position.symbol}_{position.strike_price}_{position.expiration_date}"
+                        rec_hash = {
+                            'action': result.action,
+                            'reason_short': result.reason_short
+                        }
+                        if scan_filter.should_send(position_id, rec_hash):
+                            rec = self._convert_v5_evaluation_to_recommendation(result, position)
+                            if rec:
+                                all_recommendations.append(rec)
+                                logger.info(f"V5: {position.symbol} - {result.action} ({result.reason_short})")
+                        else:
+                            logger.debug(f"V5: Filtered duplicate for {position.symbol}")
+                    else:
+                        logger.debug(f"V5: No action for {position.symbol} ${position.strike_price}")
+
+                except Exception as e:
+                    logger.error(f"V5: Error evaluating {position.symbol}: {e}", exc_info=True)
+
+            logger.info(f"V5: Generated {len(all_recommendations)} position recommendations ({life_support_count} LIFE_SUPPORT)")
+
+        except Exception as e:
+            logger.error(f"V5: Error getting positions: {e}", exc_info=True)
+
+        # =====================================================================
+        # STEP 2: Run non-position strategies (earnings, new_covered_call, etc.)
+        # =====================================================================
+        non_position_strategies = [
+            'earnings_alert',
+            'new_covered_call',
+            'diversification',
+            'triple_witching_handler',
+            'cash_secured_put',
+        ]
+
+        enabled_strategies = self.get_enabled_strategies()
+        for strategy in enabled_strategies:
+            if strategy.strategy_type in non_position_strategies:
+                try:
+                    logger.info(f"V5: Running supplementary strategy: {strategy.strategy_type}")
+                    recs = strategy.generate_recommendations(params)
+                    all_recommendations.extend(recs)
+                    logger.info(f"V5: {strategy.strategy_type} generated {len(recs)} recommendations")
+                except Exception as e:
+                    logger.error(f"V5: Error in {strategy.strategy_type}: {e}", exc_info=True)
+
+        # =====================================================================
+        # STEP 3: No priority sorting in V5 (all notifications equal)
+        # =====================================================================
+        logger.info(f"V5: Total recommendations: {len(all_recommendations)}")
+        return all_recommendations
+
+    def _convert_v5_evaluation_to_recommendation(
+        self,
+        result,  # V5EvaluationResult
+        position
+    ) -> Optional[StrategyRecommendation]:
+        """
+        Convert V5EvaluationResult to StrategyRecommendation.
+        """
+        from datetime import datetime, timedelta
+
+        # Map V5 action to strategy type
+        action_to_type = {
+            'HOLD': 'roll_options',
+            'CLOSE': 'roll_options',
+            'ROLL': 'roll_options',
+            'COMPRESS': 'roll_options',
+            'LET_EXPIRE': 'roll_options',
+            'WAIT_FOR_PULLBACK': 'roll_options',
+            'WAIT_FOR_RECOVERY': 'roll_options',
+            # V5 NEW
+            'ROLL_BIWEEKLY': 'roll_options',
+            'ROLL_MONTHLY': 'roll_options',
+        }
+
+        strategy_type = action_to_type.get(result.action, 'roll_options')
+
+        # Build title based on V5 action
+        symbol = position.symbol
+        strike = float(position.strike_price) if position.strike_price else 0
+        option_type = getattr(position, 'option_type', 'call').upper()
+
+        if result.action == 'ROLL_BIWEEKLY':
+            # V5 LIFE_SUPPORT: Bi-weekly roll
+            credit = result.biweekly_credit if result.biweekly_credit else 0
+            title = f"ROLL (2wk): {symbol} ${strike:.0f} {option_type} → ${result.new_strike:.0f} · Credit ${credit:.2f}"
+            action_type = 'roll'
+        elif result.action == 'ROLL_MONTHLY':
+            # V5 LIFE_SUPPORT: Monthly roll
+            credit = result.monthly_credit if result.monthly_credit else 0
+            title = f"ROLL (4wk): {symbol} ${strike:.0f} {option_type} → ${result.new_strike:.0f} · Credit ${credit:.2f}"
+            action_type = 'roll'
+        elif result.action == 'LET_EXPIRE':
+            title = f"LET EXPIRE: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'hold'
+        elif result.action == 'HOLD':
+            title = f"HOLD: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'hold'
+        elif result.action == 'CLOSE':
+            title = f"CLOSE: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'close'
+        elif result.action == 'ROLL':
+            new_strike = result.new_strike or strike
+            title = f"ROLL: {symbol} ${strike:.0f}→${new_strike:.0f} {option_type}"
+            action_type = 'roll'
+        elif result.action == 'COMPRESS':
+            title = f"COMPRESS: {symbol} ${strike:.0f} {option_type} to weekly"
+            action_type = 'roll'
+        elif result.action in ['WAIT_FOR_PULLBACK', 'WAIT_FOR_RECOVERY']:
+            title = f"WAIT: {symbol} - {result.reason_short}"
+            action_type = 'wait'
+        else:
+            title = f"{result.action}: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'monitor'
+
+        # Build context with V5-specific info
+        context = {
+            'symbol': symbol,
+            'strike_price': strike,
+            'option_type': option_type,
+            'expiration_date': str(position.expiration_date),
+            'account_name': getattr(position, 'account_name', 'Unknown'),
+            'current_price': result.details.get('current_price'),
+            # V5 specific
+            'v5_philosophy': result.philosophy_applied,
+            'v5_reason': result.reason,
+            'v5_reason_short': result.reason_short,
+            'intrinsic_pct': result.intrinsic_pct,
+            'time_value': result.time_value,
+            'has_follow_up': result.has_follow_up,
+            'follow_up_condition': result.follow_up_condition,
+            # V5 LIFE_SUPPORT
+            'stuck_category': result.stuck_category,
+            'iv_category': result.iv_category,
+            'weekly_credit': result.weekly_credit,
+            'biweekly_credit': result.biweekly_credit,
+            'monthly_credit': result.monthly_credit,
+        }
+
+        if result.new_strike:
+            context['new_strike'] = result.new_strike
+        if result.new_expiration:
+            context['new_expiration'] = str(result.new_expiration)
+        if result.net_cost:
+            context['net_cost'] = result.net_cost
+
+        # Generate unique ID for this recommendation
+        expiration = getattr(position, 'expiration_date', '')
+        account = getattr(position, 'account_name', 'Unknown')
+        rec_id = f"v5_{symbol}_{strike}_{expiration}_{account}".replace(' ', '_').replace("'", '')
+
+        return StrategyRecommendation(
+            id=rec_id,
+            type=strategy_type,
+            category='risk_management',
+            title=title,
+            description=result.reason_short,
+            rationale=result.reason,
+            action=result.action,
+            action_type=action_type,
+            symbol=symbol,
+            priority='medium',  # V5: No priority (all equal)
+            context=context,
+            expires_at=datetime.utcnow() + timedelta(hours=24)
+        )
+
+    # =========================================================================
+    # V4 CONVICTION-BASED EVALUATOR
+    # =========================================================================
+
+    def generate_v4_recommendations(
+        self,
+        params: Optional[Dict[str, Any]] = None
+    ) -> List[StrategyRecommendation]:
+        """
+        V4 Conviction-based recommendation generation.
+
+        Uses V4PositionEvaluator with:
+        - Intrinsic/time value model
+        - 4-week escape cap
+        - Rich reasoning with philosophy references
+        - Dual-benefit compression analysis
+        - Two-part actions with follow-up tracking
+
+        Philosophy:
+        1. Believe in holdings
+        2. Hold forever
+        3. Mean reversion is inevitable
+        4. Primary goal: weekly options income
+        5. Tactical timing (sell high, buy low)
+        6. Avoid forced assignment
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if params is None:
+            params = {}
+
+        all_recommendations: List[StrategyRecommendation] = []
+
+        # Get SmartScanFilter to prevent duplicates
+        scan_filter = get_scan_filter()
+
+        # =====================================================================
+        # STEP 1: Evaluate all options positions with V5 PositionEvaluator
+        # =====================================================================
+        logger.info("V5: Running V5 PositionEvaluator for all positions")
+
+        try:
+            positions = get_positions_from_db(self.db)
+            logger.info(f"V5: Found {len(positions)} open positions to evaluate")
+
+            # Get cost basis and weekly income maps
+            from app.modules.strategies.v5_notification_service import get_v5_notification_service
+            v5_service = get_v5_notification_service(self.db)
+
+            # Get cost basis map from portfolio holdings
+            cost_basis_map = self._get_cost_basis_map()
+            weekly_income_map = self._get_weekly_income_map()
+
+            for position in positions:
+                try:
+                    # Evaluate with V5
+                    result = v5_service.evaluator.evaluate(
+                        position,
+                        cost_basis=cost_basis_map.get(position.symbol),
+                        weekly_income=weekly_income_map.get(position.symbol)
+                    )
+
+                    if result:
+                        # Check if we should send (not a duplicate)
+                        position_id = f"{position.symbol}_{position.strike_price}_{position.expiration_date}"
+                        rec_hash = {
+                            'action': result.action,
+                            'reason_short': result.reason_short
+                        }
+                        if scan_filter.should_send(position_id, rec_hash):
+                            rec = self._convert_v4_evaluation_to_recommendation(result, position)
+                            if rec:
+                                all_recommendations.append(rec)
+                                logger.info(f"V5: {position.symbol} - {result.action} ({result.reason_short})")
+                        else:
+                            logger.debug(f"V5: Filtered duplicate for {position.symbol}")
+                    else:
+                        logger.debug(f"V5: No action for {position.symbol} ${position.strike_price}")
+
+                except Exception as e:
+                    logger.error(f"V5: Error evaluating {position.symbol}: {e}", exc_info=True)
+
+            logger.info(f"V5: Generated {len(all_recommendations)} position recommendations")
+
+        except Exception as e:
+            logger.error(f"V5: Error getting positions: {e}", exc_info=True)
+
+        # =====================================================================
+        # STEP 2: Run non-position strategies (earnings, new_covered_call, etc.)
+        # =====================================================================
+        non_position_strategies = [
+            'earnings_alert',
+            'new_covered_call',
+            'diversification',
+            'triple_witching_handler',
+            'cash_secured_put',
+        ]
+
+        enabled_strategies = self.get_enabled_strategies()
+        for strategy in enabled_strategies:
+            if strategy.strategy_type in non_position_strategies:
+                try:
+                    logger.info(f"V4: Running supplementary strategy: {strategy.strategy_type}")
+                    recs = strategy.generate_recommendations(params)
+                    all_recommendations.extend(recs)
+                    logger.info(f"V4: {strategy.strategy_type} generated {len(recs)} recommendations")
+                except Exception as e:
+                    logger.error(f"V4: Error in {strategy.strategy_type}: {e}", exc_info=True)
+
+        # =====================================================================
+        # STEP 3: No priority sorting in V4 (all notifications equal)
+        # =====================================================================
+        logger.info(f"V4: Total recommendations: {len(all_recommendations)}")
+        return all_recommendations
+
+    def _get_cost_basis_map(self) -> dict:
+        """Get cost basis for all symbols from portfolio holdings."""
+        try:
+            from app.modules.investments.models import InvestmentHolding
+            holdings = self.db.query(InvestmentHolding).all()
+
+            cost_basis_map = {}
+            for h in holdings:
+                if h.symbol and h.cost_basis:
+                    cost_basis_map[h.symbol] = float(h.cost_basis)
+
+            return cost_basis_map
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Could not get cost basis map: {e}")
+            return {}
+
+    def _get_weekly_income_map(self) -> dict:
+        """Get weekly premium income targets from option_premium_settings."""
+        try:
+            from app.modules.strategies.models import OptionPremiumSetting
+            settings = self.db.query(OptionPremiumSetting).all()
+
+            income_map = {}
+            for s in settings:
+                if s.symbol and s.premium_per_contract:
+                    income_map[s.symbol] = float(s.premium_per_contract)
+
+            return income_map
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Could not get weekly income map: {e}")
+            return {}
+
+    def _convert_v4_evaluation_to_recommendation(
+        self,
+        result,  # V4EvaluationResult
+        position
+    ) -> Optional[StrategyRecommendation]:
+        """
+        Convert V4EvaluationResult to StrategyRecommendation.
+        """
+        from datetime import datetime, timedelta
+
+        # Map V4 action to strategy type
+        action_to_type = {
+            'HOLD': 'roll_options',
+            'CLOSE': 'roll_options',
+            'ROLL': 'roll_options',
+            'COMPRESS': 'roll_options',
+            'LET_EXPIRE': 'roll_options',
+            'WAIT_FOR_PULLBACK': 'roll_options',
+            'WAIT_FOR_RECOVERY': 'roll_options',
+        }
+
+        strategy_type = action_to_type.get(result.action, 'roll_options')
+
+        # Build title based on V4 action
+        symbol = position.symbol
+        strike = float(position.strike_price) if position.strike_price else 0
+        option_type = getattr(position, 'option_type', 'call').upper()
+
+        if result.action == 'LET_EXPIRE':
+            title = f"LET EXPIRE: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'hold'
+        elif result.action == 'HOLD':
+            title = f"HOLD: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'hold'
+        elif result.action == 'CLOSE':
+            title = f"CLOSE: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'close'
+        elif result.action == 'ROLL':
+            new_strike = result.new_strike or strike
+            title = f"ROLL: {symbol} ${strike:.0f}→${new_strike:.0f} {option_type}"
+            action_type = 'roll'
+        elif result.action == 'COMPRESS':
+            title = f"COMPRESS: {symbol} ${strike:.0f} {option_type} to weekly"
+            action_type = 'roll'
+        elif result.action in ['WAIT_FOR_PULLBACK', 'WAIT_FOR_RECOVERY']:
+            title = f"WAIT: {symbol} - {result.reason_short}"
+            action_type = 'wait'
+        else:
+            title = f"{result.action}: {symbol} ${strike:.0f} {option_type}"
+            action_type = 'monitor'
+
+        # Build context with V4-specific info
+        context = {
+            'symbol': symbol,
+            'strike_price': strike,
+            'option_type': option_type,
+            'expiration_date': str(position.expiration_date),
+            'account_name': getattr(position, 'account_name', 'Unknown'),
+            'current_price': result.details.get('current_price'),
+            # V4 specific
+            'v4_philosophy': result.philosophy_applied,
+            'v4_reason': result.reason,
+            'v4_reason_short': result.reason_short,
+            'intrinsic_pct': result.intrinsic_pct,
+            'time_value': result.time_value,
+            'has_follow_up': result.has_follow_up,
+            'follow_up_condition': result.follow_up_condition,
+        }
+
+        if result.new_strike:
+            context['new_strike'] = result.new_strike
+        if result.new_expiration:
+            context['new_expiration'] = str(result.new_expiration)
+        if result.net_cost:
+            context['net_cost'] = result.net_cost
+
+        # Generate unique ID for this recommendation
+        expiration = getattr(position, 'expiration_date', '')
+        account = getattr(position, 'account_name', 'Unknown')
+        rec_id = f"v4_{symbol}_{strike}_{expiration}_{account}".replace(' ', '_').replace("'", '')
+
+        return StrategyRecommendation(
+            id=rec_id,
+            type=strategy_type,  # Required field
+            category='risk_management',  # V4 focuses on position management
+            title=title,
+            description=result.reason_short,  # Short description
+            rationale=result.reason,  # Full reasoning
+            action=result.action,  # The V4 action (ROLL, HOLD, etc.)
+            action_type=action_type,
+            symbol=symbol,
+            priority='medium',  # V4: No priority (all equal)
+            context=context,
+            expires_at=datetime.utcnow() + timedelta(hours=24)
+        )
+
+    # =========================================================================
     # V3 UNIFIED POSITION EVALUATOR
     # =========================================================================
-    
+
     def generate_v3_recommendations(
         self,
         params: Optional[Dict[str, Any]] = None

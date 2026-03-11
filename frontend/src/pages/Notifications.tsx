@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp,
   X,
+  FlaskConical,
   Eye,
   Check,
   XCircle,
@@ -241,7 +242,109 @@ export default function Notifications() {
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [telegramPolling, setTelegramPolling] = useState(false);
   const [telegramPollResult, setTelegramPollResult] = useState<string | null>(null);
-  
+
+  // Test Mode state
+  const [testModeEnabled, setTestModeEnabled] = useState(false);
+  const [testModeLoading, setTestModeLoading] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState<{
+    is_market_hours: boolean;
+    prices_ttl_display: string;
+  } | null>(null);
+
+  // Schwab token status
+  const [schwabStatus, setSchwabStatus] = useState<{
+    status: 'valid' | 'expired' | 'not_configured';
+    expires_at: string | null;
+    created_at: string | null;
+    token_age_days: number | null;
+  } | null>(null);
+  const [schwabAuthPending, setSchwabAuthPending] = useState(false);
+
+  const fetchTestModeStatus = async () => {
+    try {
+      const response = await fetch('/api/v1/strategies/debug/cache-status');
+      if (response.ok) {
+        const data = await response.json();
+        setTestModeEnabled(data.test_mode?.enabled || false);
+        setCacheStatus({
+          is_market_hours: data.market_status?.is_market_hours || false,
+          prices_ttl_display: data.effective_cache_ttl?.prices_ttl_display || 'unknown',
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching test mode status:', err);
+    }
+  };
+
+  const toggleTestMode = async () => {
+    setTestModeLoading(true);
+    try {
+      const response = await fetch(`/api/v1/strategies/debug/test-mode?enable=${!testModeEnabled}`, {
+        method: 'POST',
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setTestModeEnabled(data.test_mode_enabled);
+        await fetchTestModeStatus();
+      }
+    } catch (err) {
+      console.error('Error toggling test mode:', err);
+    } finally {
+      setTestModeLoading(false);
+    }
+  };
+
+  // Schwab token status
+  const fetchSchwabStatus = async () => {
+    try {
+      const response = await fetch('/api/v1/strategies/schwab/token-status', {
+        headers: getAuthHeaders(),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setSchwabStatus(data);
+      }
+    } catch (err) {
+      console.error('Error fetching Schwab status:', err);
+    }
+  };
+
+  const handleSchwabAuth = async () => {
+    setSchwabAuthPending(true);
+    try {
+      await fetch('/api/v1/strategies/schwab/authenticate', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      // Poll for token status until it flips to valid
+      const pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch('/api/v1/strategies/schwab/token-status', {
+            headers: getAuthHeaders(),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setSchwabStatus(data);
+            if (data.status === 'valid') {
+              clearInterval(pollInterval);
+              setSchwabAuthPending(false);
+            }
+          }
+        } catch {
+          // keep polling
+        }
+      }, 3000);
+      // Stop polling after 2 minutes regardless
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        setSchwabAuthPending(false);
+      }, 120000);
+    } catch (err) {
+      console.error('Error triggering Schwab auth:', err);
+      setSchwabAuthPending(false);
+    }
+  };
+
   // Helper function to fetch history from DB
   // Fetches notification HISTORY - shows all past notifications like Telegram chat history
   // Uses /history endpoint to include resolved recommendations, not just active ones
@@ -250,8 +353,10 @@ export default function Notifications() {
       const effectiveMode = mode || 'verbose';
       // Use /history endpoint to get ALL past notifications (like Telegram chat history)
       // This includes resolved recommendations, not just active ones
+      // latest_only=false shows ALL scan snapshots (6am, 8am, 12pm, etc.)
+      // latest_only=true (default) shows only the most recent snapshot per position
       const response = await fetch(
-        `/api/v1/strategies/notifications/v2/history?mode=${effectiveMode}&days_back=7&limit=200`,
+        `/api/v1/strategies/notifications/v2/history?mode=${effectiveMode}&days_back=7&limit=500&latest_only=false`,
         { headers: getAuthHeaders() }
       );
       
@@ -340,6 +445,12 @@ export default function Notifications() {
       fetchFeedbackHistory();
     }
   }, [activeTab]);
+
+  // Fetch test mode status and Schwab status on mount
+  useEffect(() => {
+    fetchTestModeStatus();
+    fetchSchwabStatus();
+  }, []);
 
   // On mount: Show localStorage cache instantly, then fetch from DB for consistency
   useEffect(() => {
@@ -498,46 +609,44 @@ export default function Notifications() {
       }
       
       // ============================================================
-      // STEP 3: Run strategies + generate + save + send notifications
-      // This is the slow operation - it saves new recs to DB
+      // STEP 3: Trigger V4 evaluation + save to DB
+      // V4 uses conviction-based evaluation with rich reasoning
+      // Results are saved to V2 history tables for the page to display
       // ============================================================
-      console.log('Step 3: Running strategies and generating recommendations...');
-      const timestamp = new Date().getTime();
+      console.log('Step 3: Running V4 recommendation check...');
       const liveController = new AbortController();
       const liveTimeout = setTimeout(() => {
         liveController.abort();
-        console.warn('Live recommendations fetch timed out after 90 seconds');
-      }, 90000);
-      
+        console.warn('V5 recommendation check timed out after 120 seconds');
+      }, 120000);
+
       try {
         const liveResponse = await fetch(
-          `/api/v1/strategies/options-selling/recommendations?default_premium=60&profit_threshold=0.80&send_notification=true&notification_priority=high&force_refresh=true&_t=${timestamp}`,
-          { 
+          `/api/v1/strategies/recommendations/check-now-v5?send_notifications=false`,
+          {
+            method: 'POST',
             headers: getAuthHeaders(),
             signal: liveController.signal,
             cache: 'no-store'
           }
         );
-        
+
         clearTimeout(liveTimeout);
-        
+
         if (liveResponse.ok) {
           const liveResult = await liveResponse.json();
-          console.log(`Strategies generated ${liveResult.count || 0} recommendations, notifications sent:`, liveResult.notifications_sent);
-          
-          if (liveResult.generated_at) {
-            setGeneratedAt(new Date(liveResult.generated_at));
-          }
+          console.log('V4 recommendation check completed:', liveResult);
+          setGeneratedAt(new Date());
         } else {
           const errorText = await liveResponse.text();
-          console.error(`Live recommendations API returned ${liveResponse.status}:`, errorText);
+          console.error(`V4 recommendation check returned ${liveResponse.status}:`, errorText);
         }
       } catch (liveErr: any) {
         clearTimeout(liveTimeout);
         if (liveErr.name === 'AbortError') {
-          console.warn('Live recommendations fetch timed out');
+          console.warn('V4 recommendation check timed out');
         } else {
-          console.error('Live recommendations fetch failed:', liveErr);
+          console.error('V4 recommendation check failed:', liveErr);
         }
       }
       
@@ -1152,13 +1261,50 @@ export default function Notifications() {
                 </span>
               )}
               {dataFreshness?.data_sources?.options && (
-                <span 
+                <span
                   className={`${styles.dataSource} ${dataFreshness.data_sources.options === 'nasdaq' ? styles.fallback : ''}`}
-                  title={dataFreshness.data_sources.options === 'nasdaq' 
-                    ? 'Using NASDAQ API as backup (Yahoo Finance rate-limited)' 
+                  title={dataFreshness.data_sources.options === 'nasdaq'
+                    ? 'Using NASDAQ API as backup (Yahoo Finance rate-limited)'
                     : 'Using Yahoo Finance API'}
                 >
                   {dataFreshness.data_sources.options === 'nasdaq' ? '📊 NASDAQ (backup)' : '📈 Yahoo'}
+                </span>
+              )}
+              {schwabStatus && schwabStatus.status === 'valid' && (
+                <span
+                  className={`${styles.schwabStatus} ${styles.schwabValid}`}
+                  title={`Token created ${schwabStatus.token_age_days}d ago. Expires ${schwabStatus.expires_at ? new Date(schwabStatus.expires_at).toLocaleDateString() : 'unknown'}`}
+                >
+                  🔐 Schwab: Connected
+                </span>
+              )}
+              {schwabStatus && schwabStatus.status === 'expired' && !schwabAuthPending && (
+                <>
+                  <span
+                    className={`${styles.schwabStatus} ${styles.schwabExpired}`}
+                    title="Schwab refresh token has expired. Re-authentication needed."
+                  >
+                    ⚠️ Schwab: Re-auth needed
+                  </span>
+                  <button
+                    className={styles.schwabAuthButton}
+                    onClick={handleSchwabAuth}
+                  >
+                    Authenticate
+                  </button>
+                </>
+              )}
+              {schwabAuthPending && (
+                <span className={styles.schwabAuthWaiting}>
+                  Waiting for Schwab login...
+                </span>
+              )}
+              {schwabStatus && schwabStatus.status === 'not_configured' && (
+                <span
+                  className={`${styles.schwabStatus} ${styles.schwabNotConfigured}`}
+                  title="Schwab API credentials not configured in .env"
+                >
+                  Schwab: Not configured
                 </span>
               )}
             </div>
@@ -1181,7 +1327,7 @@ export default function Notifications() {
               [filters.priority, filters.strategy, filters.status, filters.account, filters.dateRange !== 'all' ? 1 : null].filter(Boolean).length
             }</span>}
           </button>
-          <button 
+          <button
             onClick={fetchRecommendations}
             className={styles.refreshButton}
             disabled={refreshing}
@@ -1189,9 +1335,39 @@ export default function Notifications() {
             <RefreshCw size={18} className={refreshing ? styles.spinning : ''} />
             {refreshing ? 'Refreshing...' : 'Refresh'}
           </button>
+          <button
+            className={`${styles.testModeToggle} ${testModeEnabled ? styles.testModeActive : ''}`}
+            onClick={toggleTestMode}
+            disabled={testModeLoading}
+            title={testModeEnabled ? 'Disable Test Mode' : 'Enable Test Mode (uses cached data)'}
+          >
+            <FlaskConical size={16} />
+            {testModeLoading ? '...' : testModeEnabled ? 'Test Mode ON' : 'Test Mode'}
+          </button>
         </div>
       </header>
-      
+
+      {/* Test Mode Banner */}
+      {testModeEnabled && (
+        <div className={styles.testModeBanner}>
+          <div className={styles.testModeBannerContent}>
+            <FlaskConical size={18} />
+            <span>
+              <strong>Test Mode Active</strong> — Using cached data (no live API calls).
+              Cache TTL: {cacheStatus?.prices_ttl_display || '24h'}.
+              {cacheStatus?.is_market_hours ? ' Market is OPEN.' : ' Market is closed.'}
+            </span>
+          </div>
+          <button
+            className={styles.testModeBannerClose}
+            onClick={toggleTestMode}
+            title="Disable Test Mode"
+          >
+            <X size={18} />
+          </button>
+        </div>
+      )}
+
       {/* Tab Navigation */}
       <div className={styles.tabBar}>
         <button 

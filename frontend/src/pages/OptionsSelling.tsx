@@ -23,6 +23,8 @@ import {
   Plus,
   Target,
   TrendingDown,
+  FlaskConical,
+  X,
 } from 'lucide-react';
 import {
   BarChart,
@@ -38,6 +40,16 @@ import {
 } from 'recharts';
 import styles from './OptionsSelling.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
+import {
+  HoldingsTable,
+  symbolColumn,
+  sharesColumn,
+  priceColumn,
+  valueColumn,
+  optionsBadgeColumn,
+  incomeWithYieldColumn,
+} from '../components/HoldingsTable';
+import type { HoldingsRow, ColumnDef } from '../components/HoldingsTable';
 
 interface Holding {
   symbol: string;
@@ -83,8 +95,11 @@ interface SymbolSummary {
   shares: number;
   price: number;
   value: number;
+  cost_basis?: number;
+  avg_cost_per_share?: number;
   options: number;
   premium_per_contract: number;
+  put_premium_per_contract?: number;
   premium_source?: 'database' | 'hardcoded' | 'global_default' | 'user_override' | 'actual_puts';
   weekly_income: number;
   monthly_income: number;
@@ -95,6 +110,13 @@ interface SymbolSummary {
   unsold_contracts?: number;
   utilization_status?: 'none' | 'partial' | 'full';
   is_cash_row?: boolean;
+}
+
+interface PutPremiumData {
+  symbol: string;
+  put_premium_per_contract: number;
+  put_contracts_sold?: number;
+  put_net_total?: number;
 }
 
 interface PortfolioSummary {
@@ -263,9 +285,48 @@ interface HistoricalAlert {
 }
 
 type SortDirection = 'asc' | 'desc' | null;
-type SortField = 'symbol' | 'shares' | 'price' | 'value' | 'options' | 'weekly' | 'monthly' | 'yearly';
+type SortField = 'symbol' | 'shares' | 'price' | 'value' | 'options' | 'weekly' | 'monthly' | 'yearly' | 'expectedWeekly' | 'actualWeekly' | 'expectedMonthly' | 'actualMonthly';
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899'];
+
+// Cache configuration
+const CACHE_KEY = 'options_selling_data';
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+interface CachedData {
+  data: OptionsData;
+  timestamp: number;
+  symbolPremiums: Record<string, number>;
+}
+
+const getCachedData = (): CachedData | null => {
+  try {
+    const cached = sessionStorage.getItem(CACHE_KEY);
+    if (!cached) return null;
+    const parsed: CachedData = JSON.parse(cached);
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const setCachedData = (data: OptionsData, symbolPremiums: Record<string, number>) => {
+  try {
+    const cacheEntry: CachedData = {
+      data,
+      timestamp: Date.now(),
+      symbolPremiums
+    };
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify(cacheEntry));
+  } catch {
+    // Ignore storage errors
+  }
+};
+
+const isCacheFresh = (cached: CachedData | null): boolean => {
+  if (!cached) return false;
+  return Date.now() - cached.timestamp < CACHE_TTL_MS;
+};
 
 const formatCurrency = (value: number) => {
   return new Intl.NumberFormat('en-US', {
@@ -306,21 +367,27 @@ export default function OptionsSelling() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('overview');
+  const [dataLastUpdated, setDataLastUpdated] = useState<Date | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   // Settings
   const [defaultPremium, setDefaultPremium] = useState(60);
   const [symbolPremiums, setSymbolPremiums] = useState<Record<string, number>>({});
+  const [callNetTotals, setCallNetTotals] = useState<Record<string, number>>({}); // Total net premium (4 weeks) per symbol
+  const [putPremiums, setPutPremiums] = useState<Record<string, PutPremiumData>>({});
   const [delta, setDelta] = useState(10);
   const [weeksPerYear, setWeeksPerYear] = useState(50);
+
+  // Sorting state for premium sections (Settings tab)
+  type PremiumSortField = 'netTotal' | 'roc' | 'premium' | 'symbol';
+  const [callPremiumSort, setCallPremiumSort] = useState<PremiumSortField>('netTotal');
+  const [putPremiumSort, setPutPremiumSort] = useState<PremiumSortField>('netTotal');
 
   // Sorting state for overview
   const [overviewSort, setOverviewSort] = useState<{ field: SortField; direction: SortDirection }>({
     field: 'options',
     direction: 'desc'
   });
-
-  // Sorting state for each account
-  const [accountSorts, setAccountSorts] = useState<Record<string, { field: SortField; direction: SortDirection }>>({});
 
   // Roll Monitor state
   const [rollAlerts, setRollAlerts] = useState<RollAlert[]>([]);
@@ -428,28 +495,40 @@ export default function OptionsSelling() {
   }, [data?.params?.symbol_premiums]);
 
   useEffect(() => {
-    fetchData();
+    // Check for fresh cached data first
+    const cached = getCachedData();
+    if (isCacheFresh(cached) && cached) {
+      // Use cached data immediately - no loading state
+      setData(cached.data);
+      setSymbolPremiums(cached.symbolPremiums);
+      setDataLastUpdated(new Date(cached.timestamp));
+      setLoading(false);
+    } else {
+      // No fresh cache, fetch from server
+      fetchData();
+    }
   }, []);
 
-  const fetchData = async (customPremiums?: Record<string, number>) => {
-    setLoading(true);
+  const fetchData = async (customPremiums?: Record<string, number>, forceRefresh: boolean = false) => {
+    // If not forcing refresh and we have data, show refreshing indicator instead of full loading
+    if (forceRefresh && data) {
+      setIsRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
-      // Use the enhanced endpoint that includes sold/unsold status
-      // Add cache-busting timestamp to ensure fresh data after data ingestion
       const response = await fetch('/api/v1/strategies/options-selling/income-projection-with-status', {
         method: 'POST',
         headers: {
           ...getAuthHeaders(),
           'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
         },
         body: JSON.stringify({
           default_premium: defaultPremium,
           symbol_premiums: customPremiums || symbolPremiums,
           delta: delta,
           weeks_per_year: weeksPerYear,
-          _timestamp: Date.now(), // Cache-busting parameter
         }),
       });
 
@@ -459,26 +538,81 @@ export default function OptionsSelling() {
 
       const result = await response.json();
       setData(result);
-      
+
       // Update symbol premiums from API response (which includes database values)
-      // This ensures we have the latest values after the API call
+      const newPremiums = result.params?.symbol_premiums
+        ? { ...symbolPremiums, ...result.params.symbol_premiums }
+        : symbolPremiums;
+
       if (result.params?.symbol_premiums) {
-        setSymbolPremiums(prev => {
-          // Merge: API response values (from database) override any stale values
-          return { ...prev, ...result.params.symbol_premiums };
-        });
+        setSymbolPremiums(newPremiums);
       }
+
+      // Save to cache
+      setCachedData(result, newPremiums);
+      setDataLastUpdated(new Date());
     } catch (err) {
       console.error('Fetch error:', err);
       setError(err instanceof Error ? err.message : 'Failed to load data');
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
+  };
+
+  // Manual refresh function - forces a fresh fetch
+  const handleRefresh = () => {
+    fetchData(undefined, true);
   };
 
   const applySettings = () => {
     fetchData(symbolPremiums);
   };
+
+  // Fetch premium settings including PUT premiums and call_net_total for ROC calculation
+  const fetchPremiumSettings = async () => {
+    try {
+      const response = await fetch('/api/v1/strategies/premium-settings', {
+        headers: getAuthHeaders(),
+      });
+      if (response.ok) {
+        const settings = await response.json();
+        const putData: Record<string, PutPremiumData> = {};
+        const callNetData: Record<string, number> = {};
+        Object.entries(settings).forEach(([symbol, data]: [string, any]) => {
+          // Store call_net_total for ROC calculation
+          if (data.call_net_total) {
+            callNetData[symbol] = data.call_net_total;
+          }
+          // Store put premium data
+          if (data.put_premium_per_contract) {
+            putData[symbol] = {
+              symbol,
+              put_premium_per_contract: data.put_premium_per_contract,
+              put_contracts_sold: data.put_contracts_sold,
+              put_net_total: data.put_net_total,
+            };
+          }
+        });
+        setCallNetTotals(callNetData);
+        setPutPremiums(putData);
+      }
+    } catch (err) {
+      console.error('Failed to fetch premium settings:', err);
+    }
+  };
+
+  // Fetch premium settings on mount and when Settings tab is active
+  // This provides call_net_total data for accurate ROC calculation
+  useEffect(() => {
+    fetchPremiumSettings();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'settings') {
+      fetchPremiumSettings();
+    }
+  }, [activeTab]);
 
   // Roll Monitor functions
   const checkRollOpportunities = async () => {
@@ -526,6 +660,56 @@ export default function OptionsSelling() {
   const [newAcquisitionSymbol, setNewAcquisitionSymbol] = useState('');
   const [newAcquisitionTargetPrice, setNewAcquisitionTargetPrice] = useState('');
   const [newAcquisitionNotes, setNewAcquisitionNotes] = useState('');
+
+  // Test Mode state
+  const [testModeEnabled, setTestModeEnabled] = useState(false);
+  const [testModeLoading, setTestModeLoading] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState<{
+    is_market_hours: boolean;
+    prices_ttl_display: string;
+  } | null>(null);
+
+  // Fetch test mode status on mount
+  const fetchTestModeStatus = async () => {
+    try {
+      const response = await fetch('/api/v1/strategies/debug/cache-status');
+      if (response.ok) {
+        const data = await response.json();
+        setTestModeEnabled(data.test_mode?.enabled || false);
+        setCacheStatus({
+          is_market_hours: data.market_status?.is_market_hours || false,
+          prices_ttl_display: data.effective_cache_ttl?.prices_ttl_display || 'unknown',
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching test mode status:', err);
+    }
+  };
+
+  // Toggle test mode
+  const toggleTestMode = async () => {
+    setTestModeLoading(true);
+    try {
+      const response = await fetch(`/api/v1/strategies/debug/test-mode?enable=${!testModeEnabled}`, {
+        method: 'POST',
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setTestModeEnabled(data.test_mode_enabled);
+        // Refresh cache status
+        await fetchTestModeStatus();
+      }
+    } catch (err) {
+      console.error('Error toggling test mode:', err);
+    } finally {
+      setTestModeLoading(false);
+    }
+  };
+
+  // Fetch test mode status on component mount
+  useEffect(() => {
+    fetchTestModeStatus();
+  }, []);
 
   const fetchMonitoredPositions = async (useLivePrices: boolean = false) => {
     setPositionsLoading(true);
@@ -757,41 +941,24 @@ export default function OptionsSelling() {
     }));
   };
 
-  // Calculate income based on current symbol premiums (real-time preview)
+  // Use backend's actual income values (from historical transactions)
   const getSymbolIncome = (symbol: SymbolSummary) => {
-    // For CASH rows (put income), use the backend-calculated values directly
-    if (symbol.is_cash_row || symbol.symbol === 'CASH') {
-      return {
-        premium: symbol.premium_per_contract,
-        weekly: symbol.weekly_income,
-        monthly: symbol.monthly_income,
-        yearly: symbol.yearly_income
-      };
-    }
-    // For regular symbols, calculate from options * premium
-    const premium = symbolPremiums[symbol.symbol] ?? symbol.premium_per_contract;
-    const weekly = symbol.options * premium;
-    const monthly = weekly * 4;
-    const yearly = weekly * weeksPerYear;
-    return { premium, weekly, monthly, yearly };
+    return {
+      premium: symbol.premium_per_contract,
+      weekly: symbol.weekly_income,
+      monthly: symbol.monthly_income,
+      yearly: symbol.yearly_income
+    };
   };
 
   const getHoldingIncome = (holding: Holding) => {
-    // For CASH rows (put income), use the backend-calculated values directly
-    if (holding.is_cash_row || holding.symbol === 'CASH') {
-      return {
-        premium: holding.premium_per_contract ?? 0,
-        weekly: holding.weekly_income,
-        monthly: holding.monthly_income,
-        yearly: holding.yearly_income
-      };
-    }
-    // For regular holdings, calculate from options * premium
-    const premium = symbolPremiums[holding.symbol] ?? holding.premium_per_contract ?? 60;
-    const weekly = holding.options * premium;
-    const monthly = weekly * 4;
-    const yearly = weekly * weeksPerYear;
-    return { premium, weekly, monthly, yearly };
+    // Use the backend's actual income values directly (from historical transactions)
+    return {
+      premium: holding.premium_per_contract ?? 0,
+      weekly: holding.weekly_income,
+      monthly: holding.monthly_income,
+      yearly: holding.yearly_income
+    };
   };
 
   // Use actual income from backend (not projections)
@@ -845,18 +1012,6 @@ export default function OptionsSelling() {
     }));
   };
 
-  const handleAccountSort = (accountId: string, field: SortField) => {
-    setAccountSorts(prev => ({
-      ...prev,
-      [accountId]: {
-        field,
-        direction: prev[accountId]?.field === field 
-          ? prev[accountId]?.direction === 'asc' ? 'desc' : prev[accountId]?.direction === 'desc' ? null : 'asc'
-          : 'desc'
-      }
-    }));
-  };
-
   const getSortIcon = (field: SortField, currentSort: { field: SortField; direction: SortDirection }) => {
     if (currentSort.field !== field || currentSort.direction === null) {
       return <ArrowUpDown size={14} className={styles.sortIconInactive} />;
@@ -870,10 +1025,17 @@ export default function OptionsSelling() {
   const sortedSymbols = useMemo(() => {
     if (!data) return [];
     
-    const symbolsWithCalc = data.symbols.map(sym => ({
-      ...sym,
-      ...getSymbolIncome(sym)
-    }));
+    const symbolsWithCalc = data.symbols.map(sym => {
+      const income = getSymbolIncome(sym);
+      return {
+        ...sym,
+        ...income,
+        expectedWeekly: sym.value * 0.01 / 4,
+        expectedMonthly: sym.value * 0.01,
+        actualWeekly: income.weekly,
+        actualMonthly: income.monthly,
+      };
+    });
 
     if (overviewSort.direction === null) return symbolsWithCalc;
 
@@ -885,9 +1047,10 @@ export default function OptionsSelling() {
         case 'price': aVal = a.price; bVal = b.price; break;
         case 'value': aVal = a.value; bVal = b.value; break;
         case 'options': aVal = a.options; bVal = b.options; break;
-        case 'weekly': aVal = a.weekly; bVal = b.weekly; break;
-        case 'monthly': aVal = a.monthly; bVal = b.monthly; break;
-        case 'yearly': aVal = a.yearly; bVal = b.yearly; break;
+        case 'expectedWeekly': aVal = a.expectedWeekly; bVal = b.expectedWeekly; break;
+        case 'actualWeekly': aVal = a.actualWeekly; bVal = b.actualWeekly; break;
+        case 'expectedMonthly': aVal = a.expectedMonthly; bVal = b.expectedMonthly; break;
+        case 'actualMonthly': aVal = a.actualMonthly; bVal = b.actualMonthly; break;
         default: return 0;
       }
       if (typeof aVal === 'string') {
@@ -898,39 +1061,6 @@ export default function OptionsSelling() {
       return overviewSort.direction === 'asc' ? aVal - (bVal as number) : (bVal as number) - aVal;
     });
   }, [data, symbolPremiums, overviewSort, weeksPerYear]);
-
-  // Sort holdings for accounts
-  const getSortedHoldings = (account: Account) => {
-    const sort = accountSorts[account.account_id] || { field: 'options', direction: 'desc' };
-    
-    const holdingsWithCalc = account.holdings.map(h => ({
-      ...h,
-      ...getHoldingIncome(h)
-    }));
-
-    if (sort.direction === null) return holdingsWithCalc;
-
-    return [...holdingsWithCalc].sort((a, b) => {
-      let aVal: number | string, bVal: number | string;
-      switch (sort.field) {
-        case 'symbol': aVal = a.symbol; bVal = b.symbol; break;
-        case 'shares': aVal = a.shares; bVal = b.shares; break;
-        case 'price': aVal = a.price; bVal = b.price; break;
-        case 'value': aVal = a.value; bVal = b.value; break;
-        case 'options': aVal = a.options; bVal = b.options; break;
-        case 'weekly': aVal = a.weekly; bVal = b.weekly; break;
-        case 'monthly': aVal = a.monthly; bVal = b.monthly; break;
-        case 'yearly': aVal = a.yearly; bVal = b.yearly; break;
-        default: return 0;
-      }
-      if (typeof aVal === 'string') {
-        return sort.direction === 'asc' 
-          ? aVal.localeCompare(bVal as string)
-          : (bVal as string).localeCompare(aVal);
-      }
-      return sort.direction === 'asc' ? aVal - (bVal as number) : (bVal as number) - aVal;
-    });
-  };
 
   // Sort accounts in desired order: Neel's Inv -> Neel's IRA -> Jaya's Inv -> Jaya's IRA
   const sortedAccounts = useMemo(() => {
@@ -968,6 +1098,35 @@ export default function OptionsSelling() {
     fill: COLORS[idx % COLORS.length],
   }));
 
+  // --- Shared HoldingsTable integration for per-account views ---
+  const holdingToRow = (holding: Holding & { premium?: number; weekly: number; monthly: number; yearly: number }): HoldingsRow => ({
+    symbol: holding.symbol,
+    shares: holding.shares,
+    currentPrice: holding.price,
+    value: holding.value,
+    isCash: holding.is_cash_row || holding.symbol === 'CASH',
+    options: holding.options,
+    soldContracts: holding.sold_contracts,
+    unsoldContracts: holding.unsold_contracts,
+    utilizationStatus: holding.utilization_status,
+    weeklyIncome: holding.weekly,
+    monthlyIncome: holding.monthly,
+    yearlyIncome: holding.yearly,
+    premiumSource: holding.premium_source,
+    subtitle: holding.utilization_status === 'none' ? undefined : undefined,
+  })
+
+  const optionsAccountColumns: ColumnDef[] = [
+    symbolColumn({ showSubtitle: true }),
+    sharesColumn(),
+    priceColumn(),
+    valueColumn(),
+    optionsBadgeColumn(),
+    incomeWithYieldColumn('weekly', 'Weekly', 'weeklyIncome', data?.income_periods?.weekly?.label),
+    incomeWithYieldColumn('monthly', 'Monthly', 'monthlyIncome', data?.income_periods?.monthly?.label),
+    incomeWithYieldColumn('yearly', 'Yearly', 'yearlyIncome', data?.income_periods?.yearly?.label),
+  ]
+
   return (
     <div className={styles.container}>
       {/* Header */}
@@ -983,7 +1142,55 @@ export default function OptionsSelling() {
             </p>
           </div>
         </div>
+        {/* Refresh button and last updated indicator */}
+        {!loading && data && (
+          <div className={styles.headerActions}>
+            <span className={styles.lastUpdated}>
+              {dataLastUpdated ? `Updated ${formatTimestamp(dataLastUpdated)}` : ''}
+            </span>
+            <button
+              className={styles.refreshButton}
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              title="Refresh data"
+            >
+              <RefreshCw size={16} className={isRefreshing ? styles.spinner : ''} />
+              {isRefreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
+            {/* Test Mode Toggle */}
+            <button
+              className={`${styles.testModeToggle} ${testModeEnabled ? styles.testModeActive : ''}`}
+              onClick={toggleTestMode}
+              disabled={testModeLoading}
+              title={testModeEnabled ? 'Disable Test Mode' : 'Enable Test Mode (uses cached data)'}
+            >
+              <FlaskConical size={16} />
+              {testModeLoading ? '...' : testModeEnabled ? 'Test Mode ON' : 'Test Mode'}
+            </button>
+          </div>
+        )}
       </header>
+
+      {/* Test Mode Banner */}
+      {testModeEnabled && (
+        <div className={styles.testModeBanner}>
+          <div className={styles.testModeBannerContent}>
+            <FlaskConical size={18} />
+            <span>
+              <strong>Test Mode Active</strong> — Using cached data (no live API calls).
+              Cache TTL: {cacheStatus?.prices_ttl_display || '24h'}.
+              {cacheStatus?.is_market_hours ? ' Market is OPEN.' : ' Market is closed.'}
+            </span>
+          </div>
+          <button
+            className={styles.testModeBannerClose}
+            onClick={toggleTestMode}
+            title="Disable Test Mode"
+          >
+            <X size={18} />
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className={styles.tabs}>
@@ -1178,38 +1385,47 @@ export default function OptionsSelling() {
               <table className={styles.table}>
                 <thead>
                   <tr>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('symbol')}>
+                    <th rowSpan={2} className={styles.sortableHeader} onClick={() => handleOverviewSort('symbol')}>
                       Symbol {getSortIcon('symbol', overviewSort)}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('shares')}>
-                      Shares {getSortIcon('shares', overviewSort)}
-                    </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('price')}>
-                      Price {getSortIcon('price', overviewSort)}
-                    </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('value')}>
+                    <th rowSpan={2} className={styles.sortableHeader} onClick={() => handleOverviewSort('value')}>
                       Value {getSortIcon('value', overviewSort)}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('options')}>
+                    <th rowSpan={2} className={styles.sortableHeader} onClick={() => handleOverviewSort('shares')}>
+                      Shares {getSortIcon('shares', overviewSort)}
+                    </th>
+                    <th rowSpan={2} className={styles.sortableHeader} onClick={() => handleOverviewSort('price')}>
+                      Price {getSortIcon('price', overviewSort)}
+                    </th>
+                    <th rowSpan={2} className={styles.sortableHeader} onClick={() => handleOverviewSort('options')}>
                       Options {getSortIcon('options', overviewSort)}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('weekly')} title={data?.income_periods?.weekly?.label || 'Last complete week'}>
-                      Weekly {getSortIcon('weekly', overviewSort)}
+                    <th colSpan={2} className={styles.tableGroupHeader}>
+                      Weekly
                       {data?.income_periods?.weekly && <span className={styles.periodLabel}>{data.income_periods.weekly.label}</span>}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('monthly')} title={data?.income_periods?.monthly?.label || 'Last complete month'}>
-                      Monthly {getSortIcon('monthly', overviewSort)}
+                    <th colSpan={2} className={styles.tableGroupHeader}>
+                      Monthly
                       {data?.income_periods?.monthly && <span className={styles.periodLabel}>{data.income_periods.monthly.label}</span>}
                     </th>
-                    <th className={styles.sortableHeader} onClick={() => handleOverviewSort('yearly')} title={data?.income_periods?.yearly?.label || 'Last complete year'}>
-                      Yearly {getSortIcon('yearly', overviewSort)}
-                      {data?.income_periods?.yearly && <span className={styles.periodLabel}>{data.income_periods.yearly.label}</span>}
+                  </tr>
+                  <tr>
+                    <th className={`${styles.sortableHeader} ${styles.subHeader}`} onClick={() => handleOverviewSort('expectedWeekly')}>
+                      Expected {getSortIcon('expectedWeekly', overviewSort)}
+                    </th>
+                    <th className={`${styles.sortableHeader} ${styles.subHeader}`} onClick={() => handleOverviewSort('actualWeekly')}>
+                      Actual {getSortIcon('actualWeekly', overviewSort)}
+                    </th>
+                    <th className={`${styles.sortableHeader} ${styles.subHeader}`} onClick={() => handleOverviewSort('expectedMonthly')}>
+                      Expected {getSortIcon('expectedMonthly', overviewSort)}
+                    </th>
+                    <th className={`${styles.sortableHeader} ${styles.subHeader}`} onClick={() => handleOverviewSort('actualMonthly')}>
+                      Actual {getSortIcon('actualMonthly', overviewSort)}
                     </th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedSymbols.map((symbol) => {
-                    const isHardcoded = symbol.premium_source === 'hardcoded' || symbol.premium_source === 'global_default';
                     const isCashRow = symbol.is_cash_row || symbol.symbol === 'CASH';
 
                     return (
@@ -1225,9 +1441,9 @@ export default function OptionsSelling() {
                             </span>
                           </div>
                         </td>
+                        <td>{formatCurrency(symbol.value)}</td>
                         <td>{isCashRow ? '-' : symbol.shares.toLocaleString()}</td>
                         <td>{isCashRow ? '-' : formatCurrency(symbol.price)}</td>
-                        <td>{formatCurrency(symbol.value)}</td>
                         <td>
                           {isCashRow ? (
                             <span className={styles.putsLabel}>Puts</span>
@@ -1257,41 +1473,38 @@ export default function OptionsSelling() {
                             </div>
                           )}
                         </td>
-                        <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
-                          {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
-                          {formatCurrency(symbol.weekly)}
-                          <span className={styles.yieldPercent}>({(symbol.weekly / symbol.value * 100).toFixed(2)}%)</span>
+                        <td className={styles.expectedCol}>
+                          {formatCurrency(symbol.expectedWeekly)}
                         </td>
-                        <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
-                          {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
-                          {formatCurrency(symbol.monthly)}
-                          <span className={styles.yieldPercent}>({(symbol.monthly / symbol.value * 100).toFixed(2)}%)</span>
+                        <td className={`${styles.actualCol} ${symbol.actualWeekly >= symbol.expectedWeekly ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
+                          {formatCurrency(symbol.actualWeekly)}
                         </td>
-                        <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
-                          {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
-                          {formatCurrency(symbol.yearly)}
-                          <span className={styles.yieldPercent}>({(symbol.yearly / symbol.value * 100).toFixed(2)}%)</span>
+                        <td className={styles.expectedCol}>
+                          {formatCurrency(symbol.expectedMonthly)}
+                        </td>
+                        <td className={`${styles.actualCol} ${symbol.actualMonthly >= symbol.expectedMonthly ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
+                          {formatCurrency(symbol.actualMonthly)}
                         </td>
                       </tr>
                     );
                   })}
                   <tr className={styles.totalRow}>
                     <td><strong>TOTAL</strong></td>
-                    <td></td>
-                    <td></td>
                     <td><strong>{formatCurrency(portfolioTotals.total_value)}</strong></td>
+                    <td></td>
+                    <td></td>
                     <td><strong>{portfolioTotals.total_options}</strong></td>
-                    <td>
+                    <td className={styles.expectedCol}>
+                      <strong>{formatCurrency(portfolioTotals.total_value * 0.01 / 4)}</strong>
+                    </td>
+                    <td className={`${styles.actualCol} ${portfolioTotals.weekly_income >= portfolioTotals.total_value * 0.01 / 4 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
                       <strong>{formatCurrency(portfolioTotals.weekly_income)}</strong>
-                      <span className={styles.yieldPercent}>({(portfolioTotals.weekly_income / portfolioTotals.total_value * 100).toFixed(2)}%)</span>
                     </td>
-                    <td>
+                    <td className={styles.expectedCol}>
+                      <strong>{formatCurrency(portfolioTotals.total_value * 0.01)}</strong>
+                    </td>
+                    <td className={`${styles.actualCol} ${portfolioTotals.monthly_income >= portfolioTotals.total_value * 0.01 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
                       <strong>{formatCurrency(portfolioTotals.monthly_income)}</strong>
-                      <span className={styles.yieldPercent}>({(portfolioTotals.monthly_income / portfolioTotals.total_value * 100).toFixed(2)}%)</span>
-                    </td>
-                    <td>
-                      <strong>{formatCurrency(portfolioTotals.yearly_income)}</strong>
-                      <span className={styles.yieldPercent}>({(portfolioTotals.yearly_income / portfolioTotals.total_value * 100).toFixed(2)}%)</span>
                     </td>
                   </tr>
                 </tbody>
@@ -1302,8 +1515,6 @@ export default function OptionsSelling() {
 
         {/* Individual Account Views */}
         {!loading && !error && data && sortedAccounts.map((account) => {
-          const accountSort = accountSorts[account.account_id] || { field: 'options', direction: 'desc' };
-          const sortedHoldings = getSortedHoldings(account);
           const accountTotals = getAccountTotals(account);
           
           return activeTab === account.account_id && (
@@ -1369,129 +1580,11 @@ export default function OptionsSelling() {
               {/* Holdings Table */}
               <div className={styles.tableCard}>
                 <h3 className={styles.tableTitle}>Holdings & Options Income</h3>
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'symbol')}>
-                        Symbol {getSortIcon('symbol', accountSort)}
-                      </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'shares')}>
-                        Shares {getSortIcon('shares', accountSort)}
-                      </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'price')}>
-                        Price {getSortIcon('price', accountSort)}
-                      </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'value')}>
-                        Value {getSortIcon('value', accountSort)}
-                      </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'options')}>
-                        Options {getSortIcon('options', accountSort)}
-                      </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'weekly')} title={data?.income_periods?.weekly?.label || 'Last complete week'}>
-                        Weekly {getSortIcon('weekly', accountSort)}
-                        {data?.income_periods?.weekly && <span className={styles.periodLabel}>{data.income_periods.weekly.label}</span>}
-                      </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'monthly')} title={data?.income_periods?.monthly?.label || 'Last complete month'}>
-                        Monthly {getSortIcon('monthly', accountSort)}
-                        {data?.income_periods?.monthly && <span className={styles.periodLabel}>{data.income_periods.monthly.label}</span>}
-                      </th>
-                      <th className={styles.sortableHeader} onClick={() => handleAccountSort(account.account_id, 'yearly')} title={data?.income_periods?.yearly?.label || 'Last complete year'}>
-                        Yearly {getSortIcon('yearly', accountSort)}
-                        {data?.income_periods?.yearly && <span className={styles.periodLabel}>{data.income_periods.yearly.label}</span>}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedHoldings.map((holding) => {
-                      const isHardcoded = holding.premium_source === 'hardcoded' || holding.premium_source === 'global_default';
-                      const isCashRow = holding.is_cash_row || holding.symbol === 'CASH';
-
-                      return (
-                        <tr
-                          key={holding.symbol}
-                          className={`${holding.utilization_status === 'none' ? styles.unsoldRow : ''} ${isCashRow ? styles.cashRow : ''}`}
-                        >
-                          <td>
-                            <div className={styles.symbolCell}>
-                              <strong>{holding.symbol}</strong>
-                              {isCashRow ? (
-                                <span className={styles.accountCount}>Cash-Secured Puts</span>
-                              ) : holding.utilization_status === 'none' ? (
-                                <span className={styles.unsoldLabel}>Not Sold</span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td>{isCashRow ? '-' : holding.shares.toLocaleString()}</td>
-                          <td>{isCashRow ? '-' : formatCurrency(holding.price)}</td>
-                          <td>{formatCurrency(holding.value)}</td>
-                          <td>
-                            {isCashRow ? (
-                              <span className={styles.putsLabel}>Puts</span>
-                            ) : (
-                              <div className={styles.optionsCell}>
-                                <span className={`${styles.optionsBadge} ${
-                                  holding.utilization_status === 'full' ? styles.optionsFull :
-                                  holding.utilization_status === 'partial' ? styles.optionsPartial :
-                                  styles.optionsNone
-                                }`}>
-                                  {holding.options}
-                                </span>
-                                {holding.sold_contracts !== undefined && holding.unsold_contracts !== undefined && (
-                                  <div className={styles.soldUnsoldInfo}>
-                                    {holding.sold_contracts > 0 && (
-                                      <span className={styles.soldCount} title="Sold">
-                                        <CheckCircle size={12} /> {holding.sold_contracts}
-                                      </span>
-                                    )}
-                                    {holding.unsold_contracts > 0 && (
-                                      <span className={styles.unsoldCount} title="Unsold">
-                                        <XCircle size={12} /> {holding.unsold_contracts}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                          <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
-                            {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
-                            {formatCurrency(holding.weekly)}
-                            <span className={styles.yieldPercent}>({(holding.weekly / holding.value * 100).toFixed(2)}%)</span>
-                          </td>
-                          <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
-                            {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
-                            {formatCurrency(holding.monthly)}
-                            <span className={styles.yieldPercent}>({(holding.monthly / holding.value * 100).toFixed(2)}%)</span>
-                          </td>
-                          <td className={`${styles.incomeCell} ${isHardcoded ? styles.hardcodedIncome : ''}`}>
-                            {isHardcoded && <span className={styles.hardcodedMarker} title="Using hardcoded default premium">*</span>}
-                            {formatCurrency(holding.yearly)}
-                            <span className={styles.yieldPercent}>({(holding.yearly / holding.value * 100).toFixed(2)}%)</span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    <tr className={styles.totalRow}>
-                      <td><strong>TOTAL</strong></td>
-                      <td></td>
-                      <td></td>
-                      <td><strong>{formatCurrency(account.total_value)}</strong></td>
-                      <td><strong>{account.total_options}</strong></td>
-                      <td>
-                        <strong>{formatCurrency(accountTotals.weekly)}</strong>
-                        <span className={styles.yieldPercent}>({(accountTotals.weekly / account.total_value * 100).toFixed(2)}%)</span>
-                      </td>
-                      <td>
-                        <strong>{formatCurrency(accountTotals.monthly)}</strong>
-                        <span className={styles.yieldPercent}>({(accountTotals.monthly / account.total_value * 100).toFixed(2)}%)</span>
-                      </td>
-                      <td>
-                        <strong>{formatCurrency(accountTotals.yearly)}</strong>
-                        <span className={styles.yieldPercent}>({(accountTotals.yearly / account.total_value * 100).toFixed(2)}%)</span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                <HoldingsTable
+                  rows={account.holdings.map(h => holdingToRow({ ...h, ...getHoldingIncome(h) }))}
+                  columns={optionsAccountColumns}
+                  defaultSortKey="options"
+                />
               </div>
             </div>
           );
@@ -2367,20 +2460,56 @@ export default function OptionsSelling() {
               </div>
             </div>
 
-            {/* Per-Symbol Premiums */}
+            {/* Per-Symbol CALL Premiums */}
             <div className={styles.symbolPremiumsSection}>
-              <h4 className={styles.sectionTitle}>Weekly Premium per Contract by Symbol</h4>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <h4 className={styles.sectionTitle} style={{ margin: 0 }}>Weekly CALL Premium per Contract by Symbol</h4>
+                <div style={{ display: 'flex', gap: '4px', fontSize: '12px' }}>
+                  <span style={{ color: '#888', marginRight: '4px' }}>Sort:</span>
+                  {(['netTotal', 'roc', 'premium', 'symbol'] as PremiumSortField[]).map((field) => (
+                    <button
+                      key={field}
+                      onClick={() => setCallPremiumSort(field)}
+                      style={{
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        border: 'none',
+                        background: callPremiumSort === field ? '#10b981' : '#333',
+                        color: callPremiumSort === field ? '#000' : '#888',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                      }}
+                    >
+                      {field === 'netTotal' ? 'Total $' : field === 'roc' ? 'ROC %' : field === 'premium' ? '$/wk' : 'A-Z'}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <p className={styles.sectionHint}>
-                Set the expected weekly premium for each stock based on its volatility. 
+                NET premium (after buy-backs) for covered calls based on 4-week history.
                 <strong> Changes update instantly in all calculations.</strong>
               </p>
-              
+
               <div className={styles.symbolPremiumsGrid}>
-                {data.symbols.map((symbol) => {
-                  // Prioritize database settings (symbolPremiums) over API response
-                  const currentPremium = symbolPremiums[symbol.symbol] ?? symbol.premium_per_contract ?? defaultPremium;
-                  const projectedWeekly = symbol.options * currentPremium;
-                  return (
+                {[...data.symbols]
+                  .map((symbol) => {
+                    const currentPremium = symbolPremiums[symbol.symbol] ?? symbol.premium_per_contract ?? defaultPremium;
+                    const avgCostPerShare = symbol.avg_cost_per_share || symbol.price || 0;
+                    const callNetTotal = callNetTotals[symbol.symbol] || 0;
+                    const capitalTiedUp = symbol.options * 100 * avgCostPerShare;
+                    const monthlyReturnPct = capitalTiedUp > 0 ? (callNetTotal / capitalTiedUp) * 100 : 0;
+                    return { ...symbol, currentPremium, callNetTotal, monthlyReturnPct };
+                  })
+                  .sort((a, b) => {
+                    switch (callPremiumSort) {
+                      case 'netTotal': return (b.callNetTotal || 0) - (a.callNetTotal || 0);
+                      case 'roc': return (b.monthlyReturnPct || 0) - (a.monthlyReturnPct || 0);
+                      case 'premium': return (b.currentPremium || 0) - (a.currentPremium || 0);
+                      case 'symbol': return a.symbol.localeCompare(b.symbol);
+                      default: return 0;
+                    }
+                  })
+                  .map((symbol) => (
                     <div key={symbol.symbol} className={styles.symbolPremiumItem}>
                       <div className={styles.symbolInfo}>
                         <span className={styles.symbolName}>{symbol.symbol}</span>
@@ -2390,7 +2519,7 @@ export default function OptionsSelling() {
                         <span>$</span>
                         <input
                           type="number"
-                          value={currentPremium}
+                          value={symbol.currentPremium}
                           onChange={(e) => updateSymbolPremium(symbol.symbol, parseFloat(e.target.value) || 0)}
                           step="5"
                           min="0"
@@ -2399,14 +2528,94 @@ export default function OptionsSelling() {
                       </div>
                       <div className={styles.projectedIncome}>
                         <span className={styles.weeklyProjection}>
-                          {formatCurrency(projectedWeekly)}/wk
+                          {symbol.monthlyReturnPct.toFixed(1)}%/mo
                         </span>
                       </div>
                     </div>
-                  );
-                })}
+                  ))}
               </div>
             </div>
+
+            {/* Per-Symbol PUT Premiums */}
+            {Object.keys(putPremiums).length > 0 && (
+              <div className={styles.symbolPremiumsSection}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <h4 className={styles.sectionTitle} style={{ margin: 0 }}>Weekly PUT Premium per Contract by Symbol</h4>
+                  <div style={{ display: 'flex', gap: '4px', fontSize: '12px' }}>
+                    <span style={{ color: '#888', marginRight: '4px' }}>Sort:</span>
+                    {(['netTotal', 'roc', 'premium', 'symbol'] as PremiumSortField[]).map((field) => (
+                      <button
+                        key={field}
+                        onClick={() => setPutPremiumSort(field)}
+                        style={{
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          border: 'none',
+                          background: putPremiumSort === field ? '#10b981' : '#333',
+                          color: putPremiumSort === field ? '#000' : '#888',
+                          cursor: 'pointer',
+                          fontSize: '11px',
+                        }}
+                      >
+                        {field === 'netTotal' ? 'Total $' : field === 'roc' ? 'ROC %' : field === 'premium' ? '$/wk' : 'A-Z'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <p className={styles.sectionHint}>
+                  NET premium (after buy-backs) for cash-secured puts based on 4-week history.
+                  Put income is attributed to your CASH position.
+                </p>
+
+                <div className={styles.symbolPremiumsGrid}>
+                  {Object.values(putPremiums)
+                    .map((putData) => {
+                      const premiumPerWeek = putData.put_premium_per_contract || 0;
+                      const symbolData = data.symbols.find(s => s.symbol === putData.symbol);
+                      const stockPrice = symbolData?.price || 0;
+                      const putNetTotal = putData.put_net_total || 0;
+                      const avgContractsHeld = Math.ceil((putData.put_contracts_sold || 0) / 4);
+                      const capitalTiedUp = avgContractsHeld * 100 * stockPrice;
+                      const monthlyReturnPct = capitalTiedUp > 0 ? (putNetTotal / capitalTiedUp) * 100 : 0;
+                      return { ...putData, premiumPerWeek, putNetTotal, monthlyReturnPct, stockPrice };
+                    })
+                    .sort((a, b) => {
+                      switch (putPremiumSort) {
+                        case 'netTotal': return (b.putNetTotal || 0) - (a.putNetTotal || 0);
+                        case 'roc': return (b.monthlyReturnPct || 0) - (a.monthlyReturnPct || 0);
+                        case 'premium': return (b.premiumPerWeek || 0) - (a.premiumPerWeek || 0);
+                        case 'symbol': return a.symbol.localeCompare(b.symbol);
+                        default: return 0;
+                      }
+                    })
+                    .map((putData) => (
+                      <div key={putData.symbol} className={styles.symbolPremiumItem}>
+                        <div className={styles.symbolInfo}>
+                          <span className={styles.symbolName}>{putData.symbol}</span>
+                          <span className={styles.symbolOptions}>
+                            {putData.put_contracts_sold || 0} puts sold
+                          </span>
+                        </div>
+                        <div className={styles.premiumInput}>
+                          <span>$</span>
+                          <input
+                            type="number"
+                            value={putData.premiumPerWeek?.toFixed(0) || 0}
+                            readOnly
+                            style={{ background: '#2a2a2a', cursor: 'not-allowed' }}
+                          />
+                          <span className={styles.perWeek}>/wk</span>
+                        </div>
+                        <div className={styles.projectedIncome}>
+                          <span className={styles.weeklyProjection} style={{ color: '#10b981' }}>
+                            {putData.monthlyReturnPct > 0 ? `${putData.monthlyReturnPct.toFixed(1)}%/mo` : '-'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
 
             <div className={styles.deltaGuide}>
               <h4>Delta Guide (Reference)</h4>

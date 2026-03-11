@@ -1,10 +1,18 @@
 """
 Ingestion services for saving parsed records to the database.
+
+Uses HYBRID deduplication approach for transactions:
+1. Find crossover point (max date in DB for each account)
+2. Skip all rows before crossover (already imported)
+3. For rows at/after crossover, use count-based logic to handle identical transactions
 """
 
-from typing import Optional
+from typing import Optional, List, Dict
+from collections import defaultdict
 from sqlalchemy.orm import Session
-from datetime import datetime
+from sqlalchemy import func
+from datetime import datetime, date
+import hashlib
 
 from app.ingestion.parsers.base import ParsedRecord, RecordType
 from app.shared.models.ingestion import IngestionLog
@@ -50,30 +58,284 @@ def complete_ingestion_log(
     db.flush()
 
 
+def _make_transaction_key(record_data: dict) -> str:
+    """Create a unique key for a transaction based on business fields."""
+    txn_date = record_data.get("transaction_date")
+    if isinstance(txn_date, datetime):
+        txn_date = txn_date.date()
+    amount = record_data.get('amount')
+    amount = float(amount) if amount is not None else 0.0
+    return (
+        f"{txn_date}|"
+        f"{record_data.get('transaction_type', '')}|"
+        f"{record_data.get('symbol', '')}|"
+        f"{amount:.2f}|"
+        f"{record_data.get('description', '')}"
+    )
+
+
+def save_investment_transactions_hybrid(
+    db: Session,
+    records: List[ParsedRecord],
+    ingestion_id: Optional[int] = None
+) -> Dict[str, int]:
+    """
+    Save investment transactions using HYBRID deduplication approach.
+
+    Algorithm:
+    1. Group records by account
+    2. For each account, find crossover date (max date already in DB)
+    3. Skip all records before crossover date (no DB queries needed)
+    4. For records at/after crossover, use count-based logic:
+       - Count identical transactions in CSV
+       - Count identical transactions in DB
+       - Import the difference (csv_count - db_count)
+
+    This handles:
+    - Overlapping date range uploads (skip old, import new)
+    - Same file uploaded twice (counts match, skip all)
+    - Identical transactions on same day (import correct count)
+    """
+    from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
+
+    created = 0
+    skipped = 0
+    has_sto_transactions = False
+    accounts_with_buys: set = set()
+
+    if not records:
+        return {"created": 0, "updated": 0, "skipped": 0, "has_sto": False}
+
+    # Step 1: Normalize account IDs and group records by account
+    records_by_account = defaultdict(list)
+    for record in records:
+        data = record.data
+        account_id = _normalize_account_id(data.get("account_id", "default"))
+        data["account_id"] = account_id  # Update with normalized ID
+        records_by_account[account_id].append(record)
+
+    # Step 2: Process each account
+    for account_id, account_records in records_by_account.items():
+        source = account_records[0].data.get("source", "unknown")
+
+        # Find unique transaction types in the incoming records
+        incoming_types = set(r.data.get("transaction_type", "") for r in account_records)
+
+        # Calculate crossover date per transaction type
+        # This prevents other transaction types from affecting our crossover
+        crossover_by_type = {}
+        for txn_type in incoming_types:
+            crossover_result = db.query(func.max(InvestmentTransaction.transaction_date)).filter(
+                InvestmentTransaction.account_id == account_id,
+                InvestmentTransaction.source == source,
+                InvestmentTransaction.transaction_type == txn_type
+            ).scalar()
+            crossover_by_type[txn_type] = crossover_result
+
+        # Separate records: before crossover vs at/after crossover (per type)
+        before_crossover = []
+        at_or_after_crossover = []
+
+        for record in account_records:
+            txn_date = record.data.get("transaction_date")
+            if isinstance(txn_date, datetime):
+                txn_date = txn_date.date()
+
+            txn_type = record.data.get("transaction_type", "")
+            crossover_date = crossover_by_type.get(txn_type)
+
+            if crossover_date and txn_date < crossover_date:
+                before_crossover.append(record)
+            else:
+                at_or_after_crossover.append(record)
+
+        # Skip everything before crossover
+        skipped += len(before_crossover)
+
+        if not at_or_after_crossover:
+            continue
+
+        # Step 3: Count-based logic for records at/after crossover
+        # Group by key and count
+        csv_counts = defaultdict(int)
+        csv_records_by_key = defaultdict(list)
+        for record in at_or_after_crossover:
+            key = _make_transaction_key(record.data)
+            csv_counts[key] += 1
+            csv_records_by_key[key].append(record)
+
+        # Query DB for counts of each key
+        # We need to check each unique key
+        db_counts = defaultdict(int)
+        for key in csv_counts.keys():
+            parts = key.split("|")
+            txn_date_str, txn_type, symbol, amount_str, description = parts[0], parts[1], parts[2], parts[3], parts[4]
+            txn_date = datetime.strptime(txn_date_str, "%Y-%m-%d").date()
+            amount = float(amount_str)
+
+            # Handle symbol variants (empty string vs UNKNOWN)
+            symbol_variants = [symbol]
+            if symbol == "" or symbol == "UNKNOWN":
+                symbol_variants = ["", "UNKNOWN"]
+
+            # Get equivalent transaction types
+            equivalent_types = _get_equivalent_types(txn_type)
+
+            count = db.query(func.count(InvestmentTransaction.id)).filter(
+                InvestmentTransaction.account_id == account_id,
+                InvestmentTransaction.source == source,
+                InvestmentTransaction.transaction_date == txn_date,
+                InvestmentTransaction.transaction_type.in_(equivalent_types),
+                InvestmentTransaction.symbol.in_(symbol_variants),
+                InvestmentTransaction.amount == amount,
+                InvestmentTransaction.description == description
+            ).scalar() or 0
+
+            db_counts[key] = count
+
+        # Step 4: Import the difference for each key
+        for key, csv_count in csv_counts.items():
+            db_count = db_counts.get(key, 0)
+            to_import = csv_count - db_count
+
+            if to_import <= 0:
+                skipped += csv_count
+                continue
+
+            # Import 'to_import' records with this key
+            records_to_import = csv_records_by_key[key][db_count:db_count + to_import]
+            skipped += csv_count - to_import  # Skip the ones we already have
+
+            for idx, record in enumerate(records_to_import):
+                data = record.data
+
+                # Ensure account exists
+                _ensure_account_exists(db, account_id, source, data)
+
+                # Check for STO transactions
+                if data.get("transaction_type") == "STO":
+                    has_sto_transactions = True
+
+                # Track accounts with BUY/SELL for cost basis recalculation
+                if data.get("transaction_type") in ("BUY", "SELL", "OASGN"):
+                    accounts_with_buys.add(account_id)
+
+                # Generate record hash with unique counter to allow identical transactions
+                # The counter (db_count + idx) ensures each instance gets a unique hash
+                instance_num = db_count + idx
+                hash_data = (
+                    f"{source}:{account_id}:{data.get('transaction_date')}:"
+                    f"{data.get('symbol', '')}:{data.get('transaction_type', '')}:"
+                    f"{data.get('quantity')}:{data.get('amount')}:{data.get('description', '')}:"
+                    f"instance_{instance_num}"
+                )
+                record_hash = hashlib.sha256(hash_data.encode()).hexdigest()
+
+                # Create transaction
+                transaction = InvestmentTransaction(
+                    source=source,
+                    account_id=account_id,
+                    transaction_date=data.get("transaction_date"),
+                    symbol=data.get("symbol", ""),
+                    description=data.get("description"),
+                    transaction_type=data.get("transaction_type"),
+                    quantity=data.get("quantity"),
+                    price_per_share=data.get("price_per_share") or data.get("price"),
+                    amount=data.get("amount"),
+                    fees=data.get("fees", 0),
+                    record_hash=record_hash,
+                    ingestion_id=ingestion_id,
+                )
+                db.add(transaction)
+                created += 1
+
+        db.flush()
+
+    return {
+        "created": created,
+        "updated": 0,
+        "skipped": skipped,
+        "has_sto": has_sto_transactions,
+        "accounts_with_buys": accounts_with_buys,
+    }
+
+
+def _ensure_account_exists(db: Session, account_id: str, source: str, data: dict):
+    """Ensure the investment account exists, creating it if necessary."""
+    from app.modules.investments.models import InvestmentAccount
+
+    account = db.query(InvestmentAccount).filter(
+        InvestmentAccount.account_id == account_id,
+        InvestmentAccount.source == source,
+    ).first()
+
+    if not account:
+        owner, account_type = _parse_owner_and_type_from_account_id(account_id)
+        account_name = data.get("account_name")
+        if not account_name or account_name == account_id:
+            account_name = _generate_account_name(account_id, account_type)
+
+        final_account_type = data.get("account_type") or account_type
+        if 'roth' in account_id.lower() and final_account_type != 'roth_ira':
+            final_account_type = 'roth_ira'
+
+        account = InvestmentAccount(
+            account_id=account_id,
+            account_name=account_name,
+            source=source,
+            account_type=final_account_type,
+        )
+        db.add(account)
+        db.flush()
+
+
 def save_records(db: Session, records: list, ingestion_id: Optional[int] = None) -> dict:
     """
     Save parsed records to the database.
     Returns dict with created, updated, skipped counts.
+
+    Uses HYBRID deduplication for transactions:
+    - Skip records before crossover date (max date in DB)
+    - Use count-based logic for records at/after crossover
     """
     from app.modules.investments.models import InvestmentTransaction, InvestmentHolding, InvestmentAccount
     from app.modules.cash.models import CashTransaction, CashAccount
-    
+
     created = 0
     updated = 0
     skipped = 0
     has_sto_transactions = False
-    
+
+    # Separate transaction records from other types
+    transaction_records = []
+    spending_records = []
+    other_records = []
+
     for record in records:
+        if record.record_type in (RecordType.TRANSACTION, RecordType.DIVIDEND):
+            transaction_records.append(record)
+        elif record.record_type == RecordType.SPENDING:
+            spending_records.append(record)
+        else:
+            other_records.append(record)
+
+    # Process transactions using hybrid approach
+    if transaction_records:
+        txn_result = save_investment_transactions_hybrid(db, transaction_records, ingestion_id)
+        created += txn_result["created"]
+        skipped += txn_result["skipped"]
+        has_sto_transactions = txn_result.get("has_sto", False)
+
+    # Process spending records
+    if spending_records:
+        spend_result = save_spending_transactions(db, spending_records, ingestion_id)
+        created += spend_result["created"]
+        skipped += spend_result["skipped"]
+
+    # Process other record types as before
+    for record in other_records:
         try:
-            if record.record_type == RecordType.TRANSACTION:
-                result = save_investment_transaction(db, record, ingestion_id)
-                # Check if this is an STO transaction (for auto-update trigger)
-                if record.data.get("transaction_type") == "STO":
-                    has_sto_transactions = True
-            elif record.record_type == RecordType.DIVIDEND:
-                # Dividends are also transactions, save them the same way
-                result = save_investment_transaction(db, record, ingestion_id)
-            elif record.record_type == RecordType.HOLDING:
+            if record.record_type == RecordType.HOLDING:
                 result = save_investment_holding(db, record, ingestion_id)
             elif record.record_type == RecordType.CASH_SNAPSHOT:
                 result = save_cash_transaction(db, record, ingestion_id)
@@ -84,18 +346,18 @@ def save_records(db: Session, records: list, ingestion_id: Optional[int] = None)
             else:
                 skipped += 1
                 continue
-            
+
             if result == "created":
                 created += 1
             elif result == "updated":
                 updated += 1
             else:
                 skipped += 1
-                
+
         except Exception as e:
             print(f"Error saving record: {e}")
             skipped += 1
-    
+
     # Auto-update premium settings if we have new STO transactions
     if has_sto_transactions:
         try:
@@ -106,7 +368,30 @@ def save_records(db: Session, records: list, ingestion_id: Optional[int] = None)
         except Exception as e:
             print(f"Error auto-updating premium settings: {e}")
             # Don't fail the ingestion if auto-update fails
-    
+
+    # Auto-recalculate cost basis for accounts that had BUY/SELL/OASGN transactions
+    accounts_with_buys = txn_result.get("accounts_with_buys", set()) if transaction_records else set()
+    if accounts_with_buys:
+        try:
+            from app.modules.investments.services import calculate_cost_basis_from_transactions
+            from app.modules.investments.models import InvestmentHolding
+            cost_basis_updated = 0
+            for acct_id in accounts_with_buys:
+                holdings = db.query(InvestmentHolding).filter(
+                    InvestmentHolding.account_id == acct_id,
+                    InvestmentHolding.quantity > 0,
+                    InvestmentHolding.symbol != 'CASH',
+                ).all()
+                for holding in holdings:
+                    calculated = calculate_cost_basis_from_transactions(db, acct_id, holding.symbol)
+                    if calculated is not None and calculated > 0:
+                        holding.cost_basis = calculated
+                        cost_basis_updated += 1
+            db.flush()
+            print(f"Auto-recalculated cost basis: {cost_basis_updated} holdings updated for accounts {accounts_with_buys}")
+        except Exception as e:
+            print(f"Error auto-recalculating cost basis: {e}")
+
     return {
         "created": created,
         "updated": updated,
@@ -372,12 +657,32 @@ def _parse_owner_and_type_from_account_id(account_id: str) -> tuple[str, str]:
     return owner or 'unknown', account_type
 
 
+# Mapping of equivalent transaction types for deduplication
+# These are different codes that represent the same type of transaction
+EQUIVALENT_TRANSACTION_TYPES = {
+    # Dividend types - all represent cash dividends
+    'CDIV': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    'DIVIDEND': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    'CASH DIVIDEND': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    'QUALIFIED DIVIDEND': ['CDIV', 'DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
+    # Interest types - all represent interest income
+    'INT': ['INT', 'INTEREST', 'SLIP'],
+    'INTEREST': ['INT', 'INTEREST', 'SLIP'],
+    'SLIP': ['INT', 'INTEREST', 'SLIP'],  # Sweep interest
+}
+
+
+def _get_equivalent_types(transaction_type: str) -> list:
+    """Get list of equivalent transaction types for deduplication."""
+    return EQUIVALENT_TRANSACTION_TYPES.get(transaction_type, [transaction_type])
+
+
 def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id: Optional[int] = None) -> str:
     """Save an investment transaction record and update holdings."""
     from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
     import hashlib
     import json
-    
+
     data = record.data
     source = data.get("source", "unknown")
     account_id_str = data.get("account_id", "default")
@@ -444,36 +749,38 @@ def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id:
     quantity = data.get("quantity")
     amount = data.get("amount")
     price_per_share = data.get("price_per_share") or data.get("price")
-    
+
     # Check for duplicate using the composite unique key fields
+    # Use equivalent transaction types to catch CDIV/DIVIDEND, INT/INTEREST duplicates
+    equivalent_types = _get_equivalent_types(transaction_type)
+
+    # Handle symbol normalization: empty string and 'UNKNOWN' should be treated as equivalent
+    symbol_variants = [symbol]
+    if symbol == "" or symbol == "UNKNOWN" or symbol is None:
+        symbol_variants = ["", "UNKNOWN"]
+
     existing = db.query(InvestmentTransaction).filter(
         InvestmentTransaction.source == source,
         InvestmentTransaction.account_id == account_id_str,
         InvestmentTransaction.transaction_date == transaction_date,
-        InvestmentTransaction.symbol == symbol,
-        InvestmentTransaction.transaction_type == transaction_type,
+        InvestmentTransaction.symbol.in_(symbol_variants),
+        InvestmentTransaction.transaction_type.in_(equivalent_types),
         InvestmentTransaction.quantity == quantity,
         InvestmentTransaction.amount == amount,
     ).first()
-    
+
     if existing:
         return "skipped"
-    
+
     # CROSS-ACCOUNT DEDUPLICATION: For sources like Robinhood where exports don't
     # include account info, also check if this transaction exists in ANY account
     # from the same source (to prevent duplicates when importing generic exports)
-    # 
-    # Handle symbol normalization: empty string and 'UNKNOWN' should be treated as equivalent
-    from sqlalchemy import or_
-    symbol_variants = [symbol]
-    if symbol == "" or symbol == "UNKNOWN":
-        symbol_variants = ["", "UNKNOWN"]
-    
+    # Note: symbol_variants already defined above with UNKNOWN/empty handling
     cross_account_existing = db.query(InvestmentTransaction).filter(
         InvestmentTransaction.source == source,
         InvestmentTransaction.transaction_date == transaction_date,
         InvestmentTransaction.symbol.in_(symbol_variants),
-        InvestmentTransaction.transaction_type == transaction_type,
+        InvestmentTransaction.transaction_type.in_(equivalent_types),  # Use equivalent types
         InvestmentTransaction.amount == amount,
     ).first()
     
@@ -849,4 +1156,48 @@ def save_portfolio_snapshot(db: Session, record: ParsedRecord, ingestion_id: Opt
     return "created"
 
 
+def save_spending_transactions(
+    db: Session,
+    records: List[ParsedRecord],
+    ingestion_id: Optional[int] = None,
+) -> Dict[str, int]:
+    """
+    Save spending transactions using simple hash-based deduplication.
+    Each record already has a unique record_hash computed by the parser.
+    """
+    from app.modules.spending.models import SpendingTransaction
+
+    created = 0
+    skipped = 0
+
+    for record in records:
+        data = record.data
+        record_hash = data.get("record_hash")
+
+        existing = db.query(SpendingTransaction.id).filter(
+            SpendingTransaction.record_hash == record_hash
+        ).first()
+
+        if existing:
+            skipped += 1
+            continue
+
+        txn = SpendingTransaction(
+            transaction_date=data["transaction_date"],
+            merchant=data.get("merchant"),
+            category=data.get("category"),
+            account=data.get("account"),
+            original_statement=data.get("original_statement"),
+            notes=data.get("notes"),
+            amount=data["amount"],
+            tags=data.get("tags"),
+            owner=data.get("owner"),
+            record_hash=record_hash,
+            ingestion_id=ingestion_id,
+        )
+        db.add(txn)
+        created += 1
+
+    db.flush()
+    return {"created": created, "updated": 0, "skipped": skipped}
 

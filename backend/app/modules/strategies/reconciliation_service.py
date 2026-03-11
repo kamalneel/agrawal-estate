@@ -89,18 +89,35 @@ class V2SnapshotAdapter:
     
     @property
     def recommendation_type(self) -> str:
-        # Map V2 actions to V1-style types
+        # Map V2/V4 actions to recommendation types for RLHF
         action = self.snapshot.recommended_action or ''
-        if action.upper() in ['ROLL', 'ROLL_OUT', 'ROLL_UP']:
+        action_upper = action.upper()
+
+        # Roll actions
+        if action_upper in ['ROLL', 'ROLL_OUT', 'ROLL_UP', 'ROLL_WEEKLY']:
             return 'roll'
-        elif action.upper() in ['CLOSE', 'CLOSE_DONT_ROLL', 'BUY_TO_CLOSE']:
+        # Close actions
+        elif action_upper in ['CLOSE', 'CLOSE_DONT_ROLL', 'BUY_TO_CLOSE']:
             return 'close'
-        elif action.upper() in ['HOLD', 'WAIT']:
+        # V4: Hold actions (position is fine, keep it)
+        elif action_upper in ['HOLD']:
             return 'hold'
-        elif action.upper() in ['MONITOR', 'WATCH']:
+        # V4: Wait actions (waiting for specific condition)
+        elif action_upper in ['WAIT', 'WAIT_FOR_PULLBACK', 'WAIT_FOR_RECOVERY', 'WAIT_FOR_DROP']:
+            return 'wait'
+        # V4: Let expire (near-worthless, let it expire)
+        elif action_upper in ['LET_EXPIRE', 'EXPIRE']:
+            return 'let_expire'
+        # V4: Compress (roll deep ITM to weekly for dual benefit)
+        elif action_upper in ['COMPRESS', 'COMPRESS_TO_WEEKLY']:
+            return 'compress'
+        # Monitor/Watch (informational)
+        elif action_upper in ['MONITOR', 'WATCH']:
             return 'monitor'
-        elif action.upper() in ['SELL', 'STO', 'SELL_TO_OPEN']:
+        # Sell actions (open new position)
+        elif action_upper in ['SELL', 'STO', 'SELL_TO_OPEN']:
             return 'sell'
+
         return action.lower() if action else 'unknown'
     
     @property
@@ -599,17 +616,26 @@ class ReconciliationService:
         """Check if recommendation action aligns with execution type."""
         if not rec_action or not exec_action:
             return True  # Unknown = assume aligned
-        
+
         rec_action = rec_action.lower()
         exec_action = exec_action.upper()
-        
+
+        # V4 action alignments
         alignments = {
             'sell': ['STO'],
-            'roll': ['STO', 'BTC'],
+            'roll': ['STO', 'BTC'],  # Roll involves closing old + opening new
             'close': ['BTC'],
             'buy_to_close': ['BTC'],
+            # V4 additions
+            'compress': ['STO', 'BTC'],  # Compress = close + open new weekly
+            'hold': [],  # Hold means no execution expected
+            'wait': [],  # Wait means no execution expected
+            'wait_for_pullback': [],
+            'wait_for_recovery': [],
+            'let_expire': ['OEXP'],  # Let expire = option expiration
+            'monitor': [],  # Monitor means no action
         }
-        
+
         return exec_action in alignments.get(rec_action, [exec_action])
     
     def _classify_match(
@@ -621,20 +647,25 @@ class ReconciliationService:
         """
         Classify the match type based on differences.
 
-        Consent: Close enough to recommendation, or followed WAIT advice
+        Consent: Close enough to recommendation, or followed WAIT/HOLD advice
         Modify: Same symbol but different parameters
         Reject: Didn't follow WAIT advice (executed when told to wait)
         """
-        # Check if this was a WAIT/HOLD recommendation
+        # Check if this was a WAIT/HOLD/LET_EXPIRE recommendation (V4 actions included)
         action_type = rec.action_type.upper() if rec.action_type else ''
-        is_wait_recommendation = action_type in ['WAIT', 'HOLD', 'MONITOR', 'WATCH']
-        
+        is_wait_recommendation = action_type in [
+            'WAIT', 'HOLD', 'MONITOR', 'WATCH',
+            # V4 additions
+            'WAIT_FOR_PULLBACK', 'WAIT_FOR_RECOVERY', 'WAIT_FOR_DROP',
+            'LET_EXPIRE', 'EXPIRE'
+        ]
+
         if is_wait_recommendation:
-            # User was told to WAIT but they executed a trade - this is REJECT
+            # User was told to WAIT/HOLD but they executed a trade - this is REJECT
             # They didn't follow the wait advice
             return MatchType.REJECT
-        
-        # For actionable recommendations (SELL, ROLL, etc.)
+
+        # For actionable recommendations (SELL, ROLL, CLOSE, COMPRESS, etc.)
         # If no significant modifications, it's consent
         if not details:
             return MatchType.CONSENT
@@ -654,19 +685,24 @@ class ReconciliationService:
     def _determine_no_execution_type(self, rec: Any) -> MatchType:
         """
         Determine if no execution means consent, reject, or no_action.
-        
-        Consent: User followed WAIT/HOLD advice by not acting
+
+        Consent: User followed WAIT/HOLD/LET_EXPIRE advice by not acting
         No action: Position resolved itself (expired worthless, hit target, etc.)
         Reject: User chose not to act on actionable recommendation
         """
-        # Check if this was a WAIT/HOLD recommendation
+        # Check if this was a WAIT/HOLD/LET_EXPIRE recommendation (V4 actions included)
         # If user was told to wait and didn't trade, they FOLLOWED the advice = CONSENT
         action_type = rec.action_type.upper() if rec.action_type else ''
-        if action_type in ['WAIT', 'HOLD', 'MONITOR', 'WATCH']:
+        if action_type in [
+            'WAIT', 'HOLD', 'MONITOR', 'WATCH',
+            # V4 additions
+            'WAIT_FOR_PULLBACK', 'WAIT_FOR_RECOVERY', 'WAIT_FOR_DROP',
+            'LET_EXPIRE', 'EXPIRE'
+        ]:
             return MatchType.CONSENT
-        
+
         # Check if this was an informational recommendation
-        if rec.recommendation_type in ['earnings_alert', 'dividend_alert', 'monitor']:
+        if rec.recommendation_type in ['earnings_alert', 'dividend_alert', 'monitor', 'let_expire']:
             return MatchType.NO_ACTION
         
         # Check if position status changed (would need to check sold_options table)

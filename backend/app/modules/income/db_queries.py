@@ -44,7 +44,7 @@ def get_options_income_summary(
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
     )
     
     # Apply filters
@@ -92,7 +92,7 @@ def get_options_income_monthly(
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
     )
 
     if year:
@@ -290,6 +290,61 @@ def get_dividend_income_by_account(
     return result
 
 
+def get_options_income_by_symbol(
+    db: Session,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    account_id: Optional[str] = None
+) -> Dict[str, float]:
+    """
+    Get total options income (STO + BTC net) grouped by underlying symbol.
+    Extracts the underlying ticker from option symbols (e.g. "TSLA 01/17/2026 450.00 C" -> "TSLA").
+    """
+    query = db.query(
+        InvestmentTransaction.symbol,
+        InvestmentTransaction.amount,
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
+        InvestmentTransaction.symbol.isnot(None),
+    )
+
+    if year:
+        query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
+    if month:
+        query = query.filter(extract('month', InvestmentTransaction.transaction_date) == month)
+    if account_id:
+        query = query.filter(InvestmentTransaction.account_id == account_id)
+
+    rows = query.all()
+
+    # Aggregate by underlying symbol
+    result: Dict[str, float] = {}
+    for row in rows:
+        if not row.symbol:
+            continue
+        underlying = _extract_underlying_symbol(row.symbol)
+        result[underlying] = result.get(underlying, 0) + float(row.amount or 0)
+
+    # Sort by value descending
+    return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
+
+
+def _extract_underlying_symbol(option_symbol: str) -> str:
+    """Extract underlying ticker from option symbol.
+    E.g. 'TSLA 01/17/2026 450.00 C' -> 'TSLA', 'AAPL' -> 'AAPL'
+    """
+    parts = option_symbol.strip().split()
+    if len(parts) >= 2 and ('/' in parts[1] or parts[-1] in ('C', 'P', 'Call', 'Put')):
+        return parts[0]
+    return option_symbol
+
+
 def get_interest_income_summary(
     db: Session,
     year: Optional[int] = None,
@@ -429,7 +484,9 @@ def get_dividend_transactions(
 
 def get_dividend_by_symbol(
     db: Session,
-    year: Optional[int] = None
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    account_id: Optional[str] = None
 ) -> Dict[str, float]:
     """
     Get total dividend income grouped by symbol.
@@ -447,12 +504,16 @@ def get_dividend_by_symbol(
         InvestmentTransaction.transaction_type.in_(['DIVIDEND', 'CDIV', 'QUAL DIV REINVEST', 'REINVEST DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND']),
         InvestmentTransaction.symbol.isnot(None),
     )
-    
+
     if year:
         query = query.filter(extract('year', InvestmentTransaction.transaction_date) == year)
-    
+    if month:
+        query = query.filter(extract('month', InvestmentTransaction.transaction_date) == month)
+    if account_id:
+        query = query.filter(InvestmentTransaction.account_id == account_id)
+
     query = query.group_by(InvestmentTransaction.symbol).order_by(func.sum(InvestmentTransaction.amount).desc())
-    
+
     return {row.symbol: float(row.total or 0) for row in query.all() if row.symbol}
 
 
@@ -583,7 +644,7 @@ def get_monthly_chart_data(
         List of {month: 'YYYY-MM', value: float, year: int, formatted: str}
     """
     type_map = {
-        'options': ['STO', 'BTC'],
+        'options': ['STO', 'BTC', 'STC', 'BTO'],
         'dividends': ['DIVIDEND', 'CDIV', 'QUAL DIV REINVEST', 'REINVEST DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
         'interest': ['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']
     }
@@ -660,7 +721,7 @@ def get_taxable_options_income(
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
         InvestmentAccount.is_active == 'Y',
         ~InvestmentAccount.account_type.in_(NON_TAXABLE_ACCOUNT_TYPES)
     )

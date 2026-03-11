@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   TrendingUp,
   RefreshCw,
@@ -12,6 +13,8 @@ import {
   ChevronRight,
   ChevronLeft,
   PiggyBank,
+  Trash2,
+  Plus,
 } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import {
@@ -22,9 +25,33 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  ComposedChart,
+  Area,
+  Line,
+  Legend,
+  ReferenceLine,
+  Cell,
 } from 'recharts'
 import styles from './Income.module.css'
 import clsx from 'clsx'
+import {
+  formatCurrency as sharedFormatCurrency,
+  formatCurrencyShort,
+  ChartTooltip as SharedChartTooltip,
+  GRID_PROPS,
+} from '../components/charts'
+import {
+  HoldingsTable,
+  symbolColumn,
+  sharesColumn,
+  priceColumn,
+  valueColumn,
+  dividendIncomeColumn,
+  optionsIncomeColumn,
+  totalIncomeColumn,
+  totalYieldColumn,
+} from '../components/HoldingsTable'
+import type { HoldingsRow, ColumnDef } from '../components/HoldingsTable'
 
 const API_BASE = '/api/v1'
 
@@ -182,12 +209,14 @@ interface WeeklyData {
   amount: number
 }
 
+interface WeekMeta {
+  key: string
+  label: string
+  range: string
+}
+
 interface SymbolWeeklyData {
-  week1: WeeklyData
-  week2: WeeklyData
-  week3: WeeklyData
-  week4: WeeklyData
-  week5: WeeklyData
+  [weekKey: string]: WeeklyData | number
   total_count: number
   total_amount: number
 }
@@ -199,20 +228,9 @@ interface WeeklyBreakdownData {
   month_total: number
   weekly_data: Record<string, SymbolWeeklyData>
   symbols: string[]
-  weekly_totals: {
-    week1: number
-    week2: number
-    week3: number
-    week4: number
-    week5: number
-  }
-  weekly_counts: {
-    week1: number
-    week2: number
-    week3: number
-    week4: number
-    week5: number
-  }
+  weeks: WeekMeta[]
+  weekly_totals: Record<string, number>
+  weekly_counts: Record<string, number>
   transaction_count: number
 }
 
@@ -238,15 +256,10 @@ interface AccountOptionsDetailData {
   transaction_count: number
 }
 
-// Helper functions
+// Helper functions — delegate to shared formatters with NaN guard
 const formatCurrency = (value: number) => {
   if (value === undefined || value === null || isNaN(value)) return '$0'
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value)
+  return sharedFormatCurrency(value)
 }
 
 const formatCurrencyPrecise = (value: number) => {
@@ -267,6 +280,16 @@ const formatDate = (dateStr: string) => {
     year: 'numeric',
   })
 }
+
+const formatFullCurrency = (value: number) => {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(value)
+}
+
+const formatYAxis = formatCurrencyShort
 
 // Format month key (e.g., "2025-11") to display format (e.g., "Nov 2025")
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -302,24 +325,8 @@ function sortAndFilterAccounts<T>(accounts: Record<string, T>): Array<[string, T
     })
 }
 
-// Custom Tooltip for Charts
-interface ChartTooltipProps {
-  active?: boolean
-  payload?: Array<{ value: number; payload: MonthlyData }>
-  label?: string
-}
-
-function ChartTooltip({ active, payload }: ChartTooltipProps) {
-  if (active && payload && payload.length) {
-    return (
-      <div className={styles.chartTooltip}>
-        <div className={styles.tooltipMonth}>{payload[0].payload.formatted}</div>
-        <div className={styles.tooltipValue}>{formatCurrency(payload[0].value)}</div>
-      </div>
-    )
-  }
-  return null
-}
+// Chart tooltip — delegates to shared component
+const ChartTooltip = () => <SharedChartTooltip labelKey="formatted" />
 
 // Income Source Card Component
 interface SourceCardProps {
@@ -512,7 +519,7 @@ function OptionsDetail({ data, chartData, onBack }: OptionsDetailProps) {
         <div className={styles.chartContainer}>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+              <CartesianGrid {...GRID_PROPS} />
               <XAxis
                 dataKey="formatted"
                 axisLine={false}
@@ -706,7 +713,7 @@ function DividendsDetail({ data, chartData, onBack }: DividendsDetailProps) {
         <div className={styles.chartContainer}>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+              <CartesianGrid {...GRID_PROPS} />
               <XAxis
                 dataKey="formatted"
                 axisLine={false}
@@ -868,7 +875,7 @@ function InterestDetail({ data, chartData, onBack }: InterestDetailProps) {
         <div className={styles.chartContainer}>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+              <CartesianGrid {...GRID_PROPS} />
               <XAxis
                 dataKey="formatted"
                 axisLine={false}
@@ -971,6 +978,21 @@ function InterestDetail({ data, chartData, onBack }: InterestDetailProps) {
   )
 }
 
+// Income holdings table columns - factory to allow dynamic headers
+function makeIncomeColumns(periodLabel?: string): ColumnDef[] {
+  const suffix = periodLabel ? ` (${periodLabel})` : ''
+  return [
+    symbolColumn(),
+    sharesColumn(),
+    priceColumn('Price (Live)'),
+    valueColumn(),
+    { ...dividendIncomeColumn(), header: `Dividends${suffix}` },
+    { ...optionsIncomeColumn(), header: `Options${suffix}` },
+    { ...totalIncomeColumn(), header: `Total Income${suffix}` },
+    totalYieldColumn(),
+  ]
+}
+
 // Account Options Detail View - Shows monthly chart and weekly breakdown
 interface AccountOptionsDetailProps {
   accountName: string
@@ -981,25 +1003,44 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
   const [loading, setLoading] = useState(true)
   const [optionsDetail, setOptionsDetail] = useState<AccountOptionsDetailData | null>(null)
   const [weeklyData, setWeeklyData] = useState<WeeklyBreakdownData | null>(null)
-  const [selectedMonth, setSelectedMonth] = useState<string>('')
-  const [selectedYear, setSelectedYear] = useState(2026)
+  const [holdingsRows, setHoldingsRows] = useState<HoldingsRow[]>([])
+  const [holdingsData, setHoldingsData] = useState<any>(null)
 
-  // Fetch options detail for this account
+  // Single unified time picker state — defaults to current month
+  const now = new Date()
+  const [filterYear, setFilterYear] = useState<number>(now.getFullYear())
+  const [filterMonth, setFilterMonth] = useState<number | null>(now.getMonth() + 1)
+  const [allTime, setAllTime] = useState(false)
+  const [incomeColumns, setIncomeColumns] = useState<ColumnDef[]>(() => {
+    const monthName = now.toLocaleString('default', { month: 'short' })
+    return makeIncomeColumns(`${monthName} ${now.getFullYear()}`)
+  })
+  // Computed: total income for the selected period (sum of holdingsRows)
+  const periodTotal = holdingsRows.reduce((sum, r) => sum + (r.totalIncome ?? 0), 0)
+
+  // Computed period label
+  const periodLabel = allTime
+    ? 'All Time'
+    : filterMonth
+      ? `${new Date(filterYear, filterMonth - 1).toLocaleString('default', { month: 'long' })} ${filterYear}`
+      : `${filterYear}`
+
+  // Fetch options detail and holdings for this account
   useEffect(() => {
     const fetchOptionsDetail = async () => {
       setLoading(true)
       try {
-        const res = await fetch(
-          `${API_BASE}/income/accounts/${encodeURIComponent(accountName)}/options`,
-          { headers: getAuthHeaders() }
-        )
-        if (res.ok) {
-          const data = await res.json()
+        const [optRes, holdRes] = await Promise.all([
+          fetch(`${API_BASE}/income/accounts/${encodeURIComponent(accountName)}/options`, { headers: getAuthHeaders() }),
+          fetch(`${API_BASE}/investments/holdings/live`, { headers: getAuthHeaders() }),
+        ])
+        if (optRes.ok) {
+          const data = await optRes.json()
           setOptionsDetail(data)
-          // Set default selected month to most recent
-          if (data.available_months && data.available_months.length > 0) {
-            setSelectedMonth(data.available_months[0])
-          }
+        }
+        if (holdRes.ok) {
+          const holdData = await holdRes.json()
+          setHoldingsData(holdData)
         }
       } catch (err) {
         console.error('Error fetching options detail:', err)
@@ -1010,27 +1051,85 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
     fetchOptionsDetail()
   }, [accountName])
 
-  // Fetch weekly breakdown when month changes
+  // Fetch filtered income data + weekly breakdown when time period changes
   useEffect(() => {
-    if (!selectedMonth) return
-    
-    const fetchWeeklyData = async () => {
-      const [year, month] = selectedMonth.split('-').map(Number)
+    if (!holdingsData) return
+
+    const fetchFilteredIncome = async () => {
       try {
+        const params = new URLSearchParams()
+        if (!allTime && filterYear) params.set('year', String(filterYear))
+        if (!allTime && filterMonth) params.set('month', String(filterMonth))
+
         const res = await fetch(
-          `${API_BASE}/income/accounts/${encodeURIComponent(accountName)}/options/weekly?year=${year}&month=${month}`,
+          `${API_BASE}/income/accounts/${encodeURIComponent(accountName)}/income-by-symbol?${params}`,
           { headers: getAuthHeaders() }
         )
-        if (res.ok) {
-          const data = await res.json()
-          setWeeklyData(data)
+        if (!res.ok) return
+        const data = await res.json()
+        const optBySymbol: Record<string, number> = data.options_by_symbol || {}
+        const divBySymbol: Record<string, number> = data.dividends_by_symbol || {}
+
+        // Build period label for column headers
+        let colLabel = 'All Time'
+        if (!allTime) {
+          if (filterMonth) {
+            const monthName = new Date(filterYear, filterMonth - 1).toLocaleString('default', { month: 'short' })
+            colLabel = `${monthName} ${filterYear}`
+          } else {
+            colLabel = String(filterYear)
+          }
+        }
+        setIncomeColumns(makeIncomeColumns(colLabel))
+
+        // Find the matching account
+        const acct = (holdingsData.accounts || []).find((a: any) => a.name === accountName)
+        if (acct) {
+          const rows: HoldingsRow[] = (acct.holdings || [])
+            .filter((h: any) => h.symbol !== 'CASH')
+            .map((h: any) => {
+              const div = divBySymbol[h.symbol] ?? 0
+              const opt = optBySymbol[h.symbol] ?? 0
+              return {
+                symbol: h.symbol,
+                shares: h.shares || 0,
+                currentPrice: h.currentPrice || 0,
+                value: (h.shares || 0) * (h.currentPrice || 0),
+                isCash: false,
+                dividendIncome: div,
+                optionsIncome: opt,
+                totalIncome: div + opt,
+              }
+            })
+          setHoldingsRows(rows)
         }
       } catch (err) {
-        console.error('Error fetching weekly data:', err)
+        console.error('Error fetching filtered income:', err)
       }
     }
-    fetchWeeklyData()
-  }, [accountName, selectedMonth])
+    fetchFilteredIncome()
+
+    // Also fetch weekly breakdown if a specific month is selected
+    if (!allTime && filterMonth) {
+      const fetchWeeklyData = async () => {
+        try {
+          const res = await fetch(
+            `${API_BASE}/income/accounts/${encodeURIComponent(accountName)}/options/weekly?year=${filterYear}&month=${filterMonth}`,
+            { headers: getAuthHeaders() }
+          )
+          if (res.ok) {
+            const data = await res.json()
+            setWeeklyData(data)
+          }
+        } catch (err) {
+          console.error('Error fetching weekly data:', err)
+        }
+      }
+      fetchWeeklyData()
+    } else {
+      setWeeklyData(null)
+    }
+  }, [accountName, holdingsData, filterYear, filterMonth, allTime])
 
   if (loading) {
     return (
@@ -1070,15 +1169,7 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
 
   // Get available years from chart data
   const years = [...new Set(chartData.map(d => d.year))].sort((a, b) => b - a)
-  const filteredChartData = chartData.filter(d => d.year === selectedYear)
-
-  // Group available months by year for the selector
-  const monthsByYear: Record<number, string[]> = {}
-  ;(optionsDetail.available_months || []).forEach(month => {
-    const year = parseInt(month.split('-')[0])
-    if (!monthsByYear[year]) monthsByYear[year] = []
-    monthsByYear[year].push(month)
-  })
+  const filteredChartData = chartData.filter(d => d.year === filterYear)
 
   return (
     <>
@@ -1099,10 +1190,50 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
           <span className={styles.detailType}>{accountName}</span>
         </div>
         <div className={styles.detailValue}>
-          <div className={styles.detailAmount}>{formatCurrency(optionsDetail.total_income)}</div>
-          <span className={styles.detailType}>All Time</span>
+          <div className={styles.detailAmount}>{formatCurrency(periodTotal)}</div>
+          <span className={styles.detailType}>{periodLabel}</span>
         </div>
       </div>
+
+      {/* Unified Time Picker — controls everything on the page */}
+      {years.length > 0 && (
+        <div style={{ marginBottom: 'var(--space-4)' }}>
+          <div className={styles.yearSelector} style={{ marginBottom: 'var(--space-3)' }}>
+            {years.map(y => (
+              <button
+                key={y}
+                className={clsx(styles.yearButton, !allTime && filterYear === y && styles.active)}
+                onClick={() => { setAllTime(false); setFilterYear(y); setFilterMonth(null) }}
+              >
+                {y}
+              </button>
+            ))}
+          </div>
+          <div className={styles.monthSelectorRow}>
+            <button
+              className={clsx(styles.monthPill, allTime && styles.active)}
+              onClick={() => { setAllTime(true); setFilterMonth(null) }}
+            >
+              All Time
+            </button>
+            <button
+              className={clsx(styles.monthPill, !allTime && filterMonth === null && styles.active)}
+              onClick={() => { setAllTime(false); setFilterMonth(null) }}
+            >
+              Full Year
+            </button>
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => (
+              <button
+                key={m}
+                className={clsx(styles.monthPill, !allTime && filterMonth === m && styles.active)}
+                onClick={() => { setAllTime(false); setFilterMonth(m) }}
+              >
+                {new Date(filterYear, m - 1).toLocaleString('default', { month: 'short' })}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Monthly Chart */}
       <section className={styles.chartSection}>
@@ -1110,25 +1241,11 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
           <h2>Monthly Options Income</h2>
         </div>
 
-        {years.length > 0 && (
-          <div className={styles.yearSelector}>
-            {years.map(year => (
-              <button
-                key={year}
-                className={clsx(styles.yearButton, selectedYear === year && styles.active)}
-                onClick={() => setSelectedYear(year)}
-              >
-                {year}
-              </button>
-            ))}
-          </div>
-        )}
-
         {filteredChartData.length > 0 ? (
           <div className={styles.chartContainer}>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={filteredChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                <CartesianGrid {...GRID_PROPS} />
                 <XAxis
                   dataKey="formatted"
                   axisLine={false}
@@ -1150,45 +1267,24 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className={styles.chartEmpty}>No options data for {selectedYear}</div>
+          <div className={styles.chartEmpty}>No options data for {filterYear}</div>
         )}
       </section>
 
-      {/* Month Selector for Weekly Breakdown */}
-      <section className={styles.accountsSection}>
-        <h2>Weekly Breakdown</h2>
-        <p style={{ color: 'var(--color-text-secondary)', marginBottom: 'var(--space-4)' }}>
-          Select a month to see weekly options income by stock symbol
-        </p>
-        
-        <div className={styles.monthSelector}>
-          {Object.entries(monthsByYear)
-            .sort(([a], [b]) => parseInt(b) - parseInt(a))
-            .map(([year, months]) => (
-              <div key={year} className={styles.monthYearGroup}>
-                <span className={styles.monthYearLabel}>{year}</span>
-                <div className={styles.monthButtons}>
-                  {months.map(month => {
-                    const monthNum = parseInt(month.split('-')[1])
-                    const monthName = new Date(2000, monthNum - 1, 1).toLocaleDateString('en-US', { month: 'short' })
-                    return (
-                      <button
-                        key={month}
-                        className={clsx(styles.monthButton, selectedMonth === month && styles.active)}
-                        onClick={() => setSelectedMonth(month)}
-                      >
-                        {monthName}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-        </div>
-      </section>
+      {/* Holdings Income Table */}
+      {holdingsRows.length > 0 && (
+        <section className={styles.transactionsSection}>
+          <h2>Income by Holding</h2>
+          <HoldingsTable
+            rows={holdingsRows}
+            columns={incomeColumns}
+            defaultSortKey="totalIncome"
+          />
+        </section>
+      )}
 
-      {/* Weekly Breakdown Table */}
-      {weeklyData && (
+      {/* Weekly Breakdown Table — only shown when a specific month is selected */}
+      {weeklyData && filterMonth && !allTime && (
         <section className={styles.transactionsSection}>
           <div className={styles.weeklyHeader}>
             <h2>{weeklyData.month_formatted}</h2>
@@ -1199,174 +1295,13 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
 
           {/* Weekly Summary Row */}
           <div className={styles.weeklySummary}>
-            <div className={styles.weekCell}>
-              <span className={styles.weekLabel}>Week 1</span>
-              <span className={styles.weekAmount}>{formatCurrency(weeklyData.weekly_totals.week1)}</span>
-              <span className={styles.weekCount}>{weeklyData.weekly_counts.week1} contracts</span>
-            </div>
-            <div className={styles.weekCell}>
-              <span className={styles.weekLabel}>Week 2</span>
-              <span className={styles.weekAmount}>{formatCurrency(weeklyData.weekly_totals.week2)}</span>
-              <span className={styles.weekCount}>{weeklyData.weekly_counts.week2} contracts</span>
-            </div>
-            <div className={styles.weekCell}>
-              <span className={styles.weekLabel}>Week 3</span>
-              <span className={styles.weekAmount}>{formatCurrency(weeklyData.weekly_totals.week3)}</span>
-              <span className={styles.weekCount}>{weeklyData.weekly_counts.week3} contracts</span>
-            </div>
-            <div className={styles.weekCell}>
-              <span className={styles.weekLabel}>Week 4</span>
-              <span className={styles.weekAmount}>{formatCurrency(weeklyData.weekly_totals.week4)}</span>
-              <span className={styles.weekCount}>{weeklyData.weekly_counts.week4} contracts</span>
-            </div>
-            {weeklyData.weekly_totals.week5 > 0 && (
-              <div className={styles.weekCell}>
-                <span className={styles.weekLabel}>Week 5</span>
-                <span className={styles.weekAmount}>{formatCurrency(weeklyData.weekly_totals.week5)}</span>
-                <span className={styles.weekCount}>{weeklyData.weekly_counts.week5} contracts</span>
+            {weeklyData.weeks.map((week, i) => (
+              <div key={week.key} className={styles.weekCell}>
+                <span className={styles.weekLabel}>Week {i + 1}</span>
+                <span className={styles.weekAmount}>{formatCurrency(weeklyData.weekly_totals[week.key] || 0)}</span>
+                <span className={styles.weekCount}>{weeklyData.weekly_counts[week.key] || 0} contracts</span>
               </div>
-            )}
-          </div>
-
-          {/* Symbol-by-Week Table */}
-          <div className={styles.tableContainer}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th className={styles.alignCenter}>Week 1<br/><span style={{ fontWeight: 400, fontSize: '10px' }}>(1-7)</span></th>
-                  <th className={styles.alignCenter}>Week 2<br/><span style={{ fontWeight: 400, fontSize: '10px' }}>(8-14)</span></th>
-                  <th className={styles.alignCenter}>Week 3<br/><span style={{ fontWeight: 400, fontSize: '10px' }}>(15-21)</span></th>
-                  <th className={styles.alignCenter}>Week 4<br/><span style={{ fontWeight: 400, fontSize: '10px' }}>(22-28)</span></th>
-                  {weeklyData.weekly_totals.week5 > 0 && (
-                    <th className={styles.alignCenter}>Week 5<br/><span style={{ fontWeight: 400, fontSize: '10px' }}>(29-31)</span></th>
-                  )}
-                  <th className={styles.alignRight}>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {weeklyData.symbols.map(symbol => {
-                  const data = weeklyData.weekly_data[symbol]
-                  return (
-                    <tr key={symbol}>
-                      <td className={styles.symbolCell}>{symbol}</td>
-                      <td className={styles.alignCenter}>
-                        {data.week1.count > 0 ? (
-                          <div className={styles.weekCellData}>
-                            <span className={styles.contractCount}>{data.week1.count}</span>
-                            <span className={clsx(styles.cellAmount, data.week1.amount >= 0 ? styles.positive : styles.negative)}>
-                              {formatCurrencyPrecise(data.week1.amount)}
-                            </span>
-                          </div>
-                        ) : '-'}
-                      </td>
-                      <td className={styles.alignCenter}>
-                        {data.week2.count > 0 ? (
-                          <div className={styles.weekCellData}>
-                            <span className={styles.contractCount}>{data.week2.count}</span>
-                            <span className={clsx(styles.cellAmount, data.week2.amount >= 0 ? styles.positive : styles.negative)}>
-                              {formatCurrencyPrecise(data.week2.amount)}
-                            </span>
-                          </div>
-                        ) : '-'}
-                      </td>
-                      <td className={styles.alignCenter}>
-                        {data.week3.count > 0 ? (
-                          <div className={styles.weekCellData}>
-                            <span className={styles.contractCount}>{data.week3.count}</span>
-                            <span className={clsx(styles.cellAmount, data.week3.amount >= 0 ? styles.positive : styles.negative)}>
-                              {formatCurrencyPrecise(data.week3.amount)}
-                            </span>
-                          </div>
-                        ) : '-'}
-                      </td>
-                      <td className={styles.alignCenter}>
-                        {data.week4.count > 0 ? (
-                          <div className={styles.weekCellData}>
-                            <span className={styles.contractCount}>{data.week4.count}</span>
-                            <span className={clsx(styles.cellAmount, data.week4.amount >= 0 ? styles.positive : styles.negative)}>
-                              {formatCurrencyPrecise(data.week4.amount)}
-                            </span>
-                          </div>
-                        ) : '-'}
-                      </td>
-                      {weeklyData.weekly_totals.week5 > 0 && (
-                        <td className={styles.alignCenter}>
-                          {data.week5.count > 0 ? (
-                            <div className={styles.weekCellData}>
-                              <span className={styles.contractCount}>{data.week5.count}</span>
-                              <span className={clsx(styles.cellAmount, data.week5.amount >= 0 ? styles.positive : styles.negative)}>
-                                {formatCurrencyPrecise(data.week5.amount)}
-                              </span>
-                            </div>
-                          ) : '-'}
-                        </td>
-                      )}
-                      <td className={styles.alignRight}>
-                        <div className={styles.weekCellData}>
-                          <span className={styles.contractCount}>{data.total_count} contracts</span>
-                          <span className={clsx(styles.cellAmount, styles.positive)} style={{ fontWeight: 600 }}>
-                            {formatCurrency(data.total_amount)}
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-              <tfoot>
-                <tr style={{ borderTop: '2px solid var(--color-border)' }}>
-                  <td style={{ fontWeight: 600 }}>TOTAL</td>
-                  <td className={styles.alignCenter}>
-                    <div className={styles.weekCellData}>
-                      <span className={styles.contractCount}>{weeklyData.weekly_counts.week1}</span>
-                      <span className={clsx(styles.cellAmount, styles.positive)} style={{ fontWeight: 600 }}>
-                        {formatCurrency(weeklyData.weekly_totals.week1)}
-                      </span>
-                    </div>
-                  </td>
-                  <td className={styles.alignCenter}>
-                    <div className={styles.weekCellData}>
-                      <span className={styles.contractCount}>{weeklyData.weekly_counts.week2}</span>
-                      <span className={clsx(styles.cellAmount, styles.positive)} style={{ fontWeight: 600 }}>
-                        {formatCurrency(weeklyData.weekly_totals.week2)}
-                      </span>
-                    </div>
-                  </td>
-                  <td className={styles.alignCenter}>
-                    <div className={styles.weekCellData}>
-                      <span className={styles.contractCount}>{weeklyData.weekly_counts.week3}</span>
-                      <span className={clsx(styles.cellAmount, styles.positive)} style={{ fontWeight: 600 }}>
-                        {formatCurrency(weeklyData.weekly_totals.week3)}
-                      </span>
-                    </div>
-                  </td>
-                  <td className={styles.alignCenter}>
-                    <div className={styles.weekCellData}>
-                      <span className={styles.contractCount}>{weeklyData.weekly_counts.week4}</span>
-                      <span className={clsx(styles.cellAmount, styles.positive)} style={{ fontWeight: 600 }}>
-                        {formatCurrency(weeklyData.weekly_totals.week4)}
-                      </span>
-                    </div>
-                  </td>
-                  {weeklyData.weekly_totals.week5 > 0 && (
-                    <td className={styles.alignCenter}>
-                      <div className={styles.weekCellData}>
-                        <span className={styles.contractCount}>{weeklyData.weekly_counts.week5}</span>
-                        <span className={clsx(styles.cellAmount, styles.positive)} style={{ fontWeight: 600 }}>
-                          {formatCurrency(weeklyData.weekly_totals.week5)}
-                        </span>
-                      </div>
-                    </td>
-                  )}
-                  <td className={styles.alignRight}>
-                    <span className={clsx(styles.cellAmount, styles.positive)} style={{ fontWeight: 700, fontSize: '16px' }}>
-                      {formatCurrency(weeklyData.month_total)}
-                    </span>
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
+            ))}
           </div>
         </section>
       )}
@@ -1505,7 +1440,7 @@ function RentalDetail({ data, chartData, onBack }: RentalDetailProps) {
           <div className={styles.chartContainer}>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                <CartesianGrid {...GRID_PROPS} />
                 <XAxis
                   dataKey="formatted"
                   axisLine={false}
@@ -1618,18 +1553,119 @@ interface AccountDetailProps {
   dividendData: DividendData | null
   interestData: InterestData | null
   onBack: () => void
-  onOptionsClick?: () => void
 }
 
-function AccountDetail({ accountName, optionsData, dividendData, interestData, onBack, onOptionsClick }: AccountDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2026)
-  const [selectedMonth, setSelectedMonth] = useState<number | null>(1) // null = Full Year, default: January 2026
+function AccountDetail({ accountName, optionsData, dividendData, interestData, onBack }: AccountDetailProps) {
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(new Date().getMonth() + 1)
+
+  // Holdings table state
+  const [holdingsRows, setHoldingsRows] = useState<HoldingsRow[]>([])
+  const [holdingsData, setHoldingsData] = useState<any>(null)
+  const [weeklyData, setWeeklyData] = useState<WeeklyBreakdownData | null>(null)
+  const [incomeColumns, setIncomeColumns] = useState<ColumnDef[]>(() => {
+    const now = new Date()
+    const monthName = now.toLocaleString('default', { month: 'short' })
+    return makeIncomeColumns(`${monthName} ${now.getFullYear()}`)
+  })
   
   // Handle year change - month selection is preserved across year changes
   const handleYearChange = (year: number) => {
     setSelectedYear(year)
   }
-  
+
+  // Fetch holdings data once
+  useEffect(() => {
+    const fetchHoldings = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/investments/holdings/live`, { headers: getAuthHeaders() })
+        if (res.ok) {
+          setHoldingsData(await res.json())
+        }
+      } catch (err) {
+        console.error('Error fetching holdings:', err)
+      }
+    }
+    fetchHoldings()
+  }, [accountName])
+
+  // Fetch income-by-symbol + weekly data when time period changes
+  useEffect(() => {
+    if (!holdingsData) return
+
+    const fetchFilteredIncome = async () => {
+      try {
+        const params = new URLSearchParams()
+        params.set('year', String(selectedYear))
+        if (selectedMonth !== null) params.set('month', String(selectedMonth))
+
+        const res = await fetch(
+          `${API_BASE}/income/accounts/${encodeURIComponent(accountName)}/income-by-symbol?${params}`,
+          { headers: getAuthHeaders() }
+        )
+        if (!res.ok) return
+        const data = await res.json()
+        const optBySymbol: Record<string, number> = data.options_by_symbol || {}
+        const divBySymbol: Record<string, number> = data.dividends_by_symbol || {}
+
+        // Build period label for column headers
+        let colLabel: string
+        if (selectedMonth !== null) {
+          const monthName = new Date(selectedYear, selectedMonth - 1).toLocaleString('default', { month: 'short' })
+          colLabel = `${monthName} ${selectedYear}`
+        } else {
+          colLabel = String(selectedYear)
+        }
+        setIncomeColumns(makeIncomeColumns(colLabel))
+
+        // Find the matching account
+        const acct = (holdingsData.accounts || []).find((a: any) => a.name === accountName)
+        if (acct) {
+          const rows: HoldingsRow[] = (acct.holdings || [])
+            .filter((h: any) => h.symbol !== 'CASH')
+            .map((h: any) => {
+              const div = divBySymbol[h.symbol] ?? 0
+              const opt = optBySymbol[h.symbol] ?? 0
+              return {
+                symbol: h.symbol,
+                shares: h.shares || 0,
+                currentPrice: h.currentPrice || 0,
+                value: (h.shares || 0) * (h.currentPrice || 0),
+                isCash: false,
+                dividendIncome: div,
+                optionsIncome: opt,
+                totalIncome: div + opt,
+              }
+            })
+          setHoldingsRows(rows)
+        }
+      } catch (err) {
+        console.error('Error fetching filtered income:', err)
+      }
+    }
+    fetchFilteredIncome()
+
+    // Fetch weekly breakdown if a specific month is selected
+    if (selectedMonth !== null) {
+      const fetchWeeklyData = async () => {
+        try {
+          const res = await fetch(
+            `${API_BASE}/income/accounts/${encodeURIComponent(accountName)}/options/weekly?year=${selectedYear}&month=${selectedMonth}`,
+            { headers: getAuthHeaders() }
+          )
+          if (res.ok) {
+            setWeeklyData(await res.json())
+          }
+        } catch (err) {
+          console.error('Error fetching weekly data:', err)
+        }
+      }
+      fetchWeeklyData()
+    } else {
+      setWeeklyData(null)
+    }
+  }, [accountName, holdingsData, selectedYear, selectedMonth])
+
   // Get account-specific data
   const accountOptions = optionsData?.by_account[accountName]
   const accountDividends = dividendData?.by_account[accountName]
@@ -1787,7 +1823,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             <div className={styles.chartContainer}>
               <ResponsiveContainer width="100%" height={250}>
                 <BarChart data={filteredOptions} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                  <CartesianGrid {...GRID_PROPS} />
                   <XAxis
                     dataKey="formatted"
                     axisLine={false}
@@ -1825,7 +1861,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             <div className={styles.chartContainer}>
               <ResponsiveContainer width="100%" height={250}>
                 <BarChart data={filteredDividends} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                  <CartesianGrid {...GRID_PROPS} />
                   <XAxis
                     dataKey="formatted"
                     axisLine={false}
@@ -1863,7 +1899,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             <div className={styles.chartContainer}>
               <ResponsiveContainer width="100%" height={250}>
                 <BarChart data={filteredInterest} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                  <CartesianGrid {...GRID_PROPS} />
                   <XAxis
                     dataKey="formatted"
                     axisLine={false}
@@ -1893,11 +1929,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
       <section className={styles.accountsSection}>
         <h2>{periodLabel} Income Breakdown</h2>
         <div className={styles.accountsGrid} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-          <button 
-            className={styles.accountCard} 
-            onClick={onOptionsClick}
-            style={{ cursor: onOptionsClick ? 'pointer' : 'default' }}
-          >
+          <div className={styles.accountCard} style={{ cursor: 'default' }}>
             <div className={styles.accountHeader}>
               <div className={styles.accountIcon} style={{ background: 'rgba(0, 214, 50, 0.15)', color: '#00D632' }}>
                 <TrendingUp size={20} />
@@ -1913,12 +1945,7 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
                 <span className={styles.accountStatValue}>{formatCurrency(yearOptionsTotal)}</span>
               </div>
             </div>
-            {onOptionsClick && (
-              <div className={styles.viewDetails}>
-                View Weekly Breakdown →
-              </div>
-            )}
-          </button>
+          </div>
 
           <div className={styles.accountCard} style={{ cursor: 'default' }}>
             <div className={styles.accountHeader}>
@@ -1957,11 +1984,229 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
           </div>
         </div>
       </section>
+
+      {/* Income by Holding Table */}
+      {holdingsRows.length > 0 && (
+        <section className={styles.transactionsSection}>
+          <h2>Income by Holding</h2>
+          <HoldingsTable
+            rows={holdingsRows}
+            columns={incomeColumns}
+            defaultSortKey="totalIncome"
+          />
+        </section>
+      )}
+
+      {/* Weekly Breakdown — only shown when a specific month is selected */}
+      {weeklyData && selectedMonth !== null && (
+        <section className={styles.transactionsSection}>
+          <div className={styles.weeklyHeader}>
+            <h2>{weeklyData.month_formatted}</h2>
+            <div className={styles.weeklyTotal}>
+              Total: <span style={{ color: '#00D632' }}>{formatCurrency(weeklyData.month_total)}</span>
+            </div>
+          </div>
+
+          <div className={styles.weeklySummary}>
+            {weeklyData.weeks.map((week, i) => (
+              <div key={week.key} className={styles.weekCell}>
+                <span className={styles.weekLabel}>Week {i + 1}</span>
+                <span className={styles.weekAmount}>{formatCurrency(weeklyData.weekly_totals[week.key] || 0)}</span>
+                <span className={styles.weekCount}>{weeklyData.weekly_counts[week.key] || 0} contracts</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   )
 }
 
 // Salary Detail Component
+// Salary Projection Config sub-component
+interface SalaryProjection {
+  id: number
+  person: string
+  monthly_net: number
+  effective_from: string
+  effective_to: string | null
+  notes: string | null
+}
+
+function SalaryProjectionConfig({ employeeName }: { employeeName: string }) {
+  const [projections, setProjections] = useState<SalaryProjection[]>([])
+  const [loading, setLoading] = useState(true)
+  const [adding, setAdding] = useState(false)
+  const [newRow, setNewRow] = useState({ monthly_net: '', effective_from: '', effective_to: '', notes: '' })
+
+  const fetchProjections = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/income/salary/projections`, { headers: getAuthHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        // Filter to this employee's projections
+        setProjections(
+          data.projections.filter((p: SalaryProjection) =>
+            p.person.toLowerCase() === employeeName.toLowerCase()
+          )
+        )
+      }
+    } catch (err) {
+      console.error('Error fetching projections:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchProjections() }, [employeeName])
+
+  const handleAdd = async () => {
+    if (!newRow.monthly_net || !newRow.effective_from) return
+    try {
+      const res = await fetch(`${API_BASE}/income/salary/projections`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          person: employeeName,
+          monthly_net: parseFloat(newRow.monthly_net),
+          effective_from: newRow.effective_from,
+          effective_to: newRow.effective_to || null,
+          notes: newRow.notes || null,
+        }),
+      })
+      if (res.ok) {
+        setNewRow({ monthly_net: '', effective_from: '', effective_to: '', notes: '' })
+        setAdding(false)
+        fetchProjections()
+      }
+    } catch (err) {
+      console.error('Error adding projection:', err)
+    }
+  }
+
+  const handleDelete = async (id: number) => {
+    try {
+      const res = await fetch(`${API_BASE}/income/salary/projections/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      })
+      if (res.ok) {
+        fetchProjections()
+      }
+    } catch (err) {
+      console.error('Error deleting projection:', err)
+    }
+  }
+
+  if (loading) return null
+
+  return (
+    <section className={styles.accountsSection}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <h2>Current Salary (BBD Projection)</h2>
+        {!adding && (
+          <button
+            className={styles.backButton}
+            style={{ fontSize: '12px', padding: '4px 12px' }}
+            onClick={() => setAdding(true)}
+          >
+            <Plus size={14} /> Add
+          </button>
+        )}
+      </div>
+      <p style={{ color: '#888', fontSize: '13px', marginBottom: '12px' }}>
+        Monthly take-home used for BBD timeline income offset projections.
+      </p>
+      <div className={styles.w2Table}>
+        <div className={styles.w2Header}>
+          <span>Monthly Take-Home</span>
+          <span>From</span>
+          <span>To</span>
+          <span>Notes</span>
+          <span></span>
+        </div>
+        {projections.length === 0 && !adding && (
+          <div style={{ padding: '16px', color: '#888', textAlign: 'center', fontSize: '13px' }}>
+            No salary projections configured. Current salary is $0 for BBD projections.
+          </div>
+        )}
+        {projections.map((p) => (
+          <div key={p.id} className={styles.w2Row}>
+            <span className={styles.w2Wages}>{formatCurrency(p.monthly_net)}/mo</span>
+            <span>{p.effective_from}</span>
+            <span>{p.effective_to || 'ongoing'}</span>
+            <span style={{ color: '#888', fontSize: '12px' }}>{p.notes || ''}</span>
+            <span>
+              <button
+                onClick={() => handleDelete(p.id)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', padding: '4px' }}
+                title="Delete"
+              >
+                <Trash2 size={14} />
+              </button>
+            </span>
+          </div>
+        ))}
+        {adding && (
+          <div className={styles.w2Row} style={{ gap: '8px' }}>
+            <span>
+              <input
+                type="number"
+                placeholder="Monthly $"
+                value={newRow.monthly_net}
+                onChange={(e) => setNewRow({ ...newRow, monthly_net: e.target.value })}
+                style={{ width: '100px', background: '#1a1a1a', border: '1px solid #333', borderRadius: '4px', color: '#fff', padding: '4px 8px', fontSize: '13px' }}
+              />
+            </span>
+            <span>
+              <input
+                type="text"
+                placeholder="2025-01"
+                value={newRow.effective_from}
+                onChange={(e) => setNewRow({ ...newRow, effective_from: e.target.value })}
+                style={{ width: '80px', background: '#1a1a1a', border: '1px solid #333', borderRadius: '4px', color: '#fff', padding: '4px 8px', fontSize: '13px' }}
+              />
+            </span>
+            <span>
+              <input
+                type="text"
+                placeholder="2025-12"
+                value={newRow.effective_to}
+                onChange={(e) => setNewRow({ ...newRow, effective_to: e.target.value })}
+                style={{ width: '80px', background: '#1a1a1a', border: '1px solid #333', borderRadius: '4px', color: '#fff', padding: '4px 8px', fontSize: '13px' }}
+              />
+            </span>
+            <span>
+              <input
+                type="text"
+                placeholder="Notes"
+                value={newRow.notes}
+                onChange={(e) => setNewRow({ ...newRow, notes: e.target.value })}
+                style={{ width: '120px', background: '#1a1a1a', border: '1px solid #333', borderRadius: '4px', color: '#fff', padding: '4px 8px', fontSize: '13px' }}
+              />
+            </span>
+            <span style={{ display: 'flex', gap: '4px' }}>
+              <button
+                onClick={handleAdd}
+                style={{ background: '#10B981', border: 'none', borderRadius: '4px', color: '#fff', padding: '4px 10px', cursor: 'pointer', fontSize: '12px' }}
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setAdding(false)}
+                style={{ background: '#333', border: 'none', borderRadius: '4px', color: '#fff', padding: '4px 10px', cursor: 'pointer', fontSize: '12px' }}
+              >
+                Cancel
+              </button>
+            </span>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+
 interface SalaryDetailProps {
   employeeName: string
   onBack: () => void
@@ -2126,6 +2371,9 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
         </div>
       </section>
 
+      {/* Salary Projections Config */}
+      <SalaryProjectionConfig employeeName={data.employee_name} />
+
       {/* Yearly Summary Chart */}
       {selectedYear === 'all' && data.yearly_summary && (
         <section className={styles.chartSection}>
@@ -2138,7 +2386,7 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
                 data={[...data.yearly_summary].reverse()}
                 margin={{ top: 20, right: 20, left: 10, bottom: 20 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                <CartesianGrid {...GRID_PROPS} />
                 <XAxis
                   dataKey="year"
                   axisLine={false}
@@ -2172,7 +2420,13 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
 
 // Main Income Component
 export function Income() {
-  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'account_options' | 'salary_detail'>('main')
+  const [searchParams] = useSearchParams()
+  const sectionParam = searchParams.get('section')
+  const yearParam = searchParams.get('year')
+
+  const initialView = (sectionParam === 'options' || sectionParam === 'dividends' || sectionParam === 'interest' || sectionParam === 'rental')
+    ? sectionParam : 'main'
+  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail'>(initialView)
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -2193,8 +2447,17 @@ export function Income() {
   const [rentalData, setRentalData] = useState<RentalData | null>(null)
   const [rentalChartData, setRentalChartData] = useState<MonthlyData[]>([])
   const [salaryData, setSalaryData] = useState<SalaryData | null>(null)
-  const [mainSelectedYear, setMainSelectedYear] = useState<number | 'all'>(2026)
-  const [mainSelectedMonth, setMainSelectedMonth] = useState<number | null>(1) // null = Full Year, 1-12 = specific month (default: January 2026)
+  const [mainSelectedYear, setMainSelectedYear] = useState<number | 'all'>(yearParam ? parseInt(yearParam) : new Date().getFullYear())
+  const [mainSelectedMonth, setMainSelectedMonth] = useState<number | null>(yearParam ? null : new Date().getMonth() + 1) // null = Full Year when coming from Tax page
+
+  // Earnings chart state
+  const [earningsSummary, setEarningsSummary] = useState<any>(null)
+  const [earningsView, setEarningsView] = useState<'all' | 'options' | 'dividends' | 'interest' | 'rental'>('all')
+  const [taxableOnly, setTaxableOnly] = useState(false)
+  // BBD metrics for options expected values (1% of portfolio/month)
+  const [optionsExpectedByMonth, setOptionsExpectedByMonth] = useState<Record<string, number>>({})
+  const [capitalByMonth, setCapitalByMonth] = useState<Record<string, number>>({})
+  const [taxableCapitalByMonth, setTaxableCapitalByMonth] = useState<Record<string, number>>({})
 
   // Current year for reference
   const currentYear = new Date().getFullYear()
@@ -2273,6 +2536,67 @@ export function Income() {
   useEffect(() => {
     fetchData()
   }, [])
+
+  const fetchEarningsSummary = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/strategies/buy-borrow-die/assumptions/summary`, {
+        headers: getAuthHeaders(),
+      })
+      if (!response.ok) throw new Error('Failed to load summary')
+      setEarningsSummary(await response.json())
+    } catch (err) {
+      console.error('Earnings summary fetch error:', err)
+    }
+  }
+
+  useEffect(() => {
+    fetchEarningsSummary()
+    // Fetch taxable (brokerage-only) capital by month
+    fetch(`${API_BASE}/strategies/buy-borrow-die/assumptions/taxable-capital`, { headers: getAuthHeaders() })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data?.months) setTaxableCapitalByMonth(data.months) })
+      .catch(err => console.error('Taxable capital fetch error:', err))
+  }, [])
+
+  // Fetch BBD monthly metrics for options expected values (1% of portfolio/month)
+  const fetchOptionsExpected = async () => {
+    try {
+      // Fetch all years by getting year-level first, then monthly for each
+      // For simplicity, fetch monthly metrics for available years
+      const yearsToFetch = mainSelectedYear === 'all'
+        ? [...new Set(optionsChartData.map(d => d.year))]
+        : [mainSelectedYear as number]
+
+      const allMetrics: Record<string, number> = {}
+      const allCapital: Record<string, number> = {}
+      for (const year of yearsToFetch) {
+        const params = new URLSearchParams({ metric_type: 'options_yield', period_type: 'month', year: String(year) })
+        const response = await fetch(`${API_BASE}/strategies/buy-borrow-die/assumptions/metrics?${params}`, {
+          headers: getAuthHeaders(),
+        })
+        if (response.ok) {
+          const data = await response.json()
+          for (const m of data.metrics || []) {
+            if (m.period_start) {
+              const monthKey = m.period_start.substring(0, 7) // "2025-01"
+              allMetrics[monthKey] = m.expected_value || 0
+              allCapital[monthKey] = m.baseline_value || 0
+            }
+          }
+        }
+      }
+      setOptionsExpectedByMonth(allMetrics)
+      setCapitalByMonth(allCapital)
+    } catch (err) {
+      console.error('Options expected fetch error:', err)
+    }
+  }
+
+  useEffect(() => {
+    if (optionsChartData.length > 0) {
+      fetchOptionsExpected()
+    }
+  }, [mainSelectedYear, optionsChartData.length])
 
   // Calculate available years from all data sources
   const salaryYears = salaryData?.employees?.flatMap(emp => 
@@ -2354,10 +2678,171 @@ export function Income() {
 
   const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal
 
-  // Filter chart data by selected year and month
-  const mainFilteredOptionsChart = filterChartData(optionsChartData)
-  const mainFilteredDividendChart = filterChartData(dividendChartData)
-  const mainFilteredInterestChart = filterChartData(interestChartData)
+  // Convert rental chart data from gross to net using per-year expense ratios
+  const rentalNetChartData: MonthlyData[] = (() => {
+    if (!rentalData?.properties) return rentalChartData // fallback to gross if no property data
+    // Build year → expense ratio map (sum across all properties per year)
+    const yearTotals: Record<number, { gross: number; expenses: number }> = {}
+    for (const p of rentalData.properties) {
+      if (!yearTotals[p.year]) yearTotals[p.year] = { gross: 0, expenses: 0 }
+      yearTotals[p.year].gross += p.gross_income
+      yearTotals[p.year].expenses += p.total_expenses
+    }
+    return rentalChartData.map(d => {
+      const t = yearTotals[d.year]
+      const ratio = t && t.gross > 0 ? t.expenses / t.gross : 0
+      return { ...d, value: d.value * (1 - ratio) }
+    })
+  })()
+
+  const mainFilteredRentalChart = filterChartData(rentalNetChartData)
+
+  // Build chart data from by_account, filtered to taxable (individual/brokerage) accounts only
+  const NON_TAXABLE_TYPES = new Set(['retirement', 'ira', 'roth_ira', 'traditional_ira', '401k', 'hsa'])
+  const buildTaxableChart = (byAccount: Record<string, any> | undefined): MonthlyData[] => {
+    if (!byAccount) return []
+    const monthTotals: Record<string, number> = {}
+    for (const accountData of Object.values(byAccount)) {
+      if (NON_TAXABLE_TYPES.has(accountData.account_type)) continue
+      for (const [month, amount] of Object.entries(accountData.monthly || {})) {
+        monthTotals[month] = (monthTotals[month] || 0) + (amount as number)
+      }
+    }
+    return Object.entries(monthTotals)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, value]) => {
+        const [y, m] = month.split('-')
+        const d = new Date(parseInt(y), parseInt(m) - 1)
+        return { month, formatted: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }), value, year: parseInt(y) }
+      })
+  }
+
+  // Effective chart data: taxable-filtered or full
+  const effectiveOptionsChart = taxableOnly ? buildTaxableChart(optionsData?.by_account) : optionsChartData
+  const effectiveDividendChart = taxableOnly ? buildTaxableChart(dividendData?.by_account) : dividendChartData
+  const effectiveInterestChart = taxableOnly ? buildTaxableChart(interestData?.by_account) : interestChartData
+  // Rental and salary are always taxable — no filtering needed
+
+  // Year-only filtered chart data (for the earnings chart — always shows full year)
+  const filterChartDataYearOnly = (data: MonthlyData[]) => {
+    if (mainSelectedYear === 'all') return data
+    return data.filter(d => d.year === mainSelectedYear)
+  }
+  const yearFilteredOptionsChart = filterChartDataYearOnly(effectiveOptionsChart)
+  const yearFilteredDividendChart = filterChartDataYearOnly(effectiveDividendChart)
+  const yearFilteredInterestChart = filterChartDataYearOnly(effectiveInterestChart)
+  const yearFilteredRentalChart = filterChartDataYearOnly(rentalNetChartData)
+
+  // The selected month key for highlighting (e.g. "2026-02")
+  const highlightedMonthKey = mainSelectedMonth !== null && mainSelectedYear !== 'all'
+    ? `${mainSelectedYear}-${String(mainSelectedMonth).padStart(2, '0')}`
+    : null
+
+  // Expected monthly baselines
+  // Options: 1% of portfolio value per month (from BBD assumptions API)
+  // Others: trailing average from all historical data
+  const getExpectedOptions = (monthKey: string) => optionsExpectedByMonth[monthKey] || 0
+  const expectedMonthlyDividends = effectiveDividendChart.length > 0
+    ? effectiveDividendChart.reduce((s, d) => s + d.value, 0) / effectiveDividendChart.length : 0
+  const expectedMonthlyInterest = effectiveInterestChart.length > 0
+    ? effectiveInterestChart.reduce((s, d) => s + d.value, 0) / effectiveInterestChart.length : 0
+  const expectedMonthlyRental = rentalNetChartData.length > 0
+    ? rentalNetChartData.reduce((s, d) => s + d.value, 0) / rentalNetChartData.length : 0
+
+  // Combined income data (year-only filter for chart)
+  const combinedIncomeData = (() => {
+    const monthMap: Record<string, { month: string; formatted: string; year: number; options: number; dividends: number; interest: number; rental: number; salary: number }> = {}
+
+    const addData = (data: MonthlyData[], key: string) => {
+      for (const d of data) {
+        if (!monthMap[d.month]) {
+          monthMap[d.month] = { month: d.month, formatted: d.formatted, year: d.year, options: 0, dividends: 0, interest: 0, rental: 0, salary: 0 }
+        }
+        ;(monthMap[d.month] as any)[key] += d.value
+      }
+    }
+
+    addData(yearFilteredOptionsChart, 'options')
+    addData(yearFilteredDividendChart, 'dividends')
+    addData(yearFilteredInterestChart, 'interest')
+    addData(yearFilteredRentalChart, 'rental')
+
+    // Add prorated monthly salary
+    for (const entry of Object.values(monthMap)) {
+      if (salaryData?.employees) {
+        entry.salary = salaryData.employees.reduce((total: number, emp: any) => {
+          const yearData = emp.yearly_data.find((y: any) => y.year === entry.year)
+          return total + ((yearData?.gross || 0) / 12)
+        }, 0)
+      }
+    }
+
+    return Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month))
+  })()
+
+  // Build chart data with actual + expected lines per view (always full year)
+  const earningsChartData = (() => {
+    const addHighlight = (d: any) => ({ ...d, highlighted: d.month === highlightedMonthKey })
+
+    switch (earningsView) {
+      case 'options':
+        return yearFilteredOptionsChart.map(d => {
+          const expOpt = taxableOnly
+            ? (taxableCapitalByMonth[d.month] || 0) * 0.01
+            : getExpectedOptions(d.month)
+          return addHighlight({ ...d, actual: d.value, expected: expOpt })
+        })
+      case 'dividends':
+        return yearFilteredDividendChart.map(d => addHighlight({ ...d, actual: d.value, expected: expectedMonthlyDividends }))
+      case 'interest':
+        return yearFilteredInterestChart.map(d => addHighlight({ ...d, actual: d.value, expected: expectedMonthlyInterest }))
+      case 'rental':
+        return yearFilteredRentalChart.map(d => addHighlight({ ...d, actual: d.value, expected: expectedMonthlyRental }))
+      case 'all':
+      default: {
+        return combinedIncomeData.map(d => {
+          const cap = taxableOnly
+            ? (taxableCapitalByMonth[d.month] || 0)
+            : (capitalByMonth[d.month] || 0)
+          const expOpt = taxableOnly
+            ? cap * 0.01  // 1% of taxable capital
+            : getExpectedOptions(d.month)
+          const expectedAll = expOpt + expectedMonthlyDividends + expectedMonthlyInterest + expectedMonthlyRental
+          return addHighlight({
+            ...d,
+            actual: d.options + d.dividends + d.interest + d.rental + d.salary,
+            expected: expectedAll + d.salary,
+            capital: cap,
+            expOptions: expOpt,
+            expDividends: expectedMonthlyDividends,
+            expInterest: expectedMonthlyInterest,
+            expRental: expectedMonthlyRental,
+            expSalary: d.salary,
+          })
+        })
+      }
+    }
+  })().filter(d => {
+    // For current year, only show months up through the current month
+    if (mainSelectedYear === currentYear && mainSelectedYear !== 'all') {
+      const now = new Date()
+      const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      return d.month <= currentMonthKey
+    }
+    return true
+  })
+
+  // Determine which income categories have non-zero data for dynamic column visibility
+  const earningsVisibleCols = earningsView === 'all' && earningsChartData.length > 0 ? {
+    options: earningsChartData.some((d: any) => (d.expOptions || 0) > 0 || (d.options || 0) > 0),
+    dividends: earningsChartData.some((d: any) => (d.expDividends || 0) > 0 || (d.dividends || 0) > 0),
+    interest: earningsChartData.some((d: any) => (d.expInterest || 0) > 0 || (d.interest || 0) > 0),
+    rental: earningsChartData.some((d: any) => (d.expRental || 0) > 0 || (d.rental || 0) > 0),
+    salary: earningsChartData.some((d: any) => (d.expSalary || 0) > 0 || (d.salary || 0) > 0),
+  } : null
+  const earningsGroupColSpan = earningsVisibleCols
+    ? Object.values(earningsVisibleCols).filter(Boolean).length + 1  // +1 for Total
+    : 0
 
   // Calculate year/month-filtered account totals
   const getYearFilteredAccountData = () => {
@@ -2660,19 +3145,6 @@ export function Income() {
             setView('main')
             setSelectedAccount(null)
           }}
-          onOptionsClick={() => setView('account_options')}
-        />
-      </div>
-    )
-  }
-
-  // Account Options detail view
-  if (view === 'account_options' && selectedAccount) {
-    return (
-      <div className={styles.page}>
-        <AccountOptionsDetail
-          accountName={selectedAccount}
-          onBack={() => setView('account')}
         />
       </div>
     )
@@ -2713,43 +3185,8 @@ export function Income() {
             Across {summary?.accounts.length || 0} investment accounts
           </div>
 
-          <div className={styles.heroBreakdown}>
-            <div className={styles.heroStat}>
-              <span className={styles.heroStatLabel}>Options</span>
-              <span className={styles.heroStatValue}>
-                {formatCurrency(filteredOptionsTotal)}
-              </span>
-            </div>
-            <div className={styles.heroStat}>
-              <span className={styles.heroStatLabel}>Dividends</span>
-              <span className={styles.heroStatValue}>
-                {formatCurrency(filteredDividendTotal)}
-              </span>
-            </div>
-            <div className={styles.heroStat}>
-              <span className={styles.heroStatLabel}>Interest</span>
-              <span className={styles.heroStatValue}>
-                {formatCurrency(filteredInterestTotal)}
-              </span>
-            </div>
-            <div className={styles.heroStat}>
-              <span className={styles.heroStatLabel}>Rental</span>
-              <span className={styles.heroStatValue}>
-                {formatCurrency(filteredRentalTotal)}
-              </span>
-            </div>
-            {computedSalaryTotal > 0 && (
-              <div className={styles.heroStat}>
-                <span className={styles.heroStatLabel}>Salary</span>
-                <span className={styles.heroStatValue}>
-                  {formatCurrency(computedSalaryTotal)}
-                </span>
-              </div>
-            )}
-          </div>
-
           {/* Year Selector */}
-          <div className={styles.yearSelector} style={{ marginTop: 'var(--space-4)' }}>
+          <div className={styles.yearSelector} style={{ marginTop: 'var(--space-6)' }}>
             <button
               className={clsx(styles.yearButton, mainSelectedYear === 'all' && styles.active)}
               onClick={() => handleYearChange('all')}
@@ -2788,9 +3225,279 @@ export function Income() {
             </div>
           )}
         </div>
-        <button onClick={fetchData} className={styles.heroRefresh} title="Refresh data">
-          <RefreshCw size={20} />
-        </button>
+        <div className={styles.heroRight}>
+          <button onClick={fetchData} className={styles.heroRefresh} title="Refresh data">
+            <RefreshCw size={20} />
+          </button>
+          {earningsSummary && (() => {
+            const s = earningsSummary
+            const allEarningsYears = s ? Object.keys(s.annual_earnings || {}).sort() : []
+            const years = mainSelectedYear === 'all'
+              ? allEarningsYears
+              : allEarningsYears.filter(yr => yr === String(mainSelectedYear))
+            const fmtPct = (pct: number | null) =>
+              pct !== null && pct !== undefined ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : 'N/A'
+
+            return (
+              <div className={styles.heroEarningsCards}>
+                <div className={`${styles.heroEarningsCard} ${s.avg_monthly_earnings_pct !== null && s.avg_monthly_earnings_pct >= s.expected_monthly_earnings_pct ? styles.earningsSuccess : styles.earningsDanger}`}>
+                  <span className={styles.heroEarningsLabel}>Avg Monthly</span>
+                  <div className={styles.heroEarningsRight}>
+                    <span className={styles.heroEarningsValue}>{fmtPct(s.avg_monthly_earnings_pct)}</span>
+                    <span className={styles.heroEarningsNote}>{s.avg_monthly_earnings_amt !== null ? formatFullCurrency(s.avg_monthly_earnings_amt) : ''}/mo</span>
+                  </div>
+                </div>
+                <div className={`${styles.heroEarningsCard} ${s.cumulative_earnings_pct !== null && s.cumulative_earnings_pct >= 0 ? styles.earningsSuccess : styles.earningsDanger}`}>
+                  <span className={styles.heroEarningsLabel}>Cumulative</span>
+                  <div className={styles.heroEarningsRight}>
+                    <span className={styles.heroEarningsValue}>{fmtPct(s.cumulative_earnings_pct)}</span>
+                    <span className={styles.heroEarningsNote}>{s.cumulative_earnings_amt !== null ? formatFullCurrency(s.cumulative_earnings_amt) : ''}</span>
+                  </div>
+                </div>
+                {years.map(yr => {
+                  const e = s.annual_earnings?.[yr]
+                  return (
+                    <div key={`earn-${yr}`} className={`${styles.heroEarningsCard} ${e?.percent !== null && e?.percent !== undefined && e?.percent >= s.expected_annual_earnings_pct ? styles.earningsSuccess : styles.earningsDanger}`}>
+                      <span className={styles.heroEarningsLabel}>{yr} Earnings</span>
+                      <div className={styles.heroEarningsRight}>
+                        <span className={styles.heroEarningsValue}>{fmtPct(e?.percent)}</span>
+                        <span className={styles.heroEarningsNote}>{e?.amount !== null && e?.amount !== undefined ? formatFullCurrency(e.amount) : ''}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
+        </div>
+      </section>
+
+      {/* Earnings — Actual vs Expected */}
+      <section className={styles.earningsSection}>
+        <div className={styles.earningsChartCard}>
+          {/* Header with toggle */}
+          <div className={styles.earningsHeader}>
+            <div>
+              <h3 className={styles.earningsChartTitle}>
+                {taxableOnly ? 'Taxable ' : ''}
+                {earningsView === 'all' ? 'All Income' :
+                 earningsView === 'options' ? 'Options Income' :
+                 earningsView === 'dividends' ? 'Dividend Income' :
+                 earningsView === 'interest' ? 'Interest Income' : 'Rental Income'}
+                {' '}— Actual vs Expected
+              </h3>
+              <p className={styles.earningsChartSubtitle}>
+                {earningsView === 'all'
+                  ? `Combined monthly ${taxableOnly ? 'taxable ' : ''}income vs trailing average baseline`
+                  : `Monthly ${earningsView} ${taxableOnly ? 'taxable ' : ''}income vs trailing average baseline`}
+              </p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
+              <div className={styles.tabs} style={{ marginBottom: 0 }}>
+                {([
+                  ['all', 'All'],
+                  ['options', 'Options'],
+                  ['dividends', 'Dividends'],
+                  ['interest', 'Interest'],
+                  ['rental', 'Rental'],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    className={clsx(styles.tab, earningsView === key && styles.active)}
+                    onClick={() => setEarningsView(key as any)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className={styles.taxableToggle}>
+                <button
+                  className={clsx(styles.toggleBtn, !taxableOnly && styles.toggleActive)}
+                  onClick={() => setTaxableOnly(false)}
+                >
+                  All Income
+                </button>
+                <button
+                  className={clsx(styles.toggleBtn, taxableOnly && styles.toggleActive)}
+                  onClick={() => setTaxableOnly(true)}
+                >
+                  Taxable Only
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Unified line chart — Actual vs Expected */}
+          <div className={styles.earningsChartContainer}>
+            {earningsChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={350}>
+                <ComposedChart data={earningsChartData} margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
+                  <CartesianGrid {...GRID_PROPS} />
+                  <XAxis dataKey="formatted" stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} tickFormatter={formatYAxis} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    formatter={(value: number, name: string) => [formatFullCurrency(value), name]}
+                    contentStyle={{ background: '#1A1A1A', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px' }}
+                  />
+                  <Legend />
+                  {/* Highlight the selected month with a vertical band */}
+                  {highlightedMonthKey && (() => {
+                    const idx = earningsChartData.findIndex((d: any) => d.month === highlightedMonthKey)
+                    if (idx >= 0) {
+                      const label = earningsChartData[idx].formatted
+                      return <ReferenceLine x={label} stroke="#00D632" strokeWidth={2} strokeOpacity={0.4} />
+                    }
+                    return null
+                  })()}
+                  <Area type="monotone" dataKey="actual" name="Actual" fill="rgba(0, 214, 50, 0.15)" stroke="#00D632" strokeWidth={2}
+                    dot={(props: any) => {
+                      const { cx, cy, payload } = props
+                      if (payload?.highlighted) {
+                        return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={6} fill="#00D632" stroke="#0D0D0D" strokeWidth={2} />
+                      }
+                      return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={3} fill="#00D632" fillOpacity={0.6} />
+                    }}
+                  />
+                  <Line type="monotone" dataKey="expected" name="Expected" stroke="#FFB800" strokeWidth={2} strokeDasharray="8 4" dot={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className={styles.chartEmpty}>No income data for the selected period.</div>
+            )}
+          </div>
+
+          {/* Data Table */}
+          {earningsChartData.length > 0 && (
+            <div className={styles.earningsTableContainer} style={{ marginTop: 'var(--space-4)' }}>
+              <table className={styles.earningsTable}>
+                <thead>
+                  {earningsView === 'all' && earningsVisibleCols ? (
+                    <>
+                      <tr className={styles.earningsGroupHeader}>
+                        <th rowSpan={2}>Period</th>
+                        <th rowSpan={2}>Total Capital</th>
+                        <th colSpan={earningsGroupColSpan}>Expected</th>
+                        <th colSpan={earningsGroupColSpan}>Actual</th>
+                        <th rowSpan={2}>Variance</th>
+                      </tr>
+                      <tr>
+                        {earningsVisibleCols.options && <th className={styles.earningsHighlightCol}>Options</th>}
+                        {earningsVisibleCols.dividends && <th>Dividends</th>}
+                        {earningsVisibleCols.interest && <th>Interest</th>}
+                        {earningsVisibleCols.rental && <th>Rental</th>}
+                        {earningsVisibleCols.salary && <th>Salary</th>}
+                        <th>Total</th>
+                        {earningsVisibleCols.options && <th className={styles.earningsHighlightCol}>Options</th>}
+                        {earningsVisibleCols.dividends && <th>Dividends</th>}
+                        {earningsVisibleCols.interest && <th>Interest</th>}
+                        {earningsVisibleCols.rental && <th>Rental</th>}
+                        {earningsVisibleCols.salary && <th>Salary</th>}
+                        <th>Total</th>
+                      </tr>
+                    </>
+                  ) : (
+                    <tr>
+                      <th>Period</th>
+                      <th>Expected</th>
+                      <th>Actual</th>
+                      <th>Variance</th>
+                    </tr>
+                  )}
+                </thead>
+                <tbody>
+                  {earningsChartData.map((d: any, idx: number) => {
+                    const variance = d.actual - d.expected
+                    return (
+                      <tr
+                        key={idx}
+                        className={clsx(
+                          variance >= 0 ? styles.earningsPositiveRow : styles.earningsNegativeRow,
+                          d.highlighted && styles.earningsHighlightedRow
+                        )}
+                      >
+                        <td><strong>{d.formatted}</strong></td>
+                        {earningsView === 'all' && earningsVisibleCols ? (
+                          <>
+                            <td>{d.capital > 0 ? formatFullCurrency(d.capital) : '-'}</td>
+                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}>{formatFullCurrency(d.expOptions)}</td>}
+                            {earningsVisibleCols.dividends && <td>{formatFullCurrency(d.expDividends)}</td>}
+                            {earningsVisibleCols.interest && <td>{formatFullCurrency(d.expInterest)}</td>}
+                            {earningsVisibleCols.rental && <td>{formatFullCurrency(d.expRental)}</td>}
+                            {earningsVisibleCols.salary && <td>{formatFullCurrency(d.expSalary)}</td>}
+                            <td><strong>{formatFullCurrency(d.expected)}</strong></td>
+                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}>{formatFullCurrency(d.options)}</td>}
+                            {earningsVisibleCols.dividends && <td>{formatFullCurrency(d.dividends)}</td>}
+                            {earningsVisibleCols.interest && <td>{formatFullCurrency(d.interest)}</td>}
+                            {earningsVisibleCols.rental && <td>{formatFullCurrency(d.rental)}</td>}
+                            {earningsVisibleCols.salary && <td>{formatFullCurrency(d.salary)}</td>}
+                            <td><strong>{formatFullCurrency(d.actual)}</strong></td>
+                          </>
+                        ) : (
+                          <>
+                            <td>{formatFullCurrency(d.expected)}</td>
+                            <td>{formatFullCurrency(d.actual)}</td>
+                          </>
+                        )}
+                        <td className={variance >= 0 ? styles.positive : styles.negative}>
+                          {variance >= 0 ? '+' : ''}{formatFullCurrency(variance)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {/* Smart totals row */}
+                  {earningsChartData.length > 1 && (() => {
+                    const totals = earningsChartData.reduce((acc: any, d: any) => ({
+                      expOptions: acc.expOptions + (d.expOptions || 0),
+                      expDividends: acc.expDividends + (d.expDividends || 0),
+                      expInterest: acc.expInterest + (d.expInterest || 0),
+                      expRental: acc.expRental + (d.expRental || 0),
+                      expSalary: acc.expSalary + (d.expSalary || 0),
+                      expected: acc.expected + (d.expected || 0),
+                      options: acc.options + (d.options || 0),
+                      dividends: acc.dividends + (d.dividends || 0),
+                      interest: acc.interest + (d.interest || 0),
+                      rental: acc.rental + (d.rental || 0),
+                      salary: acc.salary + (d.salary || 0),
+                      actual: acc.actual + (d.actual || 0),
+                    }), { expOptions: 0, expDividends: 0, expInterest: 0, expRental: 0, expSalary: 0, expected: 0, options: 0, dividends: 0, interest: 0, rental: 0, salary: 0, actual: 0 })
+                    const lastCapital = earningsChartData[earningsChartData.length - 1]?.capital || 0
+                    const totalVariance = totals.actual - totals.expected
+                    return (
+                      <tr className={styles.earningsTotalRow}>
+                        <td><strong>Total</strong></td>
+                        {earningsView === 'all' && earningsVisibleCols ? (
+                          <>
+                            <td>{lastCapital > 0 ? formatFullCurrency(lastCapital) : '-'}</td>
+                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}><strong>{formatFullCurrency(totals.expOptions)}</strong></td>}
+                            {earningsVisibleCols.dividends && <td><strong>{formatFullCurrency(totals.expDividends)}</strong></td>}
+                            {earningsVisibleCols.interest && <td><strong>{formatFullCurrency(totals.expInterest)}</strong></td>}
+                            {earningsVisibleCols.rental && <td><strong>{formatFullCurrency(totals.expRental)}</strong></td>}
+                            {earningsVisibleCols.salary && <td><strong>{formatFullCurrency(totals.expSalary)}</strong></td>}
+                            <td><strong>{formatFullCurrency(totals.expected)}</strong></td>
+                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}><strong>{formatFullCurrency(totals.options)}</strong></td>}
+                            {earningsVisibleCols.dividends && <td><strong>{formatFullCurrency(totals.dividends)}</strong></td>}
+                            {earningsVisibleCols.interest && <td><strong>{formatFullCurrency(totals.interest)}</strong></td>}
+                            {earningsVisibleCols.rental && <td><strong>{formatFullCurrency(totals.rental)}</strong></td>}
+                            {earningsVisibleCols.salary && <td><strong>{formatFullCurrency(totals.salary)}</strong></td>}
+                            <td><strong>{formatFullCurrency(totals.actual)}</strong></td>
+                          </>
+                        ) : (
+                          <>
+                            <td><strong>{formatFullCurrency(totals.expected)}</strong></td>
+                            <td><strong>{formatFullCurrency(totals.actual)}</strong></td>
+                          </>
+                        )}
+                        <td className={totalVariance >= 0 ? styles.positive : styles.negative}>
+                          <strong>{totalVariance >= 0 ? '+' : ''}{formatFullCurrency(totalVariance)}</strong>
+                        </td>
+                      </tr>
+                    )
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Income Sources */}
@@ -2822,156 +3529,6 @@ export function Income() {
           ))}
         </div>
       </section>
-
-      {/* Charts Side by Side */}
-      <div className={styles.chartsGrid}>
-        {/* Options Chart */}
-        <section className={styles.chartSection}>
-          <div className={styles.chartHeader}>
-            <h2>Options Income</h2>
-            <div className={styles.chartTotal}>
-              {formatCurrency(filteredOptionsTotal)}
-            </div>
-          </div>
-
-          {mainFilteredOptionsChart.length > 0 ? (
-            <div className={styles.chartContainer}>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart
-                  data={mainFilteredOptionsChart}
-                  margin={{ top: 20, right: 20, left: 10, bottom: 20 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis
-                    dataKey="formatted"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    dy={10}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    tickFormatter={(v) => `$${(v / 1000).toFixed(0)}K`}
-                    width={50}
-                  />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="value" fill="#00D632" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className={styles.chartEmpty}>No options data available</div>
-          )}
-
-          <button
-            className={styles.backButton}
-            style={{ marginTop: 'var(--space-4)', marginBottom: 0 }}
-            onClick={() => setView('options')}
-          >
-            View Details <ChevronRight size={16} />
-          </button>
-        </section>
-
-        {/* Dividends Chart */}
-        <section className={styles.chartSection}>
-          <div className={styles.chartHeader}>
-            <h2>Dividend Income</h2>
-            <div className={styles.chartTotal} style={{ color: '#00A3FF' }}>
-              {formatCurrency(filteredDividendTotal)}
-            </div>
-          </div>
-
-          {mainFilteredDividendChart.length > 0 ? (
-            <div className={styles.chartContainer}>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart
-                  data={mainFilteredDividendChart}
-                  margin={{ top: 20, right: 20, left: 10, bottom: 20 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis
-                    dataKey="formatted"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    dy={10}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    tickFormatter={(v) => `$${v.toFixed(0)}`}
-                    width={50}
-                  />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="value" fill="#00A3FF" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className={styles.chartEmpty}>No dividend data available</div>
-          )}
-
-          <button
-            className={styles.backButton}
-            style={{ marginTop: 'var(--space-4)', marginBottom: 0 }}
-            onClick={() => setView('dividends')}
-          >
-            View Details <ChevronRight size={16} />
-          </button>
-        </section>
-
-        {/* Interest Chart */}
-        <section className={styles.chartSection}>
-          <div className={styles.chartHeader}>
-            <h2>Interest Income</h2>
-            <div className={styles.chartTotal} style={{ color: '#FFB800' }}>
-              {formatCurrency(filteredInterestTotal)}
-            </div>
-          </div>
-
-          {mainFilteredInterestChart.length > 0 ? (
-            <div className={styles.chartContainer}>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart
-                  data={mainFilteredInterestChart}
-                  margin={{ top: 20, right: 20, left: 10, bottom: 20 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis
-                    dataKey="formatted"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    dy={10}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    tickFormatter={(v) => `$${v.toFixed(0)}`}
-                    width={50}
-                  />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="value" fill="#FFB800" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className={styles.chartEmpty}>No interest data available</div>
-          )}
-
-          <button
-            className={styles.backButton}
-            style={{ marginTop: 'var(--space-4)', marginBottom: 0 }}
-            onClick={() => setView('interest')}
-          >
-            View Details <ChevronRight size={16} />
-          </button>
-        </section>
-      </div>
 
       {/* Account Breakdown */}
       {filteredAccounts.length > 0 && (

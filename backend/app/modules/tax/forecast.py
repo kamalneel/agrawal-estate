@@ -23,7 +23,7 @@ from datetime import date
 import json
 
 from app.modules.tax.models import IncomeTaxReturn, EstimatedTaxPayment
-from app.modules.income.models import W2Record, RetirementContribution
+from app.modules.income.models import W2Record, RetirementContribution, TaxDependent
 from app.modules.income import db_queries
 from app.modules.income.salary_service import get_salary_service
 from app.modules.income.rental_service import get_rental_service
@@ -478,30 +478,56 @@ def calculate_tax_forecast(
     
     # Calculate AGI
     agi = _calculate_agi(forecast_income)
-    
+
     # Get deductions from base year
     deductions = base_details.get("deductions", {})
-    
-    # Calculate taxable income
-    taxable_income = _calculate_taxable_income(agi, deductions, forecast_year)
-    
-    # Calculate federal tax
+
+    # Calculate rental net income for QBI deduction
+    rental_income = forecast_income.get("rental_income", 0)
+    rental_depreciation = forecast_income.get("rental_depreciation", 0)
+    rental_net_income = max(0, rental_income - rental_depreciation)
+
+    # Calculate taxable income (with QBI deduction)
+    taxable_income, qbi_deduction = _calculate_taxable_income(
+        agi, deductions, forecast_year, rental_net_income=rental_net_income
+    )
+
+    # Calculate federal tax with preferential rates for qualified dividends + LTCG
     filing_status = base_return.filing_status or "MFJ"
-    federal_tax = _calculate_federal_tax(taxable_income, filing_status, forecast_year)
+    cap_gains = forecast_income.get("capital_gains", {})
+    # Qualified dividends: assume all dividends are qualified (typical for equity holdings)
+    qualified_dividends = forecast_income.get("dividend_income", 0)
+    long_term_gains = cap_gains.get("net_long_term", 0)
+    preferential_income = max(0, qualified_dividends + long_term_gains)
+    # Preferential income can't exceed taxable income
+    preferential_income = min(preferential_income, taxable_income)
+    federal_tax = _calculate_federal_tax(
+        taxable_income, filing_status, forecast_year,
+        preferential_income=preferential_income
+    )
     
+    # Calculate tax credits (Child Tax Credit, etc.)
+    credits = _calculate_credits(db, forecast_year, federal_tax)
+
+    # Subtract credits from federal tax (non-refundable, capped at tax liability)
+    federal_tax_after_credits = max(0, federal_tax - credits["total_credits"])
+
     # Calculate state tax (assuming California)
-    state_tax = _calculate_ca_state_tax(taxable_income, filing_status, forecast_year)
-    
+    # CA uses its own standard deduction (much lower than federal)
+    ca_taxable_income = _calculate_ca_taxable_income(agi, deductions, forecast_year)
+    state_tax = _calculate_ca_state_tax(ca_taxable_income, filing_status, forecast_year)
+
     # Calculate other taxes (payroll, NIIT, etc.)
     other_taxes = _calculate_other_taxes(forecast_income, agi, base_details)
-    
-    # Calculate effective rate
-    total_tax = federal_tax + state_tax + other_taxes
+
+    # Calculate effective rate (use federal tax after credits)
+    total_tax = federal_tax_after_credits + state_tax + other_taxes
     effective_rate = (total_tax / agi * 100) if agi > 0 else 0
-    
+
     # Build details JSON similar to base year
     forecast_details = _build_forecast_details(
-        forecast_income, deductions, base_details, forecast_year
+        forecast_income, deductions, base_details, forecast_year,
+        qbi_deduction=qbi_deduction, credits=credits
     )
     
     # Calculate quarterly payment schedule for estimated taxes
@@ -516,7 +542,7 @@ def calculate_tax_forecast(
     monthly_income = forecast_income.get("monthly_income", {})
     payment_schedule = _calculate_quarterly_payments(
         total_tax=total_tax,
-        federal_tax=federal_tax,
+        federal_tax=federal_tax_after_credits,
         state_tax=state_tax,
         w2_withheld=w2_withheld,
         federal_withheld=federal_withheld,
@@ -525,16 +551,16 @@ def calculate_tax_forecast(
         year=forecast_year,
         estimated_payments=estimated_payments
     )
-    
+
     # Calculate safe harbor amounts (to avoid underpayment penalties)
     # Safe harbor: Pay 110% of prior year tax or 90% of current year tax (for AGI > $150k)
     prior_federal_tax = float(base_return.federal_tax or 0) if base_return else 0
     prior_state_tax = float(base_return.state_tax or 0) if base_return else 0
     prior_year_tax = prior_federal_tax + prior_state_tax
 
-    # Federal safe harbor
+    # Federal safe harbor (use tax after credits)
     federal_safe_harbor_prior = prior_federal_tax * 1.10
-    federal_safe_harbor_current = federal_tax * 0.90
+    federal_safe_harbor_current = federal_tax_after_credits * 0.90
     federal_safe_harbor = min(federal_safe_harbor_prior, federal_safe_harbor_current) if prior_federal_tax > 0 else federal_safe_harbor_current
 
     # State safe harbor (CA uses same rules for AGI $150k-$1M)
@@ -553,7 +579,7 @@ def calculate_tax_forecast(
         state_safe_harbor=state_safe_harbor,
         prior_federal_tax=prior_federal_tax,
         prior_state_tax=prior_state_tax,
-        current_federal_tax=federal_tax,
+        current_federal_tax=federal_tax_after_credits,
         current_state_tax=state_tax,
         year=forecast_year
     )
@@ -565,12 +591,15 @@ def calculate_tax_forecast(
     return {
         "tax_year": forecast_year,
         "agi": agi,
-        "federal_tax": federal_tax,
+        "federal_tax": federal_tax_after_credits,
+        "federal_tax_before_credits": federal_tax,
         "state_tax": state_tax,
         "other_tax": other_taxes,
         "total_tax": total_tax,
         "effective_rate": round(effective_rate, 2),
         "filing_status": filing_status,
+        "qbi_deduction": round(qbi_deduction, 2),
+        "credits": credits,
         "details": forecast_details,
         "is_forecast": True,
         "payment_schedule": payment_schedule,
@@ -626,20 +655,23 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
     total_state_withheld = 0
     total_social_security = 0
     total_medicare = 0
-    
+    total_dependent_care = 0
+
     for w2 in w2_records:
         wages = float(w2.wages or 0)
         federal_withheld = float(w2.federal_tax_withheld or 0)
         state_withheld = float(w2.state_tax_withheld or 0)
         ss_tax = float(w2.social_security_tax or 0)
         medicare_tax = float(w2.medicare_tax or 0)
-        
+        dep_care = float(w2.dependent_care_benefits or 0)
+
         total_w2_wages += wages
         total_federal_withheld += federal_withheld
         total_state_withheld += state_withheld
         total_social_security += ss_tax
         total_medicare += medicare_tax
-        
+        total_dependent_care += dep_care
+
         w2_breakdown.append({
             "employee_name": w2.employee_name,
             "employer": w2.employer,
@@ -647,13 +679,14 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
             "federal_withheld": federal_withheld,
             "state_withheld": state_withheld,
         })
-    
+
     income["w2_income"] = {
         "total_wages": total_w2_wages,
         "federal_withheld": total_federal_withheld,
         "state_withheld": total_state_withheld,
         "social_security": total_social_security,
         "medicare": total_medicare,
+        "dependent_care_benefits": total_dependent_care,
         "breakdown": w2_breakdown
     }
     
@@ -707,6 +740,81 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
     return income
 
 
+def _calculate_ira_deduction_after_phaseout(
+    retirement: Dict[str, Any],
+    magi: float,
+    filing_status: str = "MFJ",
+    year: int = 2025
+) -> float:
+    """
+    Calculate the IRA deduction after applying income-based phase-out rules.
+
+    IRA deduction phase-out for 2025 (Married Filing Jointly):
+    - Active participant (has workplace plan like 401k):
+      Phase-out range: $126,000 - $146,000 MAGI
+    - Spouse of active participant (no own workplace plan):
+      Phase-out range: $236,000 - $246,000 MAGI
+    - Neither spouse is active participant: No phase-out
+
+    Phase-out formula:
+      reduced = contribution * (phase_out_end - MAGI) / (phase_out_end - phase_out_start)
+      rounded UP to the nearest $10
+
+    Source: IRS Publication 590-A
+    """
+    # 2025 MFJ phase-out ranges
+    # Source: IRS Revenue Procedure 2024-40
+    ACTIVE_PARTICIPANT_START = 126000
+    ACTIVE_PARTICIPANT_END = 146000
+    SPOUSE_OF_PARTICIPANT_START = 236000
+    SPOUSE_OF_PARTICIPANT_END = 246000
+
+    ira_per_person = retirement.get("ira_per_person", [])
+    anyone_has_plan = retirement.get("anyone_has_workplace_plan", False)
+
+    if not ira_per_person:
+        return 0
+
+    # If nobody has a workplace plan, full deduction (no phase-out)
+    if not anyone_has_plan:
+        return retirement.get("ira_deduction_before_phaseout", 0)
+
+    total_deduction = 0
+    for person in ira_per_person:
+        contribution = person.get("ira_contribution", 0)
+        if contribution <= 0:
+            continue
+
+        has_plan = person.get("has_workplace_plan", False)
+
+        if has_plan:
+            # Active participant phase-out
+            start, end = ACTIVE_PARTICIPANT_START, ACTIVE_PARTICIPANT_END
+        else:
+            # Spouse of active participant phase-out
+            start, end = SPOUSE_OF_PARTICIPANT_START, SPOUSE_OF_PARTICIPANT_END
+
+        if magi <= start:
+            # Below phase-out range: full deduction
+            total_deduction += contribution
+        elif magi >= end:
+            # Above phase-out range: no deduction
+            pass  # $0 for this person
+        else:
+            # Within phase-out range: partial deduction
+            # Formula: contribution * (end - MAGI) / (end - start), rounded up to $10
+            reduction_factor = (end - magi) / (end - start)
+            reduced = contribution * reduction_factor
+            # Round UP to nearest $10
+            import math
+            reduced = math.ceil(reduced / 10) * 10
+            # Minimum $200 if any contribution was made (IRS rule)
+            reduced = max(reduced, min(200, contribution))
+            total_deduction += reduced
+
+    return total_deduction
+
+
 def _calculate_agi(income: Dict[str, Any]) -> float:
     """
     Calculate Adjusted Gross Income from income sources.
@@ -715,15 +823,22 @@ def _calculate_agi(income: Dict[str, Any]) -> float:
 
     Includes:
     - W-2 wages
-    - Investment income from TAXABLE accounts only (options, dividends, interest)
+    - Dividend income from TAXABLE accounts only
+    - Interest income from TAXABLE accounts only
+    - Capital gains/losses (includes realized options gains + stock lot gains)
     - Rental income (net after expenses AND depreciation)
-    - Capital gains/losses (net, from TAXABLE accounts only)
 
-    Note: Income from retirement accounts (IRA, Roth IRA, 401k, HSA) is 
+    NOTE: Options income (STO/BTC premiums) is NOT added separately.
+    It is incorporated into capital_gains via _calculate_capital_gains()
+    with a realization rate adjustment. This prevents double-counting
+    (options gains + stock lot gains overlapping) and accounts for
+    unrealized open positions.
+
+    Note: Income from retirement accounts (IRA, Roth IRA, 401k, HSA) is
     NOT included as it is either tax-deferred or tax-free.
 
     Subtracts (above-the-line deductions):
-    - IRA contributions (traditional only)
+    - IRA contributions (traditional only, subject to phase-out)
     - HSA contributions
     - Rental depreciation
     - Other pre-tax retirement contributions (already excluded from W-2 wages)
@@ -733,9 +848,13 @@ def _calculate_agi(income: Dict[str, Any]) -> float:
     # W-2 wages (already reduced by 401k contributions in Box 1)
     agi += income["w2_income"].get("total_wages", 0)
 
-    # Investment income from TAXABLE accounts only (options, dividends, interest)
-    # Retirement account income is NOT included (tax-deferred or tax-free)
-    agi += income.get("options_income", 0)
+    # Dependent care benefits (W-2 Box 10) - taxable income on 1040 line 1e
+    agi += income["w2_income"].get("dependent_care_benefits", 0)
+
+    # Investment income from TAXABLE accounts only
+    # NOTE: Options income (STO/BTC premiums) is NOT added here separately.
+    # It is incorporated into capital_gains via _calculate_capital_gains()
+    # to avoid double-counting and to apply realization adjustments.
     agi += income.get("dividend_income", 0)
     agi += income.get("interest_income", 0)
 
@@ -776,8 +895,13 @@ def _calculate_agi(income: Dict[str, Any]) -> float:
 
     # Above-the-line deductions (reduce AGI)
     retirement = income.get("retirement_contributions", {})
-    # IRA contributions (traditional IRA reduces AGI, Roth does not)
-    agi -= retirement.get("ira_deduction", 0)
+
+    # IRA deduction with phase-out based on MAGI
+    # MAGI for IRA phase-out = AGI before IRA deduction (which is current 'agi')
+    magi = agi
+    ira_deduction = _calculate_ira_deduction_after_phaseout(retirement, magi)
+    agi -= ira_deduction
+
     # HSA contributions
     agi -= retirement.get("hsa_contribution", 0)
     # Note: 401k contributions already excluded from W-2 Box 1 wages
@@ -788,9 +912,14 @@ def _calculate_agi(income: Dict[str, Any]) -> float:
 def _calculate_taxable_income(
     agi: float,
     deductions: Dict[str, Any],
-    year: int
-) -> float:
-    """Calculate taxable income after deductions."""
+    year: int,
+    rental_net_income: float = 0
+) -> tuple:
+    """
+    Calculate taxable income after deductions and QBI deduction.
+
+    Returns (taxable_income, qbi_deduction) tuple.
+    """
     # Standard deduction amounts (Married Filing Jointly)
     # Source: One Big Beautiful Bill Act (OBBBA), signed July 4, 2025
     standard_deductions = {
@@ -805,92 +934,165 @@ def _calculate_taxable_income(
     # Use the larger of standard or itemized
     deduction = max(standard_deduction, itemized_total) if itemized_total > 0 else standard_deduction
 
-    taxable_income = max(0, agi - deduction)
-    return taxable_income
+    taxable_income_before_qbi = max(0, agi - deduction)
+
+    # QBI Deduction (Section 199A) - 20% of qualified business income
+    # Rental income from Schedule E qualifies as QBI for non-passive landlords
+    # Simplified calculation applies when taxable income < $383,900 (MFJ 2025)
+    qbi_deduction = 0
+    if rental_net_income > 0:
+        qbi_amount = rental_net_income * 0.20
+        # QBI deduction is limited to 20% of taxable income before QBI deduction
+        taxable_income_limit = taxable_income_before_qbi * 0.20
+        qbi_deduction = min(qbi_amount, taxable_income_limit)
+
+    taxable_income = max(0, taxable_income_before_qbi - qbi_deduction)
+    return taxable_income, qbi_deduction
+
+
+def _calculate_ca_taxable_income(
+    agi: float,
+    deductions: Dict[str, Any],
+    year: int
+) -> float:
+    """
+    Calculate California taxable income after CA-specific deductions.
+
+    California has its own standard deduction that is much lower than federal.
+    CA does NOT conform to the federal standard deduction amount.
+
+    2025 CA Standard Deduction (estimated with ~2.8% inflation from 2024):
+    - MFJ: $11,026 (2024: $10,726)
+    - Single: $5,513 (2024: $5,363)
+
+    Source: California Franchise Tax Board (FTB)
+    """
+    ca_standard_deductions = {
+        2025: 11026,  # MFJ, estimated from 2024 + inflation
+        2024: 10726,  # MFJ, official
+        2023: 10404,  # MFJ, official
+    }
+
+    ca_standard = ca_standard_deductions.get(year, 11026)
+    # CA itemized deductions differ from federal (e.g., no SALT cap)
+    # For simplicity, use the larger of CA standard or itemized
+    itemized_total = deductions.get("itemized_total", 0)
+    deduction = max(ca_standard, itemized_total) if itemized_total > 0 else ca_standard
+
+    return max(0, agi - deduction)
 
 
 def _calculate_federal_tax(
     taxable_income: float,
     filing_status: str,
-    year: int
+    year: int,
+    preferential_income: float = 0
 ) -> float:
     """
     Calculate federal income tax using official IRS tax brackets.
-    Updated for 2025 with TCJA provisions made permanent.
+
+    Applies preferential rates (0%/15%/20%) to qualified dividends and
+    long-term capital gains, and ordinary rates to remaining income.
+
+    The preferential income is "stacked on top" of ordinary income:
+    1. Tax ordinary income at ordinary rates (10%-37%)
+    2. Stack preferential income above it and apply LTCG rates based on
+       where it falls in the income scale
+
+    2025 LTCG/Qualified Dividend brackets (MFJ):
+      0% up to $96,700
+      15% from $96,700 to $600,050
+      20% above $600,050
+
     Source: IRS Revenue Procedure 2024-40, Tax Foundation
     """
-    # 2025 Official Tax Brackets (Married Filing Jointly)
-    # Source: https://taxfoundation.org/data/all/federal/2025-tax-brackets/
+    # --- Ordinary income brackets ---
     if year >= 2025:
         if filing_status in ["MFJ", "married_filing_jointly"]:
             brackets = [
-                (0, 0.10),
-                (23850, 0.12),
-                (96950, 0.22),
-                (206700, 0.24),
-                (394600, 0.32),
-                (501050, 0.35),
-                (751600, 0.37),
+                (0, 0.10), (23850, 0.12), (96950, 0.22),
+                (206700, 0.24), (394600, 0.32), (501050, 0.35), (751600, 0.37),
             ]
+            ltcg_brackets = [(0, 0.0), (96700, 0.15), (600050, 0.20)]
         elif filing_status in ["Single", "single"]:
             brackets = [
-                (0, 0.10),
-                (11925, 0.12),
-                (48475, 0.22),
-                (103350, 0.24),
-                (197300, 0.32),
-                (250525, 0.35),
-                (626350, 0.37),
+                (0, 0.10), (11925, 0.12), (48475, 0.22),
+                (103350, 0.24), (197300, 0.32), (250525, 0.35), (626350, 0.37),
             ]
+            ltcg_brackets = [(0, 0.0), (48350, 0.15), (533400, 0.20)]
         else:
-            # Default to MFJ
             brackets = [
-                (0, 0.10),
-                (23850, 0.12),
-                (96950, 0.22),
-                (206700, 0.24),
-                (394600, 0.32),
-                (501050, 0.35),
-                (751600, 0.37),
+                (0, 0.10), (23850, 0.12), (96950, 0.22),
+                (206700, 0.24), (394600, 0.32), (501050, 0.35), (751600, 0.37),
             ]
+            ltcg_brackets = [(0, 0.0), (96700, 0.15), (600050, 0.20)]
     else:
-        # 2024 Tax Brackets (Married Filing Jointly)
         brackets = [
-            (0, 0.10),
-            (23200, 0.12),
-            (94300, 0.22),
-            (201050, 0.24),
-            (383900, 0.32),
-            (487050, 0.35),
-            (731200, 0.37),
+            (0, 0.10), (23200, 0.12), (94300, 0.22),
+            (201050, 0.24), (383900, 0.32), (487050, 0.35), (731200, 0.37),
         ]
-
+        ltcg_brackets = [(0, 0.0), (94050, 0.15), (583750, 0.20)]
         if filing_status in ["Single", "single"]:
             brackets = [
-                (0, 0.10),
-                (11600, 0.12),
-                (47150, 0.22),
-                (100525, 0.24),
-                (191950, 0.32),
-                (243725, 0.35),
-                (609350, 0.37),
+                (0, 0.10), (11600, 0.12), (47150, 0.22),
+                (100525, 0.24), (191950, 0.32), (243725, 0.35), (609350, 0.37),
             ]
+            ltcg_brackets = [(0, 0.0), (47025, 0.15), (518900, 0.20)]
 
+    # If no preferential income, use simple ordinary calculation
+    if preferential_income <= 0:
+        return _apply_brackets(taxable_income, brackets)
+
+    # --- Split calculation: ordinary + preferential ---
+    ordinary_income = taxable_income - preferential_income
+
+    # Step 1: Tax on ordinary income at ordinary rates
+    ordinary_tax = _apply_brackets(ordinary_income, brackets)
+
+    # Step 2: Tax on preferential income at LTCG rates
+    # Preferential income is "stacked" on top of ordinary income
+    # The LTCG rate depends on where the preferential income falls
+    pref_tax = 0.0
+    remaining_pref = preferential_income
+
+    for i in range(len(ltcg_brackets)):
+        bracket_start, rate = ltcg_brackets[i]
+        bracket_end = ltcg_brackets[i + 1][0] if i + 1 < len(ltcg_brackets) else float('inf')
+
+        if remaining_pref <= 0:
+            break
+
+        # How much of this LTCG bracket is available after ordinary income?
+        if ordinary_income >= bracket_end:
+            # Ordinary income fills this bracket entirely - preferential skips it
+            continue
+        elif ordinary_income > bracket_start:
+            # Ordinary income partially fills this bracket
+            available_in_bracket = bracket_end - ordinary_income
+        else:
+            # Ordinary income doesn't reach this bracket
+            available_in_bracket = bracket_end - bracket_start
+
+        taxable_in_bracket = min(remaining_pref, available_in_bracket)
+        pref_tax += taxable_in_bracket * rate
+        remaining_pref -= taxable_in_bracket
+
+    return ordinary_tax + pref_tax
+
+
+def _apply_brackets(income: float, brackets: list) -> float:
+    """Apply progressive tax brackets to an income amount."""
     tax = 0.0
-    remaining_income = taxable_income
-
+    remaining = income
     for i in range(len(brackets)):
         bracket_start, rate = brackets[i]
         bracket_end = brackets[i + 1][0] if i + 1 < len(brackets) else float('inf')
-
-        if remaining_income <= 0:
+        if remaining <= 0:
             break
-
-        if taxable_income > bracket_start:
-            bracket_income = min(remaining_income, bracket_end - bracket_start)
+        if income > bracket_start:
+            bracket_income = min(remaining, bracket_end - bracket_start)
             tax += bracket_income * rate
-            remaining_income -= bracket_income
-
+            remaining -= bracket_income
     return tax
 
 
@@ -1016,17 +1218,17 @@ def _calculate_other_taxes(
     niit_threshold = 250000  # MFJ default
     
     # NIIT applies to ALL net investment income including capital gains
+    # NOTE: Options income is now included within capital_gains (not separate)
     cap_gains = income.get("capital_gains", {})
     net_capital_gains = cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0)
-    
+
     # Net rental income is also subject to NIIT (minus depreciation)
     net_rental = income.get("rental_income", 0) - income.get("rental_depreciation", 0)
-    
+
     investment_income = (
-        income.get("options_income", 0) +
         income.get("dividend_income", 0) +
         income.get("interest_income", 0) +
-        net_capital_gains +  # Include capital gains in NIIT
+        net_capital_gains +  # Includes options gains (realized) + stock lot gains
         max(0, net_rental)   # Include rental income (if positive)
     )
     
@@ -1038,11 +1240,52 @@ def _calculate_other_taxes(
     return other_tax
 
 
+def _calculate_credits(
+    db: Session,
+    year: int,
+    federal_tax: float
+) -> Dict[str, Any]:
+    """
+    Calculate tax credits for the forecast year.
+
+    Currently supports:
+    - Child Tax Credit (CTC): $2,200/child for 2025 (OBBBA), $2,000/child for 2024
+    - Non-refundable: capped at federal tax liability
+    """
+    dependents = db.query(TaxDependent).filter(
+        TaxDependent.tax_year == year,
+        TaxDependent.qualifies_for_ctc == True
+    ).all()
+
+    # CTC amount per child by year
+    ctc_per_child = {
+        2025: 2200,  # One Big Beautiful Bill Act (OBBBA)
+        2024: 2000,
+    }
+    ctc_amount = ctc_per_child.get(year, 2000)
+
+    child_tax_credit = len(dependents) * ctc_amount
+
+    # Non-refundable: capped at federal tax liability
+    child_tax_credit = min(child_tax_credit, federal_tax)
+
+    total_credits = child_tax_credit
+
+    return {
+        "child_tax_credit": round(child_tax_credit, 2),
+        "num_qualifying_children": len(dependents),
+        "ctc_per_child": ctc_amount,
+        "total_credits": round(total_credits, 2),
+    }
+
+
 def _build_forecast_details(
     income: Dict[str, Any],
     deductions: Dict[str, Any],
     base_details: Dict[str, Any],
-    year: int
+    year: int,
+    qbi_deduction: float = 0,
+    credits: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Build the details JSON structure for the forecast."""
     details = {
@@ -1055,10 +1298,14 @@ def _build_forecast_details(
     
     # Income sources
     if income["w2_income"].get("total_wages", 0) > 0:
-        details["income_sources"].append({
+        w2_entry = {
             "source": "W-2 Wages",
             "amount": income["w2_income"]["total_wages"]
-        })
+        }
+        dep_care = income["w2_income"].get("dependent_care_benefits", 0)
+        if dep_care > 0:
+            w2_entry["dependent_care_benefits"] = dep_care
+        details["income_sources"].append(w2_entry)
     
     if income.get("rental_income", 0) > 0:
         depreciation = income.get("rental_depreciation", 0)
@@ -1070,12 +1317,28 @@ def _build_forecast_details(
             "depreciation": depreciation
         })
     
-    if income.get("options_income", 0) > 0:
+    # Options premiums and stock lot gains are separate components of capital gains
+    cap_gains_data = income.get("capital_gains", {})
+    if cap_gains_data.get("options_realized", 0) > 0:
         details["income_sources"].append({
-            "source": "Options Income",
-            "amount": income["options_income"]
+            "source": "Option Premiums (Realized)",
+            "amount": cap_gains_data["options_realized"],
+            "raw_net": cap_gains_data.get("options_net_income", 0),
+            "closure_rate": cap_gains_data.get("options_closure_rate", 1.0),
+            "note": "Taxable accounts only; adjusted for open positions"
         })
-    
+
+    # Stock lot gains (from direct sales or assignments)
+    stock_st = cap_gains_data.get("stock_lot_st", 0)
+    stock_lt = cap_gains_data.get("stock_lot_lt", 0)
+    stock_total = stock_st + stock_lt
+    if stock_total != 0:
+        details["income_sources"].append({
+            "source": "Stock Sale Gains/Losses",
+            "amount": stock_total,
+            "note": f"ST: ${stock_st:,.0f}, LT: ${stock_lt:,.0f} (from cost basis tracker)"
+        })
+
     if income.get("dividend_income", 0) > 0:
         details["income_sources"].append({
             "source": "Dividend Income",
@@ -1110,16 +1373,15 @@ def _build_forecast_details(
             "medicare": w2_data.get("medicare", 0),
         })
     
-    # Additional taxes (NIIT) - includes capital gains
+    # Additional taxes (NIIT) - options income is now within capital_gains
     cap_gains = income.get("capital_gains", {})
     net_capital_gains = cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0)
     net_rental = income.get("rental_income", 0) - income.get("rental_depreciation", 0)
-    
+
     investment_income = (
-        income.get("options_income", 0) +
         income.get("dividend_income", 0) +
         income.get("interest_income", 0) +
-        net_capital_gains +
+        net_capital_gains +  # Includes realized options gains
         max(0, net_rental)
     )
     
@@ -1136,21 +1398,34 @@ def _build_forecast_details(
     if base_details.get("rental_properties"):
         details["rental_properties"] = base_details["rental_properties"]
 
-    # Add capital gains if present
+    # Add capital gains if present (now includes options + stock lot gains)
     cap_gains = income.get("capital_gains", {})
     if cap_gains.get("net_short_term") or cap_gains.get("net_long_term"):
         details["capital_gains"] = {
             "short_term": cap_gains.get("net_short_term", 0),
             "long_term": cap_gains.get("net_long_term", 0),
-            "total": cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0)
+            "total": cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0),
+            "options_realized": cap_gains.get("options_realized", 0),
+            "options_closure_rate": cap_gains.get("options_closure_rate", 0),
+            "stock_lot_st": cap_gains.get("stock_lot_st", 0),
+            "stock_lot_lt": cap_gains.get("stock_lot_lt", 0),
         }
-        # Add to income sources
-        net_stock_sale_income = cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0)
-        if net_stock_sale_income != 0:
+        # Add total capital gains to income sources (sum of options + stock lots)
+        net_investment_gains = cap_gains.get("net_short_term", 0) + cap_gains.get("net_long_term", 0)
+        if net_investment_gains != 0:
             details["income_sources"].append({
-                "source": "Stock Sale Income (Net)",
-                "amount": net_stock_sale_income
+                "source": "Total Capital Gains (Schedule D)",
+                "amount": net_investment_gains,
+                "note": cap_gains.get("note", "")
             })
+
+    # QBI deduction
+    if qbi_deduction > 0:
+        details["qbi_deduction"] = round(qbi_deduction, 2)
+
+    # Tax credits
+    if credits and credits.get("total_credits", 0) > 0:
+        details["credits"] = credits
 
     return details
 
@@ -1159,77 +1434,154 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
     """
     Calculate net capital gains/losses from investment transactions.
 
-    Uses actual cost basis tracking for precise gain/loss calculations.
-    Falls back to transaction-based estimation, then to 50% conservative estimate.
-    
-    IMPORTANT: Only includes transactions from TAXABLE brokerage accounts.
-    Sales in retirement accounts (IRA, Roth IRA, 401k) do NOT generate
-    taxable capital gains.
+    Combines TWO sources of investment gains into a single capital gains figure:
+    1. Stock lot sales (from cost basis tracker) - tracks stock dispositions
+    2. Options income (STO/BTC premiums) - tracks option premium flows
 
-    Short-term: Assets held ≤ 1 year (taxed as ordinary income)
-    Long-term: Assets held > 1 year (preferential rates: 0%, 15%, 20%)
+    Both appear on the 1099-B / Schedule D as capital gains. They are combined
+    here to avoid double-counting in AGI (options_income is NOT added separately).
+
+    Options gains are adjusted by a "realization rate" because STO premiums are
+    recorded when positions are opened, but the 1099 only reports gains when
+    positions are CLOSED. Open positions at year-end would inflate the forecast.
+    Realization rate = BTC count / STO count (approximates closure fraction).
+
+    To avoid double-counting between options and stock lots:
+    - Options gains (realized) are treated as short-term capital gains
+    - Only long-term stock lot gains are added on top (options are always ST)
+    - Short-term stock lot gains are excluded when options income is present,
+      since they likely overlap (assigned options produce ST stock sales)
+
+    IMPORTANT: Only includes transactions from TAXABLE brokerage accounts.
 
     Returns dict with net_short_term and net_long_term
     """
+    # Non-taxable account types to exclude
+    non_taxable_types = ['ira', 'roth_ira', 'traditional_ira', '401k', 'hsa', 'retirement']
+
+    # --- Step 1: Get stock lot sale gains from cost basis tracker ---
+    stock_gains_st = 0.0
+    stock_gains_lt = 0.0
+    stock_num_transactions = 0
+    stock_note = ""
+
     try:
-        # Try to use actual cost basis tracking
         from app.modules.tax.cost_basis_service import CostBasisService
 
         service = CostBasisService(db)
         summary = service.get_capital_gains_summary(year)
 
         if summary.get("num_transactions", 0) > 0:
-            # We have actual cost basis data - use it!
-            return {
-                "net_short_term": summary.get("total_short_term_gain", 0),
-                "net_long_term": summary.get("total_long_term_gain", 0),
-                "total_proceeds": summary.get("total_proceeds", 0),
-                "total_cost_basis": summary.get("total_cost_basis", 0),
-                "num_transactions": summary.get("num_transactions", 0),
-                "taxable_accounts_only": True,
-                "note": "Actual cost basis data"
-            }
+            stock_gains_st = summary.get("total_short_term_gain", 0)
+            stock_gains_lt = summary.get("total_long_term_gain", 0)
+            stock_num_transactions = summary.get("num_transactions", 0)
+            stock_note = "cost_basis"
     except Exception:
-        # Cost basis tracking not available or failed - rollback and fall back to estimation
         db.rollback()
 
-    # Fallback 1: Use transaction data if available
-    sell_transactions = db.query(InvestmentTransaction).join(
+    if not stock_note:
+        # Fallback: estimate from SELL transactions
+        sell_transactions = db.query(InvestmentTransaction).join(
+            InvestmentAccount,
+            and_(
+                InvestmentTransaction.account_id == InvestmentAccount.account_id,
+                InvestmentTransaction.source == InvestmentAccount.source
+            )
+        ).filter(
+            InvestmentTransaction.transaction_type.in_(['SELL', 'SOLD']),
+            extract('year', InvestmentTransaction.transaction_date) == year
+        ).all()
+
+        if sell_transactions:
+            total_proceeds = sum(float(t.amount or 0) for t in sell_transactions)
+            estimated_gains = total_proceeds * 0.50 if total_proceeds > 0 else 0
+            stock_gains_lt = estimated_gains
+            stock_note = "estimated_50pct"
+
+    # --- Step 2: Get realized options gains ---
+    # Query STO and BTC transaction counts and amounts from taxable accounts
+    options_net = 0.0
+    options_closure_rate = 1.0
+    realized_options = 0.0
+
+    sto_result = db.query(
+        func.sum(InvestmentTransaction.amount).label('total'),
+        func.count(InvestmentTransaction.id).label('count')
+    ).join(
         InvestmentAccount,
         and_(
             InvestmentTransaction.account_id == InvestmentAccount.account_id,
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['SELL', 'SOLD']),
-        extract('year', InvestmentTransaction.transaction_date) == year
-    ).all()
+        InvestmentTransaction.transaction_type == 'STO',
+        extract('year', InvestmentTransaction.transaction_date) == year,
+        InvestmentAccount.is_active == 'Y',
+        ~func.lower(InvestmentAccount.account_type).in_(non_taxable_types)
+    ).first()
 
-    if sell_transactions:
-        # We have transaction data - use actual sale amounts with 50% gain estimate
-        total_proceeds = sum(float(t.amount or 0) for t in sell_transactions)
+    btc_result = db.query(
+        func.sum(InvestmentTransaction.amount).label('total'),
+        func.count(InvestmentTransaction.id).label('count')
+    ).join(
+        InvestmentAccount,
+        and_(
+            InvestmentTransaction.account_id == InvestmentAccount.account_id,
+            InvestmentTransaction.source == InvestmentAccount.source
+        )
+    ).filter(
+        InvestmentTransaction.transaction_type == 'BTC',
+        extract('year', InvestmentTransaction.transaction_date) == year,
+        InvestmentAccount.is_active == 'Y',
+        ~func.lower(InvestmentAccount.account_type).in_(non_taxable_types)
+    ).first()
 
-        # Use 50% as a conservative estimate of gains when we have transactions but no cost basis
-        # This is more conservative than 30% and accounts for typical market appreciation
-        estimated_gains = total_proceeds * 0.50 if total_proceeds > 0 else 0
+    sto_total = float(sto_result.total or 0) if sto_result else 0
+    sto_count = int(sto_result.count or 0) if sto_result else 0
+    btc_total = float(btc_result.total or 0) if btc_result else 0
+    btc_count = int(btc_result.count or 0) if btc_result else 0
 
-        # For now, classify all as long-term (most holdings are long-term)
-        return {
-            "net_short_term": 0,
-            "net_long_term": estimated_gains,
-            "total_proceeds": total_proceeds,
-            "taxable_accounts_only": True,
-            "note": "Estimated at 50% gains - import to Cost Basis Tracker for accuracy"
-        }
+    options_net = sto_total + btc_total  # BTC amounts are negative
 
-    # Fallback 2: No transaction data at all - return zeros
-    # This happens when there are no sales in the database for this year
+    if options_net > 0 and sto_count > 0:
+        # Estimate what fraction of positions are closed (realized)
+        # BTC count / STO count approximates the closure rate
+        # Cap at 1.0 (more BTCs than STOs means closing prior-year positions)
+        options_closure_rate = min(1.0, btc_count / sto_count) if sto_count > 0 else 1.0
+        realized_options = options_net * options_closure_rate
+
+    # --- Step 3: Combine options premiums + stock lot gains ---
+    # These are separate income streams that DO NOT overlap:
+    #   - Options premiums (STO/BTC): cash from selling/buying option contracts
+    #   - Stock lot gains: capital gain/loss when shares are sold (including assignments)
+    # Both appear on Schedule D but are distinct transactions.
+    if realized_options > 0:
+        net_short_term = realized_options + stock_gains_st
+        net_long_term = stock_gains_lt
+        parts = [f"Options: ${options_net:,.0f} net × {options_closure_rate:.0%} realized = ${realized_options:,.0f}"]
+        if stock_gains_st != 0:
+            parts.append(f"Stock sales ST: ${stock_gains_st:,.0f}")
+        if stock_gains_lt != 0:
+            parts.append(f"Stock sales LT: ${stock_gains_lt:,.0f}")
+        note = "; ".join(parts)
+    else:
+        # No options activity - use stock lot sales directly
+        net_short_term = stock_gains_st
+        net_long_term = stock_gains_lt
+        note = stock_note or "No investment gains data"
+
     return {
-        "net_short_term": 0,
-        "net_long_term": 0,
-        "total_proceeds": 0,
+        "net_short_term": net_short_term,
+        "net_long_term": net_long_term,
         "taxable_accounts_only": True,
-        "note": "No transaction data available - import transactions to Cost Basis Tracker"
+        "note": note,
+        # Breakdown for transparency
+        "options_net_income": options_net,
+        "options_closure_rate": options_closure_rate,
+        "options_realized": realized_options,
+        "stock_lot_st": stock_gains_st,
+        "stock_lot_lt": stock_gains_lt,
+        "stock_lot_transactions": stock_num_transactions,
     }
 
 
@@ -1421,12 +1773,12 @@ def _get_taxable_income_by_account(
     return result
 
 
-def _get_retirement_contributions(db: Session, year: int) -> Dict[str, float]:
+def _get_retirement_contributions(db: Session, year: int) -> Dict[str, Any]:
     """
     Get retirement contributions that reduce AGI.
 
     401(k) contributions: Already excluded from W-2 Box 1 wages
-    Traditional IRA: Deductible (reduces AGI)
+    Traditional IRA: Deductible (reduces AGI), SUBJECT TO PHASE-OUT
     Roth IRA: Not deductible (doesn't reduce AGI)
     HSA: Deductible (reduces AGI)
 
@@ -1435,9 +1787,9 @@ def _get_retirement_contributions(db: Session, year: int) -> Dict[str, float]:
     - IRA: $7,000 ($8,000 with catch-up 50+)
     - HSA: $4,300 individual / $8,550 family ($1,000 catch-up 55+)
 
-    Returns dict with deductible amounts
+    Returns dict with deductible amounts and per-person breakdown
+    for IRA phase-out calculation in _calculate_agi().
     """
-    # Query retirement contribution records
     contributions = db.query(RetirementContribution).filter(
         RetirementContribution.tax_year == year
     ).all()
@@ -1445,24 +1797,35 @@ def _get_retirement_contributions(db: Session, year: int) -> Dict[str, float]:
     total_ira_deduction = 0
     total_hsa_contribution = 0
     total_401k = 0
+    ira_per_person = []
 
     for contrib in contributions:
-        # Traditional IRA contributions are deductible
         ira_contrib = float(contrib.ira_contributions or 0)
         total_ira_deduction += ira_contrib
 
-        # HSA contributions are deductible
         hsa_contrib = float(contrib.hsa_contributions or 0)
         total_hsa_contribution += hsa_contrib
 
-        # 401k for reference (already excluded from W-2 wages)
         k401_contrib = float(contrib.contributions_401k or 0)
-        total_401k += k401_contrib
+        roth_401k = float(contrib.roth_401k or 0)
+        total_401k += k401_contrib + roth_401k
+
+        # Track per-person IRA + workplace plan status for phase-out
+        has_workplace_plan = (k401_contrib > 0 or roth_401k > 0)
+        if ira_contrib > 0:
+            ira_per_person.append({
+                "owner": contrib.owner or "Unknown",
+                "ira_contribution": ira_contrib,
+                "has_workplace_plan": has_workplace_plan,
+            })
 
     return {
-        "ira_deduction": total_ira_deduction,
+        "ira_deduction_before_phaseout": total_ira_deduction,
+        "ira_deduction": total_ira_deduction,  # Will be overridden by _calculate_agi
+        "ira_per_person": ira_per_person,
+        "anyone_has_workplace_plan": total_401k > 0,
         "hsa_contribution": total_hsa_contribution,
-        "k401_total": total_401k,  # For reference only, already excluded from wages
+        "k401_total": total_401k,
         "total_above_line_deduction": total_ira_deduction + total_hsa_contribution
     }
 

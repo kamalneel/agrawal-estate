@@ -1,0 +1,50 @@
+Clean Vehicle Credit — Form 8936 Reconciliation
+Tax Year 2025
+
+================================================================================
+VEHICLE INFORMATION
+================================================================================
+
+  Vehicle:                  2025 Tesla Model Y
+  VIN:                      7SAYGDED5TF384836
+  Type:                     New clean vehicle
+  Date of Sale:             06/20/2025
+  Placed in Service:        06/20/2025
+
+================================================================================
+CLEAN VEHICLE CREDIT (IRC Section 30D)
+================================================================================
+
+  Credit Amount:            $7,500.00
+  Transfer Election:        YES — Credit transferred to dealer at point of sale
+  Amount Transferred:       $7,500.00
+
+================================================================================
+INSTRUCTIONS FOR TAX PREPARER
+================================================================================
+
+  The taxpayer elected to transfer the $7,500 clean vehicle credit to the
+  dealer under the IRS point-of-sale transfer program. The credit was applied
+  as a reduction to the vehicle purchase price at the time of sale.
+
+  REQUIRED ACTION: The credit must be reconciled on Form 8936 on the 2025
+  tax return, even though the credit was already received at the dealer.
+  The taxpayer may NOT claim the credit again — it has already been applied.
+
+  Form 8936 should reflect:
+  - The vehicle qualifies for the clean vehicle credit
+  - The credit was transferred to the dealer
+  - Net additional credit on tax return: $0
+
+================================================================================
+ALSO FOR THE RECORD — VEHICLE TRADE-IN / SALE
+================================================================================
+
+  The taxpayer sold their prior vehicle (2019 Tesla Model 3) to CarMax on
+  08/08/2025 for $14,400.00. This was a personal-use vehicle sold at a loss.
+  No tax deduction applies (losses on personal-use property are not deductible).
+
+  See separate document: Tesla_Model3_Sale_CarMax_Check.jpg
+
+================================================================================
+Prepared: February 13, 2026

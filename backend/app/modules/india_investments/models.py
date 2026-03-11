@@ -159,10 +159,13 @@ class ExchangeRate(BaseModel):
 
 
 class FatherMutualFundHolding(BaseModel):
-    """Father's mutual fund holdings with detailed tracking."""
-    
+    """Family mutual fund holdings with detailed tracking."""
+
     __tablename__ = "father_mutual_fund_holdings"
-    
+
+    # Owner: 'Father', 'Mother', etc.
+    owner = Column(String(50), nullable=False, default='Father')
+
     # Investment details
     investment_date = Column(Date, nullable=False)  # Date when investment was made
     fund_name = Column(String(300), nullable=False)  # Name of the mutual fund
@@ -206,6 +209,7 @@ class FatherMutualFundHolding(BaseModel):
     __table_args__ = (
         Index('idx_father_mf_fund_name', 'fund_name'),
         Index('idx_father_mf_investment_date', 'investment_date'),
+        Index('idx_father_mf_owner', 'owner'),
     )
 
 

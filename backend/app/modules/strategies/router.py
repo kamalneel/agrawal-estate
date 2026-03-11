@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 # Centralized timezone handling - import from core
 from app.core.timezone import format_datetime_for_api as _format_dt_as_utc
 
+import threading
+
 from app.core.database import get_db
 from app.core.auth import get_current_user
 from app.modules.strategies.models import SoldOptionsSnapshot, SoldOption
@@ -29,6 +31,55 @@ from app.modules.strategies.services import (
 )
 
 router = APIRouter()
+
+
+# ============================================================================
+# ALGORITHM STATUS ENDPOINT
+# ============================================================================
+
+@router.get("/algorithm-status")
+async def get_algorithm_status():
+    """Return current algorithm version and configuration with isolation verification."""
+    from app.modules.strategies.algorithm_config import ALGORITHM_VERSION, get_config
+    import sys
+
+    config = get_config()
+
+    # Check which notification service modules are loaded
+    v4_loaded = 'app.modules.strategies.v4_notification_service' in sys.modules
+    v5_loaded = 'app.modules.strategies.v5_notification_service' in sys.modules
+
+    # Get V5 version tag if V5 is loaded
+    v5_version_tag = None
+    v5_has_v4_imports = None
+    if ALGORITHM_VERSION == 'v5':
+        try:
+            from app.modules.strategies.v5_notification_service import V5_VERSION_TAG
+            v5_version_tag = V5_VERSION_TAG
+
+            # Check if V5 module has any V4 imports (runtime verification)
+            import app.modules.strategies.v5_notification_service as v5_module
+            v5_source_file = v5_module.__file__
+            with open(v5_source_file, 'r') as f:
+                source = f.read()
+                v5_has_v4_imports = 'from app.modules.strategies.v4' in source or 'import app.modules.strategies.v4' in source
+        except Exception as e:
+            v5_version_tag = f"error: {e}"
+
+    return {
+        "algorithm_version": ALGORITHM_VERSION,
+        "config_version": config.get("version", "unknown"),
+        "description": config.get("description", ""),
+        "life_support_enabled": config.get("life_support", {}).get("enabled", False),
+        # Version isolation verification
+        "isolation_status": {
+            "v4_module_loaded": v4_loaded,
+            "v5_module_loaded": v5_loaded,
+            "v5_version_tag": v5_version_tag,
+            "v5_has_v4_imports": v5_has_v4_imports,
+            "is_truly_standalone": v5_has_v4_imports == False if v5_has_v4_imports is not None else None,
+        }
+    }
 
 
 class BuyBorrowDieParams(BaseModel):
@@ -676,14 +727,15 @@ async def calculate_options_income(
     symbol_premiums = params.get("symbol_premiums", {})  # Per-symbol overrides: {"AAPL": 50, "TSLA": 150}
     delta = params.get("delta", 10)  # Delta 10 strategy
     weeks_per_year = params.get("weeks_per_year", 50)  # Assuming 2 weeks off
-    
+
     # Load premium settings from database (auto-updated values)
     from app.modules.strategies.models import OptionPremiumSetting
     db_premiums = {}
     db_settings = db.query(OptionPremiumSetting).all()
     for setting in db_settings:
-        db_premiums[setting.symbol] = float(setting.premium_per_contract)
-    
+        if setting.premium_per_contract is not None:
+            db_premiums[setting.symbol] = float(setting.premium_per_contract)
+
     # Default premiums by symbol (fallback if not in database)
     default_symbol_premiums = {
         "AAPL": 50,
@@ -968,6 +1020,125 @@ async def get_expense_forecast(
             "error": str(e),
             "note": "No expense data available for forecasting. Import transactions to enable forecasting."
         }
+
+
+# ── BBD Assumptions vs Reality ────────────────────────────────
+
+@router.get("/buy-borrow-die/assumptions/metrics")
+async def get_bbd_assumption_metrics(
+    metric_type: str,
+    period_type: str = 'year',
+    year: int = None,
+    month: int = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Get cached BBD performance metrics for Assumptions vs Reality.
+
+    metric_type: 'portfolio_growth' or 'options_yield'
+    period_type: 'year', 'month', or 'week'
+    year: optional filter for drill-down
+    month: optional filter for drill-down (requires year)
+    """
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+
+    service = BbdPerformanceService(db)
+    metrics = service.get_metrics(metric_type, period_type, year, month)
+
+    if metric_type == 'portfolio_growth':
+        assumed_rate = '8%/year'
+    elif metric_type == 'options_yield':
+        assumed_rate = '1%/month'
+    else:
+        assumed_rate = '5% margin interest'
+
+    return {
+        'metric_type': metric_type,
+        'period_type': period_type,
+        'assumed_rate': assumed_rate,
+        'metrics': metrics,
+    }
+
+
+@router.post("/buy-borrow-die/assumptions/compute")
+async def compute_bbd_assumptions(
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Trigger computation of BBD performance metrics.
+    Incremental by default — only computes missing or partial periods.
+    Set force=True to recompute everything.
+    """
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+
+    service = BbdPerformanceService(db)
+    count = service.compute_all(force=force)
+    db.commit()
+
+    return {
+        'status': 'ok',
+        'periods_computed': count,
+        'force': force,
+    }
+
+
+@router.get("/buy-borrow-die/assumptions/summary")
+async def get_bbd_assumptions_summary(
+    db: Session = Depends(get_db),
+):
+    """
+    Get high-level summary for BBD Assumptions vs Reality cards.
+    Returns overall CAGR vs 8%, avg monthly yield vs 1%, latest values.
+    """
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+
+    service = BbdPerformanceService(db)
+    return service.get_summary()
+
+
+@router.get("/buy-borrow-die/assumptions/taxable-capital")
+async def get_taxable_capital_by_month(
+    db: Session = Depends(get_db),
+):
+    """
+    Get monthly brokerage-only (taxable) portfolio values.
+    Returns {months: {YYYY-MM: value}}.
+    """
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+
+    service = BbdPerformanceService(db)
+    account_months = service._get_account_month_values()
+    brokerage_months = service._get_brokerage_month_values(account_months)
+    return {'months': {k: round(v, 2) for k, v in sorted(brokerage_months.items())}}
+
+
+@router.get("/buy-borrow-die/timeline")
+async def get_bbd_timeline(
+    time_range: str = Query('data', regex='^(data|5y|10y|20y|30y|all)$'),
+    income_offset: bool = Query(False),
+    growth_rate: Optional[float] = Query(None, description="Annual growth rate as decimal, e.g. 0.08 for 8%"),
+    margin_rate: Optional[float] = Query(None, description="Annual margin interest rate as decimal, e.g. 0.05 for 5%"),
+    margin_ltv: Optional[float] = Query(None, description="Margin LTV ratio as decimal, e.g. 0.70 for 70%"),
+    options_yield: Optional[float] = Query(None, description="Monthly options yield as decimal, e.g. 0.01 for 1%"),
+    db: Session = Depends(get_db),
+):
+    """
+    Get timeline data for the BBD chart.
+    Combines actual monthly data with optional forward projections.
+    All assumption parameters are optional; defaults used when not provided.
+    """
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+
+    service = BbdPerformanceService(db)
+    return service.get_timeline_data(
+        time_range,
+        income_offset=income_offset,
+        growth_rate=growth_rate,
+        margin_rate=margin_rate,
+        margin_ltv=margin_ltv,
+        options_yield=options_yield,
+    )
 
 
 # Retirement contribution limits (2015-2026)
@@ -1563,13 +1734,13 @@ def get_date_ranges_for_actuals() -> Dict[str, tuple]:
     Calculate date ranges for actual income queries.
 
     Returns date ranges for:
-    - last_week: The most recent complete week (Mon-Sun)
+    - last_week: The most recent complete trading week (Mon-Fri)
     - last_month: The most recent complete month
     - last_year: The most recent complete year
 
-    Example: If today is Jan 13, 2026 (Monday):
-    - last_week: Jan 6-12, 2026
-    - last_month: Dec 1-31, 2025
+    Example: If today is Sat Feb 14, 2026:
+    - last_week: Feb 9-13, 2026 (Mon-Fri)
+    - last_month: Jan 1-31, 2026
     - last_year: Jan 1 - Dec 31, 2025
     """
     from datetime import timedelta
@@ -1577,13 +1748,16 @@ def get_date_ranges_for_actuals() -> Dict[str, tuple]:
 
     today = date.today()
 
-    # Last full week (Monday to Sunday)
-    # Find the most recent Sunday (end of last week)
-    days_since_sunday = (today.weekday() + 1) % 7
-    if days_since_sunday == 0:
-        days_since_sunday = 7  # If today is Sunday, go back to last Sunday
-    last_sunday = today - timedelta(days=days_since_sunday)
-    last_monday = last_sunday - timedelta(days=6)
+    # Last full trading week (Monday to Friday)
+    # Find the most recent Friday (end of last trading week)
+    weekday = today.weekday()  # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
+    if weekday >= 5:
+        # Weekend: most recent completed trading week ended this Friday
+        last_friday = today - timedelta(days=weekday - 4)
+    else:
+        # Weekday: last completed trading week ended previous Friday
+        last_friday = today - timedelta(days=weekday + 3)
+    last_monday = last_friday - timedelta(days=4)
 
     # Last full month
     first_of_this_month = today.replace(day=1)
@@ -1596,7 +1770,7 @@ def get_date_ranges_for_actuals() -> Dict[str, tuple]:
     last_of_last_year = date(last_year, 12, 31)
 
     return {
-        'last_week': (last_monday, last_sunday),
+        'last_week': (last_monday, last_friday),
         'last_month': (first_of_last_month, last_day_of_last_month),
         'last_year': (first_of_last_year, last_of_last_year)
     }
@@ -1686,7 +1860,22 @@ def calculate_actual_income_for_holdings(
         'yearly': total_call_yearly + total_put_yearly
     }
 
-    return account_income, symbol_income, portfolio_totals, date_ranges, put_income_by_account
+    # Build account+symbol level CALL income (per account, per symbol)
+    account_symbol_income = {}
+    for account_name in set(list(weekly_call_income.keys()) + list(monthly_call_income.keys()) + list(yearly_call_income.keys())):
+        account_symbol_income[account_name] = {}
+        all_acct_syms = set()
+        all_acct_syms.update(weekly_call_income.get(account_name, {}).keys())
+        all_acct_syms.update(monthly_call_income.get(account_name, {}).keys())
+        all_acct_syms.update(yearly_call_income.get(account_name, {}).keys())
+        for sym in all_acct_syms:
+            account_symbol_income[account_name][sym] = {
+                'weekly': weekly_call_income.get(account_name, {}).get(sym, 0),
+                'monthly': monthly_call_income.get(account_name, {}).get(sym, 0),
+                'yearly': yearly_call_income.get(account_name, {}).get(sym, 0),
+            }
+
+    return account_income, symbol_income, portfolio_totals, date_ranges, put_income_by_account, account_symbol_income
 
 
 @router.post("/options-selling/income-projection-with-status")
@@ -1712,13 +1901,14 @@ async def calculate_options_income_with_sold_status(
     symbol_premiums = params.get("symbol_premiums", {})
     delta = params.get("delta", 10)
     weeks_per_year = params.get("weeks_per_year", 50)
-    
+
     # Load premium settings from database (auto-updated values)
     from app.modules.strategies.models import OptionPremiumSetting
     db_premiums = {}
     db_settings = db.query(OptionPremiumSetting).all()
     for setting in db_settings:
-        db_premiums[setting.symbol] = float(setting.premium_per_contract)
+        if setting.premium_per_contract is not None:
+            db_premiums[setting.symbol] = float(setting.premium_per_contract)
     
     # Default premiums by symbol (fallback if not in database)
     default_symbol_premiums = {
@@ -1781,7 +1971,8 @@ async def calculate_options_income_with_sold_status(
             ih.quantity,
             ih.current_price,
             ih.market_value,
-            ih.description
+            ih.description,
+            ih.cost_basis
         FROM investment_holdings ih
         JOIN investment_accounts ia ON ih.account_id = ia.account_id AND ih.source = ia.source
         WHERE ih.quantity > 0
@@ -1798,16 +1989,17 @@ async def calculate_options_income_with_sold_status(
     
     # Build holdings data (same as original endpoint)
     for row in result:
-        account_id, account_name, account_type, symbol, qty, price, value, description = row
+        account_id, account_name, account_type, symbol, qty, price, value, description, cost_basis = row
         qty = float(qty) if qty else 0
         price = float(price) if price else 0
         value = float(value) if value else 0
-        
+        cost_basis = float(cost_basis) if cost_basis else 0
+
         if qty < 100:
             continue
-            
+
         options_count = int(qty // 100)
-        
+
         premium, premium_source = get_premium_with_source(symbol)
 
         if symbol not in symbols:
@@ -1817,6 +2009,7 @@ async def calculate_options_income_with_sold_status(
                 "shares": 0,
                 "price": price,
                 "value": 0,
+                "cost_basis": 0,
                 "options": 0,
                 "premium_per_contract": premium,
                 "premium_source": premium_source,
@@ -1828,6 +2021,7 @@ async def calculate_options_income_with_sold_status(
 
         symbols[symbol]["shares"] += qty
         symbols[symbol]["value"] += value
+        symbols[symbol]["cost_basis"] += cost_basis
         symbols[symbol]["price"] = price
         if account_name not in symbols[symbol]["accounts"]:
             symbols[symbol]["accounts"].append(account_name)
@@ -1882,7 +2076,14 @@ async def calculate_options_income_with_sold_status(
         symbols[sym]["monthly_income"] = symbols[sym]["weekly_income"] * 4
         symbols[sym]["yearly_income"] = symbols[sym]["weekly_income"] * weeks_per_year
         symbols[sym]["value"] = round(symbols[sym]["value"], 0)
-        symbols[sym]["shares"] = int(symbols[sym]["shares"])
+        symbols[sym]["cost_basis"] = round(symbols[sym]["cost_basis"], 0)
+        # Calculate average cost per share
+        shares = symbols[sym]["shares"]
+        if shares > 0:
+            symbols[sym]["avg_cost_per_share"] = round(symbols[sym]["cost_basis"] / shares, 2)
+        else:
+            symbols[sym]["avg_cost_per_share"] = 0
+        symbols[sym]["shares"] = int(shares)
         symbols[sym]["account_count"] = len(symbols[sym]["accounts"])
 
     symbols_list = sorted(symbols.values(), key=lambda x: x["options"], reverse=True)
@@ -1898,7 +2099,7 @@ async def calculate_options_income_with_sold_status(
     date_ranges = None
     actual_portfolio_totals = None
     try:
-        actual_account_income, actual_symbol_income, actual_portfolio_totals, date_ranges, put_income_by_account = \
+        actual_account_income, actual_symbol_income, actual_portfolio_totals, date_ranges, put_income_by_account, actual_account_symbol_income = \
             calculate_actual_income_for_holdings(db, accounts, symbols)
 
         # Update symbol-level income with actuals
@@ -1909,25 +2110,17 @@ async def calculate_options_income_with_sold_status(
                 sym["monthly_income"] = actual_symbol_income[symbol]["monthly"]
                 sym["yearly_income"] = actual_symbol_income[symbol]["yearly"]
 
-        # Update each holding's income with actuals (per account per symbol)
+        # Update each holding's income with actuals (direct per-account per-symbol attribution)
         for account_name in accounts:
             for holding in accounts[account_name]["holdings"]:
                 symbol = holding["symbol"]
                 if symbol == "CASH":
                     continue  # CASH row uses put income, handled separately
-                if symbol in actual_symbol_income:
-                    # Get actual income for this symbol across all accounts
-                    # Then prorate based on this account's share of total options for that symbol
-                    total_symbol_weekly = actual_symbol_income[symbol]["weekly"]
-                    total_symbol_options = symbols.get(symbol, {}).get("options", 0) or 1
-                    account_symbol_options = holding["options"] or 0
-
-                    # Prorate income based on options count
-                    if total_symbol_options > 0 and account_symbol_options > 0:
-                        ratio = account_symbol_options / total_symbol_options
-                        holding["weekly_income"] = round(total_symbol_weekly * ratio, 2)
-                        holding["monthly_income"] = round(actual_symbol_income[symbol]["monthly"] * ratio, 2)
-                        holding["yearly_income"] = round(actual_symbol_income[symbol]["yearly"] * ratio, 2)
+                acct_sym = actual_account_symbol_income.get(account_name, {}).get(symbol)
+                if acct_sym:
+                    holding["weekly_income"] = round(acct_sym["weekly"], 2)
+                    holding["monthly_income"] = round(acct_sym["monthly"], 2)
+                    holding["yearly_income"] = round(acct_sym["yearly"], 2)
 
     except Exception as e:
         # If actual income calculation fails, fall back to projections
@@ -2762,21 +2955,30 @@ async def get_premium_settings(
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
-    """Get current premium settings for all symbols."""
+    """Get current premium settings for all symbols, including both CALL and PUT premiums."""
     from app.modules.strategies.models import OptionPremiumSetting
-    
+
     settings = db.query(OptionPremiumSetting).all()
-    
+
     result = {}
     for setting in settings:
         result[setting.symbol] = {
-            "premium_per_contract": float(setting.premium_per_contract),
+            # CALL premium (backward compatible field name)
+            "premium_per_contract": float(setting.premium_per_contract) if setting.premium_per_contract else None,
+            "call_premium_per_contract": float(setting.premium_per_contract) if setting.premium_per_contract else None,
+            "call_contracts_sold": setting.call_contracts_sold,
+            "call_net_total": float(setting.call_net_total) if setting.call_net_total else None,
+            # PUT premium
+            "put_premium_per_contract": float(setting.put_premium_per_contract) if setting.put_premium_per_contract else None,
+            "put_contracts_sold": setting.put_contracts_sold,
+            "put_net_total": float(setting.put_net_total) if setting.put_net_total else None,
+            # Metadata
             "is_auto_updated": setting.is_auto_updated,
             "manual_override": setting.manual_override,
             "last_auto_update": setting.last_auto_update.isoformat() if setting.last_auto_update else None,
             "updated_at": setting.updated_at.isoformat()
         }
-    
+
     return result
 
 
@@ -3178,8 +3380,134 @@ async def debug_strategies(
                 "error": str(e)
             }
             logger.error(f"Error testing strategy {strategy.strategy_type}: {e}", exc_info=True)
-    
+
     return debug_info
+
+
+@router.get("/debug/cache-status")
+async def debug_cache_status():
+    """
+    Debug endpoint to check cache and test mode status.
+
+    Shows:
+    - Test mode status (OPTIONS_TEST_MODE)
+    - Infinite cache off-hours setting
+    - Current market hours status
+    - Cache TTLs being used
+    - Cache statistics from each service
+
+    No authentication required for debugging.
+    """
+    from app.core.config import settings
+    from app.modules.strategies.yahoo_cache import (
+        get_cache_stats,
+        get_data_freshness_info,
+        get_cache_ttl,
+        _is_market_hours
+    )
+    import pytz
+    from datetime import datetime
+
+    PT = pytz.timezone('America/Los_Angeles')
+    now_pt = datetime.now(PT)
+
+    # Get test mode and cache settings
+    test_mode = getattr(settings, 'OPTIONS_TEST_MODE', False)
+    infinite_cache_off_hours = getattr(settings, 'OPTIONS_INFINITE_CACHE_OFF_HOURS', True)
+    is_market_hours = _is_market_hours()
+
+    # Get cache TTLs
+    price_ttl = get_cache_ttl("prices")
+    options_ttl = get_cache_ttl("options")
+
+    return {
+        "test_mode": {
+            "enabled": test_mode,
+            "env_var": "OPTIONS_TEST_MODE",
+            "description": "When enabled, system uses 24h cache to avoid API rate limits during testing"
+        },
+        "infinite_cache_off_hours": {
+            "enabled": infinite_cache_off_hours,
+            "env_var": "OPTIONS_INFINITE_CACHE_OFF_HOURS",
+            "description": "When enabled and market is closed, cache is 24h since prices don't change"
+        },
+        "market_status": {
+            "is_market_hours": is_market_hours,
+            "current_time_pt": now_pt.strftime("%Y-%m-%d %H:%M:%S PT"),
+            "weekday": now_pt.strftime("%A"),
+            "market_hours": "6:30 AM - 1:00 PM PT (Mon-Fri)"
+        },
+        "effective_cache_ttl": {
+            "prices_ttl_seconds": price_ttl,
+            "prices_ttl_display": f"{price_ttl // 3600}h {(price_ttl % 3600) // 60}m" if price_ttl >= 3600 else f"{price_ttl // 60}m",
+            "options_ttl_seconds": options_ttl,
+            "options_ttl_display": f"{options_ttl // 3600}h {(options_ttl % 3600) // 60}m" if options_ttl >= 3600 else f"{options_ttl // 60}m",
+            "explanation": "24h cache means no API calls will be made - using stored data only"
+        },
+        "yahoo_cache_stats": get_cache_stats(),
+        "data_freshness": get_data_freshness_info(),
+        "how_to_enable_test_mode": {
+            "option_1": "Set environment variable: export OPTIONS_TEST_MODE=true",
+            "option_2": "Add to .env file: OPTIONS_TEST_MODE=true",
+            "option_3": "Call POST /api/v1/strategies/debug/test-mode?enable=true (temporary)"
+        }
+    }
+
+
+@router.post("/debug/test-mode")
+async def toggle_test_mode(
+    enable: bool = Query(..., description="Enable or disable test mode")
+):
+    """
+    Temporarily enable/disable test mode for the current server session.
+
+    This modifies the settings in memory only - will reset on server restart.
+    For permanent change, set OPTIONS_TEST_MODE in .env file.
+
+    No authentication required for debugging.
+    """
+    from app.core.config import settings
+
+    # Modify settings in memory (won't persist after restart)
+    settings.OPTIONS_TEST_MODE = enable
+
+    # Also clear caches if disabling test mode (to force fresh data)
+    if not enable:
+        from app.modules.strategies.yahoo_cache import clear_cache
+        clear_cache()  # Clear all cached data
+
+    return {
+        "test_mode_enabled": enable,
+        "message": f"Test mode {'ENABLED' if enable else 'DISABLED'} for this server session",
+        "note": "This change is temporary. For permanent change, set OPTIONS_TEST_MODE in .env file.",
+        "cache_cleared": not enable  # Cache is cleared when disabling
+    }
+
+
+@router.post("/debug/clear-cache")
+async def clear_all_caches():
+    """
+    Clear all price and options data caches.
+
+    Useful for forcing fresh API calls after testing.
+    No authentication required for debugging.
+    """
+    from app.modules.strategies.yahoo_cache import clear_cache, get_cache_stats
+
+    # Get stats before clearing
+    stats_before = get_cache_stats()
+
+    # Clear all caches
+    clear_cache()
+
+    # Get stats after clearing
+    stats_after = get_cache_stats()
+
+    return {
+        "message": "All caches cleared",
+        "stats_before": stats_before,
+        "stats_after": stats_after
+    }
 
 
 @router.post("/strategies/{strategy_type}/test")
@@ -3252,9 +3580,9 @@ async def trigger_recommendation_check(
     """Manually trigger a recommendation check (for testing scheduler logic)."""
     from app.core.scheduler import trigger_manual_check
     import logging
-    
+
     logger = logging.getLogger(__name__)
-    
+
     try:
         trigger_manual_check(send_notifications=send_notifications)
         return {
@@ -3265,6 +3593,591 @@ async def trigger_recommendation_check(
     except Exception as e:
         logger.error(f"Error triggering recommendation check: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.post("/recommendations/check-now-v4")
+async def trigger_v4_recommendation_check(
+    send_notifications: bool = Query(default=True, description="Send notifications if recommendations found"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Manually trigger a V4 recommendation check.
+
+    V4 Philosophy:
+    - Believe in holdings, hold forever
+    - Mean reversion is inevitable
+    - Primary goal: weekly options income
+    - Tactical timing (sell when up, buy when down)
+    - Avoid forced assignment
+
+    V4 Features:
+    - HOLD recommendations now generate notifications
+    - Rich reasoning in every notification
+    - Two-part actions with follow-up tracking
+    - No priority sorting (all notifications equal)
+    """
+    from app.core.scheduler import trigger_v4_check
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        trigger_v4_check(send_notifications=send_notifications)
+        return {
+            "success": True,
+            "message": "V4 recommendation check triggered",
+            "notifications_sent": send_notifications,
+            "version": "v4"
+        }
+    except Exception as e:
+        logger.error(f"Error triggering V4 recommendation check: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.post("/recommendations/check-now-v5")
+async def trigger_v5_recommendation_check(
+    send_notifications: bool = Query(default=True, description="Send notifications if recommendations found"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Manually trigger a V5 recommendation check.
+
+    V5 extends V4 with LIFE_SUPPORT category:
+    - All V4 features (conviction-based evaluation)
+    - ROLL_BIWEEKLY action for stuck positions
+    - ROLL_MONTHLY action for deeply stuck positions
+    - Cash-secured put recommendations
+    """
+    from app.core.scheduler import trigger_v5_check
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        trigger_v5_check(send_notifications=send_notifications)
+        return {
+            "success": True,
+            "message": "V5 recommendation check triggered",
+            "notifications_sent": send_notifications,
+            "version": "v5"
+        }
+    except Exception as e:
+        logger.error(f"Error triggering V5 recommendation check: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.post("/recommendations/check-now-v5-debug")
+async def trigger_v5_recommendation_check_debug(
+    send_notifications: bool = Query(default=True, description="Send notifications if recommendations found"),
+    db: Session = Depends(get_db)
+):
+    """DEBUG endpoint - no auth required."""
+    from app.core.scheduler import trigger_v5_check
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        trigger_v5_check(send_notifications=send_notifications)
+        return {
+            "success": True,
+            "message": "V5 recommendation check triggered",
+            "notifications_sent": send_notifications,
+            "version": "v5"
+        }
+    except Exception as e:
+        logger.error(f"Error triggering V5 recommendation check: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.get("/recommendations/preview-v4-debug")
+async def preview_v4_notifications_debug(
+    db: Session = Depends(get_db)
+):
+    """DEBUG endpoint - no auth required. Remove in production."""
+    return await preview_v4_notifications_impl(db)
+
+@router.get("/recommendations/preview-v4")
+async def preview_v4_notifications(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Production endpoint with auth."""
+    return await preview_v4_notifications_impl(db)
+
+async def preview_v4_notifications_impl(db: Session):
+    """
+    Preview V4 notifications without sending them.
+
+    Returns all notifications that WOULD be sent if you triggered a V4 check:
+    1. Existing position evaluations (HOLD, ROLL, COMPRESS, CLOSE, etc.)
+    2. Uncovered position alerts (SELL, WAIT)
+    3. Follow-up condition triggers
+
+    Use this to debug what V4 is doing before sending actual notifications.
+    """
+    from app.modules.strategies.v4_notification_service import get_v4_notification_service
+    from app.modules.strategies.models import SoldOption, SoldOptionsSnapshot
+    from app.modules.investments.models import InvestmentHolding
+    from app.modules.strategies.models import OptionPremiumSetting
+    from sqlalchemy import func
+    from sqlalchemy.orm import joinedload
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Get latest positions
+        latest_snapshots = db.query(
+            func.max(SoldOptionsSnapshot.id).label('max_snapshot_id')
+        ).group_by(SoldOptionsSnapshot.account_name).subquery()
+
+        # Eagerly load snapshot relationship to ensure account_name is available
+        positions = db.query(SoldOption).options(
+            joinedload(SoldOption.snapshot)
+        ).filter(
+            SoldOption.status == 'open',
+            SoldOption.snapshot_id.in_(
+                db.query(latest_snapshots.c.max_snapshot_id)
+            )
+        ).all()
+
+        # Debug: Log positions by account (using print for visibility)
+        accounts_debug = {}
+        for pos in positions:
+            acct = pos.snapshot.account_name if pos.snapshot else 'NO_SNAPSHOT'
+            accounts_debug[acct] = accounts_debug.get(acct, 0) + 1
+        print(f"[V4 Router] Loaded {len(positions)} positions from database", flush=True)
+        print(f"[V4 Router] Positions by account: {accounts_debug}", flush=True)
+
+        # Also log the latest snapshot IDs being used
+        snapshot_ids = [s[0] for s in db.query(latest_snapshots.c.max_snapshot_id).all()]
+        print(f"[V4 Router] Using latest snapshot IDs: {snapshot_ids}", flush=True)
+
+        # Get cost basis map
+        cost_basis_map = {}
+        holdings = db.query(InvestmentHolding).all()
+        for h in holdings:
+            if h.symbol and h.cost_basis:
+                cost_basis_map[h.symbol] = float(h.cost_basis)
+
+        # Get weekly income map
+        weekly_income_map = {}
+        settings = db.query(OptionPremiumSetting).all()
+        for s in settings:
+            if s.symbol and s.premium_per_contract:
+                weekly_income_map[s.symbol] = float(s.premium_per_contract)
+
+        # Get V4 service
+        v4_service = get_v4_notification_service(db)
+
+        # Get all notifications
+        notifications = v4_service.get_all_v4_notifications(
+            positions=positions,
+            cost_basis_map=cost_basis_map,
+            weekly_income_map=weekly_income_map,
+            include_uncovered=True,
+            include_follow_ups=True
+        )
+
+        # Format for preview
+        formatted_message = v4_service.format_telegram_message(notifications)
+
+        # Categorize notifications
+        position_notifications = [n for n in notifications if not n.get('is_uncovered') and not n.get('is_follow_up')]
+        uncovered_notifications = [n for n in notifications if n.get('is_uncovered')]
+        follow_up_notifications = [n for n in notifications if n.get('is_follow_up')]
+
+        return {
+            "success": True,
+            "total_notifications": len(notifications),
+            "breakdown": {
+                "existing_positions": len(position_notifications),
+                "uncovered_positions": len(uncovered_notifications),
+                "follow_up_triggers": len(follow_up_notifications),
+            },
+            "data_status": {
+                "active_sold_options": len(positions),
+                "cost_basis_symbols": len(cost_basis_map),
+                "weekly_income_symbols": len(weekly_income_map),
+            },
+            "notifications": notifications,
+            "telegram_preview": formatted_message,
+        }
+
+    except Exception as e:
+        logger.error(f"Error previewing V4 notifications: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# V5 PREVIEW ENDPOINTS
+# ============================================================================
+
+@router.get("/recommendations/v5-test")
+async def test_v5_imports(db: Session = Depends(get_db)):
+    """Test V5 imports and basic functionality."""
+    import traceback
+    errors = []
+
+    # Test 1: Import V5 evaluator
+    try:
+        from app.modules.strategies.v5_position_evaluator import V5PositionEvaluator, V5EvaluationResult
+        errors.append({"test": "v5_position_evaluator import", "status": "OK"})
+    except Exception as e:
+        errors.append({"test": "v5_position_evaluator import", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 2: Import V5 notification service
+    try:
+        from app.modules.strategies.v5_notification_service import V5NotificationService, get_v5_notification_service
+        errors.append({"test": "v5_notification_service import", "status": "OK"})
+    except Exception as e:
+        errors.append({"test": "v5_notification_service import", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 3: Import algorithm config
+    try:
+        from app.modules.strategies.algorithm_config import ALGORITHM_VERSION, get_config, V5_CONFIG
+        errors.append({"test": "algorithm_config V5", "status": "OK", "version": ALGORITHM_VERSION})
+    except Exception as e:
+        errors.append({"test": "algorithm_config V5", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 4: Instantiate V5 service
+    try:
+        from app.modules.strategies.v5_notification_service import get_v5_notification_service
+        v5_service = get_v5_notification_service(db)
+        errors.append({"test": "v5_service instantiation", "status": "OK"})
+    except Exception as e:
+        errors.append({"test": "v5_service instantiation", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 5: Get positions from DB
+    try:
+        from app.modules.strategies.models import SoldOption, SoldOptionsSnapshot
+        from sqlalchemy import func
+        from sqlalchemy.orm import joinedload
+
+        latest_snapshots = db.query(
+            func.max(SoldOptionsSnapshot.id).label('max_snapshot_id')
+        ).group_by(SoldOptionsSnapshot.account_name).subquery()
+
+        positions = db.query(SoldOption).options(
+            joinedload(SoldOption.snapshot)
+        ).filter(
+            SoldOption.status == 'open',
+            SoldOption.snapshot_id.in_(
+                db.query(latest_snapshots.c.max_snapshot_id)
+            )
+        ).all()
+        errors.append({"test": "get positions", "status": "OK", "count": len(positions)})
+    except Exception as e:
+        errors.append({"test": "get positions", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 6: Actually call get_all_v5_notifications
+    notifications = []
+    try:
+        from app.modules.strategies.v5_notification_service import get_v5_notification_service
+        v5_service = get_v5_notification_service(db)
+        notifications = v5_service.get_all_v5_notifications(
+            positions=positions,
+            cost_basis_map={},
+            weekly_income_map={},
+            include_uncovered=False,
+            include_follow_ups=False
+        )
+        errors.append({"test": "get_all_v5_notifications", "status": "OK", "count": len(notifications)})
+    except Exception as e:
+        errors.append({"test": "get_all_v5_notifications", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 7: Format telegram message
+    try:
+        formatted_message = v5_service.format_telegram_message(notifications)
+        errors.append({"test": "format_telegram_message", "status": "OK", "length": len(formatted_message)})
+    except Exception as e:
+        errors.append({"test": "format_telegram_message", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 8: Check for non-serializable objects in notifications
+    try:
+        import json
+        json.dumps(notifications, default=str)
+        errors.append({"test": "json_serialization", "status": "OK"})
+    except Exception as e:
+        errors.append({"test": "json_serialization", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 10: Compression debug for long-dated ITM positions
+    try:
+        from app.modules.strategies.schwab_service import get_option_expirations_schwab
+        from datetime import date
+
+        compression_debug = []
+        all_positions_debug = []
+
+        for pos in positions:
+            exp_date = pos.expiration_date
+            if isinstance(exp_date, str):
+                exp_date = date.fromisoformat(exp_date)
+
+            days_to_exp = (exp_date - date.today()).days if exp_date else 0
+
+            all_positions_debug.append({
+                "symbol": pos.symbol,
+                "strike": float(pos.strike_price) if pos.strike_price else 0,
+                "expiration": str(exp_date),
+                "days_to_exp": days_to_exp,
+            })
+
+            # Only check long-dated positions
+            if days_to_exp > 30:
+                symbol = pos.symbol
+                available_exps = get_option_expirations_schwab(symbol)
+
+                # Count shorter expirations
+                shorter_count = 0
+                if available_exps:
+                    for exp_str in available_exps:
+                        exp = date.fromisoformat(exp_str) if isinstance(exp_str, str) else exp_str
+                        if exp < exp_date and (exp - date.today()).days >= 7:
+                            shorter_count += 1
+
+                compression_debug.append({
+                    "symbol": symbol,
+                    "strike": float(pos.strike_price) if pos.strike_price else 0,
+                    "expiration": str(exp_date),
+                    "days_to_exp": days_to_exp,
+                    "available_expirations": len(available_exps) if available_exps else 0,
+                    "shorter_expirations": shorter_count,
+                    "current_premium": float(pos.premium_per_contract) if pos.premium_per_contract else 0,
+                })
+
+        errors.append({
+            "test": "compression_debug",
+            "status": "OK",
+            "total_positions": len(all_positions_debug),
+            "long_dated_positions": len(compression_debug),
+            "all_positions": all_positions_debug[:5],  # First 5 for brevity
+            "long_dated": compression_debug
+        })
+    except Exception as e:
+        errors.append({"test": "compression_debug", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    # Test 9: Full get_all_v5_notifications with uncovered and follow-ups
+    try:
+        from app.modules.strategies.v5_notification_service import get_v5_notification_service
+        from app.modules.investments.models import InvestmentHolding
+        from app.modules.strategies.models import OptionPremiumSetting
+
+        # Get cost basis map
+        cost_basis_map = {}
+        holdings = db.query(InvestmentHolding).all()
+        for h in holdings:
+            if h.symbol and h.cost_basis:
+                cost_basis_map[h.symbol] = float(h.cost_basis)
+
+        # Get weekly income map
+        weekly_income_map = {}
+        settings = db.query(OptionPremiumSetting).all()
+        for s in settings:
+            if s.symbol and s.premium_per_contract:
+                weekly_income_map[s.symbol] = float(s.premium_per_contract)
+
+        v5_service = get_v5_notification_service(db)
+        full_notifications = v5_service.get_all_v5_notifications(
+            positions=positions,
+            cost_basis_map=cost_basis_map,
+            weekly_income_map=weekly_income_map,
+            include_uncovered=True,
+            include_follow_ups=True
+        )
+        errors.append({"test": "full get_all_v5_notifications", "status": "OK", "count": len(full_notifications)})
+    except Exception as e:
+        errors.append({"test": "full get_all_v5_notifications", "status": "FAILED", "error": str(e), "traceback": traceback.format_exc()})
+
+    return {"tests": errors}
+
+
+@router.get("/recommendations/preview-v5-debug")
+async def preview_v5_notifications_debug(
+    db: Session = Depends(get_db)
+):
+    """DEBUG endpoint - no auth required. Remove in production."""
+    return await preview_v5_notifications_impl(db)
+
+@router.get("/recommendations/preview-v5")
+async def preview_v5_notifications(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Production endpoint with auth."""
+    return await preview_v5_notifications_impl(db)
+
+async def preview_v5_notifications_impl(db: Session):
+    """
+    Preview V5 notifications without sending them.
+
+    V5 extends V4 with LIFE_SUPPORT category:
+    1. All V4 position evaluations (HOLD, ROLL, COMPRESS, CLOSE, etc.)
+    2. NEW: ROLL_BIWEEKLY for stuck positions where weekly = $0 but biweekly = credit
+    3. NEW: ROLL_MONTHLY for deeply stuck positions where biweekly = $0 but monthly = credit
+    4. Uncovered position alerts (SELL, WAIT)
+    5. Follow-up condition triggers
+
+    Use this to debug what V5 is doing before sending actual notifications.
+    """
+    from app.modules.strategies.v5_notification_service import get_v5_notification_service
+    from app.modules.strategies.models import SoldOption, SoldOptionsSnapshot
+    from app.modules.investments.models import InvestmentHolding
+    from app.modules.strategies.models import OptionPremiumSetting
+    from sqlalchemy import func
+    from sqlalchemy.orm import joinedload
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Get latest positions
+        latest_snapshots = db.query(
+            func.max(SoldOptionsSnapshot.id).label('max_snapshot_id')
+        ).group_by(SoldOptionsSnapshot.account_name).subquery()
+
+        positions = db.query(SoldOption).options(
+            joinedload(SoldOption.snapshot)
+        ).filter(
+            SoldOption.status == 'open',
+            SoldOption.snapshot_id.in_(
+                db.query(latest_snapshots.c.max_snapshot_id)
+            )
+        ).all()
+
+        print(f"[V5 Router] Loaded {len(positions)} positions from database", flush=True)
+
+        # Get cost basis map
+        cost_basis_map = {}
+        holdings = db.query(InvestmentHolding).all()
+        for h in holdings:
+            if h.symbol and h.cost_basis:
+                cost_basis_map[h.symbol] = float(h.cost_basis)
+
+        # Get weekly income map
+        weekly_income_map = {}
+        settings = db.query(OptionPremiumSetting).all()
+        for s in settings:
+            if s.symbol and s.premium_per_contract:
+                weekly_income_map[s.symbol] = float(s.premium_per_contract)
+
+        # Get V5 service
+        v5_service = get_v5_notification_service(db)
+
+        # Get all notifications
+        notifications = v5_service.get_all_v5_notifications(
+            positions=positions,
+            cost_basis_map=cost_basis_map,
+            weekly_income_map=weekly_income_map,
+            include_uncovered=True,
+            include_follow_ups=True
+        )
+
+        # Format for preview
+        formatted_message = v5_service.format_telegram_message(notifications)
+
+        # Categorize notifications
+        position_notifications = [n for n in notifications if not n.get('is_uncovered') and not n.get('is_follow_up')]
+        uncovered_notifications = [n for n in notifications if n.get('is_uncovered')]
+        follow_up_notifications = [n for n in notifications if n.get('is_follow_up')]
+
+        # V5-specific: Count LIFE_SUPPORT actions
+        life_support_biweekly = [n for n in notifications if n.get('action') == 'ROLL_BIWEEKLY']
+        life_support_monthly = [n for n in notifications if n.get('action') == 'ROLL_MONTHLY']
+        stuck_positions = [n for n in notifications if n.get('stuck_category') in ('STUCK', 'LIFE_SUPPORT', 'DROWNING')]
+
+        return {
+            "success": True,
+            "algorithm_version": "v5",
+            "total_notifications": len(notifications),
+            "breakdown": {
+                "existing_positions": len(position_notifications),
+                "uncovered_positions": len(uncovered_notifications),
+                "follow_up_triggers": len(follow_up_notifications),
+            },
+            "life_support_breakdown": {
+                "roll_biweekly": len(life_support_biweekly),
+                "roll_monthly": len(life_support_monthly),
+                "stuck_positions": len(stuck_positions),
+                "biweekly_symbols": [n.get('symbol') for n in life_support_biweekly],
+                "monthly_symbols": [n.get('symbol') for n in life_support_monthly],
+            },
+            "data_status": {
+                "active_sold_options": len(positions),
+                "cost_basis_symbols": len(cost_basis_map),
+                "weekly_income_symbols": len(weekly_income_map),
+            },
+            "notifications": notifications,
+            "telegram_preview": formatted_message,
+        }
+
+    except Exception as e:
+        logger.error(f"Error previewing V5 notifications: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SCHEDULER DIAGNOSTICS
+# ============================================================================
+
+@router.get("/scheduler/status")
+async def get_scheduler_status(
+    user=Depends(get_current_user)
+):
+    """
+    Get scheduler status and list of scheduled jobs.
+
+    Use this to diagnose why scheduled notifications might not be running.
+    """
+    from app.core.scheduler import get_scheduler
+    import pytz
+
+    PT = pytz.timezone('America/Los_Angeles')
+
+    scheduler = get_scheduler()
+
+    if scheduler is None:
+        return {
+            "status": "not_running",
+            "message": "Scheduler has not been started. Backend may need restart.",
+            "jobs": []
+        }
+
+    if not scheduler.scheduler.running:
+        return {
+            "status": "stopped",
+            "message": "Scheduler exists but is not running.",
+            "jobs": []
+        }
+
+    # Get all scheduled jobs
+    jobs = []
+    for job in scheduler.scheduler.get_jobs():
+        next_run = job.next_run_time
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run_time": next_run.astimezone(PT).strftime('%Y-%m-%d %H:%M:%S %Z') if next_run else "Not scheduled",
+            "trigger": str(job.trigger),
+        })
+
+    # Sort by next run time
+    jobs.sort(key=lambda x: x["next_run_time"] if x["next_run_time"] != "Not scheduled" else "9999")
+
+    now_pt = datetime.now(PT)
+
+    return {
+        "status": "running",
+        "current_time_pt": now_pt.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        "day_of_week": now_pt.strftime('%A'),
+        "is_weekday": now_pt.weekday() < 5,
+        "jobs_count": len(jobs),
+        "jobs": jobs,
+        "note": "Jobs only run Monday-Friday. Today is " + now_pt.strftime('%A') + "."
+    }
 
 
 # ============================================================================
@@ -3597,19 +4510,24 @@ async def get_v2_notification_history(
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
     days_back: int = Query(30, description="Number of days to look back"),
     limit: int = Query(100, description="Maximum records"),
+    latest_only: bool = Query(True, description="Show only latest snapshot per position (default True)"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user)
 ):
     """
     Get V2 notification history with snapshot information.
-    
+
     This returns notifications based on the V2 recommendation/snapshot model,
     including snapshot numbers and change tracking.
-    
+
     mode:
     - 'verbose': All snapshots that were notified in verbose mode
-    - 'smart': Only snapshots notified in smart mode  
+    - 'smart': Only snapshots notified in smart mode
     - 'all': Everything
+
+    latest_only:
+    - True (default): Show only the latest snapshot per position (no duplicates)
+    - False: Show all snapshots (historical view)
     """
     from app.modules.strategies.recommendation_models import (
         PositionRecommendation,
@@ -3626,9 +4544,25 @@ async def get_v2_notification_history(
         RecommendationSnapshot.evaluated_at >= cutoff
     )
     
+    # Filter to latest snapshot per recommendation if requested (default)
+    if latest_only:
+        from sqlalchemy import func
+        # Subquery to get max snapshot_number per recommendation
+        latest_subq = db.query(
+            RecommendationSnapshot.recommendation_id,
+            func.max(RecommendationSnapshot.snapshot_number).label('max_snap')
+        ).group_by(RecommendationSnapshot.recommendation_id).subquery()
+
+        query = query.join(
+            latest_subq,
+            (RecommendationSnapshot.recommendation_id == latest_subq.c.recommendation_id) &
+            (RecommendationSnapshot.snapshot_number == latest_subq.c.max_snap)
+        )
+
+
     # Filter by mode - interpret like notification display modes, not database flags
     # 'verbose' = show ALL snapshots (every evaluation, like verbose mode shows everything)
-    # 'smart' = only snapshots where something changed (like smart mode only shows changes)  
+    # 'smart' = only snapshots where something changed (like smart mode only shows changes)
     # 'all' = same as verbose
     if mode == 'smart':
         # Smart mode: only show snapshots where action, target, or priority changed
@@ -3642,15 +4576,62 @@ async def get_v2_notification_history(
             )
         )
     # 'verbose' and 'all' show everything - no additional filter
-    
-    # Filter by status
+
+    # When showing historical snapshots (latest_only=false), deduplicate identical ones
+    # Only show snapshots where the ACTION changed OR it's first/latest
+    # This prevents showing multiple identical "Wait on IBIT (1 uncovered)" notifications
+    # Note: target_changed is excluded since strike recommendations change frequently
+    # but don't represent meaningful changes to show the user
+    if not latest_only:
+        from sqlalchemy import or_
+        query = query.filter(
+            or_(
+                RecommendationSnapshot.action_changed == True,  # Action changed (SELL->WAIT, HOLD->ROLL, etc.)
+                RecommendationSnapshot.snapshot_number == 1,  # First snapshot (when position was first detected)
+                RecommendationSnapshot.snapshot_number == PositionRecommendation.total_snapshots  # Latest (current state)
+            )
+        )
+
+    # Exclude HOLD and NO_ACTION (no user action needed)
+    query = query.filter(
+        ~RecommendationSnapshot.recommended_action.in_(['HOLD', 'hold', 'NO_ACTION', 'no_action'])
+    )
+
+    # Filter by status - default to 'active' to exclude superseded/resolved duplicates
     if status:
         query = query.filter(PositionRecommendation.status == status)
+    else:
+        # Default: only show active recommendations (primary defense against duplicates)
+        query = query.filter(PositionRecommendation.status == 'active')
     
     # Filter by symbol
     if symbol:
         query = query.filter(PositionRecommendation.symbol.ilike(f"%{symbol}%"))
-    
+
+    # SECONDARY defense: deduplicate at position level (if latest_only is enabled)
+    # This handles cases where multiple recommendation_ids exist for same position
+    # Keep only the recommendation with highest ID (most recent) per position
+    if latest_only:
+        from sqlalchemy import func
+        effective_status = status if status else 'active'
+        position_dedup_subq = db.query(
+            func.max(PositionRecommendation.id).label('max_rec_id')
+        ).filter(
+            PositionRecommendation.status == effective_status
+        ).group_by(
+            PositionRecommendation.symbol,
+            PositionRecommendation.account_name,
+            PositionRecommendation.source_strike,
+            PositionRecommendation.source_expiration,
+            PositionRecommendation.option_type
+        ).subquery()
+
+        query = query.filter(
+            PositionRecommendation.id.in_(
+                db.query(position_dedup_subq.c.max_rec_id)
+            )
+        )
+
     # Order and limit
     snapshots = query.order_by(
         RecommendationSnapshot.evaluated_at.desc()
@@ -4821,4 +5802,141 @@ async def remove_from_acquisition_watchlist(
         logger.error(f"Error removing from acquisition watchlist: {e}", exc_info=True)
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# V4 VALIDATION ENDPOINT
+# =============================================================================
+
+@router.get("/v4-validation")
+async def get_v4_validation(
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user)
+):
+    """
+    Run V4 evaluator on all active positions and return results for validation.
+    This creates a baseline for testing after refactoring.
+    """
+    from app.modules.strategies.v4_position_evaluator import V4PositionEvaluator
+    from app.modules.strategies.algorithm_config import V4_CONFIG
+
+    try:
+        # Get all active positions
+        positions = db.query(SoldOption).filter(SoldOption.status == 'open').all()
+
+        # Initialize evaluator (it fetches prices internally via ta_service)
+        evaluator = V4PositionEvaluator(V4_CONFIG)
+
+        results = []
+        errors = []
+
+        for position in positions:
+            try:
+                strike = float(position.strike_price) if position.strike_price else 0
+                option_type = getattr(position, 'option_type', 'call')
+                expiration = position.expiration_date
+                account = getattr(position, 'account_name', 'Unknown')
+
+                # Run V4 evaluator (it fetches price internally)
+                result = evaluator.evaluate(position=position)
+
+                if result:
+                    # Get market data from result details
+                    details = result.details or {}
+                    stock_price = details.get('current_price', 0)
+                    itm_pct = details.get('itm_pct', 0)
+                    moneyness = "ITM" if details.get('is_itm') else "OTM"
+
+                    results.append({
+                        # Position identity
+                        'symbol': position.symbol,
+                        'strike': strike,
+                        'option_type': option_type,
+                        'expiration': str(expiration),
+                        'account': account,
+                        # Market data
+                        'stock_price': stock_price,
+                        'moneyness': moneyness,
+                        'itm_pct': round(itm_pct, 1) if itm_pct else 0,
+                        'dte': (expiration - date.today()).days if expiration else None,
+                        # V4 decision
+                        'v4_action': result.action,
+                        'v4_reason_short': result.reason_short,
+                        'v4_philosophy': result.philosophy_applied,
+                        'v4_intrinsic_pct': result.intrinsic_pct,
+                        'v4_new_strike': result.new_strike,
+                        'v4_new_expiration': str(result.new_expiration) if result.new_expiration else None,
+                    })
+                else:
+                    errors.append(f"{position.symbol} ${strike}: No result from V4")
+
+            except Exception as e:
+                errors.append(f"{position.symbol} ${position.strike_price}: {str(e)}")
+
+        # Summary
+        action_counts = {}
+        for r in results:
+            action = r['v4_action']
+            action_counts[action] = action_counts.get(action, 0) + 1
+
+        return {
+            'generated_at': datetime.now().isoformat(),
+            'total_positions': len(positions),
+            'evaluated': len(results),
+            'errors': len(errors),
+            'action_summary': action_counts,
+            'positions': results,
+            'error_details': errors[:10]  # First 10 errors
+        }
+
+    except Exception as e:
+        logger.error(f"V4 validation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Schwab Token Status & Re-Authentication
+# =============================================================================
+
+@router.get("/schwab/token-status")
+async def get_schwab_token_status(user=Depends(get_current_user)):
+    """
+    Get Schwab token health status.
+    Reads schwab_token.json and computes refresh token expiry (7 days from creation).
+    No Schwab API call needed.
+    """
+    from app.modules.strategies.schwab_service import get_schwab_token_status as _get_status
+    return _get_status()
+
+
+@router.post("/schwab/authenticate")
+async def trigger_schwab_auth(user=Depends(get_current_user)):
+    """
+    Trigger Schwab OAuth re-authentication.
+    Runs authenticate_schwab() in a background thread (it blocks while waiting
+    for browser OAuth). Returns immediately so the frontend can poll token-status.
+    """
+    from app.modules.strategies.schwab_service import authenticate_schwab, _auth_in_progress
+
+    if _auth_in_progress:
+        return {"message": "Authentication already in progress..."}
+
+    def _run_auth():
+        import app.modules.strategies.schwab_service as svc
+        svc._auth_in_progress = True
+        try:
+            # Reset cached client so fresh token is picked up
+            svc._schwab_client = None
+            # Delete old token file to force browser-based re-auth
+            # (otherwise easy_client may load the stale token and return
+            # without opening a browser)
+            svc.TOKEN_FILE.unlink(missing_ok=True)
+            authenticate_schwab()
+        finally:
+            svc._auth_in_progress = False
+
+    thread = threading.Thread(target=_run_auth, daemon=True)
+    thread.start()
+
+    return {"message": "Browser opened for Schwab login. Complete the OAuth flow to re-authenticate."}
 

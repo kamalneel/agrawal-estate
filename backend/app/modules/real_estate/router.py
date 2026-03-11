@@ -1,15 +1,48 @@
 """
 Real Estate API routes.
-Handles properties, mortgages, valuations, and equity tracking.
+Handles properties, mortgages, valuations, equity tracking, and rental management.
 All data is stored in and retrieved from the database.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from datetime import date
+from decimal import Decimal
 from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
+from pydantic import BaseModel as PydanticModel
+from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.modules.real_estate import services
+
+
+# ── Pydantic request models ──
+
+class RentalAgreementRequest(PydanticModel):
+    property_id: int
+    lease_start_date: date
+    lease_end_date: date
+    tenant_names: str
+    monthly_rent: float
+    monthly_hoa: Optional[float] = None
+    security_deposit: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class RentalExpenseRequest(PydanticModel):
+    property_id: int
+    tax_year: int
+    category: str
+    amount: float
+    description: Optional[str] = None
+
+
+class RentalIncomeRequest(PydanticModel):
+    property_id: int
+    tax_year: int
+    annual_income: Optional[float] = None
+    cost_of_property: Optional[float] = None
 
 router = APIRouter()
 
@@ -299,3 +332,170 @@ async def seed_property_data(db: Session = Depends(get_db)):
         "message": "Property data seeded successfully",
         "stats": stats
     }
+
+
+# ── Rental Agreements ─────────────────────────────────────────
+
+@router.get("/rental-agreements")
+async def list_rental_agreements(
+    property_id: int,
+    db: Session = Depends(get_db),
+):
+    """List all rental agreements for a property."""
+    agreements = services.get_rental_agreements(db, property_id)
+    return {"agreements": agreements}
+
+
+@router.post("/rental-agreements")
+async def create_or_update_rental_agreement(
+    req: RentalAgreementRequest,
+    db: Session = Depends(get_db),
+):
+    """Create or update a rental agreement."""
+    agreement = services.upsert_rental_agreement(
+        db=db,
+        property_id=req.property_id,
+        lease_start_date=req.lease_start_date,
+        lease_end_date=req.lease_end_date,
+        tenant_names=req.tenant_names,
+        monthly_rent=Decimal(str(req.monthly_rent)),
+        monthly_hoa=Decimal(str(req.monthly_hoa)) if req.monthly_hoa is not None else None,
+        security_deposit=Decimal(str(req.security_deposit)) if req.security_deposit is not None else None,
+        notes=req.notes,
+    )
+    return {"status": "success", "id": agreement.id}
+
+
+# ── Rental Expenses ───────────────────────────────────────────
+
+@router.get("/rental-expenses")
+async def list_rental_expenses(
+    property_id: int,
+    tax_year: int,
+    db: Session = Depends(get_db),
+):
+    """Get expenses for a property and year."""
+    expenses = services.get_expenses_by_year(db, property_id, tax_year)
+    return {"expenses": expenses, "categories": services.EXPENSE_CATEGORIES}
+
+
+@router.post("/rental-expenses")
+async def create_or_update_expense(
+    req: RentalExpenseRequest,
+    db: Session = Depends(get_db),
+):
+    """Create or update a rental expense."""
+    expense = services.upsert_expense(
+        db=db,
+        property_id=req.property_id,
+        tax_year=req.tax_year,
+        category=req.category,
+        amount=Decimal(str(req.amount)),
+        description=req.description,
+    )
+    return {"status": "success", "id": expense.id}
+
+
+@router.delete("/rental-expenses/{expense_id}")
+async def remove_expense(expense_id: int, db: Session = Depends(get_db)):
+    """Delete an expense."""
+    if not services.delete_expense(db, expense_id):
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"status": "deleted"}
+
+
+# ── Rental Income / Annual Summary ────────────────────────────
+
+@router.post("/rental-income")
+async def set_annual_income(
+    req: RentalIncomeRequest,
+    db: Session = Depends(get_db),
+):
+    """Set annual income and/or cost of property for a tax year."""
+    summary = services.upsert_annual_income(
+        db=db,
+        property_id=req.property_id,
+        tax_year=req.tax_year,
+        annual_income=Decimal(str(req.annual_income)) if req.annual_income is not None else None,
+        cost_of_property=Decimal(str(req.cost_of_property)) if req.cost_of_property is not None else None,
+    )
+    return {"status": "success", "id": summary.id}
+
+
+@router.get("/rental-summary")
+async def get_rental_summary(
+    property_id: int,
+    tax_year: int,
+    db: Session = Depends(get_db),
+):
+    """Get annual income/expense summary for a property."""
+    return services.get_annual_summary(db, property_id, tax_year)
+
+
+@router.post("/rental-income/project")
+async def project_rental_income(db: Session = Depends(get_db)):
+    """Project rental_monthly_income rows from active rental agreements.
+    Creates rows for months covered by agreements that don't already have income data."""
+    stats = services.project_rental_income_from_agreements(db)
+    return {"status": "success", **stats}
+
+
+# ── Rental Documents ──────────────────────────────────────────
+
+@router.get("/rental-documents")
+async def list_rental_documents(
+    property_id: int,
+    db: Session = Depends(get_db),
+):
+    """List all rental documents for a property."""
+    docs = services.get_rental_documents(db, property_id)
+    return {"documents": docs}
+
+
+@router.post("/rental-documents/{property_id}")
+async def upload_rental_doc(
+    property_id: int,
+    file: UploadFile = File(...),
+    document_type: str = Form("other"),
+    tax_year: Optional[int] = Form(None),
+    notes: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Upload a rental document."""
+    try:
+        doc = await services.upload_rental_document(
+            db=db,
+            property_id=property_id,
+            file=file,
+            document_type=document_type,
+            tax_year=tax_year,
+            notes=notes,
+        )
+        return {
+            "status": "success",
+            "id": doc.id,
+            "file_name": doc.file_name,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/rental-documents/{doc_id}/download")
+async def download_rental_doc(doc_id: int, db: Session = Depends(get_db)):
+    """Download a rental document."""
+    file_path = services.get_rental_document_path(db, doc_id)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/octet-stream",
+    )
+
+
+@router.delete("/rental-documents/{doc_id}")
+async def remove_rental_doc(doc_id: int, db: Session = Depends(get_db)):
+    """Delete a rental document."""
+    if not services.delete_rental_document(db, doc_id):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"status": "deleted"}

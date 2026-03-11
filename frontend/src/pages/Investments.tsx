@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { TrendingUp, TrendingDown, ArrowLeft, User, Heart, Briefcase, RefreshCw, AlertCircle } from 'lucide-react'
+import React, { useState, useEffect, useMemo } from 'react'
+import { TrendingUp, TrendingDown, ArrowLeft, User, Heart, Briefcase, RefreshCw, AlertCircle, ChevronRight } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import {
   AreaChart,
@@ -12,6 +12,32 @@ import {
 } from 'recharts'
 import styles from './Investments.module.css'
 import clsx from 'clsx'
+import {
+  HoldingsTable,
+  symbolColumn,
+  sharesColumn,
+  priceColumn,
+  valueColumn,
+  percentPortfolioColumn,
+  costBasisColumn,
+  totalReturnColumn,
+  stockGrowthColumn,
+  holdingPeriodColumn,
+} from '../components/HoldingsTable'
+import type { HoldingsRow, ColumnDef } from '../components/HoldingsTable'
+import {
+  formatCurrency,
+  formatCurrencyShort,
+  formatPercent,
+  ChartTooltip,
+  ChartWrapper,
+  PERIOD_PRESETS,
+  GRID_PROPS,
+  X_AXIS_PROPS,
+  Y_AXIS_PROPS,
+  CHART_MARGINS,
+  CHART_GREEN,
+} from '../components/charts'
 
 const API_BASE = '/api/v1'
 
@@ -26,9 +52,7 @@ interface Holding {
   priceSource?: 'live' | 'cached' | 'statement'
   change: number
   changePercent: number
-  change1d?: number | null
-  change30d?: number | null
-  change90d?: number | null
+  costBasis?: number | null
 }
 
 interface Account {
@@ -70,6 +94,33 @@ interface GrowthSummary {
   }
 }
 
+interface CapitalEvent {
+  date: string
+  formatted: string
+  month_key: string
+  date_key: string
+  type: 'BUY' | 'SELL'
+  symbol: string
+  quantity: number | null
+  amount: number
+  price_per_share: number | null
+  account_id: string
+  account_name: string
+  description: string
+}
+
+interface OptionChainTrade {
+  date: string; formatted: string; type: 'STO' | 'BTC'
+  strike: number; expiry: string; amount: number; contracts: number
+}
+
+interface OptionChainInfo {
+  is_forced: boolean; option_type: 'put' | 'call'
+  net_premium: number; rolls: number
+  chain_start_date: string; starting_strike: number; final_strike: number
+  duration_days: number; contracts: number; trades: OptionChainTrade[]
+}
+
 
 // Account type to icon mapping
 const getAccountIcon = (type: string) => {
@@ -104,54 +155,6 @@ const getAccountTypeDisplay = (type: string) => {
   }
 }
 
-// Helper functions
-const formatCurrency = (value: number) => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
-const formatCurrencyPrecise = (value: number) => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value)
-}
-
-const formatPercent = (value: number) => {
-  const sign = value >= 0 ? '+' : ''
-  return `${sign}${value.toFixed(2)}%`
-}
-
-const formatNumber = (value: number) => {
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(value)
-}
-
-// Custom Tooltip for Chart
-interface CustomTooltipProps {
-  active?: boolean
-  payload?: Array<{ value: number; payload: MonthlyData }>
-}
-
-function ChartTooltip({ active, payload }: CustomTooltipProps) {
-  if (active && payload && payload.length) {
-    return (
-      <div className={styles.chartTooltip}>
-        <div className={styles.tooltipMonth}>{payload[0].payload.month}</div>
-        <div className={styles.tooltipValue}>{formatCurrency(payload[0].value)}</div>
-      </div>
-    )
-  }
-  return null
-}
 
 // Account Card Component
 interface AccountCardProps {
@@ -189,6 +192,7 @@ function AccountCard({ account, onClick, delay }: AccountCardProps) {
         {isPositive ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
         <span>{formatCurrency(Math.abs(account.change))}</span>
         <span className={styles.changePercent}>{formatPercent(account.changePercent)}</span>
+        <span style={{ opacity: 0.6, fontSize: '0.8em', marginLeft: 4 }}>Today</span>
       </div>
       <div className={styles.viewDetails}>
         View Holdings →
@@ -197,98 +201,43 @@ function AccountCard({ account, onClick, delay }: AccountCardProps) {
   )
 }
 
-// Holdings Table Component
-interface HoldingsTableProps {
-  holdings: Holding[]
+// Mapper: convert Holding[] to HoldingsRow[], merging growth data
+function toHoldingsRows(holdings: Holding[], growthData?: Record<string, { growth_ytd: number | null; growth_1y: number | null; growth_5y: number | null; holding_period_days: number | null }>): HoldingsRow[] {
+  return holdings.map((h) => {
+    const value = h.symbol === 'CASH' ? h.totalValue : h.shares * h.currentPrice
+    const costBasis = h.costBasis ?? null
+    const totalReturnPct = costBasis && costBasis > 0 ? ((value - costBasis) / costBasis) * 100 : null
+    const growth = growthData?.[h.symbol]
+    return {
+      symbol: h.symbol,
+      shares: h.shares,
+      currentPrice: h.currentPrice,
+      value: h.totalValue,
+      isCash: h.symbol === 'CASH',
+      costBasis,
+      totalReturnPct: totalReturnPct != null ? Math.round(totalReturnPct * 10) / 10 : null,
+      growthYTD: growth?.growth_ytd ?? null,
+      growth1Y: growth?.growth_1y ?? null,
+      growth5Y: growth?.growth_5y ?? null,
+      holdingPeriodDays: growth?.holding_period_days ?? null,
+    }
+  })
 }
 
-function HoldingsTable({ holdings }: HoldingsTableProps) {
-  const formatChange = (value: number | null | undefined) => {
-    if (value === null || value === undefined) return '—'
-    const sign = value >= 0 ? '+' : ''
-    return `${sign}${value.toFixed(2)}%`
-  }
-  
-  // Filter out CASH (incorrectly calculated in backend) and calculate real values
-  const stockHoldings = holdings.filter(h => h.symbol !== 'CASH')
-  
-  // Calculate total portfolio value from real prices (shares × currentPrice)
-  const totalPortfolioValue = stockHoldings.reduce((sum, h) => sum + (h.shares * h.currentPrice), 0)
-  
-  return (
-    <div className={styles.tableContainer}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Name</th>
-            <th className={styles.alignRight}>Shares</th>
-            <th className={styles.alignRight}>Price</th>
-            <th className={styles.alignRight}>Total Value</th>
-            <th className={styles.alignRight}>% Portfolio</th>
-            <th className={styles.alignRight}>Today</th>
-            <th className={styles.alignRight}>30 Days</th>
-            <th className={styles.alignRight}>90 Days</th>
-          </tr>
-        </thead>
-        <tbody>
-          {stockHoldings.map((holding) => {
-            // Calculate total value as shares × price (more accurate than parsed value)
-            const calculatedTotalValue = holding.shares * holding.currentPrice
-            // Calculate percentage based on real total portfolio value
-            const calculatedPercent = totalPortfolioValue > 0 ? (calculatedTotalValue / totalPortfolioValue * 100) : 0
-            return (
-            <tr key={holding.symbol} className={styles.tableRow}>
-              <td className={styles.symbol}>{holding.symbol}</td>
-              <td className={styles.name}>{holding.name}</td>
-              <td className={styles.alignRight}>{formatNumber(holding.shares)}</td>
-              <td className={styles.alignRight}>{formatCurrencyPrecise(holding.currentPrice)}</td>
-              <td className={clsx(styles.alignRight, styles.totalValue)}>
-                {formatCurrencyPrecise(calculatedTotalValue)}
-              </td>
-              <td className={styles.alignRight}>
-                <div className={styles.percentBar}>
-                  <div
-                    className={styles.percentFill}
-                    style={{ width: `${Math.min(calculatedPercent, 100)}%` }}
-                  />
-                  <span>{calculatedPercent.toFixed(1)}%</span>
-                </div>
-              </td>
-              <td className={clsx(
-                styles.alignRight,
-                styles.changeCell,
-                holding.change1d !== null && holding.change1d !== undefined
-                  ? (holding.change1d >= 0 ? styles.positive : styles.negative)
-                  : ''
-              )}>
-                {formatChange(holding.change1d)}
-              </td>
-              <td className={clsx(
-                styles.alignRight,
-                styles.changeCell,
-                holding.change30d !== null && holding.change30d !== undefined
-                  ? (holding.change30d >= 0 ? styles.positive : styles.negative)
-                  : ''
-              )}>
-                {formatChange(holding.change30d)}
-              </td>
-              <td className={clsx(
-                styles.alignRight,
-                styles.changeCell,
-                holding.change90d !== null && holding.change90d !== undefined
-                  ? (holding.change90d >= 0 ? styles.positive : styles.negative)
-                  : ''
-              )}>
-                {formatChange(holding.change90d)}
-              </td>
-            </tr>
-          )})}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+// Column configuration for Investments page
+const investmentColumns: ColumnDef[] = [
+  symbolColumn(),
+  sharesColumn(),
+  priceColumn('Price (Live)'),
+  valueColumn(),
+  percentPortfolioColumn(),
+  costBasisColumn(),
+  totalReturnColumn(),
+  stockGrowthColumn('growthYTD', 'YTD', 'growthYTD'),
+  stockGrowthColumn('growth1Y', '1Y Growth', 'growth1Y'),
+  stockGrowthColumn('growth5Y', '5Y Growth', 'growth5Y'),
+  holdingPeriodColumn(),
+]
 
 // Empty State Component
 function EmptyState({ onRefresh }: { onRefresh: () => void }) {
@@ -305,6 +254,10 @@ function EmptyState({ onRefresh }: { onRefresh: () => void }) {
   )
 }
 
+// Module-level cache for stock growth data (survives re-mounts across page navigations)
+let _stockGrowthCache: { data: Record<string, { growth_ytd: number | null; growth_1y: number | null; growth_5y: number | null; holding_period_days: number | null }>; ts: number } | null = null
+const STOCK_GROWTH_CACHE_TTL = 60 * 60 * 1000 // 1 hour in ms
+
 // Main Investments Component
 export function Investments() {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null)
@@ -314,7 +267,74 @@ export function Investments() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [growthSummary, setGrowthSummary] = useState<GrowthSummary | null>(null)
-  
+  const [chartPeriod, setChartPeriod] = useState<string | null>('ytd')
+  const [accountChartPeriod, setAccountChartPeriod] = useState<string | null>(null)
+  const [stockGrowthData, setStockGrowthData] = useState<Record<string, { growth_ytd: number | null; growth_1y: number | null; growth_5y: number | null; holding_period_days: number | null }> | null>(_stockGrowthCache?.data ?? null)
+  const [capitalEvents, setCapitalEvents] = useState<CapitalEvent[]>([])
+  const [capitalThreshold, setCapitalThreshold] = useState(5000)
+  const [highlightedDate, setHighlightedDate] = useState<string | null>(null)
+  const [cfSortKey, setCfSortKey] = useState<string>('date')
+  const [cfSortDir, setCfSortDir] = useState<'asc' | 'desc'>('desc')
+  const [optionChains, setOptionChains] = useState<Record<string, OptionChainInfo>>({})
+  const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set())
+
+  // Fetch stock growth data (with frontend cache to avoid re-fetching on page navigation)
+  const fetchStockGrowth = async (force = false) => {
+    // Use cached data if still fresh
+    if (!force && _stockGrowthCache && Date.now() - _stockGrowthCache.ts < STOCK_GROWTH_CACHE_TTL) {
+      setStockGrowthData(_stockGrowthCache.data)
+      return
+    }
+    try {
+      const response = await fetch(`${API_BASE}/investments/stock-growth`, {
+        headers: getAuthHeaders(),
+      })
+      if (response.ok) {
+        const data = await response.json()
+        _stockGrowthCache = { data, ts: Date.now() }
+        setStockGrowthData(data)
+      }
+    } catch (err) {
+      console.error('Error fetching stock growth:', err)
+    }
+  }
+
+  // Fetch capital events (BUY/SELL) for chart overlay and table
+  const fetchCapitalEvents = async (period?: string | null, minAmount?: number) => {
+    try {
+      const params = new URLSearchParams()
+      if (period) params.set('period', period)
+      params.set('min_amount', String(minAmount ?? capitalThreshold))
+      const qs = params.toString()
+
+      const [eventsRes, chainsRes] = await Promise.all([
+        fetch(`${API_BASE}/investments/capital-events${qs ? `?${qs}` : ''}`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/investments/capital-events/option-chains${qs ? `?${qs}` : ''}`, { headers: getAuthHeaders() }),
+      ])
+
+      if (eventsRes.ok) {
+        const data = await eventsRes.json()
+        setCapitalEvents(data.events || [])
+      }
+      if (chainsRes.ok) {
+        const data = await chainsRes.json()
+        setOptionChains(data.option_chains || {})
+      }
+    } catch (err) {
+      console.error('Error fetching capital events:', err)
+    }
+  }
+
+  const getEventKey = (e: CapitalEvent) => `${e.date}|${e.symbol}|${e.account_id}|${e.type}`
+
+  const toggleChainExpand = (key: string) => {
+    setExpandedChains(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   // Fetch growth summary from snapshots
   const fetchGrowthSummary = async () => {
@@ -334,23 +354,24 @@ export function Investments() {
   }
 
   // Fetch portfolio history for chart
-  const fetchPortfolioHistory = async (accountId?: string) => {
+  const fetchPortfolioHistory = async (accountId?: string, period?: string | null) => {
     try {
-      const url = accountId 
-        ? `${API_BASE}/investments/portfolio-history?account_id=${encodeURIComponent(accountId)}`
-        : `${API_BASE}/investments/portfolio-history`
-      
+      const params = new URLSearchParams()
+      if (accountId) params.set('account_id', accountId)
+      if (period) params.set('period', period)
+      const qs = params.toString()
+      const url = `${API_BASE}/investments/portfolio-history${qs ? `?${qs}` : ''}`
+
       const response = await fetch(url, {
         headers: getAuthHeaders(),
       })
       if (response.ok) {
         const data = await response.json()
-        // Transform API data to chart format
         const history: MonthlyData[] = (data.history || []).map((h: any) => ({
           month: h.formatted || h.month,
           value: h.value,
         }))
-        
+
         if (accountId) {
           setAccountChartData(history)
         } else {
@@ -365,31 +386,18 @@ export function Investments() {
   }
   
   // Fetch account-specific history when account is selected
-  const handleAccountSelect = async (account: Account) => {
+  const handleAccountSelect = (account: Account) => {
     setSelectedAccount(account)
     setAccountChartData([]) // Clear previous data
-    // Clear parse messages when switching accounts (they are account-specific)
-    setParseSuccess(null)
-    setParseError(null)
-    setHoldingsText('') // Also clear the textarea
-    await fetchPortfolioHistory(account.id)
+    setAccountChartPeriod(null) // Reset to "All" period
   }
 
-  // Fetch price changes for holdings
-  const fetchPriceChanges = async (): Promise<Record<string, any>> => {
-    try {
-      const response = await fetch(`${API_BASE}/investments/price-changes`, {
-        headers: getAuthHeaders(),
-      })
-      if (response.ok) {
-        const data = await response.json()
-        return data.price_data || {}
-      }
-    } catch (err) {
-      console.error('Error fetching price changes:', err)
+  // Fetch chart data when selected account or period changes
+  useEffect(() => {
+    if (selectedAccount) {
+      fetchPortfolioHistory(selectedAccount.id, accountChartPeriod)
     }
-    return {}
-  }
+  }, [selectedAccount?.id, accountChartPeriod])
 
   // Fetch holdings with LIVE prices from Yahoo Finance
   const fetchHoldings = async () => {
@@ -421,8 +429,8 @@ export function Investments() {
         value: acc.value || 0,
         securitiesValue: acc.securitiesValue || 0,
         cashBalance: acc.cashBalance || 0,
-        change: 0,
-        changePercent: 0,
+        change: acc.change || 0,
+        changePercent: acc.changePercent || 0,
         icon: getAccountIcon(acc.type),
         color: acc.color || '#00D632',
         pricesUpdatedAt: acc.pricesUpdatedAt,
@@ -434,11 +442,9 @@ export function Investments() {
           totalValue: h.totalValue || 0,
           percentOfPortfolio: h.percentOfPortfolio || 0,
           priceSource: h.priceSource || 'cached',
-          change: 0,
-          changePercent: 0,
-          change1d: null,
-          change30d: null,
-          change90d: null,
+          change: h.change || 0,
+          changePercent: h.changePercent || 0,
+          costBasis: h.costBasis ?? null,
         })),
       }))
       
@@ -453,13 +459,28 @@ export function Investments() {
 
   useEffect(() => {
     fetchHoldings()
-    fetchPortfolioHistory()
+    fetchPortfolioHistory(undefined, 'ytd')
     fetchGrowthSummary()
+    fetchStockGrowth()
+    fetchCapitalEvents('ytd')
   }, [])
 
   const totalEquity = accounts.reduce((sum, acc) => sum + acc.value, 0)
   const totalChange = accounts.reduce((sum, acc) => sum + acc.change, 0)
   const totalChangePercent = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : 0
+
+  // Build current price lookup from holdings for Capital Flow table
+  const currentPriceMap = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const acc of accounts) {
+      for (const h of acc.holdings) {
+        if (h.symbol !== 'CASH' && h.currentPrice > 0) {
+          map[h.symbol] = h.currentPrice
+        }
+      }
+    }
+    return map
+  }, [accounts])
 
   // Loading state
   if (loading) {
@@ -526,57 +547,51 @@ export function Investments() {
               <span className={styles.changePill}>
                 {formatPercent(selectedAccount.changePercent)}
               </span>
+              <span style={{ opacity: 0.6, fontSize: '0.8em', marginLeft: 4 }}>Today</span>
             </div>
           </div>
         </div>
 
         {/* Account Growth Chart */}
-        <section className={styles.chartSection}>
-          <h2>Account Growth</h2>
+        <ChartWrapper
+          title="Account Growth"
+          periodOptions={PERIOD_PRESETS.STANDARD}
+          periodValue={accountChartPeriod}
+          onPeriodChange={setAccountChartPeriod}
+          isEmpty={accountChartData.length === 0}
+          emptyMessage="Loading account history..."
+        >
           {accountChartData.length > 1 ? (
-            <div className={styles.chartContainer}>
-              <ResponsiveContainer width="100%" height={250}>
-                <AreaChart data={accountChartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                  <defs>
-                    <linearGradient id="accountGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={selectedAccount.color} stopOpacity={0.3} />
-                      <stop offset="100%" stopColor={selectedAccount.color} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis
-                    dataKey="month"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 12 }}
-                    dy={10}
-                    interval={Math.max(0, Math.floor(accountChartData.length / 8) - 1)}
-                    tickFormatter={(value) => {
-                      // Extract year from "Jan 2024" or "2024-01" format
-                      const match = value.match(/(\d{4})/);
-                      return match ? match[1] : value;
-                    }}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 12 }}
-                    tickFormatter={(v) => `$${(v / 1000).toFixed(0)}K`}
-                    dx={-10}
-                    width={70}
-                  />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    stroke={selectedAccount.color}
-                    strokeWidth={3}
-                    fill="url(#accountGradient)"
-                    animationDuration={1000}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <ResponsiveContainer width="100%" height={250}>
+              <AreaChart data={accountChartData} margin={CHART_MARGINS}>
+                <defs>
+                  <linearGradient id="accountGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={selectedAccount.color} stopOpacity={0.3} />
+                    <stop offset="100%" stopColor={selectedAccount.color} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis
+                  dataKey="month"
+                  {...X_AXIS_PROPS}
+                  interval={Math.max(0, Math.floor(accountChartData.length / 8) - 1)}
+                  tickFormatter={(value) => {
+                    const match = value.match(/(\d{4})/);
+                    return match ? match[1] : value;
+                  }}
+                />
+                <YAxis {...Y_AXIS_PROPS} tickFormatter={formatCurrencyShort} />
+                <Tooltip content={<ChartTooltip labelKey="month" />} />
+                <Area
+                  type="monotone"
+                  dataKey="value"
+                  stroke={selectedAccount.color}
+                  strokeWidth={3}
+                  fill="url(#accountGradient)"
+                  animationDuration={1000}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
           ) : accountChartData.length === 1 ? (
             <div className={styles.chartEmpty}>
               <div className={styles.singleDataPoint}>
@@ -585,17 +600,16 @@ export function Investments() {
               </div>
               <p>Upload more statements to see account growth over time.</p>
             </div>
-          ) : (
-            <div className={styles.chartEmpty}>
-              <p>Loading account history...</p>
-            </div>
-          )}
-        </section>
+          ) : null}
+        </ChartWrapper>
 
         <section className={styles.holdingsSection}>
           <h2>Holdings ({selectedAccount.holdings.filter(h => h.symbol !== 'CASH').length})</h2>
           {selectedAccount.holdings.filter(h => h.symbol !== 'CASH').length > 0 ? (
-          <HoldingsTable holdings={selectedAccount.holdings} />
+          <HoldingsTable
+            rows={toHoldingsRows(selectedAccount.holdings, stockGrowthData ?? undefined)}
+            columns={investmentColumns}
+          />
           ) : (
             <p className={styles.noHoldings}>No holdings in this account.</p>
           )}
@@ -622,94 +636,176 @@ export function Investments() {
           <div className={styles.heroLabel}>Total Stock Holdings</div>
           <div className={styles.heroValue}>{formatCurrency(totalEquity)}</div>
           
-          {/* Growth Periods */}
-          {growthSummary?.periods && Object.keys(growthSummary.periods).length > 0 ? (
-            <div className={styles.growthPeriods}>
-              {(['30d', '90d', '1y'] as const).map((key) => {
-                const period = growthSummary.periods[key]
-                if (!period) return null
-                const isPositive = period.change >= 0
-                return (
-                  <div 
-                    key={key} 
-                    className={clsx(
-                      styles.growthPeriod,
-                      isPositive ? styles.positive : styles.negative
-                    )}
-                  >
-                    <span className={styles.periodLabel}>{period.label}</span>
-                    <span className={styles.periodValue}>
-                      {isPositive ? '+' : ''}{formatPercent(period.change_percent)}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <div className={clsx(
-              styles.heroChange,
-              totalChange >= 0 ? styles.positive : styles.negative
-            )}>
-              {totalChange >= 0 ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
-              <span>{formatCurrency(Math.abs(totalChange))}</span>
-              <span className={styles.changePill}>{formatPercent(totalChangePercent)}</span>
-              <span className={styles.changePeriod}>today</span>
-            </div>
-          )}
+          {/* Growth Periods — portfolio-weighted average of individual stock returns */}
+          {(() => {
+            // Build weighted growth from individual stock data + daily change from live prices
+            const allHoldings = accounts.flatMap(a => a.holdings.filter(h => h.symbol !== 'CASH'))
+            const growthCards: { key: string; label: string; pct: number | null }[] = []
+
+            // 1D: use daily change from live prices (already available)
+            const dayPct = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : null
+            growthCards.push({ key: '1d', label: '1 Day', pct: dayPct })
+
+            // YTD and 1Y: portfolio-weighted average of per-stock growth
+            if (stockGrowthData) {
+              for (const [key, label, field] of [
+                ['ytd', 'YTD', 'growth_ytd'],
+                ['1y', '1 Year', 'growth_1y'],
+              ] as const) {
+                let weightedSum = 0
+                let totalVal = 0
+                for (const h of allHoldings) {
+                  const g = stockGrowthData[h.symbol]
+                  const growthVal = g?.[field]
+                  if (growthVal == null) continue
+                  const val = h.shares * h.currentPrice
+                  weightedSum += growthVal * val
+                  totalVal += val
+                }
+                growthCards.push({ key, label, pct: totalVal > 0 ? weightedSum / totalVal : null })
+              }
+            }
+
+            return (
+              <div className={styles.growthPeriods}>
+                {growthCards.map(({ key, label, pct }) => {
+                  if (pct == null) return null
+                  const isPositive = pct >= 0
+                  return (
+                    <div
+                      key={key}
+                      className={clsx(
+                        styles.growthPeriod,
+                        isPositive ? styles.positive : styles.negative
+                      )}
+                    >
+                      <span className={styles.periodLabel}>{label}</span>
+                      <span className={styles.periodValue}>
+                        {isPositive ? '+' : ''}{pct.toFixed(2)}%
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
         </div>
-        <button onClick={() => { fetchHoldings(); fetchGrowthSummary(); }} className={styles.heroRefresh} title="Refresh data">
+        <button onClick={() => { fetchHoldings(); fetchGrowthSummary(); fetchStockGrowth(true); }} className={styles.heroRefresh} title="Refresh data">
           <RefreshCw size={20} />
         </button>
       </section>
 
       {/* Growth Chart */}
-      <section className={styles.chartSection}>
-        <h2>Portfolio Growth</h2>
-        {chartData.length > 1 ? (
-        <div className={styles.chartContainer}>
+      <ChartWrapper
+        title="Portfolio Growth"
+        periodOptions={PERIOD_PRESETS.EXTENDED}
+        periodValue={chartPeriod}
+        onPeriodChange={(key) => {
+          setChartPeriod(key)
+          fetchPortfolioHistory(undefined, key)
+          fetchCapitalEvents(key)
+        }}
+        isEmpty={chartData.length === 0}
+        emptyMessage="No historical data yet. Upload account statements to build your portfolio history."
+      >
+        {chartData.length > 1 ? (() => {
+          // Merge capital events onto chart data points for dot overlay
+          const isDaily = chartPeriod === '1d' || chartPeriod === '1w' || chartPeriod === '30d' || chartPeriod === '90d'
+          const eventsByLabel = new Map<string, CapitalEvent[]>()
+          for (const event of capitalEvents) {
+            const key = isDaily ? event.formatted : event.month_key
+            if (!eventsByLabel.has(key)) eventsByLabel.set(key, [])
+            eventsByLabel.get(key)!.push(event)
+          }
+
+          const enrichedData = chartData.map(d => {
+            const evts = eventsByLabel.get(d.month)
+            if (!evts || evts.length === 0) return { ...d, events: [] as CapitalEvent[] }
+            return { ...d, hasBuy: evts.some(e => e.type === 'BUY'), hasSell: evts.some(e => e.type === 'SELL'), events: evts }
+          })
+
+          return (
           <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+            <AreaChart data={enrichedData} margin={CHART_MARGINS}>
               <defs>
                 <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#00D632" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#00D632" stopOpacity={0} />
+                  <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.3} />
+                  <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+              <CartesianGrid {...GRID_PROPS} />
               <XAxis
                 dataKey="month"
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: '#737373', fontSize: 12 }}
-                dy={10}
-                interval={Math.max(0, Math.floor(chartData.length / 10) - 1)}
-                tickFormatter={(value) => {
-                  // Extract year from "Jan 2024" or "2024-01" format
-                  const match = value.match(/(\d{4})/);
-                  return match ? match[1] : value;
-                }}
+                {...X_AXIS_PROPS}
+                interval={Math.max(0, Math.floor(enrichedData.length / 10) - 1)}
               />
               <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: '#737373', fontSize: 12 }}
-                tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`}
-                dx={-10}
-                width={70}
+                {...Y_AXIS_PROPS}
+                tickFormatter={formatCurrencyShort}
+                domain={['dataMin - 50000', 'dataMax + 50000']}
               />
-              <Tooltip content={<ChartTooltip />} />
+              <Tooltip
+                content={({ active, payload }) => {
+                  if (!active || !payload || !payload.length) return null
+                  const point = payload[0]?.payload
+                  if (!point) return null
+                  const evts: CapitalEvent[] = point.events || []
+                  return (
+                    <div className={styles.eventTooltip}>
+                      <div className={styles.eventTooltipTitle}>{point.month}</div>
+                      <div className={styles.eventTooltipRow}>
+                        <span>Portfolio</span>
+                        <span>{formatCurrency(point.value)}</span>
+                      </div>
+                      {evts.map((e: CapitalEvent, i: number) => (
+                        <div key={i} className={styles.eventTooltipRow}>
+                          <span style={{ color: e.type === 'BUY' ? '#00D632' : '#FF5A5A' }}>
+                            {e.type} {e.symbol}
+                          </span>
+                          <span>{formatCurrency(e.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                }}
+              />
               <Area
                 type="monotone"
                 dataKey="value"
-                stroke="#00D632"
+                stroke={CHART_GREEN}
                 strokeWidth={3}
                 fill="url(#equityGradient)"
                 animationDuration={1500}
+                dot={(props: any) => {
+                  const { cx, cy, payload } = props
+                  if (cx == null || cy == null) return <g key={`dot-${props.index}`} />
+                  const hasBuy = payload.hasBuy
+                  const hasSell = payload.hasSell
+                  if (!hasBuy && !hasSell) return <g key={`dot-${props.index}`} />
+                  return (
+                    <g key={`dot-${props.index}`} style={{ cursor: 'pointer' }}
+                       onClick={() => setHighlightedDate(payload.month)}>
+                      {hasBuy && (
+                        <>
+                          <circle cx={cx} cy={cy} r={7} fill="#00D632" stroke="#fff" strokeWidth={2} opacity={0.9} />
+                          <text x={cx} y={cy + 1} textAnchor="middle" fill="#fff" fontSize={9} fontWeight="bold">B</text>
+                        </>
+                      )}
+                      {hasSell && (
+                        <>
+                          <circle cx={cx} cy={cy - 18} r={7} fill="#FF5A5A" stroke="#fff" strokeWidth={2} opacity={0.9} />
+                          <text x={cx} y={cy - 17} textAnchor="middle" fill="#fff" fontSize={9} fontWeight="bold">S</text>
+                        </>
+                      )}
+                    </g>
+                  )
+                }}
+                activeDot={{ r: 5, fill: CHART_GREEN, stroke: '#fff', strokeWidth: 2 }}
               />
             </AreaChart>
           </ResponsiveContainer>
-        </div>
-        ) : chartData.length === 1 ? (
+          )
+        })() : chartData.length === 1 ? (
           <div className={styles.chartEmpty}>
             <div className={styles.singleDataPoint}>
               <span className={styles.dataPointLabel}>{chartData[0].month}</span>
@@ -717,12 +813,216 @@ export function Investments() {
             </div>
             <p>Upload statements from more months to see your portfolio growth over time.</p>
           </div>
-        ) : (
-          <div className={styles.chartEmpty}>
-            <p>No historical data yet. Upload account statements to build your portfolio history.</p>
+        ) : null}
+      </ChartWrapper>
+
+      {/* Capital Flow Table */}
+      {capitalEvents.length > 0 && (
+        <section className={styles.capitalFlowSection}>
+          <div className={styles.capitalFlowHeader}>
+            <h2>Capital Flow ({capitalEvents.length} transactions)</h2>
+            <select
+              className={styles.thresholdSelect}
+              value={capitalThreshold}
+              onChange={(e) => {
+                const val = Number(e.target.value)
+                setCapitalThreshold(val)
+                fetchCapitalEvents(chartPeriod, val)
+              }}
+            >
+              <option value={1000}>{"Show \u2265 $1K"}</option>
+              <option value={5000}>{"Show \u2265 $5K"}</option>
+              <option value={10000}>{"Show \u2265 $10K"}</option>
+              <option value={25000}>{"Show \u2265 $25K"}</option>
+            </select>
           </div>
-        )}
-      </section>
+          <table className={styles.capitalFlowTable}>
+            <thead>
+              <tr>
+                {([
+                  ['date', 'Date'],
+                  ['type', 'Type'],
+                  ['symbol', 'Symbol'],
+                  ['quantity', 'Shares'],
+                  ['price_per_share', 'Price/Share'],
+                  ['current_price', 'Current Price'],
+                  ['account_name', 'Account'],
+                  ['option_premium', 'Option Premium'],
+                  ['amount', 'Amount'],
+                ] as [string, string][]).map(([key, label]) => (
+                  <th
+                    key={key}
+                    style={{ cursor: 'pointer', userSelect: 'none' }}
+                    onClick={() => {
+                      if (cfSortKey === key) {
+                        setCfSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                      } else {
+                        setCfSortKey(key)
+                        setCfSortDir(key === 'symbol' || key === 'account_name' || key === 'type' ? 'asc' : 'desc')
+                      }
+                    }}
+                  >
+                    {label} {cfSortKey === key ? (cfSortDir === 'asc' ? '↑' : '↓') : <span style={{ opacity: 0.3 }}>⇅</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[...capitalEvents].sort((a, b) => {
+                let cmp = 0
+                if (cfSortKey === 'current_price') {
+                  cmp = (currentPriceMap[a.symbol] ?? 0) - (currentPriceMap[b.symbol] ?? 0)
+                } else if (cfSortKey === 'option_premium') {
+                  cmp = (optionChains[getEventKey(a)]?.net_premium ?? 0) - (optionChains[getEventKey(b)]?.net_premium ?? 0)
+                } else {
+                  const key = cfSortKey as keyof CapitalEvent
+                  const va = a[key]
+                  const vb = b[key]
+                  if (typeof va === 'string' && typeof vb === 'string') cmp = va.localeCompare(vb)
+                  else cmp = ((va as number) ?? 0) - ((vb as number) ?? 0)
+                }
+                return cfSortDir === 'asc' ? cmp : -cmp
+              }).map((event, i) => {
+                const isDaily = chartPeriod === '1d' || chartPeriod === '1w' || chartPeriod === '30d' || chartPeriod === '90d'
+                const matchLabel = isDaily ? event.formatted : event.month_key
+                const isHighlighted = highlightedDate === matchLabel
+                const eventKey = getEventKey(event)
+                const chain = optionChains[eventKey]
+                const isExpanded = expandedChains.has(eventKey)
+                return (
+                  <React.Fragment key={i}>
+                  <tr className={isHighlighted ? styles.highlighted : undefined}>
+                    <td>{event.formatted}</td>
+                    <td>
+                      <span className={`${styles.typeBadge} ${event.type === 'BUY' ? styles.typeBuy : styles.typeSell}`}>
+                        {event.type}
+                      </span>
+                    </td>
+                    <td style={{ fontWeight: 600 }}>{event.symbol}</td>
+                    <td className={styles.monoCell}>{event.quantity != null ? event.quantity.toLocaleString() : '-'}</td>
+                    <td className={styles.monoCell}>{event.price_per_share != null ? formatCurrency(event.price_per_share) : '-'}</td>
+                    <td className={styles.monoCell}>{currentPriceMap[event.symbol] ? formatCurrency(currentPriceMap[event.symbol]) : '-'}</td>
+                    <td className={styles.accountCell}>{event.account_name}</td>
+                    <td>
+                      {chain ? (
+                        <span
+                          className={styles.premiumClickable}
+                          onClick={() => toggleChainExpand(eventKey)}
+                        >
+                          <ChevronRight
+                            size={14}
+                            className={`${styles.expandIcon} ${isExpanded ? styles.rotated : ''}`}
+                          />
+                          <span className={chain.net_premium >= 0 ? styles.premiumPositive : styles.premiumNegative}>
+                            {chain.net_premium >= 0 ? '+' : ''}{formatCurrency(chain.net_premium)}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className={styles.premiumDash}>&mdash;</span>
+                      )}
+                    </td>
+                    <td className={event.type === 'BUY' ? styles.amountBuy : styles.amountSell}>
+                      {event.type === 'BUY' ? '-' : '+'}{formatCurrency(event.amount)}
+                    </td>
+                  </tr>
+                  {chain && isExpanded && (
+                    <tr className={styles.chainExpandedRow}>
+                      <td colSpan={9}>
+                        <div className={styles.chainDetails}>
+                          <div className={styles.chainSummary}>
+                            <div className={styles.chainStat}>
+                              <span className={styles.chainStatLabel}>Type</span>
+                              <span className={styles.chainStatValue}>{chain.option_type === 'put' ? 'Put Assignment' : 'Call Assignment'}</span>
+                            </div>
+                            <div className={styles.chainStat}>
+                              <span className={styles.chainStatLabel}>Contracts</span>
+                              <span className={styles.chainStatValue}>{chain.contracts}</span>
+                            </div>
+                            <div className={styles.chainStat}>
+                              <span className={styles.chainStatLabel}>Started</span>
+                              <span className={styles.chainStatValue}>
+                                {chain.chain_start_date ? new Date(chain.chain_start_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '-'}
+                              </span>
+                            </div>
+                            <div className={styles.chainStat}>
+                              <span className={styles.chainStatLabel}>Strike Range</span>
+                              <span className={styles.chainStatValue}>${chain.starting_strike} → ${chain.final_strike}</span>
+                            </div>
+                            <div className={styles.chainStat}>
+                              <span className={styles.chainStatLabel}>Rolls</span>
+                              <span className={styles.chainStatValue}>{chain.rolls}</span>
+                            </div>
+                            <div className={styles.chainStat}>
+                              <span className={styles.chainStatLabel}>Duration</span>
+                              <span className={styles.chainStatValue}>{chain.duration_days} days</span>
+                            </div>
+                            <div className={styles.chainStat}>
+                              <span className={styles.chainStatLabel}>Net Premium</span>
+                              <span className={`${styles.chainStatValue} ${chain.net_premium >= 0 ? styles.premiumPositive : styles.premiumNegative}`}>
+                                {chain.net_premium >= 0 ? '+' : ''}{formatCurrency(chain.net_premium)}
+                              </span>
+                            </div>
+                          </div>
+                          <table className={styles.chainTable}>
+                            <thead>
+                              <tr>
+                                <th>Date</th>
+                                <th>Action</th>
+                                <th>Strike</th>
+                                <th>Expiry</th>
+                                <th>Contracts</th>
+                                <th>Amount</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {chain.trades.map((trade, ti) => (
+                                <tr key={ti}>
+                                  <td>{trade.formatted}</td>
+                                  <td className={trade.type === 'STO' ? styles.tradeOpen : styles.tradeClose}>
+                                    {trade.type}
+                                  </td>
+                                  <td>${trade.strike}</td>
+                                  <td>{trade.expiry}</td>
+                                  <td>{trade.contracts}</td>
+                                  <td className={trade.amount >= 0 ? styles.premiumPositive : styles.premiumNegative}>
+                                    {trade.amount >= 0 ? '+' : ''}{formatCurrency(trade.amount)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
+                )
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={7} className={styles.footerLabel}>Totals</td>
+                <td>
+                  <div className={styles.footerStats}>
+                    <span className={styles.footerBuys}>
+                      Buy: {formatCurrency(capitalEvents.filter(e => e.type === 'BUY').reduce((s, e) => s + e.amount, 0))}
+                    </span>
+                    <span className={styles.footerSells}>
+                      Sell: {formatCurrency(capitalEvents.filter(e => e.type === 'SELL').reduce((s, e) => s + e.amount, 0))}
+                    </span>
+                    <span className={styles.footerNet}>
+                      Net: {formatCurrency(
+                        capitalEvents.filter(e => e.type === 'SELL').reduce((s, e) => s + e.amount, 0)
+                        - capitalEvents.filter(e => e.type === 'BUY').reduce((s, e) => s + e.amount, 0)
+                      )}
+                    </span>
+                  </div>
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </section>
+      )}
 
       {/* Account Cards */}
       <section className={styles.accountsSection}>
@@ -738,6 +1038,54 @@ export function Investments() {
           ))}
         </div>
       </section>
+
+      {/* Total Portfolio Holdings */}
+      {accounts.length > 0 && (() => {
+        // Aggregate holdings across all accounts by symbol
+        const holdingsMap = new Map<string, Holding>()
+        for (const account of accounts) {
+          for (const h of account.holdings) {
+            if (h.symbol === 'CASH') continue
+            const existing = holdingsMap.get(h.symbol)
+            if (existing) {
+              // Sum cost basis across accounts for weighted average
+              if (h.costBasis && existing.costBasis) {
+                existing.costBasis = existing.costBasis + h.costBasis
+              } else if (h.costBasis) {
+                existing.costBasis = h.costBasis
+              }
+              existing.shares += h.shares
+              existing.totalValue = existing.shares * existing.currentPrice
+            } else {
+              holdingsMap.set(h.symbol, {
+                ...h,
+                totalValue: h.shares * h.currentPrice,
+              })
+            }
+          }
+        }
+
+        const aggregated = Array.from(holdingsMap.values())
+          .sort((a, b) => (b.shares * b.currentPrice) - (a.shares * a.currentPrice))
+
+        const totalValue = aggregated.reduce((sum, h) => sum + (h.shares * h.currentPrice), 0)
+        // Recalculate percentOfPortfolio against entire portfolio
+        for (const h of aggregated) {
+          const hValue = h.shares * h.currentPrice
+          h.percentOfPortfolio = totalValue > 0 ? (hValue / totalValue) * 100 : 0
+        }
+
+        return (
+          <section className={styles.holdingsSection}>
+            <h2>Total Portfolio Holdings ({aggregated.length})</h2>
+            {aggregated.length > 0 ? (
+              <HoldingsTable rows={toHoldingsRows(aggregated, stockGrowthData ?? undefined)} columns={investmentColumns} />
+            ) : (
+              <p className={styles.noHoldings}>No holdings across accounts.</p>
+            )}
+          </section>
+        )
+      })()}
     </div>
   )
 }

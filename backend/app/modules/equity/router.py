@@ -21,6 +21,10 @@ from app.modules.equity.services import (
     create_shares,
     create_rsa,
     create_safe,
+    get_partners,
+    create_partner,
+    get_capital_events,
+    create_capital_event,
 )
 from app.modules.equity.models import (
     EquityCompany,
@@ -28,6 +32,8 @@ from app.modules.equity.models import (
     EquityShares,
     EquityRSA,
     EquitySAFE,
+    EquityPartner,
+    EquityCapitalEvent,
 )
 
 router = APIRouter()
@@ -38,6 +44,16 @@ class CompanyCreate(BaseModel):
     name: str
     dba_name: Optional[str] = None
     status: str = 'active'
+    investment_type: str = 'startup_equity'
+    entity_type: Optional[str] = None
+    ein: Optional[str] = None
+    state_of_incorporation: Optional[str] = None
+    incorporation_date: Optional[date] = None
+    dissolution_date: Optional[date] = None
+    dissolution_status: Optional[str] = None
+    total_capital_invested: Optional[float] = None
+    total_revenue_earned: Optional[float] = None
+    section_1244_eligible: str = 'N'
     current_fmv: Optional[float] = None
     fmv_date: Optional[date] = None
     qsbs_eligible: str = 'N'
@@ -50,6 +66,16 @@ class CompanyUpdate(BaseModel):
     name: Optional[str] = None
     dba_name: Optional[str] = None
     status: Optional[str] = None
+    investment_type: Optional[str] = None
+    entity_type: Optional[str] = None
+    ein: Optional[str] = None
+    state_of_incorporation: Optional[str] = None
+    incorporation_date: Optional[date] = None
+    dissolution_date: Optional[date] = None
+    dissolution_status: Optional[str] = None
+    total_capital_invested: Optional[float] = None
+    total_revenue_earned: Optional[float] = None
+    section_1244_eligible: Optional[str] = None
     current_fmv: Optional[float] = None
     fmv_date: Optional[date] = None
     qsbs_eligible: Optional[str] = None
@@ -101,6 +127,25 @@ class SAFECreate(BaseModel):
     status: str = 'outstanding'
 
 
+class PartnerCreate(BaseModel):
+    company_id: int
+    name: str
+    role: Optional[str] = None  # 'investor', 'operator', 'both'
+    ownership_pct: Optional[float] = None
+    capital_contributed: Optional[float] = None
+    is_primary: str = 'N'
+    notes: Optional[str] = None
+
+
+class CapitalEventCreate(BaseModel):
+    company_id: int
+    event_date: Optional[date] = None
+    event_type: str  # 'capital_contribution', 'revenue', 'expense', 'distribution', 'dissolution'
+    amount: float
+    description: Optional[str] = None
+    contributor: Optional[str] = None
+
+
 @router.get("/summary")
 async def get_summary(db: Session = Depends(get_db)):
     """
@@ -122,9 +167,14 @@ async def list_companies(db: Session = Depends(get_db)):
                 "name": c.name,
                 "dba_name": c.dba_name,
                 "status": c.status,
+                "investment_type": c.investment_type,
+                "entity_type": c.entity_type,
                 "current_fmv": float(c.current_fmv) if c.current_fmv else None,
                 "fmv_date": c.fmv_date.isoformat() if c.fmv_date else None,
                 "qsbs_eligible": c.qsbs_eligible == 'Y',
+                "section_1244_eligible": c.section_1244_eligible == 'Y',
+                "total_capital_invested": float(c.total_capital_invested) if c.total_capital_invested else None,
+                "dissolution_status": c.dissolution_status,
             }
             for c in companies
         ]
@@ -377,6 +427,102 @@ async def list_safes(
                 "status": s.status,
             }
             for s in safes
+        ]
+    }
+
+
+@router.post("/partners")
+async def add_partner(partner: PartnerCreate, db: Session = Depends(get_db)):
+    """Add a partner to a company."""
+    company = get_company_by_id(db, partner.company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    try:
+        new_partner = create_partner(db, partner.model_dump())
+        db.commit()
+
+        return {
+            "success": True,
+            "partner": {
+                "id": new_partner.id,
+                "name": new_partner.name,
+                "company_id": new_partner.company_id,
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/partners")
+async def list_partners(
+    company_id: int,
+    db: Session = Depends(get_db)
+):
+    """List partners for a company."""
+    partners = get_partners(db, company_id)
+
+    return {
+        "partners": [
+            {
+                "id": p.id,
+                "company_id": p.company_id,
+                "name": p.name,
+                "role": p.role,
+                "ownership_pct": float(p.ownership_pct) if p.ownership_pct else None,
+                "capital_contributed": float(p.capital_contributed) if p.capital_contributed else None,
+                "is_primary": p.is_primary == 'Y',
+            }
+            for p in partners
+        ]
+    }
+
+
+@router.post("/capital-events")
+async def add_capital_event(event: CapitalEventCreate, db: Session = Depends(get_db)):
+    """Record a capital event for a company."""
+    company = get_company_by_id(db, event.company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    try:
+        new_event = create_capital_event(db, event.model_dump())
+        db.commit()
+
+        return {
+            "success": True,
+            "capital_event": {
+                "id": new_event.id,
+                "event_type": new_event.event_type,
+                "amount": float(new_event.amount),
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/capital-events")
+async def list_capital_events(
+    company_id: int,
+    db: Session = Depends(get_db)
+):
+    """List capital events for a company."""
+    events = get_capital_events(db, company_id)
+
+    return {
+        "capital_events": [
+            {
+                "id": e.id,
+                "company_id": e.company_id,
+                "event_date": e.event_date.isoformat() if e.event_date else None,
+                "event_type": e.event_type,
+                "amount": float(e.amount) if e.amount else None,
+                "description": e.description,
+                "contributor": e.contributor,
+            }
+            for e in events
         ]
     }
 

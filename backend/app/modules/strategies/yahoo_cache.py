@@ -51,42 +51,102 @@ class OptionChainResult:
 
 
 # =============================================================================
+# TEST MODE & CACHE CONFIGURATION
+# =============================================================================
+
+def _is_test_mode() -> bool:
+    """Check if OPTIONS_TEST_MODE is enabled."""
+    try:
+        from app.core.config import settings
+        return getattr(settings, 'OPTIONS_TEST_MODE', False)
+    except Exception:
+        return False
+
+
+def _use_infinite_cache_off_hours() -> bool:
+    """Check if infinite cache is enabled for off-hours."""
+    try:
+        from app.core.config import settings
+        return getattr(settings, 'OPTIONS_INFINITE_CACHE_OFF_HOURS', True)
+    except Exception:
+        return True
+
+
+def _is_market_hours() -> bool:
+    """Check if we're within market hours (6:30 AM - 1:00 PM PT, Mon-Fri)."""
+    try:
+        PT = pytz.timezone('America/Los_Angeles')
+        now = datetime.now(PT)
+        weekday = now.weekday()
+
+        if weekday >= 5:
+            return False
+
+        current_time = now.hour * 60 + now.minute
+        market_open = 6 * 60 + 30
+        market_close = 13 * 60
+
+        return market_open <= current_time <= market_close
+    except Exception:
+        return False
+
+
+# =============================================================================
 # CACHE TTL
 # =============================================================================
 
 def get_cache_ttl(data_type: str = "prices") -> int:
     """
-    Get cache TTL based on market hours and data type.
-    
+    Get cache TTL based on market hours, data type, and configuration.
+
+    Test Mode: 24 hours (infinite cache - use stored data)
+    Market Hours: 5-15 minutes (data changes frequently)
+    Off-Hours with INFINITE_CACHE: 24 hours (prices don't change)
+    Off-Hours without INFINITE_CACHE: 30-90 minutes
+
     Returns TTL in seconds.
     """
     try:
+        # Test mode = infinite cache (24 hours)
+        if _is_test_mode():
+            logger.debug("[YAHOO_CACHE] Test mode enabled - using 24h cache")
+            return 86400  # 24 hours
+
         PT = pytz.timezone('America/Los_Angeles')
         now = datetime.now(PT)
         hour = now.hour
         minute = now.minute
         weekday = now.weekday()
-        
+
         # Multiplier for options data (delta doesn't change as fast)
         options_multiplier = 3 if data_type == "options" else 1
-        
-        # Weekend - long cache
-        if weekday >= 5:
-            return 3600 * options_multiplier
-        
+
         current_time = hour * 60 + minute
         market_open = 6 * 60 + 30   # 6:30 AM PT
         market_close = 13 * 60      # 1:00 PM PT
         extended_open = 4 * 60      # 4:00 AM PT
         extended_close = 17 * 60    # 5:00 PM PT
-        
-        if market_open <= current_time <= market_close:
+
+        # During regular market hours - short cache
+        if weekday < 5 and market_open <= current_time <= market_close:
             return 300 * options_multiplier  # 5 min (prices) or 15 min (options)
-        elif extended_open <= current_time <= extended_close:
+
+        # Extended hours (still some trading)
+        if weekday < 5 and extended_open <= current_time <= extended_close:
             return 600 * options_multiplier  # 10 min (prices) or 30 min (options)
+
+        # Outside market hours (weekends or night)
+        if _use_infinite_cache_off_hours():
+            # Use 24-hour cache - prices don't change when market is closed
+            logger.debug("[YAHOO_CACHE] Market closed, using 24h cache (infinite mode)")
+            return 86400  # 24 hours
         else:
+            # Weekend
+            if weekday >= 5:
+                return 3600 * options_multiplier  # 1h or 3h
+            # Weekday outside extended hours
             return 1800 * options_multiplier  # 30 min (prices) or 90 min (options)
-            
+
     except Exception as e:
         logger.warning(f"Error calculating cache TTL: {e}")
         return 300

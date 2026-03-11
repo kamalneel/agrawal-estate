@@ -124,47 +124,56 @@ def get_schwab_client():
 def authenticate_schwab():
     """
     Interactive authentication for Schwab API.
-    
+
     This opens a browser for OAuth login. Run this manually once to get the token.
     """
     global _schwab_client
-    
+
     app_key, app_secret, callback_url = get_schwab_credentials()
-    
+
     if not app_key or not app_secret:
-        print("ERROR: Missing Schwab credentials in .env file")
-        print("Required: SCHWAB_APP_KEY and SCHWAB_APP_SECRET")
+        logger.error("Missing Schwab credentials in .env file")
         return False
-    
+
     try:
         from schwab import auth
-        
-        print("=" * 60)
-        print("SCHWAB API AUTHENTICATION")
-        print("=" * 60)
-        print(f"App Key: {app_key[:10]}...")
-        print(f"Callback URL: {callback_url}")
-        print(f"Token will be saved to: {TOKEN_FILE}")
-        print()
-        print("A browser window will open for Schwab login...")
-        print("After login, you'll be redirected to a localhost URL.")
-        print("The authentication will complete automatically.")
-        print("=" * 60)
-        
-        _schwab_client = auth.easy_client(
+        import webbrowser
+
+        logger.info("=" * 60)
+        logger.info("SCHWAB API AUTHENTICATION")
+        logger.info("=" * 60)
+        logger.info(f"App Key: {app_key[:10]}...")
+        logger.info(f"Callback URL: {callback_url}")
+        logger.info(f"Token will be saved to: {TOKEN_FILE}")
+
+        # Get the auth context (authorization URL)
+        auth_context = auth.get_auth_context(app_key, callback_url)
+
+        logger.info(f"Opening browser for OAuth login...")
+        logger.info(f"Auth URL: {auth_context.authorization_url[:80]}...")
+
+        # Open browser manually
+        webbrowser.open(auth_context.authorization_url)
+
+        # Now use client_from_login_flow with interactive=False
+        # It will start the callback server and wait for the redirect
+        _schwab_client = auth.client_from_login_flow(
             app_key,
             app_secret,
             callback_url,
-            str(TOKEN_FILE)
+            str(TOKEN_FILE),
+            interactive=False,  # Don't wait for ENTER
+            callback_timeout=300.0  # 5 minute timeout
         )
-        
-        print()
-        print("✅ Authentication successful!")
-        print(f"Token saved to: {TOKEN_FILE}")
+
+        logger.info("✅ Authentication successful!")
+        logger.info(f"Token saved to: {TOKEN_FILE}")
         return True
-        
+
     except Exception as e:
-        print(f"❌ Authentication failed: {e}")
+        logger.error(f"❌ Authentication failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -649,6 +658,68 @@ def get_price_history_dataframe_schwab(
     logger.info(f"[SCHWAB] Created DataFrame with {len(df)} rows for {symbol}")
     
     return df
+
+
+def get_schwab_token_status() -> Dict[str, Any]:
+    """
+    Get Schwab token health status by reading the token file.
+    No API call needed — just reads schwab_token.json and computes expiry.
+
+    Returns:
+        Dict with status ("valid", "expired", "not_configured"),
+        expires_at, created_at, token_age_days
+    """
+    if not is_schwab_configured():
+        return {
+            "status": "not_configured",
+            "expires_at": None,
+            "created_at": None,
+            "token_age_days": None,
+        }
+
+    if not TOKEN_FILE.exists():
+        return {
+            "status": "expired",
+            "expires_at": None,
+            "created_at": None,
+            "token_age_days": None,
+        }
+
+    try:
+        with open(TOKEN_FILE, "r") as f:
+            token_data = json.load(f)
+
+        creation_ts = token_data.get("creation_timestamp")
+        if creation_ts is None:
+            return {
+                "status": "expired",
+                "expires_at": None,
+                "created_at": None,
+                "token_age_days": None,
+            }
+
+        created_at = datetime.fromtimestamp(creation_ts)
+        # Refresh token expires after 7 days
+        expires_at = created_at + timedelta(days=7)
+        now = datetime.now()
+        age_days = (now - created_at).total_seconds() / 86400
+
+        status = "valid" if now < expires_at else "expired"
+
+        return {
+            "status": status,
+            "expires_at": expires_at.isoformat(),
+            "created_at": created_at.isoformat(),
+            "token_age_days": round(age_days, 1),
+        }
+    except Exception as e:
+        logger.error(f"Failed to read token status: {e}")
+        return {
+            "status": "expired",
+            "expires_at": None,
+            "created_at": None,
+            "token_age_days": None,
+        }
 
 
 def get_schwab_status() -> Dict[str, Any]:

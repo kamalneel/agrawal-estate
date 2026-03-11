@@ -706,6 +706,278 @@
   margin-top: var(--space-1);
 }
 
+.viewDetailsButton {
+  margin-left: auto;
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  color: var(--color-positive);
+  border: 1px solid var(--color-positive);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  white-space: nowrap;
+}
+
+.viewDetailsButton:hover {
+  background: rgba(52, 211, 153, 0.1);
+}
+
+/* Save Details Modal */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+}
+
+.saveModal {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  max-width: 700px;
+  width: 100%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+
+.saveModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.saveModalHeader h3 {
+  font-size: var(--text-lg);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.modalClose {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+}
+
+.modalClose:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.saveModalBody {
+  padding: var(--space-4) var(--space-6);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.saveModalSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+}
+
+.badgeCreated {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--color-positive);
+}
+
+.badgeUpdated {
+  background: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+}
+
+.badgeRemoved {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+}
+
+.badgeOptions {
+  background: rgba(167, 139, 250, 0.15);
+  color: #a78bfa;
+}
+
+.badgePending {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
+.saveModalSection {
+  margin-bottom: var(--space-4);
+}
+
+.saveModalSection h4 {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--space-2);
+}
+
+.saveModalTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.saveModalTable th {
+  padding: var(--space-1) var(--space-3);
+  text-align: left;
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-medium);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.saveModalTable td {
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.saveModalTable tr:last-child td {
+  border-bottom: none;
+}
+
+.symbolCell {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary) !important;
+  font-family: var(--font-mono, monospace);
+}
+
+.arrow {
+  color: var(--color-text-tertiary);
+  margin: 0 var(--space-1);
+}
+
+.oldValue {
+  color: var(--color-text-tertiary);
+  text-decoration: line-through;
+}
+
+/* Imported Transactions Table */
+.importedCard {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-6);
+  overflow: hidden;
+}
+
+.importedHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.importedHeader h3 {
+  font-size: var(--text-base);
+  color: var(--color-text-primary);
+}
+
+.dismissButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast);
+}
+
+.dismissButton:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.importedTableWrap {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.importedTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.importedTable th,
+.importedTable td {
+  padding: var(--space-2) var(--space-4);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.importedTable td strong {
+  color: var(--color-text-primary);
+}
+
+.importedTable td {
+  color: var(--color-text-secondary);
+}
+
+.sortableHeader {
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-medium);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: color var(--duration-fast);
+}
+
+.sortableHeader:hover {
+  color: var(--color-accent);
+}
+
+.sortArrow {
+  font-size: 9px;
+  margin-left: 2px;
+}
+
+.positive {
+  color: var(--color-positive) !important;
+}
+
+.negative {
+  color: var(--color-negative) !important;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .actionCard {

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { RefreshCw, CheckCircle, AlertCircle, FolderOpen, FileText, Clock, Clipboard, Send, ChevronDown, ChevronUp, TrendingUp, BarChart3, Eye } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { RefreshCw, CheckCircle, AlertCircle, FolderOpen, FileText, Clock, Clipboard, Send, ChevronDown, ChevronUp, TrendingUp, BarChart3, Eye, X } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import styles from './DataIngestion.module.css'
 import clsx from 'clsx'
@@ -22,7 +22,19 @@ interface RefreshResult {
     files: string[]
     records: number
   }[]
+  ingestion_ids?: number[]
 }
+
+interface ImportedTransaction {
+  symbol: string
+  transaction_date: string | null
+  amount: number
+  transaction_type: string
+  description: string | null
+}
+
+type SortKey = 'symbol' | 'transaction_date' | 'amount' | 'transaction_type'
+type SortDir = 'asc' | 'desc'
 
 interface ParsedStock {
   symbol: string
@@ -57,14 +69,64 @@ interface PreviewResult {
   warnings: string[]
 }
 
+interface StockCreatedDetail {
+  symbol: string
+  name: string
+  shares: number
+  price: number
+  market_value: number
+}
+
+interface StockUpdatedDetail {
+  symbol: string
+  shares: number
+  old_shares: number
+  price: number
+  old_price: number
+  market_value: number
+  old_market_value: number
+}
+
+interface StockRemovedDetail {
+  symbol: string
+  shares?: number
+  last_price?: number
+  market_value?: number
+  warning?: string
+}
+
+interface OptionSavedDetail {
+  symbol: string
+  strike_price: number
+  option_type: string
+  expiration_date: string | null
+  contracts: number
+}
+
+interface PendingOrderDetail {
+  symbol: string
+  order_type: string
+  option_type: string | null
+  strike_price: number | null
+  contracts: number
+  limit_price: number | null
+}
+
 interface SaveResult {
   success: boolean
   account_name: string
   stocks_saved: number
   stocks_updated: number
+  stocks_removed: number
   options_saved: number
+  pending_orders_saved: number
   snapshot_id: number | null
   detected_format: string
+  stocks_created_details: StockCreatedDetail[]
+  stocks_updated_details: StockUpdatedDetail[]
+  stocks_removed_details: StockRemovedDetail[]
+  options_saved_details: OptionSavedDetail[]
+  pending_orders_details: PendingOrderDetail[]
 }
 
 interface AccountOption {
@@ -115,8 +177,81 @@ export function DataIngestion() {
   const [isSaving, setIsSaving] = useState(false)
   const [previewResult, setPreviewResult] = useState<PreviewResult | null>(null)
   const [saveResult, setSaveResult] = useState<SaveResult | null>(null)
+  const [showSaveModal, setShowSaveModal] = useState(false)
   const [pasteError, setPasteError] = useState<string | null>(null)
   const [showPreviewDetails, setShowPreviewDetails] = useState(false)
+
+  // Imported transactions table state
+  const [importedTransactions, setImportedTransactions] = useState<ImportedTransaction[]>([])
+  const [showImportedTable, setShowImportedTable] = useState(false)
+  const [sortKey, setSortKey] = useState<SortKey>('transaction_date')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  const friendlyType = (txType: string, description: string | null): string => {
+    const upper = txType.toUpperCase()
+    if (upper === 'STO') {
+      if (description) {
+        const d = description.toLowerCase()
+        if (d.includes('call')) return 'Call'
+        if (d.includes('put')) return 'Put'
+      }
+      return 'STO'
+    }
+    if (upper === 'BTC') return 'BTC'
+    if (upper === 'BUY') return 'Buy'
+    if (upper === 'SELL') return 'Sell'
+    if (upper === 'DIVIDEND') return 'Dividend'
+    if (upper === 'INTEREST' || upper === 'SLIP') return 'Interest'
+    return txType
+  }
+
+  const handleSort = useCallback((key: SortKey) => {
+    setSortKey(prev => {
+      if (prev === key) {
+        setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+        return key
+      }
+      setSortDir('asc')
+      return key
+    })
+  }, [])
+
+  const sortedTransactions = [...importedTransactions].sort((a, b) => {
+    const dir = sortDir === 'asc' ? 1 : -1
+    switch (sortKey) {
+      case 'symbol':
+        return dir * a.symbol.localeCompare(b.symbol)
+      case 'transaction_date':
+        return dir * ((a.transaction_date ?? '').localeCompare(b.transaction_date ?? ''))
+      case 'amount':
+        return dir * (a.amount - b.amount)
+      case 'transaction_type':
+        return dir * friendlyType(a.transaction_type, a.description).localeCompare(friendlyType(b.transaction_type, b.description))
+      default:
+        return 0
+    }
+  })
+
+  const fetchImportedTransactions = async (ids: number[]) => {
+    if (!ids.length) return
+    try {
+      const response = await fetch(
+        `${API_BASE}/ingestion/imported-transactions?ingestion_ids=${ids.join(',')}`,
+        { headers: getAuthHeaders() }
+      )
+      if (response.ok) {
+        const data = await response.json()
+        if (data.transactions && data.transactions.length > 0) {
+          setImportedTransactions(data.transactions)
+          setShowImportedTable(true)
+          setSortKey('transaction_date')
+          setSortDir('desc')
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch imported transactions:', err)
+    }
+  }
 
   const handlePreview = async () => {
     if (!pasteText.trim()) {
@@ -219,6 +354,7 @@ export function DataIngestion() {
       if (response.ok) {
         const result = await response.json()
         setSaveResult(result)
+        setShowSaveModal(true)
         // Clear the text area after successful save
         setPasteText('')
         setPreviewResult(null)
@@ -253,6 +389,8 @@ export function DataIngestion() {
     setIsRefreshing(true)
     setError(null)
     setLastRefresh(null)
+    setShowImportedTable(false)
+    setImportedTransactions([])
 
     try {
       const response = await fetch('/api/v1/ingestion/process-all', {
@@ -268,6 +406,10 @@ export function DataIngestion() {
         setLastRefresh(result)
         // Refresh inbox status after processing
         await fetchInboxStatus()
+        // Fetch imported transactions if any records were imported
+        if (result.records_imported > 0 && result.ingestion_ids?.length) {
+          await fetchImportedTransactions(result.ingestion_ids)
+        }
       } else {
         const errorData = await response.json()
         setError(errorData.detail || 'Failed to refresh data')
@@ -704,11 +846,21 @@ $2.84
               <div>
                 <strong>Saved successfully!</strong>
                 <p>
-                  {saveResult.stocks_saved > 0 && `${saveResult.stocks_saved} stocks created`}
-                  {saveResult.stocks_updated > 0 && `, ${saveResult.stocks_updated} stocks updated`}
-                  {saveResult.options_saved > 0 && `, ${saveResult.options_saved} options saved`}
+                  {[
+                    saveResult.stocks_saved > 0 && `${saveResult.stocks_saved} stocks created`,
+                    saveResult.stocks_updated > 0 && `${saveResult.stocks_updated} stocks updated`,
+                    saveResult.stocks_removed > 0 && `${saveResult.stocks_removed} stocks removed`,
+                    saveResult.options_saved > 0 && `${saveResult.options_saved} options saved`,
+                    saveResult.pending_orders_saved > 0 && `${saveResult.pending_orders_saved} pending orders`,
+                  ].filter(Boolean).join(', ')}
                 </p>
               </div>
+              <button
+                className={styles.viewDetailsButton}
+                onClick={() => setShowSaveModal(true)}
+              >
+                <Eye size={14} /> View Details
+              </button>
             </div>
           )}
         </div>
@@ -796,6 +948,61 @@ $2.84
         </div>
       )}
 
+      {/* Imported Transactions Table */}
+      {showImportedTable && sortedTransactions.length > 0 && (
+        <div className={styles.importedCard}>
+          <div className={styles.importedHeader}>
+            <h3>Newly Imported Transactions ({sortedTransactions.length})</h3>
+            <button
+              className={styles.dismissButton}
+              onClick={() => setShowImportedTable(false)}
+              aria-label="Dismiss"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className={styles.importedTableWrap}>
+            <table className={styles.importedTable}>
+              <thead>
+                <tr>
+                  {([
+                    ['symbol', 'Stock'],
+                    ['transaction_date', 'Date'],
+                    ['amount', 'Amount'],
+                    ['transaction_type', 'Type'],
+                  ] as [SortKey, string][]).map(([key, label]) => (
+                    <th
+                      key={key}
+                      className={styles.sortableHeader}
+                      onClick={() => handleSort(key)}
+                    >
+                      {label}
+                      {sortKey === key && (
+                        <span className={styles.sortArrow}>
+                          {sortDir === 'asc' ? ' \u25B2' : ' \u25BC'}
+                        </span>
+                      )}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedTransactions.map((tx, i) => (
+                  <tr key={i}>
+                    <td><strong>{tx.symbol}</strong></td>
+                    <td>{tx.transaction_date ?? '-'}</td>
+                    <td className={tx.amount >= 0 ? styles.positive : styles.negative}>
+                      ${Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                    <td>{friendlyType(tx.transaction_type, tx.description)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Inbox Folders Status */}
       <div className={styles.foldersSection}>
         <h2>
@@ -862,6 +1069,168 @@ $2.84
           </div>
         </div>
       </div>
+
+      {/* Save Details Modal */}
+      {showSaveModal && saveResult && (
+        <div className={styles.modalOverlay} onClick={() => setShowSaveModal(false)}>
+          <div className={styles.saveModal} onClick={e => e.stopPropagation()}>
+            <div className={styles.saveModalHeader}>
+              <h3>Save Details — {saveResult.account_name}</h3>
+              <button className={styles.modalClose} onClick={() => setShowSaveModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className={styles.saveModalBody}>
+              <div className={styles.saveModalSummary}>
+                {saveResult.stocks_saved > 0 && (
+                  <span className={clsx(styles.badge, styles.badgeCreated)}>{saveResult.stocks_saved} Created</span>
+                )}
+                {saveResult.stocks_updated > 0 && (
+                  <span className={clsx(styles.badge, styles.badgeUpdated)}>{saveResult.stocks_updated} Updated</span>
+                )}
+                {saveResult.stocks_removed > 0 && (
+                  <span className={clsx(styles.badge, styles.badgeRemoved)}>{saveResult.stocks_removed} Removed</span>
+                )}
+                {saveResult.options_saved > 0 && (
+                  <span className={clsx(styles.badge, styles.badgeOptions)}>{saveResult.options_saved} Options</span>
+                )}
+                {saveResult.pending_orders_saved > 0 && (
+                  <span className={clsx(styles.badge, styles.badgePending)}>{saveResult.pending_orders_saved} Pending</span>
+                )}
+              </div>
+
+              {saveResult.stocks_created_details.length > 0 && (
+                <div className={styles.saveModalSection}>
+                  <h4>Stocks Created</h4>
+                  <table className={styles.saveModalTable}>
+                    <thead>
+                      <tr><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th></tr>
+                    </thead>
+                    <tbody>
+                      {saveResult.stocks_created_details.map((s, i) => (
+                        <tr key={i}>
+                          <td className={styles.symbolCell}>{s.symbol}</td>
+                          <td>{s.shares}</td>
+                          <td>${s.price.toFixed(2)}</td>
+                          <td>${s.market_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {saveResult.stocks_updated_details.length > 0 && (
+                <div className={styles.saveModalSection}>
+                  <h4>Stocks Updated</h4>
+                  <table className={styles.saveModalTable}>
+                    <thead>
+                      <tr><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th></tr>
+                    </thead>
+                    <tbody>
+                      {saveResult.stocks_updated_details.map((s, i) => (
+                        <tr key={i}>
+                          <td className={styles.symbolCell}>{s.symbol}</td>
+                          <td>
+                            {s.old_shares !== s.shares ? (
+                              <><span className={styles.oldValue}>{s.old_shares}</span><span className={styles.arrow}>&rarr;</span>{s.shares}</>
+                            ) : s.shares}
+                          </td>
+                          <td>
+                            {s.old_price !== s.price ? (
+                              <><span className={styles.oldValue}>${s.old_price.toFixed(2)}</span><span className={styles.arrow}>&rarr;</span>${s.price.toFixed(2)}</>
+                            ) : `$${s.price.toFixed(2)}`}
+                          </td>
+                          <td>
+                            {s.old_market_value !== s.market_value ? (
+                              <><span className={styles.oldValue}>${s.old_market_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span><span className={styles.arrow}>&rarr;</span>${s.market_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</>
+                            ) : `$${s.market_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {saveResult.stocks_removed_details.length > 0 && (
+                <div className={styles.saveModalSection}>
+                  <h4>Stocks Removed</h4>
+                  <table className={styles.saveModalTable}>
+                    <thead>
+                      <tr><th>Symbol</th><th>Shares</th><th>Last Price</th><th>Last Value</th></tr>
+                    </thead>
+                    <tbody>
+                      {saveResult.stocks_removed_details.map((s, i) =>
+                        s.warning ? (
+                          <tr key={i}>
+                            <td colSpan={4} style={{ color: 'var(--color-warning, #fbbf24)', fontStyle: 'italic' }}>{s.warning}</td>
+                          </tr>
+                        ) : (
+                          <tr key={i}>
+                            <td className={styles.symbolCell}>{s.symbol}</td>
+                            <td>{s.shares}</td>
+                            <td>${(s.last_price ?? 0).toFixed(2)}</td>
+                            <td>${(s.market_value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          </tr>
+                        )
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {saveResult.options_saved_details.length > 0 && (
+                <div className={styles.saveModalSection}>
+                  <h4>Options Saved</h4>
+                  <table className={styles.saveModalTable}>
+                    <thead>
+                      <tr><th>Symbol</th><th>Type</th><th>Strike</th><th>Expiration</th><th>Contracts</th></tr>
+                    </thead>
+                    <tbody>
+                      {saveResult.options_saved_details.map((o, i) => (
+                        <tr key={i}>
+                          <td className={styles.symbolCell}>{o.symbol}</td>
+                          <td>{o.option_type}</td>
+                          <td>${o.strike_price.toFixed(2)}</td>
+                          <td>{o.expiration_date || '—'}</td>
+                          <td>{o.contracts}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {saveResult.pending_orders_details.length > 0 && (
+                <div className={styles.saveModalSection}>
+                  <h4>Pending Orders</h4>
+                  <table className={styles.saveModalTable}>
+                    <thead>
+                      <tr><th>Symbol</th><th>Order</th><th>Type</th><th>Strike</th><th>Contracts</th></tr>
+                    </thead>
+                    <tbody>
+                      {saveResult.pending_orders_details.map((p, i) => (
+                        <tr key={i}>
+                          <td className={styles.symbolCell}>{p.symbol}</td>
+                          <td>{p.order_type}</td>
+                          <td>{p.option_type || '—'}</td>
+                          <td>{p.strike_price ? `$${p.strike_price.toFixed(2)}` : '—'}</td>
+                          <td>{p.contracts}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {saveResult.stocks_saved === 0 && saveResult.stocks_updated === 0 && saveResult.stocks_removed === 0 && saveResult.options_saved === 0 && saveResult.pending_orders_saved === 0 && (
+                <p style={{ color: 'var(--color-text-tertiary)' }}>No changes were made.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

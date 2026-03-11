@@ -747,6 +747,111 @@
   font-weight: 500;
 }
 
+/* Clickable drill-down styles */
+.clickableHeader {
+  cursor: pointer;
+  transition: color 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.clickableHeader:hover {
+  color: #00A3FF;
+}
+
+.linkIcon {
+  opacity: 0.3;
+  transition: opacity 0.2s ease;
+  margin-left: auto;
+}
+
+.clickableHeader:hover .linkIcon {
+  opacity: 1;
+  color: #00A3FF;
+}
+
+.clickableRow {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.clickableRow:hover {
+  background: rgba(0, 163, 255, 0.08);
+}
+
+.clickableItem {
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.clickableItem:hover {
+  background: rgba(0, 163, 255, 0.08);
+  border-color: rgba(0, 163, 255, 0.2);
+}
+
+/* Tooltip on hover */
+.hasTooltip {
+  position: relative;
+}
+
+.tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a2e;
+  border: 1px solid rgba(0, 163, 255, 0.3);
+  border-radius: 8px;
+  padding: 0.75rem;
+  min-width: 260px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: rgba(0, 163, 255, 0.3);
+}
+
+.hasTooltip:hover .tooltip {
+  display: block;
+}
+
+.tooltipRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: #e5e5e5;
+  padding: 0.2rem 0;
+}
+
+.tooltipRow span:first-child {
+  color: #9CA3AF;
+}
+
+.tooltipRow span:last-child {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-weight: 600;
+}
+
+.tooltipNote {
+  font-size: 0.7rem;
+  color: #6b7280;
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-style: italic;
+}
+
 /* Property Card */
 .propertyCard {
   background: rgba(0, 0, 0, 0.2);

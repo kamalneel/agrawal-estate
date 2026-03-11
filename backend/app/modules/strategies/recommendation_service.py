@@ -40,10 +40,7 @@ class RecommendationService:
     - Linking executions to recommendations
     """
     
-    # Notification cooldown (hours) for unchanged recommendations
-    NOTIFICATION_COOLDOWN_HOURS = 4
-    
-    # Priority escalation always triggers notification
+    # Priority order (kept for RLHF analysis, not used for notification decisions)
     PRIORITY_ORDER = {'urgent': 0, 'high': 1, 'medium': 2, 'low': 3}
     
     def __init__(self, db: Session):
@@ -310,69 +307,32 @@ class RecommendationService:
     ) -> bool:
         """
         Decide whether this snapshot should trigger a notification.
-        
-        Notify if:
-        1. First snapshot (new recommendation)
-        2. Action changed (roll → close, etc.)
-        3. Target changed significantly
-        4. Priority escalated (medium → urgent)
-        5. Cooldown period passed for daily reminder
-        
-        Don't notify if:
-        - Same advice as last notification, within cooldown
-        - Low priority and no changes
-        - Action is NO_ACTION or HOLD
+
+        V4 Philosophy: Each notification set is fresh. Previous notifications
+        are redundant once a new set arrives. Therefore:
+        - Always notify for all actions (including HOLD)
+        - No cooldown between notifications
+        - Only skip NO_ACTION (truly nothing to communicate)
+
+        Change tracking (action_changed, target_changed) is still recorded
+        for RLHF learning but doesn't affect notification decision.
         """
-        # Never notify for NO_ACTION or HOLD
-        if snapshot.recommended_action in ('NO_ACTION', 'HOLD'):
-            snapshot.notification_decision = 'suppressed_hold'
+        # Only skip NO_ACTION - truly nothing to communicate
+        if snapshot.recommended_action == 'NO_ACTION':
+            snapshot.notification_decision = 'skipped_no_action'
             return False
-        
-        # First snapshot: always notify
+
+        # Track why we're notifying (for RLHF analysis)
         if prev_snapshot is None:
             snapshot.notification_decision = 'sent_new'
-            return True
-        
-        # Action changed: always notify
-        if snapshot.action_changed:
+        elif snapshot.action_changed:
             snapshot.notification_decision = 'sent_action_changed'
-            return True
-        
-        # Target changed significantly: notify
-        if snapshot.target_changed:
-            # Only if strike changed by more than $1 or expiration changed
-            strike_changed = abs(
-                float(snapshot.target_strike or 0) - 
-                float(snapshot.previous_target_strike or 0)
-            ) > 1.0
-            exp_changed = snapshot.target_expiration != snapshot.previous_target_expiration
-            
-            if strike_changed or exp_changed:
-                snapshot.notification_decision = 'sent_target_changed'
-                return True
-        
-        # Priority escalated: notify
-        if snapshot.priority_changed:
-            current_priority = self.PRIORITY_ORDER.get(snapshot.priority, 99)
-            previous_priority = self.PRIORITY_ORDER.get(snapshot.previous_priority, 99)
-            
-            if current_priority < previous_priority:  # Lower number = higher priority
-                snapshot.notification_decision = 'sent_priority_escalated'
-                return True
-        
-        # Check cooldown for daily reminder
-        last_notification = self._get_last_notification_time(recommendation)
-        if last_notification:
-            hours_since = (datetime.utcnow() - last_notification).total_seconds() / 3600
-            if hours_since >= self.NOTIFICATION_COOLDOWN_HOURS:
-                snapshot.notification_decision = 'sent_daily_reminder'
-                return True
-            else:
-                snapshot.notification_decision = 'suppressed_duplicate'
-                return False
-        
-        # No previous notification: notify
-        snapshot.notification_decision = 'sent_new'
+        elif snapshot.target_changed:
+            snapshot.notification_decision = 'sent_target_changed'
+        else:
+            snapshot.notification_decision = 'sent_refresh'
+
+        # Always notify for all actions (HOLD, CLOSE, ROLL, etc.)
         return True
     
     def _get_last_notification_time(

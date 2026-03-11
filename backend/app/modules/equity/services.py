@@ -15,13 +15,15 @@ from app.modules.equity.models import (
     EquityRSA,
     EquitySAFE,
     EquityExercise,
+    EquityPartner,
+    EquityCapitalEvent,
 )
 
 
 def get_all_companies(db: Session) -> List[EquityCompany]:
-    """Get all equity companies."""
+    """Get all equity companies (excludes fully dissolved/shutdown)."""
     return db.query(EquityCompany).filter(
-        EquityCompany.status != 'shutdown'
+        EquityCompany.status.notin_(['shutdown', 'dissolved'])
     ).all()
 
 
@@ -137,6 +139,7 @@ def get_equity_summary(db: Session) -> Dict[str, Any]:
             'total_rsas': total_rsas,
             'safe_principal': float(safe_principal),
             'estimated_value': float(company_value + safe_principal),
+            'dissolution_status': company.dissolution_status,
         })
     
     return {
@@ -167,18 +170,56 @@ def get_company_detail(db: Session, company_id: int) -> Optional[Dict[str, Any]]
         ).all()
         exercises.extend(grant_exercises)
     
+    # Get partners and capital events
+    partners = db.query(EquityPartner).filter(EquityPartner.company_id == company_id).all()
+    capital_events = db.query(EquityCapitalEvent).filter(
+        EquityCapitalEvent.company_id == company_id
+    ).order_by(EquityCapitalEvent.event_date).all()
+
     return {
         'company': {
             'id': company.id,
             'name': company.name,
             'dba_name': company.dba_name,
             'status': company.status,
+            'investment_type': company.investment_type,
+            'entity_type': company.entity_type,
+            'ein': company.ein,
+            'state_of_incorporation': company.state_of_incorporation,
+            'incorporation_date': company.incorporation_date.isoformat() if company.incorporation_date else None,
+            'dissolution_date': company.dissolution_date.isoformat() if company.dissolution_date else None,
+            'dissolution_status': company.dissolution_status,
+            'total_capital_invested': float(company.total_capital_invested) if company.total_capital_invested else None,
+            'total_revenue_earned': float(company.total_revenue_earned) if company.total_revenue_earned else None,
+            'section_1244_eligible': company.section_1244_eligible == 'Y',
             'current_fmv': float(company.current_fmv) if company.current_fmv else None,
             'fmv_date': company.fmv_date.isoformat() if company.fmv_date else None,
             'qsbs_eligible': company.qsbs_eligible == 'Y',
             'qsbs_notes': company.qsbs_notes,
             'notes': company.notes,
         },
+        'partners': [
+            {
+                'id': p.id,
+                'name': p.name,
+                'role': p.role,
+                'ownership_pct': float(p.ownership_pct) if p.ownership_pct else None,
+                'capital_contributed': float(p.capital_contributed) if p.capital_contributed else None,
+                'is_primary': p.is_primary == 'Y',
+            }
+            for p in partners
+        ],
+        'capital_events': [
+            {
+                'id': ce.id,
+                'event_date': ce.event_date.isoformat() if ce.event_date else None,
+                'event_type': ce.event_type,
+                'amount': float(ce.amount) if ce.amount else None,
+                'description': ce.description,
+                'contributor': ce.contributor,
+            }
+            for ce in capital_events
+        ],
         'grants': [
             {
                 'id': g.id,
@@ -286,4 +327,32 @@ def create_safe(db: Session, data: Dict[str, Any]) -> EquitySAFE:
     db.add(safe)
     db.flush()
     return safe
+
+
+def get_partners(db: Session, company_id: int) -> List[EquityPartner]:
+    """Get all partners for a company."""
+    return db.query(EquityPartner).filter(EquityPartner.company_id == company_id).all()
+
+
+def create_partner(db: Session, data: Dict[str, Any]) -> EquityPartner:
+    """Create a new partner record."""
+    partner = EquityPartner(**data)
+    db.add(partner)
+    db.flush()
+    return partner
+
+
+def get_capital_events(db: Session, company_id: int) -> List[EquityCapitalEvent]:
+    """Get all capital events for a company."""
+    return db.query(EquityCapitalEvent).filter(
+        EquityCapitalEvent.company_id == company_id
+    ).order_by(EquityCapitalEvent.event_date).all()
+
+
+def create_capital_event(db: Session, data: Dict[str, Any]) -> EquityCapitalEvent:
+    """Create a new capital event."""
+    event = EquityCapitalEvent(**data)
+    db.add(event)
+    db.flush()
+    return event
 

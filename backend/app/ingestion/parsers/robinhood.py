@@ -208,6 +208,8 @@ class RobinhoodParser(BaseParser):
             # Options transactions - preserve original codes for income tracking
             "STO": "STO",   # Sell To Open (options income)
             "BTC": "BTC",   # Buy To Close (options cost)
+            "STC": "STC",   # Sell To Close (close long option position)
+            "BTO": "BTO",   # Buy To Open (open long option position)
             "OEXP": "OEXP", # Option Expiration
             "OASGN": "OASGN", # Options assignment
             "OEXCS": "OEXCS", # Options exercise
@@ -255,6 +257,17 @@ class RobinhoodParser(BaseParser):
         if symbol in ("", "UNKNOWN", "N/A", "-"):
             symbol = ""  # Normalize to empty string for consistency
         
+        # Parse amounts - may be None for certain transaction types
+        amount = self._normalize_amount(row.get("Amount") or "")
+        price_per_share = self._normalize_amount(row.get("Price") or "")
+
+        # OEXP (option expiration) and similar types don't have monetary amounts
+        # Set to 0.0 to satisfy NOT NULL constraint - these are informational records
+        if amount is None and trans_type in ("OEXP", "OASGN", "OEXCS", "SPLIT"):
+            amount = 0.0
+        if price_per_share is None and trans_type in ("OEXP", "OASGN", "OEXCS", "SPLIT"):
+            price_per_share = 0.0
+
         data = {
             "source": self.source_name,
             "account_id": account_id,  # Inferred from filename
@@ -263,8 +276,8 @@ class RobinhoodParser(BaseParser):
             "symbol": symbol,
             "description": (row.get("Description") or "").strip(),
             "quantity": self._normalize_amount(row.get("Quantity") or ""),
-            "price_per_share": self._normalize_amount(row.get("Price") or ""),
-            "amount": self._normalize_amount(row.get("Amount") or ""),
+            "price_per_share": price_per_share,
+            "amount": amount,
         }
         
         return ParsedRecord(

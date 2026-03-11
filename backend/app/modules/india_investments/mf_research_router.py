@@ -149,6 +149,10 @@ async def update_fund_details(
         fund.alpha = Decimal(str(update_data["alpha"])) if update_data["alpha"] is not None else None
     if "value_research_rating" in update_data:
         fund.value_research_rating = update_data["value_research_rating"] if update_data["value_research_rating"] is not None else None
+    if "sharpe_ratio" in update_data:
+        fund.sharpe_ratio = Decimal(str(update_data["sharpe_ratio"])) if update_data["sharpe_ratio"] is not None else None
+    if "volatility" in update_data:
+        fund.volatility = Decimal(str(update_data["volatility"])) if update_data["volatility"] is not None else None
     if "exit_load" in update_data:
         fund.exit_load = update_data["exit_load"] if update_data["exit_load"] else None
     

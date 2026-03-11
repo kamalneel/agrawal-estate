@@ -2,10 +2,27 @@
 Income module database models.
 """
 
-from sqlalchemy import Column, Integer, String, Numeric, Date, Text, UniqueConstraint, ForeignKey, Index, JSON
+from sqlalchemy import Column, Integer, String, Numeric, Date, Text, UniqueConstraint, ForeignKey, Index, JSON, Boolean
 from sqlalchemy.orm import relationship
 
 from app.shared.models.base import BaseModel
+
+
+class SalaryProjection(BaseModel):
+    """Salary projection config for BBD income offset calculations.
+    Each row represents a person's monthly take-home pay for a date range."""
+
+    __tablename__ = "salary_projections"
+
+    person = Column(String(100), nullable=False)           # "Neel", "Jaya"
+    monthly_net = Column(Numeric(12, 2), nullable=False, default=0)
+    effective_from = Column(String(7), nullable=False)     # "2025-01" (YYYY-MM)
+    effective_to = Column(String(7), nullable=True)        # "2025-12" or null (ongoing)
+    notes = Column(String(500), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('person', 'effective_from', name='uq_salary_projection_person_from'),
+    )
 
 
 class RentalProperty(BaseModel):
@@ -207,7 +224,9 @@ class W2Record(BaseModel):
     state_wages = Column(Numeric(18, 2), nullable=False, default=0)
     # Box 17 - State income tax
     state_tax_withheld = Column(Numeric(18, 2), nullable=False, default=0)
-    
+    # Box 10 - Dependent care benefits
+    dependent_care_benefits = Column(Numeric(18, 2), nullable=False, default=0)
+
     # Calculated net income (wages - taxes)
     net_income = Column(Numeric(18, 2), nullable=False, default=0)
     
@@ -262,5 +281,23 @@ class RetirementContribution(BaseModel):
         UniqueConstraint('owner', 'tax_year', name='uq_retirement_contribution_owner_year'),
         Index('idx_retirement_contributions_owner', 'owner'),
         Index('idx_retirement_contributions_year', 'tax_year'),
+    )
+
+
+class TaxDependent(BaseModel):
+    """Tax dependents for credit calculations (Child Tax Credit, etc.)."""
+
+    __tablename__ = "tax_dependents"
+
+    name = Column(String(200), nullable=False)
+    relationship_type = Column(String(50), nullable=False)  # 'child', 'qualifying_relative'
+    date_of_birth = Column(Date, nullable=False)
+    tax_year = Column(Integer, nullable=False)
+    ssn_last_four = Column(String(4), nullable=True)
+    qualifies_for_ctc = Column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        UniqueConstraint('name', 'tax_year', name='uq_tax_dependent_name_year'),
+        Index('idx_tax_dependent_year', 'tax_year'),
     )
 

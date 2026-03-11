@@ -70,7 +70,11 @@ def calculate_itm_status(
         {'is_itm': True, 'itm_pct': 35.0, 'itm_amount': 21.0, ...}
     """
     option_type_lower = option_type.lower()
-    
+
+    # Ensure native Python types (avoid numpy.float64, numpy.bool_ etc.)
+    current_price = float(current_price)
+    strike = float(strike)
+
     if option_type_lower == "call":
         # CALL: ITM when stock > strike
         is_itm = current_price > strike

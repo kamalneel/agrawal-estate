@@ -25,6 +25,7 @@ from app.modules.tax.pdf_generator import (
 )
 from app.modules.tax.cost_basis_service import CostBasisService
 from app.modules.tax.models import StockLot, StockLotSale
+from app.modules.income.models import TaxDependent
 
 router = APIRouter()
 
@@ -41,6 +42,7 @@ class TaxReturnSummary(BaseModel):
     federal_rate: Optional[float] = None
     state_rate: Optional[float] = None
     other_rate: Optional[float] = None
+    is_forecast: bool = False
 
 
 class TaxHistory(BaseModel):
@@ -170,6 +172,7 @@ async def get_tax_returns(
                         federal_rate=round(federal_rate, 1),
                         state_rate=round(state_rate, 1),
                         other_rate=round(other_rate, 1),
+                        is_forecast=True,
                     ))
                 except Exception as e:
                     # Log the error for debugging
@@ -301,6 +304,109 @@ async def get_tax_forecast(
         raise HTTPException(status_code=500, detail=f"Error calculating forecast: {str(e)}")
 
 
+# ==================== Tax Dependents Endpoints ====================
+
+
+class DependentCreate(BaseModel):
+    """Schema for creating a tax dependent."""
+    name: str
+    relationship_type: str  # 'child', 'qualifying_relative'
+    date_of_birth: str  # ISO date
+    tax_year: int
+    ssn_last_four: Optional[str] = None
+    qualifies_for_ctc: bool = True
+
+
+@router.post("/dependents")
+async def add_dependent(
+    data: DependentCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Add or update a tax dependent."""
+    from datetime import datetime
+
+    dob = datetime.fromisoformat(data.date_of_birth).date()
+
+    # Upsert by name + tax_year
+    existing = db.query(TaxDependent).filter(
+        TaxDependent.name == data.name,
+        TaxDependent.tax_year == data.tax_year
+    ).first()
+
+    if existing:
+        existing.relationship_type = data.relationship_type
+        existing.date_of_birth = dob
+        existing.ssn_last_four = data.ssn_last_four
+        existing.qualifies_for_ctc = data.qualifies_for_ctc
+        db.commit()
+        dep = existing
+    else:
+        dep = TaxDependent(
+            name=data.name,
+            relationship_type=data.relationship_type,
+            date_of_birth=dob,
+            tax_year=data.tax_year,
+            ssn_last_four=data.ssn_last_four,
+            qualifies_for_ctc=data.qualifies_for_ctc,
+        )
+        db.add(dep)
+        db.commit()
+        db.refresh(dep)
+
+    return {
+        "id": dep.id,
+        "name": dep.name,
+        "relationship_type": dep.relationship_type,
+        "date_of_birth": dep.date_of_birth.isoformat(),
+        "tax_year": dep.tax_year,
+        "qualifies_for_ctc": dep.qualifies_for_ctc,
+    }
+
+
+@router.get("/dependents/{year}")
+async def list_dependents(
+    year: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """List all dependents for a tax year."""
+    dependents = db.query(TaxDependent).filter(
+        TaxDependent.tax_year == year
+    ).all()
+
+    return {
+        "tax_year": year,
+        "dependents": [
+            {
+                "id": d.id,
+                "name": d.name,
+                "relationship_type": d.relationship_type,
+                "date_of_birth": d.date_of_birth.isoformat(),
+                "qualifies_for_ctc": d.qualifies_for_ctc,
+                "ssn_last_four": d.ssn_last_four,
+            }
+            for d in dependents
+        ]
+    }
+
+
+@router.delete("/dependents/{dep_id}")
+async def delete_dependent(
+    dep_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Remove a tax dependent."""
+    dep = db.query(TaxDependent).filter(TaxDependent.id == dep_id).first()
+    if not dep:
+        raise HTTPException(status_code=404, detail="Dependent not found")
+
+    db.delete(dep)
+    db.commit()
+    return {"success": True, "message": f"Dependent '{dep.name}' removed"}
+
+
 @router.get("/forms/{year}", response_model=TaxFormPackage)
 async def get_tax_forms(
     year: int,
@@ -349,12 +455,14 @@ async def download_form_1040_pdf(
         generate_form_1040_pdf(forms.form_1040, buffer)
         buffer.seek(0)
 
-        # Return as downloadable PDF
+        # Return as downloadable PDF with Content-Length so browser knows when download is complete
+        pdf_bytes = buffer.getvalue()
         return StreamingResponse(
-            buffer,
+            iter([pdf_bytes]),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=Form_1040_{year}_Forecast.pdf"
+                "Content-Disposition": f"attachment; filename=Form_1040_{year}_Forecast.pdf",
+                "Content-Length": str(len(pdf_bytes))
             }
         )
     except ValueError as e:
@@ -386,12 +494,14 @@ async def download_form_540_pdf(
         generate_california_540_pdf(forms.california_540, buffer)
         buffer.seek(0)
 
-        # Return as downloadable PDF
+        # Return as downloadable PDF with Content-Length so browser knows when download is complete
+        pdf_bytes = buffer.getvalue()
         return StreamingResponse(
-            buffer,
+            iter([pdf_bytes]),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=CA_Form_540_{year}_Forecast.pdf"
+                "Content-Disposition": f"attachment; filename=CA_Form_540_{year}_Forecast.pdf",
+                "Content-Length": str(len(pdf_bytes))
             }
         )
     except ValueError as e:
@@ -418,12 +528,14 @@ async def download_all_forms_pdf(
         # Generate combined PDF
         buffer = generate_tax_forms_pdf(forms)
 
-        # Return as downloadable PDF
+        # Return as downloadable PDF with Content-Length so browser knows when download is complete
+        pdf_bytes = buffer.getvalue()
         return StreamingResponse(
-            buffer,
+            iter([pdf_bytes]),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=Tax_Forms_{year}_Forecast.pdf"
+                "Content-Disposition": f"attachment; filename=Tax_Forms_{year}_Forecast.pdf",
+                "Content-Length": str(len(pdf_bytes))
             }
         )
     except ValueError as e:
@@ -485,6 +597,7 @@ async def get_realized_gains(
             "holding_period_days": sale.holding_period_days,
             "is_long_term": sale.is_long_term,
             "wash_sale": sale.wash_sale,
+            "account_id": lot.account_id if lot else None,
             "notes": sale.notes
         })
 
@@ -923,4 +1036,458 @@ async def get_tax_history_chart(
         "years": [],
         "assessed_values": [],
         "tax_amounts": []
+    }
+
+
+# ==================== Tax Document Management Endpoints ====================
+
+from fastapi import UploadFile, File, Form
+from fastapi.responses import FileResponse
+from decimal import Decimal
+from app.modules.tax.document_service import TaxDocumentService
+from app.modules.tax.actual_tax_service import ActualTaxService
+
+
+@router.post("/documents/upload")
+async def upload_tax_document(
+    year: int = Form(...),
+    document_type: str = Form(...),
+    institution_name: str = Form(None),
+    institution_ein: str = Form(None),
+    document_date: str = Form(None),
+    notes: str = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Upload a tax document (1099, W-2, etc.).
+
+    Form parameters:
+    - year: Tax year (e.g., 2025)
+    - document_type: Type of document (1099-INT, 1099-DIV, W-2, etc.)
+    - institution_name: Name of the institution (optional)
+    - institution_ein: Employer ID Number (optional)
+    - document_date: Date on the document (ISO format, optional)
+    - notes: Additional notes (optional)
+    - file: The document file (PDF, image, etc.)
+    """
+    service = TaxDocumentService(db)
+
+    try:
+        doc = await service.upload_document(
+            year=year,
+            file=file,
+            doc_type=document_type,
+            institution_name=institution_name,
+            institution_ein=institution_ein,
+            document_date=document_date,
+            notes=notes
+        )
+
+        return {
+            "success": True,
+            "document": {
+                "id": doc.id,
+                "tax_year": doc.tax_year,
+                "document_type": doc.document_type,
+                "institution_name": doc.institution_name,
+                "file_name": doc.file_name,
+                "file_size": doc.file_size,
+                "upload_date": doc.upload_date.isoformat() if doc.upload_date else None,
+                "status": doc.status
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading document: {str(e)}")
+
+
+@router.get("/documents/{year}")
+async def list_tax_documents(
+    year: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    List all tax documents for a year.
+
+    Returns documents grouped by type with upload information.
+    """
+    service = TaxDocumentService(db)
+    docs = service.get_documents_by_year(year)
+
+    # Group by type
+    by_type = {}
+    for doc in docs:
+        if doc.document_type not in by_type:
+            by_type[doc.document_type] = []
+        by_type[doc.document_type].append({
+            "id": doc.id,
+            "file_name": doc.file_name,
+            "institution_name": doc.institution_name,
+            "institution_ein": doc.institution_ein,
+            "file_size": doc.file_size,
+            "mime_type": doc.mime_type,
+            "upload_date": doc.upload_date.isoformat() if doc.upload_date else None,
+            "document_date": doc.document_date.isoformat() if doc.document_date else None,
+            "status": doc.status,
+            "notes": doc.notes
+        })
+
+    stats = service.get_document_stats(year)
+
+    return {
+        "tax_year": year,
+        "documents": by_type,
+        "stats": stats
+    }
+
+
+@router.get("/documents/{year}/{doc_id}")
+async def get_tax_document(
+    year: int,
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Get details of a specific tax document."""
+    service = TaxDocumentService(db)
+    doc = service.get_document_by_id(doc_id)
+
+    if not doc or doc.tax_year != year:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return {
+        "id": doc.id,
+        "tax_year": doc.tax_year,
+        "document_type": doc.document_type,
+        "institution_name": doc.institution_name,
+        "institution_ein": doc.institution_ein,
+        "file_name": doc.file_name,
+        "file_size": doc.file_size,
+        "mime_type": doc.mime_type,
+        "upload_date": doc.upload_date.isoformat() if doc.upload_date else None,
+        "document_date": doc.document_date.isoformat() if doc.document_date else None,
+        "status": doc.status,
+        "extracted_data": doc.extracted_data,
+        "notes": doc.notes
+    }
+
+
+@router.delete("/documents/{year}/{doc_id}")
+async def delete_tax_document(
+    year: int,
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Delete a tax document."""
+    service = TaxDocumentService(db)
+    doc = service.get_document_by_id(doc_id)
+
+    if not doc or doc.tax_year != year:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    success = service.delete_document(doc_id)
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete document")
+
+    return {"success": True, "message": f"Document '{doc.file_name}' deleted"}
+
+
+@router.get("/documents/{year}/{doc_id}/download")
+async def download_tax_document(
+    year: int,
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Download a tax document file."""
+    service = TaxDocumentService(db)
+    doc = service.get_document_by_id(doc_id)
+
+    if not doc or doc.tax_year != year:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = service.get_file_path(doc_id)
+
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document file not found")
+
+    return FileResponse(
+        path=file_path,
+        filename=doc.file_name,
+        media_type=doc.mime_type or "application/octet-stream"
+    )
+
+
+# ==================== Actual Tax Data Endpoints ====================
+
+
+@router.get("/actual/{year}")
+async def get_actual_tax_data(
+    year: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get aggregated actual tax data for a year.
+
+    Returns tax items by form line with source information.
+    """
+    service = ActualTaxService(db)
+    return service.get_actual_tax_data(year)
+
+
+@router.get("/actual/{year}/comparison")
+async def get_actual_vs_forecast(
+    year: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Compare actual tax data against forecast.
+
+    Returns line-by-line comparison with differences.
+    """
+    # Get forecast data
+    try:
+        forecast = calculate_tax_forecast(db, forecast_year=year, base_year=2024)
+    except Exception:
+        forecast = {}
+
+    # Build forecast data dict for comparison
+    forecast_data = {
+        '1040:1': forecast.get('details', {}).get('w2_wages', 0),
+        '1040:2b': forecast.get('details', {}).get('interest_income', 0),
+        '1040:3b': forecast.get('details', {}).get('dividend_income', 0),
+        '1040:7': forecast.get('details', {}).get('capital_gains', {}).get('total', 0),
+        '1040:11': forecast.get('agi', 0),
+        '1040:22': forecast.get('federal_tax', 0) + forecast.get('state_tax', 0),
+    }
+
+    service = ActualTaxService(db)
+    return service.get_comparison(year, forecast_data)
+
+
+@router.get("/actual/{year}/completeness")
+async def get_document_completeness(
+    year: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Check document completeness for a year.
+
+    Returns analysis of received vs expected documents.
+    """
+    service = ActualTaxService(db)
+    return service.get_completeness(year)
+
+
+class ActualTaxItemCreate(BaseModel):
+    """Schema for creating an actual tax item."""
+    form_line: str
+    amount: float
+    description: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.post("/actual/{year}/items")
+async def add_actual_tax_item(
+    year: int,
+    item: ActualTaxItemCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Add a manual tax item entry.
+
+    Use this for items that don't come from uploaded documents.
+    """
+    service = ActualTaxService(db)
+
+    try:
+        created = service.add_manual_item(
+            year=year,
+            form_line=item.form_line,
+            amount=Decimal(str(item.amount)),
+            description=item.description,
+            notes=item.notes
+        )
+
+        return {
+            "success": True,
+            "item": {
+                "id": created.id,
+                "tax_year": created.tax_year,
+                "form_line": created.form_line,
+                "description": created.description,
+                "amount": float(created.amount),
+                "is_manual_entry": created.is_manual_entry
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/actual/{year}/items/{item_id}")
+async def delete_actual_tax_item(
+    year: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """Delete an actual tax item."""
+    service = ActualTaxService(db)
+    success = service.delete_item(item_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    return {"success": True, "message": "Item deleted"}
+
+
+# ==================== Document Processing Endpoints ====================
+
+
+@router.get("/documents/{year}/{doc_id}/fields")
+async def get_document_fields(
+    year: int,
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get the form fields that should be extracted from a document.
+
+    Returns field definitions based on document type, plus any
+    previously extracted values if the document was already processed.
+    """
+    doc_service = TaxDocumentService(db)
+    tax_service = ActualTaxService(db)
+
+    doc = doc_service.get_document_by_id(doc_id)
+    if not doc or doc.tax_year != year:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Get field definitions for this document type
+    fields = tax_service.get_document_fields(doc.document_type)
+
+    # Get any existing extracted items
+    existing_items = tax_service.get_items_by_document(doc_id)
+    existing_by_line = {item.form_line: float(item.amount) for item in existing_items}
+
+    # Merge existing values into fields
+    fields_with_values = []
+    for field in fields:
+        field_copy = dict(field)
+        field_copy['value'] = existing_by_line.get(field['form_line'], None)
+        fields_with_values.append(field_copy)
+
+    return {
+        "document": {
+            "id": doc.id,
+            "file_name": doc.file_name,
+            "document_type": doc.document_type,
+            "institution_name": doc.institution_name,
+            "status": doc.status
+        },
+        "fields": fields_with_values
+    }
+
+
+class DocumentProcessRequest(BaseModel):
+    """Request body for processing a document."""
+    values: List[Dict]  # List of {form_line, amount, description?, notes?}
+
+
+@router.post("/documents/{year}/{doc_id}/process")
+async def process_document(
+    year: int,
+    doc_id: int,
+    request: DocumentProcessRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Process a document by saving extracted values.
+
+    This creates ActualTaxItem records for each value and marks
+    the document as 'processed'.
+
+    Request body:
+    {
+        "values": [
+            {"form_line": "1040:2b", "amount": 1234.56, "description": "Interest from Chase"},
+            {"form_line": "1040:25b", "amount": 0, "description": "Federal withheld"}
+        ]
+    }
+    """
+    doc_service = TaxDocumentService(db)
+    tax_service = ActualTaxService(db)
+
+    doc = doc_service.get_document_by_id(doc_id)
+    if not doc or doc.tax_year != year:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        items = tax_service.process_document(
+            document_id=doc_id,
+            extracted_values=request.values,
+            year=year
+        )
+
+        return {
+            "success": True,
+            "document_id": doc_id,
+            "status": "processed",
+            "items_created": len(items),
+            "items": [
+                {
+                    "id": item.id,
+                    "form_line": item.form_line,
+                    "description": item.description,
+                    "amount": float(item.amount)
+                }
+                for item in items
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/documents/{year}/{doc_id}/verify")
+async def verify_document(
+    year: int,
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Mark a processed document as verified.
+
+    This confirms that the extracted values have been reviewed and are correct.
+    """
+    doc_service = TaxDocumentService(db)
+
+    doc = doc_service.get_document_by_id(doc_id)
+    if not doc or doc.tax_year != year:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.status != 'processed':
+        raise HTTPException(
+            status_code=400,
+            detail="Document must be processed before it can be verified"
+        )
+
+    updated = doc_service.update_document_status(doc_id, 'verified')
+
+    return {
+        "success": True,
+        "document_id": doc_id,
+        "status": updated.status
     }

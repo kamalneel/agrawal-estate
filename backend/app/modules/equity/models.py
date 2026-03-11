@@ -1,5 +1,5 @@
 """
-Equity module database models for startup holdings.
+Equity module database models for startup holdings and business investments.
 """
 
 from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Text, ForeignKey, Index
@@ -9,31 +9,49 @@ from app.shared.models.base import BaseModel
 
 
 class EquityCompany(BaseModel):
-    """Companies where equity is held (startups from Carta)."""
-    
+    """Companies where equity is held (startups from Carta or business investments)."""
+
     __tablename__ = "equity_companies"
-    
+
     name = Column(String(200), nullable=False)
     dba_name = Column(String(200), nullable=True)  # "Doing Business As" name
-    
+
     # Company info
-    status = Column(String(50), default='active')  # 'active', 'acquired', 'ipo', 'shutdown'
+    status = Column(String(50), default='active')  # 'active', 'acquired', 'ipo', 'shutdown', 'closing', 'dissolved'
     founded_date = Column(Date, nullable=True)
-    
+
+    # Investment classification
+    investment_type = Column(String(50), default='startup_equity')  # 'startup_equity', 'business_investment'
+
+    # Business entity details
+    entity_type = Column(String(50), nullable=True)  # 'c_corp', 's_corp', 'llc', 'partnership'
+    ein = Column(String(20), nullable=True)  # Federal EIN
+    state_of_incorporation = Column(String(50), nullable=True)
+    incorporation_date = Column(Date, nullable=True)
+    dissolution_date = Column(Date, nullable=True)
+    dissolution_status = Column(String(50), nullable=True)  # 'not_started', 'in_progress', 'completed'
+
+    # Business investment financials
+    total_capital_invested = Column(Numeric(18, 2), nullable=True)
+    total_revenue_earned = Column(Numeric(18, 2), nullable=True)
+
+    # Tax treatment
+    section_1244_eligible = Column(String(1), default='N')  # 'Y' or 'N' — ordinary loss treatment
+
     # Valuation
     current_fmv = Column(Numeric(18, 4), nullable=True)  # Fair Market Value per share
     fmv_date = Column(Date, nullable=True)
     last_409a_date = Column(Date, nullable=True)
-    
+
     # QSBS eligibility
     qsbs_eligible = Column(String(1), default='N')  # 'Y' or 'N'
     qsbs_notes = Column(Text, nullable=True)
-    
+
     # Additional info
     industry = Column(String(100), nullable=True)
     website = Column(String(200), nullable=True)
     notes = Column(Text, nullable=True)
-    
+
     logo_url = Column(String(500), nullable=True)
 
 
@@ -183,8 +201,36 @@ class EquityExercise(BaseModel):
     notes = Column(Text, nullable=True)
 
 
+class EquityPartner(BaseModel):
+    """Partners/co-owners in a business investment."""
+
+    __tablename__ = "equity_partners"
+
+    company_id = Column(Integer, ForeignKey('equity_companies.id'), nullable=False)
+
+    name = Column(String(200), nullable=False)
+    role = Column(String(50), nullable=True)  # 'investor', 'operator', 'both'
+    ownership_pct = Column(Numeric(5, 2), nullable=True)  # e.g., 80.00
+    capital_contributed = Column(Numeric(18, 2), nullable=True)
+    is_primary = Column(String(1), default='N')  # 'Y' or 'N'
+
+    notes = Column(Text, nullable=True)
 
 
+class EquityCapitalEvent(BaseModel):
+    """Capital events for a business investment (contributions, revenue, distributions)."""
+
+    __tablename__ = "equity_capital_events"
+
+    company_id = Column(Integer, ForeignKey('equity_companies.id'), nullable=False)
+
+    event_date = Column(Date, nullable=True)
+    event_type = Column(String(50), nullable=False)  # 'capital_contribution', 'revenue', 'expense', 'distribution', 'dissolution'
+    amount = Column(Numeric(18, 2), nullable=False)
+    description = Column(Text, nullable=True)
+    contributor = Column(String(200), nullable=True)  # who made this contribution/payment
+
+    notes = Column(Text, nullable=True)
 
 
 

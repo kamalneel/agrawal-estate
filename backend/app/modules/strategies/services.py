@@ -190,70 +190,119 @@ def save_parsed_options(
 def get_sold_options_by_account(db: Session) -> Dict[str, Dict]:
     """
     Get sold options grouped by account name.
-    
+
+    Aggregates across ALL recent snapshots for each account so that partial
+    uploads don't wipe out previously-captured symbols.  For each symbol,
+    the data from the most recent snapshot that mentions it is used.
+    Options whose expiration_date has already passed are excluded.
+
     Returns a dictionary mapping account_name -> {by_symbol: {...}, snapshot: {...}}
     This allows us to match sold options to specific accounts.
     """
     from sqlalchemy import func
-    
-    # Get all successful snapshots grouped by account (latest per account)
-    subquery = db.query(
-        SoldOptionsSnapshot.account_name,
-        func.max(SoldOptionsSnapshot.id).label('max_id')
-    ).filter(
-        SoldOptionsSnapshot.parsing_status == 'success',
-        SoldOptionsSnapshot.account_name.isnot(None)
-    ).group_by(SoldOptionsSnapshot.account_name).subquery()
-    
-    # Get the actual snapshots
-    snapshots = db.query(SoldOptionsSnapshot).join(
-        subquery, SoldOptionsSnapshot.id == subquery.c.max_id
-    ).all()
-    
-    result = {}
-    
-    for snapshot in snapshots:
-        account_name = snapshot.account_name
-        
-        # Get all options for this snapshot
-        options = db.query(SoldOption).filter(
-            SoldOption.snapshot_id == snapshot.id
-        ).all()
-        
-        # Group by symbol
-        by_symbol = {}
-        total_contracts = 0
-        
-        for opt in options:
-            if opt.symbol not in by_symbol:
-                by_symbol[opt.symbol] = []
-            
-            by_symbol[opt.symbol].append({
-                "id": opt.id,
-                "strike_price": float(opt.strike_price),
-                "option_type": opt.option_type,  # 'call' or 'put' - needed to filter covered calls vs cash-secured puts
-                "contracts_sold": opt.contracts_sold,
-            })
-            total_contracts += opt.contracts_sold
-        
-        result[account_name] = {
-            "snapshot": {
-                "id": snapshot.id,
-                "source": snapshot.source,
-                "account_name": account_name,
-                "snapshot_date": snapshot.snapshot_date.isoformat(),
-            },
-            "by_symbol": by_symbol,
-            "total_contracts": total_contracts
-        }
-    
-    # Debug: Log what we're returning
+    from datetime import date as date_type, timedelta, datetime as dt_type
     import logging
     logger = logging.getLogger(__name__)
+
+    today = date_type.today()
+    # Only look back 30 days for snapshots — options rarely last longer
+    cutoff = dt_type.combine(today - timedelta(days=30), dt_type.min.time())
+
+    # Get recent successful snapshots, ordered newest-first
+    snapshots = db.query(SoldOptionsSnapshot).filter(
+        SoldOptionsSnapshot.parsing_status == 'success',
+        SoldOptionsSnapshot.account_name.isnot(None),
+        SoldOptionsSnapshot.snapshot_date >= cutoff,
+    ).order_by(SoldOptionsSnapshot.id.desc()).all()
+
+    # Group snapshots by account name
+    snapshots_by_account: Dict[str, list] = {}
+    for s in snapshots:
+        snapshots_by_account.setdefault(s.account_name, []).append(s)
+
+    result = {}
+
+    for account_name, account_snapshots in snapshots_by_account.items():
+        # The most recent snapshot provides the "snapshot" metadata
+        latest_snapshot = account_snapshots[0]
+
+        # For each symbol, take data from the most recent snapshot that mentions it.
+        # Since account_snapshots is already newest-first, the first occurrence wins.
+        #
+        # Key rule: if the LATEST snapshot doesn't mention a symbol, it's closed —
+        # the user's current positions are the source of truth.  We only fall back
+        # to older snapshots for symbols that the latest snapshot also contains
+        # (to pick up additional strikes/expiries from partial uploads).
+        by_symbol: Dict[str, list] = {}
+        seen_symbols: set = set()
+        total_contracts = 0
+
+        # Build the set of symbols present in the latest snapshot
+        latest_options = db.query(SoldOption).filter(
+            SoldOption.snapshot_id == latest_snapshot.id
+        ).all()
+        latest_symbols: set = set()
+        for opt in latest_options:
+            latest_symbols.add(opt.symbol)
+
+        for snapshot in account_snapshots:
+            if snapshot.id == latest_snapshot.id:
+                options = latest_options  # reuse already-fetched rows
+            else:
+                options = db.query(SoldOption).filter(
+                    SoldOption.snapshot_id == snapshot.id
+                ).all()
+
+            # Collect symbols present in this snapshot
+            snapshot_symbols: Dict[str, list] = {}
+            for opt in options:
+                snapshot_symbols.setdefault(opt.symbol, []).append(opt)
+
+            is_older_snapshot = (snapshot.id != latest_snapshot.id)
+
+            for symbol, opts in snapshot_symbols.items():
+                if symbol in seen_symbols:
+                    continue  # Already have newer data for this symbol
+
+                # If this symbol is NOT in the latest snapshot, it's been
+                # closed/expired — skip it regardless of expiration date.
+                if is_older_snapshot and symbol not in latest_symbols:
+                    seen_symbols.add(symbol)
+                    continue
+
+                # Filter out individually expired options
+                valid_opts = []
+                for opt in opts:
+                    if opt.expiration_date is not None and opt.expiration_date < today:
+                        continue
+                    valid_opts.append({
+                        "id": opt.id,
+                        "strike_price": float(opt.strike_price),
+                        "option_type": opt.option_type,
+                        "contracts_sold": opt.contracts_sold,
+                    })
+
+                if valid_opts:
+                    by_symbol[symbol] = valid_opts
+                    total_contracts += sum(o["contracts_sold"] for o in valid_opts)
+
+                seen_symbols.add(symbol)
+
+        result[account_name] = {
+            "snapshot": {
+                "id": latest_snapshot.id,
+                "source": latest_snapshot.source,
+                "account_name": account_name,
+                "snapshot_date": latest_snapshot.snapshot_date.isoformat(),
+            },
+            "by_symbol": by_symbol,
+            "total_contracts": total_contracts,
+        }
+
     logger.debug(f"get_sold_options_by_account returning {len(result)} accounts: {list(result.keys())}")
     for acc_name, data in result.items():
         logger.debug(f"  {acc_name}: {len(data.get('by_symbol', {}))} symbols, MU in symbols: {'MU' in data.get('by_symbol', {})}")
-    
+
     return result
 
 
@@ -397,124 +446,145 @@ def calculate_4_week_average_premiums(
     weeks: int = 4
 ) -> Dict[str, Dict]:
     """
-    Calculate 4-week running average of weekly option premiums per symbol.
-    
-    This function:
-    1. Gets ALL STO transactions from the last N weeks
-    2. Filters to only weekly options (7-8 days to expiration)
-    3. Calculates average premium per share across ALL accounts
-    4. Returns data for auto-updating premium settings
-    
+    Calculate 4-week NET premium per contract by symbol, separated by option type.
+
+    CORRECT Algorithm:
+    1. Get ALL STO (Sell To Open) and BTC (Buy To Close) transactions from last N weeks
+    2. Separate CALLS from PUTS based on description
+    3. For each symbol and option type:
+       - Total STO amount (income)
+       - Total BTC amount (buy-back cost)
+       - Net Premium = STO - BTC
+       - Total Contracts = sum of STO contract quantities
+       - Premium per Contract = Net Premium / Total Contracts
+    4. Divide by N weeks to get weekly average per contract
+
     Returns:
         {
             "AAPL": {
-                "avg_premium_per_share": 0.5150,
-                "premium_per_contract": 51.50,  # per share * 100
-                "transaction_count": 6,
-                "date_range": "2025-11-21 to 2025-12-04",
+                "call_premium_per_contract": 51.50,  # NET weekly premium for calls
+                "put_premium_per_contract": 85.00,   # NET weekly premium for puts
+                "call_contracts": 12,
+                "put_contracts": 4,
+                "call_net_total": 618.00,
+                "put_net_total": 340.00,
+                "date_range": "2025-11-21 to 2025-12-18",
                 "last_updated": "2025-12-08"
             },
             ...
         }
     """
     from app.modules.investments.models import InvestmentTransaction
-    from sqlalchemy import func, desc
     from datetime import date, timedelta
-    import re
     from collections import defaultdict
-    
+
     # Get date N weeks ago
     cutoff_date = date.today() - timedelta(days=weeks * 7)
-    
-    def parse_expiration_date(description):
-        """Extract expiration date from option description."""
-        if not description:
-            return None
-        match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', description)
-        if match:
-            month, day, year = map(int, match.groups())
-            try:
-                return date(year, month, day)
-            except:
-                return None
-        return None
-    
-    # Get ALL STO transactions from last N weeks
-    all_sto = db.query(InvestmentTransaction).filter(
-        InvestmentTransaction.transaction_type == 'STO',
+
+    # Get ALL STO and BTC transactions from last N weeks
+    all_transactions = db.query(InvestmentTransaction).filter(
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
         InvestmentTransaction.symbol.isnot(None),
         InvestmentTransaction.symbol != '',
         InvestmentTransaction.transaction_date >= cutoff_date
     ).all()
-    
-    # Group by symbol and filter to weekly options
-    symbol_data = defaultdict(list)
-    
-    for txn in all_sto:
-        quantity = abs(float(txn.quantity)) if txn.quantity else 1
+
+    # Structure: {symbol: {'call': {'sto_amount': 0, 'btc_amount': 0, 'contracts': 0}, 'put': {...}}}
+    symbol_data = defaultdict(lambda: {
+        'call': {'sto_amount': 0, 'btc_amount': 0, 'contracts': 0, 'dates': []},
+        'put': {'sto_amount': 0, 'btc_amount': 0, 'contracts': 0, 'dates': []}
+    })
+
+    for txn in all_transactions:
+        # Extract underlying symbol (e.g., "TSLA 01/17/2026 450.00 C" -> "TSLA")
+        underlying = txn.symbol.split()[0] if txn.symbol else None
+        if not underlying:
+            continue
+
+        # Determine option type from description
+        description = (txn.description or '').lower()
+        if 'call' in description:
+            option_type = 'call'
+        elif 'put' in description:
+            option_type = 'put'
+        else:
+            continue  # Skip if can't determine type
+
         amount = abs(float(txn.amount)) if txn.amount else 0
-        price_per_share = float(txn.price_per_share) if txn.price_per_share else 0
-        
-        # Premium per share (use price_per_share field if available, otherwise calculate)
-        premium_per_share = price_per_share if price_per_share > 0 else (amount / quantity) / 100
-        
-        # Parse expiration date
-        exp_date = parse_expiration_date(txn.description)
-        days_to_expiry = None
-        if exp_date and txn.transaction_date:
-            days_to_expiry = (exp_date - txn.transaction_date).days
-        
-        # Only include weekly options (7-8 days to expiration)
-        if days_to_expiry and 7 <= days_to_expiry <= 8:
-            symbol_data[txn.symbol].append({
-                'date': txn.transaction_date,
-                'premium_per_share': premium_per_share,
-                'days_to_expiry': days_to_expiry,
-                'contracts': int(quantity),
-                'account_id': txn.account_id,
-                'description': txn.description
-            })
-    
-    # Calculate averages for each symbol
+        quantity = abs(float(txn.quantity)) if txn.quantity else 1
+
+        data = symbol_data[underlying][option_type]
+        data['dates'].append(txn.transaction_date)
+
+        if txn.transaction_type == 'STO':
+            data['sto_amount'] += amount
+            data['contracts'] += int(quantity)
+        elif txn.transaction_type == 'BTC':
+            data['btc_amount'] += amount
+
+    # Calculate net premium per contract for each symbol
     result = {}
-    for symbol, transactions in symbol_data.items():
-        if len(transactions) > 0:
-            # Calculate average premium per share across ALL transactions
-            avg_premium_per_share = sum(t['premium_per_share'] for t in transactions) / len(transactions)
-            
-            # Convert to premium per contract (multiply by 100)
-            premium_per_contract = avg_premium_per_share * 100
-            
-            # Get date range
-            dates = [t['date'] for t in transactions]
-            min_date = min(dates)
-            max_date = max(dates)
-            
-            result[symbol] = {
-                "avg_premium_per_share": round(avg_premium_per_share, 4),
-                "premium_per_contract": round(premium_per_contract, 2),
-                "transaction_count": len(transactions),
-                "date_range": f"{min_date} to {max_date}",
-                "last_updated": datetime.utcnow().isoformat(),
-                "accounts": len(set(t['account_id'] for t in transactions))  # Number of unique accounts
-            }
-    
+    for symbol, type_data in symbol_data.items():
+        symbol_result = {
+            "last_updated": datetime.utcnow().isoformat()
+        }
+
+        all_dates = []
+
+        # Calculate CALL premium
+        call_data = type_data['call']
+        if call_data['contracts'] > 0:
+            call_net = call_data['sto_amount'] - call_data['btc_amount']
+            call_per_contract = call_net / call_data['contracts']
+            call_weekly = call_per_contract  # Already represents typical weekly premium
+
+            symbol_result["call_premium_per_contract"] = round(call_weekly, 2)
+            symbol_result["call_contracts"] = call_data['contracts']
+            symbol_result["call_net_total"] = round(call_net, 2)
+            all_dates.extend(call_data['dates'])
+
+        # Calculate PUT premium
+        put_data = type_data['put']
+        if put_data['contracts'] > 0:
+            put_net = put_data['sto_amount'] - put_data['btc_amount']
+            put_per_contract = put_net / put_data['contracts']
+            put_weekly = put_per_contract  # Already represents typical weekly premium
+
+            symbol_result["put_premium_per_contract"] = round(put_weekly, 2)
+            symbol_result["put_contracts"] = put_data['contracts']
+            symbol_result["put_net_total"] = round(put_net, 2)
+            all_dates.extend(put_data['dates'])
+
+        # Only include symbols that have at least one option type with data
+        if all_dates:
+            symbol_result["date_range"] = f"{min(all_dates)} to {max(all_dates)}"
+
+            # For backward compatibility, set premium_per_contract to call premium if available
+            if "call_premium_per_contract" in symbol_result:
+                symbol_result["premium_per_contract"] = symbol_result["call_premium_per_contract"]
+            elif "put_premium_per_contract" in symbol_result:
+                symbol_result["premium_per_contract"] = symbol_result["put_premium_per_contract"]
+
+            result[symbol] = symbol_result
+
     return result
 
 
 def update_premium_settings_from_averages(
     db: Session,
     weeks: int = 4,
-    min_transactions: int = 1
+    min_contracts: int = 1
 ) -> Dict[str, Any]:
     """
-    Auto-update premium settings based on 4-week running average.
-    
+    Auto-update premium settings based on 4-week NET premium calculation.
+
+    Updates both CALL and PUT premiums separately for each symbol.
+
     Only updates symbols that:
-    1. Have at least min_transactions in the last N weeks
+    1. Have at least min_contracts sold in the last N weeks
     2. Are not manually overridden (manual_override = False)
     3. Have is_auto_updated = True
-    
+
     Returns:
         {
             "updated": 5,
@@ -523,30 +593,33 @@ def update_premium_settings_from_averages(
         }
     """
     from app.modules.strategies.models import OptionPremiumSetting
-    from typing import Any
-    
-    # Calculate averages
+
+    # Calculate averages with new algorithm (NET premium / contracts)
     averages = calculate_4_week_average_premiums(db, weeks)
-    
+
     updated_count = 0
     skipped_count = 0
     details = {}
-    
+
     for symbol, data in averages.items():
-        # Skip if not enough transactions
-        if data['transaction_count'] < min_transactions:
+        # Check if there's enough data (at least min_contracts for either calls or puts)
+        call_contracts = data.get('call_contracts', 0)
+        put_contracts = data.get('put_contracts', 0)
+        total_contracts = call_contracts + put_contracts
+
+        if total_contracts < min_contracts:
             skipped_count += 1
             details[symbol] = {
                 "status": "skipped",
-                "reason": f"Insufficient data: {data['transaction_count']} < {min_transactions} transactions"
+                "reason": f"Insufficient data: {total_contracts} < {min_contracts} contracts"
             }
             continue
-        
+
         # Get or create setting
         setting = db.query(OptionPremiumSetting).filter(
             OptionPremiumSetting.symbol == symbol
         ).first()
-        
+
         if setting:
             # Check if manually overridden
             if setting.manual_override:
@@ -554,36 +627,55 @@ def update_premium_settings_from_averages(
                 details[symbol] = {
                     "status": "skipped",
                     "reason": "Manually overridden",
-                    "current_premium": float(setting.premium_per_contract),
-                    "calculated_premium": data['premium_per_contract']
+                    "current_call_premium": float(setting.premium_per_contract) if setting.premium_per_contract else None,
+                    "current_put_premium": float(setting.put_premium_per_contract) if setting.put_premium_per_contract else None
                 }
                 continue
-            
+
             # Update if auto-update is enabled
             if setting.is_auto_updated:
-                old_premium = float(setting.premium_per_contract)
-                setting.premium_per_contract = Decimal(str(data['premium_per_contract']))
+                old_call = float(setting.premium_per_contract) if setting.premium_per_contract else None
+                old_put = float(setting.put_premium_per_contract) if setting.put_premium_per_contract else None
+
+                # Update CALL premium if we have call data
+                if 'call_premium_per_contract' in data:
+                    setting.premium_per_contract = Decimal(str(data['call_premium_per_contract']))
+                    setting.call_contracts_sold = data.get('call_contracts')
+                    setting.call_net_total = Decimal(str(data.get('call_net_total', 0)))
+
+                # Update PUT premium if we have put data
+                if 'put_premium_per_contract' in data:
+                    setting.put_premium_per_contract = Decimal(str(data['put_premium_per_contract']))
+                    setting.put_contracts_sold = data.get('put_contracts')
+                    setting.put_net_total = Decimal(str(data.get('put_net_total', 0)))
+
                 setting.last_auto_update = datetime.utcnow()
                 updated_count += 1
                 details[symbol] = {
                     "status": "updated",
-                    "old_premium": old_premium,
-                    "new_premium": data['premium_per_contract'],
-                    "transaction_count": data['transaction_count'],
-                    "accounts": data['accounts']
+                    "old_call_premium": old_call,
+                    "new_call_premium": data.get('call_premium_per_contract'),
+                    "call_contracts": call_contracts,
+                    "old_put_premium": old_put,
+                    "new_put_premium": data.get('put_premium_per_contract'),
+                    "put_contracts": put_contracts
                 }
             else:
                 skipped_count += 1
                 details[symbol] = {
                     "status": "skipped",
-                    "reason": "Auto-update disabled",
-                    "current_premium": float(setting.premium_per_contract)
+                    "reason": "Auto-update disabled"
                 }
         else:
             # Create new setting with auto-update enabled
             setting = OptionPremiumSetting(
                 symbol=symbol,
-                premium_per_contract=Decimal(str(data['premium_per_contract'])),
+                premium_per_contract=Decimal(str(data['call_premium_per_contract'])) if 'call_premium_per_contract' in data else None,
+                call_contracts_sold=data.get('call_contracts'),
+                call_net_total=Decimal(str(data.get('call_net_total', 0))) if 'call_net_total' in data else None,
+                put_premium_per_contract=Decimal(str(data['put_premium_per_contract'])) if 'put_premium_per_contract' in data else None,
+                put_contracts_sold=data.get('put_contracts'),
+                put_net_total=Decimal(str(data.get('put_net_total', 0))) if 'put_net_total' in data else None,
                 is_auto_updated=True,
                 last_auto_update=datetime.utcnow(),
                 manual_override=False
@@ -592,13 +684,14 @@ def update_premium_settings_from_averages(
             updated_count += 1
             details[symbol] = {
                 "status": "created",
-                "premium": data['premium_per_contract'],
-                "transaction_count": data['transaction_count'],
-                "accounts": data['accounts']
+                "call_premium": data.get('call_premium_per_contract'),
+                "call_contracts": call_contracts,
+                "put_premium": data.get('put_premium_per_contract'),
+                "put_contracts": put_contracts
             }
-    
+
     db.flush()
-    
+
     return {
         "updated": updated_count,
         "skipped": skipped_count,

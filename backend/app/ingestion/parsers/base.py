@@ -19,6 +19,7 @@ class RecordType(Enum):
     TAX_RECORD = "tax_record"
     INCOME_ENTRY = "income_entry"
     CASH_SNAPSHOT = "cash_snapshot"
+    SPENDING = "spending"
 
 
 @dataclass

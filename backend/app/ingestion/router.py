@@ -30,7 +30,9 @@ def _compute_file_hash(file_path: Path) -> str:
 def _get_module_from_folder(folder_path: Path) -> str:
     """Determine module name from folder path."""
     folder_str = str(folder_path).lower()
-    if "investment" in folder_str or "robinhood" in folder_str or "schwab" in folder_str or "fidelity" in folder_str:
+    if "spending" in folder_str or "monarch" in folder_str:
+        return "spending"
+    elif "investment" in folder_str or "robinhood" in folder_str or "schwab" in folder_str or "fidelity" in folder_str:
         return "investments"
     elif "cash" in folder_str or "chase" in folder_str or "bank" in folder_str:
         return "cash"
@@ -50,13 +52,15 @@ def get_all_parsers():
     from app.ingestion.parsers.fidelity_csv import FidelityCSVParser
     from app.ingestion.parsers.schwab_pdf import SchwabPDFParser
     from app.ingestion.parsers.chase import ChaseParser
-    
+    from app.ingestion.parsers.monarch import MonarchParser
+
     return [
         RobinhoodPDFParser(),
         RobinhoodParser(),
         FidelityCSVParser(),
         SchwabPDFParser(),
         ChaseParser(),
+        MonarchParser(),
     ]
 
 
@@ -77,6 +81,7 @@ def trigger_inbox_scan(db: Session = Depends(get_db)):
         settings.INBOX_DIR / "investments" / "other",
         settings.INBOX_DIR / "cash" / "chase",
         settings.INBOX_DIR / "cash" / "bank_of_america",
+        settings.INBOX_DIR / "spending" / "monarch",
     ]
     
     folders_scanned = []
@@ -409,6 +414,7 @@ def process_all_inbox_files(db: Session = Depends(get_db)):
         ("cash/bank_of_america", settings.INBOX_DIR / "cash" / "bank_of_america"),
         ("income/salary", settings.INBOX_DIR / "income" / "salary"),
         ("tax/returns", settings.INBOX_DIR / "tax" / "returns"),
+        ("spending/monarch", settings.INBOX_DIR / "spending" / "monarch"),
     ]
     
     files_processed = 0
@@ -728,6 +734,45 @@ def test_db_commit(db: Session = Depends(get_db)):
         pg_conn.close()
 
 
+@router.get("/imported-transactions")
+def get_imported_transactions(
+    ingestion_ids: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch newly imported transactions by ingestion IDs.
+    Returns only records created during those ingestions (not skipped duplicates).
+    """
+    from app.modules.investments.models import InvestmentTransaction
+
+    try:
+        id_list = [int(x.strip()) for x in ingestion_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ingestion_ids must be comma-separated integers")
+
+    if not id_list:
+        return {"transactions": []}
+
+    rows = (
+        db.query(InvestmentTransaction)
+        .filter(InvestmentTransaction.ingestion_id.in_(id_list))
+        .order_by(InvestmentTransaction.transaction_date.desc())
+        .all()
+    )
+
+    transactions = []
+    for r in rows:
+        transactions.append({
+            "symbol": r.symbol,
+            "transaction_date": r.transaction_date.isoformat() if r.transaction_date else None,
+            "amount": float(r.amount) if r.amount is not None else 0,
+            "transaction_type": r.transaction_type,
+            "description": r.description,
+        })
+
+    return {"transactions": transactions}
+
+
 @router.get("/inbox-status")
 def get_inbox_status():
     """Get status of all inbox folders."""
@@ -743,6 +788,7 @@ def get_inbox_status():
         ("real_estate/mortgages", settings.INBOX_DIR / "real_estate" / "mortgages"),
         ("real_estate/valuations", settings.INBOX_DIR / "real_estate" / "valuations"),
         ("estate_planning/documents", settings.INBOX_DIR / "estate_planning" / "documents"),
+        ("spending/monarch", settings.INBOX_DIR / "spending" / "monarch"),
     ]
     
     status = []
@@ -805,6 +851,7 @@ async def preview_robinhood_paste(
         "detected_format": result.detected_format,
         "stocks_count": len(result.stocks),
         "options_count": len(result.options),
+        "pending_orders_count": len(result.pending_orders),
         "has_options_section": result.has_options_section,
         "has_stocks_section": result.has_stocks_section,
         "requires_confirmation": requires_confirmation,
@@ -832,6 +879,19 @@ async def preview_robinhood_paste(
             }
             for o in result.options
         ],
+        "pending_orders": [
+            {
+                "symbol": p.symbol,
+                "order_type": p.order_type,
+                "option_type": p.option_type,
+                "strike_price": p.strike_price,
+                "from_expiration": p.from_expiration,
+                "to_expiration": p.to_expiration,
+                "contracts": p.contracts,
+                "limit_price": p.limit_price
+            }
+            for p in result.pending_orders
+        ],
         "warnings": result.warnings
     }
 
@@ -855,7 +915,7 @@ async def save_robinhood_paste(
         normalize_expiration_date
     )
     from app.modules.investments.models import InvestmentAccount, InvestmentHolding, PortfolioSnapshot
-    from app.modules.strategies.models import SoldOptionsSnapshot, SoldOption
+    from app.modules.strategies.models import SoldOptionsSnapshot, SoldOption, PendingOrder
     from decimal import Decimal
     from datetime import datetime, date
     
@@ -885,6 +945,14 @@ async def save_robinhood_paste(
     stocks_saved = 0
     stocks_updated = 0
     options_saved = 0
+    pending_orders_saved = 0
+
+    # Detail lists for modal display
+    stocks_created_details = []
+    stocks_updated_details = []
+    stocks_removed_details = []
+    options_saved_details = []
+    pending_orders_details = []
     
     # Save/update stock holdings
     # Only save/update if we have actual stock data
@@ -945,6 +1013,11 @@ async def save_robinhood_paste(
             ).first()
             
             if existing:
+                # Capture old values before mutation
+                old_shares = float(existing.quantity) if existing.quantity else 0
+                old_price = float(existing.current_price) if existing.current_price else 0
+                old_market_value = float(existing.market_value) if existing.market_value else 0
+
                 # Update existing holding
                 existing.quantity = Decimal(str(stock.shares))
                 existing.current_price = Decimal(str(round(stock.current_price, 4)))
@@ -952,6 +1025,15 @@ async def save_robinhood_paste(
                 existing.description = stock.name if stock.name != stock.symbol else existing.description
                 existing.last_updated = datetime.utcnow()
                 stocks_updated += 1
+                stocks_updated_details.append({
+                    "symbol": symbol,
+                    "shares": stock.shares,
+                    "old_shares": old_shares,
+                    "price": round(stock.current_price, 4),
+                    "old_price": round(old_price, 4),
+                    "market_value": round(stock.market_value, 2),
+                    "old_market_value": round(old_market_value, 2),
+                })
                 logger.info(f"Updated {symbol}: {stock.shares} shares @ ${stock.current_price:.2f} = ${stock.market_value:,.2f}")
             else:
                 # Create new holding
@@ -967,22 +1049,53 @@ async def save_robinhood_paste(
                 )
                 db.add(holding)
                 stocks_saved += 1
+                stocks_created_details.append({
+                    "symbol": symbol,
+                    "name": stock.name if stock.name != stock.symbol else symbol,
+                    "shares": stock.shares,
+                    "price": round(stock.current_price, 4),
+                    "market_value": round(stock.market_value, 2),
+                })
                 logger.info(f"Created {symbol}: {stock.shares} shares @ ${stock.current_price:.2f} = ${stock.market_value:,.2f}")
         
         # Remove holdings that are no longer in the account
         # (User sold the stock entirely)
-        # Only cleanup if we have a section header (explicit complete list)
-        # If no section header, this is a partial update - don't delete anything
+        # Safety: if paste would remove > 2 holdings, it's likely an incomplete
+        # paste (user didn't scroll far enough). In that case, skip deletion
+        # and return a warning. Normal sales are 1-2 stocks at a time.
         if result.has_stocks_section:
             current_holdings = db.query(InvestmentHolding).filter(
                 InvestmentHolding.account_id == account_id,
                 InvestmentHolding.source == 'robinhood'
             ).all()
-            
-            for holding in current_holdings:
-                if holding.symbol not in new_symbols:
+
+            holdings_to_remove = [h for h in current_holdings if h.symbol not in new_symbols]
+
+            if len(holdings_to_remove) <= 2:
+                # Small removal (1-2 stocks) — likely actual sales
+                for holding in holdings_to_remove:
+                    stocks_removed_details.append({
+                        "symbol": holding.symbol,
+                        "shares": float(holding.quantity) if holding.quantity else 0,
+                        "last_price": float(holding.current_price) if holding.current_price else 0,
+                        "market_value": float(holding.market_value) if holding.market_value else 0,
+                    })
                     logger.info(f"Removing {holding.symbol} from {account_name} - no longer in holdings")
                     db.delete(holding)
+            elif holdings_to_remove:
+                # Large removal (3+ stocks) — likely incomplete paste
+                skipped_symbols = [h.symbol for h in holdings_to_remove]
+                logger.warning(
+                    f"Skipping deletion of {len(holdings_to_remove)} holdings from {account_name} - "
+                    f"paste has {len(new_symbols)} stocks but would remove {len(holdings_to_remove)} "
+                    f"(likely incomplete paste). Skipped: {skipped_symbols}"
+                )
+                stocks_removed_details.append({
+                    "symbol": "_SKIPPED",
+                    "warning": f"Paste would remove {len(holdings_to_remove)} stocks "
+                               f"({', '.join(skipped_symbols)}). This looks like an incomplete paste. "
+                               f"If you actually sold these, paste the complete holdings list.",
+                })
     elif save_stocks and result.has_stocks_section and not result.stocks:
         # Stocks section header detected but empty - user has cleared all stocks
         account_id = _normalize_account_id(account_name)
@@ -1013,6 +1126,12 @@ async def save_robinhood_paste(
         ).all()
         
         for holding in current_holdings:
+            stocks_removed_details.append({
+                "symbol": holding.symbol,
+                "shares": float(holding.quantity) if holding.quantity else 0,
+                "last_price": float(holding.current_price) if holding.current_price else 0,
+                "market_value": float(holding.market_value) if holding.market_value else 0,
+            })
             logger.info(f"Removing {holding.symbol} from {account_name} - stocks section is empty (all stocks cleared)")
             db.delete(holding)
     
@@ -1051,6 +1170,89 @@ async def save_robinhood_paste(
             )
             db.add(sold_option)
             options_saved += 1
+            options_saved_details.append({
+                "symbol": opt.symbol.upper(),
+                "strike_price": float(opt.strike_price),
+                "option_type": opt.option_type,
+                "expiration_date": str(exp_date) if exp_date else None,
+                "contracts": opt.contracts,
+            })
+
+        # Save pending orders to the same snapshot
+        for po in result.pending_orders:
+            from_exp = normalize_expiration_date(po.from_expiration) if po.from_expiration else None
+            to_exp = normalize_expiration_date(po.to_expiration) if po.to_expiration else None
+
+            pending_order = PendingOrder(
+                snapshot_id=snapshot_id,
+                symbol=po.symbol.upper(),
+                order_type=po.order_type,
+                option_type=po.option_type.lower() if po.option_type else None,
+                strike_price=Decimal(str(po.strike_price)) if po.strike_price else None,
+                from_expiration=from_exp,
+                to_expiration=to_exp,
+                contracts=po.contracts,
+                limit_price=Decimal(str(po.limit_price)) if po.limit_price else None,
+                account_name=account_name,
+                status='pending',
+                raw_text=po.raw_text[:500] if po.raw_text else None
+            )
+            db.add(pending_order)
+            pending_orders_saved += 1
+            pending_orders_details.append({
+                "symbol": po.symbol.upper(),
+                "order_type": po.order_type,
+                "option_type": po.option_type,
+                "strike_price": float(po.strike_price) if po.strike_price else None,
+                "contracts": po.contracts,
+                "limit_price": float(po.limit_price) if po.limit_price else None,
+            })
+            logger.info(f"Saved pending order: {po.order_type} {po.symbol} {po.option_type} @ ${po.limit_price}")
+
+    # Handle case where we have pending orders but no options
+    elif save_options and not result.options and result.pending_orders:
+        # Create snapshot just for pending orders
+        snapshot = SoldOptionsSnapshot(
+            source='robinhood',
+            account_name=account_name,
+            snapshot_date=datetime.utcnow(),
+            parsing_status='success',
+            raw_extracted_text=text[:5000]
+        )
+        db.add(snapshot)
+        db.flush()
+        snapshot_id = snapshot.id
+
+        for po in result.pending_orders:
+            from_exp = normalize_expiration_date(po.from_expiration) if po.from_expiration else None
+            to_exp = normalize_expiration_date(po.to_expiration) if po.to_expiration else None
+
+            pending_order = PendingOrder(
+                snapshot_id=snapshot_id,
+                symbol=po.symbol.upper(),
+                order_type=po.order_type,
+                option_type=po.option_type.lower() if po.option_type else None,
+                strike_price=Decimal(str(po.strike_price)) if po.strike_price else None,
+                from_expiration=from_exp,
+                to_expiration=to_exp,
+                contracts=po.contracts,
+                limit_price=Decimal(str(po.limit_price)) if po.limit_price else None,
+                account_name=account_name,
+                status='pending',
+                raw_text=po.raw_text[:500] if po.raw_text else None
+            )
+            db.add(pending_order)
+            pending_orders_saved += 1
+            pending_orders_details.append({
+                "symbol": po.symbol.upper(),
+                "order_type": po.order_type,
+                "option_type": po.option_type,
+                "strike_price": float(po.strike_price) if po.strike_price else None,
+                "contracts": po.contracts,
+                "limit_price": float(po.limit_price) if po.limit_price else None,
+            })
+            logger.info(f"Saved pending order: {po.order_type} {po.symbol} {po.option_type} @ ${po.limit_price}")
+
     elif save_options and result.has_options_section and not result.options:
         # Options section header detected but empty - user has cleared all options
         # Delete all snapshots for this account (cascade will delete associated options)
@@ -1125,9 +1327,16 @@ async def save_robinhood_paste(
         "account_name": account_name,
         "stocks_saved": stocks_saved,
         "stocks_updated": stocks_updated,
+        "stocks_removed": len(stocks_removed_details),
         "options_saved": options_saved,
+        "pending_orders_saved": pending_orders_saved,
         "snapshot_id": snapshot_id,
-        "detected_format": result.detected_format
+        "detected_format": result.detected_format,
+        "stocks_created_details": stocks_created_details,
+        "stocks_updated_details": stocks_updated_details,
+        "stocks_removed_details": stocks_removed_details,
+        "options_saved_details": options_saved_details,
+        "pending_orders_details": pending_orders_details,
     }
 
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, TrendingUp, TrendingDown, DollarSign, FileText, Filter, Download, Upload, RefreshCw } from 'lucide-react';
 import styles from './CostBasis.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
@@ -37,6 +37,7 @@ interface RealizedGain {
   holding_period_days: number;
   is_long_term: boolean;
   wash_sale: boolean;
+  account_id: string | null;
   notes: string | null;
 }
 
@@ -57,16 +58,19 @@ interface StockLot {
 
 export default function CostBasis() {
   const navigate = useNavigate();
-  const [taxYear, setTaxYear] = useState(2025);
+  const [searchParams] = useSearchParams();
+  const yearParam = searchParams.get('year');
+  const termParam = searchParams.get('term');
+  const [taxYear, setTaxYear] = useState(yearParam ? parseInt(yearParam) : 2025);
   const [summary, setSummary] = useState<CapitalGainsSummary | null>(null);
   const [realizedGains, setRealizedGains] = useState<RealizedGain[]>([]);
   const [openLots, setOpenLots] = useState<StockLot[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'summary' | 'realized' | 'lots'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'realized' | 'lots'>(termParam ? 'realized' : 'summary');
 
   // Filters
   const [symbolFilter, setSymbolFilter] = useState('');
-  const [termFilter, setTermFilter] = useState<'all' | 'short' | 'long'>('all');
+  const [termFilter, setTermFilter] = useState<'all' | 'short' | 'long'>(termParam === 'short' ? 'short' : termParam === 'long' ? 'long' : 'all');
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
@@ -208,6 +212,7 @@ export default function CostBasis() {
           <div className={styles.yearSelector}>
             <label>Tax Year:</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
+              <option value={2026}>2026</option>
               <option value={2025}>2025</option>
               <option value={2024}>2024</option>
               <option value={2023}>2023</option>
@@ -307,40 +312,50 @@ export default function CostBasis() {
             </div>
           </div>
 
-          {/* By Symbol Breakdown */}
+          {/* Transaction Details */}
           <div className={styles.section}>
-            <h2 className={styles.sectionTitle}>Breakdown by Symbol</h2>
+            <h2 className={styles.sectionTitle}>Transaction Details</h2>
             <div className={styles.tableContainer}>
               <table className={styles.table}>
                 <thead>
                   <tr>
                     <th>Symbol</th>
-                    <th>Sales</th>
+                    <th>Sale Date</th>
+                    <th>Account</th>
+                    <th>Quantity</th>
                     <th>Proceeds</th>
                     <th>Cost Basis</th>
-                    <th>Short-Term Gain</th>
-                    <th>Long-Term Gain</th>
-                    <th>Total Gain/Loss</th>
+                    <th>Gain/Loss</th>
+                    <th>Term</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(summary.by_symbol).map(([symbol, data]) => (
-                    <tr key={symbol}>
-                      <td className={styles.symbolCell}>{symbol}</td>
-                      <td>{data.num_sales}</td>
-                      <td>{formatCurrency(data.proceeds)}</td>
-                      <td>{formatCurrency(data.cost_basis)}</td>
-                      <td className={data.short_term_gain >= 0 ? styles.positive : styles.negative}>
-                        {formatCurrency(data.short_term_gain)}
-                      </td>
-                      <td className={data.long_term_gain >= 0 ? styles.positive : styles.negative}>
-                        {formatCurrency(data.long_term_gain)}
-                      </td>
-                      <td className={data.total_gain >= 0 ? styles.positiveGold : styles.negative}>
-                        {formatCurrency(data.total_gain)}
+                  {realizedGains.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className={styles.emptyState}>
+                        No realized gains for {taxYear}
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    realizedGains.map((gain) => (
+                      <tr key={gain.sale_id}>
+                        <td className={styles.symbolCell}>{gain.symbol}</td>
+                        <td>{formatDate(gain.sale_date)}</td>
+                        <td className={styles.accountCell}>{gain.account_id || '—'}</td>
+                        <td>{gain.quantity_sold}</td>
+                        <td>{formatCurrency(gain.proceeds)}</td>
+                        <td>{formatCurrency(gain.cost_basis)}</td>
+                        <td className={gain.gain_loss >= 0 ? styles.positiveGold : styles.negative}>
+                          {formatCurrency(gain.gain_loss)}
+                        </td>
+                        <td>
+                          <span className={gain.is_long_term ? styles.badgeLong : styles.badgeShort}>
+                            {gain.is_long_term ? 'Long' : 'Short'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -383,6 +398,7 @@ export default function CostBasis() {
                   <th>Symbol</th>
                   <th>Sale Date</th>
                   <th>Purchase Date</th>
+                  <th>Account</th>
                   <th>Quantity</th>
                   <th>Proceeds</th>
                   <th>Cost Basis</th>
@@ -394,7 +410,7 @@ export default function CostBasis() {
               <tbody>
                 {filteredGains.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className={styles.emptyState}>
+                    <td colSpan={10} className={styles.emptyState}>
                       No realized gains for {taxYear}
                     </td>
                   </tr>
@@ -404,6 +420,7 @@ export default function CostBasis() {
                       <td className={styles.symbolCell}>{gain.symbol}</td>
                       <td>{formatDate(gain.sale_date)}</td>
                       <td>{formatDate(gain.purchase_date)}</td>
+                      <td className={styles.accountCell}>{gain.account_id || '—'}</td>
                       <td>{gain.quantity_sold}</td>
                       <td>{formatCurrency(gain.proceeds)}</td>
                       <td>{formatCurrency(gain.cost_basis)}</td>

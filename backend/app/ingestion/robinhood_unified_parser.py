@@ -48,10 +48,25 @@ class ParsedOption:
 
 
 @dataclass
+class ParsedPendingOrder:
+    """Represents a parsed pending order from Robinhood."""
+    symbol: str
+    order_type: str  # 'ROLL', 'SELL_TO_OPEN', 'BUY_TO_CLOSE'
+    option_type: Optional[str]  # 'call' or 'put'
+    strike_price: Optional[float]
+    from_expiration: Optional[str]  # For rolls: original expiration
+    to_expiration: Optional[str]  # For rolls: new expiration / For others: expiration
+    contracts: int
+    limit_price: Optional[float]
+    raw_text: str
+
+
+@dataclass
 class ParseResult:
     """Result of parsing Robinhood data."""
     stocks: List[ParsedStock] = field(default_factory=list)
     options: List[ParsedOption] = field(default_factory=list)
+    pending_orders: List[ParsedPendingOrder] = field(default_factory=list)
     detected_format: str = "unknown"
     warnings: List[str] = field(default_factory=list)
     raw_text: str = ""
@@ -155,6 +170,7 @@ def parse_robinhood_data(text: str, account_name: Optional[str] = None) -> Parse
     
     elif detected == 'options_list':
         result.options = parse_options_list_view(text)
+        result.pending_orders = parse_pending_orders(text)
     
     elif detected == 'stocks':
         result.stocks = parse_stock_holdings(text)
@@ -163,6 +179,7 @@ def parse_robinhood_data(text: str, account_name: Optional[str] = None) -> Parse
         # Parse both stocks and options
         result.stocks = parse_stock_holdings(text)
         result.options = parse_options_list_view(text)
+        result.pending_orders = parse_pending_orders(text)
     
     else:
         result.warnings.append("Could not detect data format. Please ensure you copied from Robinhood.")
@@ -219,7 +236,8 @@ def parse_stock_holdings(text: str) -> List[ParsedStock]:
                 
                 # Check for shares - handles both "1,700 Shares" and "1.56K shares" formats
                 # Robinhood uses "K" suffix for 1000+ shares (e.g., "1.56K shares" = 1,560)
-                shares_match = re.match(r'^([\d,]+\.?\d*)\s*(K)?\s*Shares?$', next_line, re.IGNORECASE)
+                # Also handles "(+)" suffix that Robinhood adds for some positions (e.g., "10 shares (+)")
+                shares_match = re.match(r'^([\d,]+\.?\d*)\s*(K)?\s*Shares?\s*(\(\+\))?$', next_line, re.IGNORECASE)
                 if shares_match:
                     shares_value = float(shares_match.group(1).replace(',', ''))
                     # Check for "K" suffix (thousands)
@@ -474,10 +492,165 @@ def parse_options_list_view(text: str) -> List[ParsedOption]:
                 options.append(option)
             else:
                 logger.debug(f"Skipping option without expiration date: {option.symbol} ${option.strike_price} {option.option_type}")
-        
+
         i += 1
-    
+
     return options
+
+
+def parse_pending_orders(text: str) -> List[ParsedPendingOrder]:
+    """
+    Parse pending orders from Robinhood paste.
+
+    Handles three order types:
+
+    1. Roll orders:
+       TSLA Short Call Roll
+       8/21 – 9/18 • 1 roll
+       $3.00 Limit
+
+    2. Buy to close orders:
+       AVGO $315 Put
+       12/19 • 1 buy to close
+       $0.30 Limit
+
+    3. Sell to open orders:
+       AAPL $200 Call
+       1/17 • 2 sells to open
+       $1.50 Limit
+    """
+    pending_orders = []
+    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
+
+    # Find the "Pending Orders" section
+    pending_start = None
+    pending_end = len(lines)
+
+    for idx, line in enumerate(lines):
+        if re.match(r'^Pending\s*Orders?$', line, re.IGNORECASE):
+            pending_start = idx + 1
+            logger.info(f"Found 'Pending Orders' section at line {idx}")
+        elif pending_start is not None and re.match(r'^Positions?\s*Held$', line, re.IGNORECASE):
+            pending_end = idx
+            logger.info(f"'Positions Held' section found at line {idx}, ending pending orders parse")
+            break
+
+    if pending_start is None:
+        logger.debug("No 'Pending Orders' section found")
+        return []
+
+    i = pending_start
+    while i < pending_end:
+        line = lines[i]
+
+        # Pattern 1: Roll order - "TSLA Short Call Roll" or "TSLA Short Put Roll"
+        roll_match = re.match(r'^([A-Z]+)\s+Short\s+(Call|Put)\s+Roll$', line, re.IGNORECASE)
+        if roll_match:
+            symbol = roll_match.group(1).upper()
+            option_type = roll_match.group(2).lower()
+
+            order = ParsedPendingOrder(
+                symbol=symbol,
+                order_type='ROLL',
+                option_type=option_type,
+                strike_price=None,  # Roll orders don't show strike in header
+                from_expiration=None,
+                to_expiration=None,
+                contracts=1,
+                limit_price=None,
+                raw_text=line
+            )
+
+            # Next line: "8/21 – 9/18 • 1 roll" (from_exp – to_exp • contracts roll)
+            if i + 1 < pending_end:
+                date_line = lines[i + 1]
+                # Match: "8/21 – 9/18 • 1 roll" or "8/21 - 9/18 • 1 roll"
+                roll_date_match = re.match(
+                    r'^(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*[–-]\s*(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*[·•]\s*(\d+)\s*rolls?$',
+                    date_line,
+                    re.IGNORECASE
+                )
+                if roll_date_match:
+                    order.from_expiration = roll_date_match.group(1)
+                    order.to_expiration = roll_date_match.group(2)
+                    order.contracts = int(roll_date_match.group(3))
+                    order.raw_text += f" | {date_line}"
+                    i += 1
+
+            # Next line: "$3.00 Limit"
+            if i + 1 < pending_end:
+                limit_line = lines[i + 1]
+                limit_match = re.match(r'^\$?([\d.]+)\s*Limit$', limit_line, re.IGNORECASE)
+                if limit_match:
+                    order.limit_price = float(limit_match.group(1))
+                    order.raw_text += f" | {limit_line}"
+                    i += 1
+
+            pending_orders.append(order)
+            logger.info(f"Parsed ROLL order: {symbol} {option_type} {order.from_expiration} -> {order.to_expiration}")
+            i += 1
+            continue
+
+        # Pattern 2: Buy to close / Sell to open - "AVGO $315 Put"
+        option_match = re.match(r'^([A-Z]+)\s+\$?([\d.]+)\s+(Call|Put)$', line, re.IGNORECASE)
+        if option_match:
+            symbol = option_match.group(1).upper()
+            strike_price = float(option_match.group(2))
+            option_type = option_match.group(3).lower()
+
+            # Check next line to determine order type
+            if i + 1 < pending_end:
+                action_line = lines[i + 1]
+
+                # Check for "buy to close"
+                btc_match = re.match(
+                    r'^(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*[·•]\s*(\d+)\s*buys?\s+to\s+close$',
+                    action_line,
+                    re.IGNORECASE
+                )
+
+                # Check for "sell to open"
+                sto_match = re.match(
+                    r'^(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*[·•]\s*(\d+)\s*sells?\s+to\s+open$',
+                    action_line,
+                    re.IGNORECASE
+                )
+
+                if btc_match or sto_match:
+                    match = btc_match or sto_match
+                    order_type = 'BUY_TO_CLOSE' if btc_match else 'SELL_TO_OPEN'
+
+                    order = ParsedPendingOrder(
+                        symbol=symbol,
+                        order_type=order_type,
+                        option_type=option_type,
+                        strike_price=strike_price,
+                        from_expiration=None,
+                        to_expiration=match.group(1),  # Expiration date
+                        contracts=int(match.group(2)),
+                        limit_price=None,
+                        raw_text=f"{line} | {action_line}"
+                    )
+                    i += 1
+
+                    # Next line: "$0.30 Limit"
+                    if i + 1 < pending_end:
+                        limit_line = lines[i + 1]
+                        limit_match = re.match(r'^\$?([\d.]+)\s*Limit$', limit_line, re.IGNORECASE)
+                        if limit_match:
+                            order.limit_price = float(limit_match.group(1))
+                            order.raw_text += f" | {limit_line}"
+                            i += 1
+
+                    pending_orders.append(order)
+                    logger.info(f"Parsed {order_type} order: {symbol} ${strike_price} {option_type} exp {order.to_expiration}")
+                    i += 1
+                    continue
+
+        i += 1
+
+    logger.info(f"Parsed {len(pending_orders)} pending orders")
+    return pending_orders
 
 
 def parse_options_detail_view(text: str) -> Optional[ParsedOption]:

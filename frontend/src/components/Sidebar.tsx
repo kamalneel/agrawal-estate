@@ -9,20 +9,19 @@ import {
   FileText,
   Database,
   LogOut,
-  ScrollText,
   Lightbulb,
   DollarSign,
   ChevronDown,
   ChevronRight,
-  Target,
   LineChart,
   Banknote,
   PiggyBank,
   Settings,
   Bell,
   Globe,
-  Brain,
   Link2,
+  CreditCard,
+  Layers,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import styles from './Sidebar.module.css'
@@ -40,55 +39,52 @@ interface NavGroup {
 }
 
 const navItems: NavItem[] = [
-  { path: '/', label: 'Notifications', icon: <Bell size={20} /> },
   { path: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
   { path: '/income', label: 'Income', icon: <Wallet size={20} /> },
+  { path: '/strategies/options-selling', label: 'Option Income', icon: <LineChart size={20} /> },
   { path: '/investments', label: 'Investments', icon: <TrendingUp size={20} /> },
-  { path: '/equity', label: 'Equity', icon: <DollarSign size={20} /> },
-  { path: '/real-estate', label: 'Real Estate', icon: <Building2 size={20} /> },
-  { path: '/cash', label: 'Cash & Banking', icon: <Receipt size={20} /> },
-  { path: '/tax', label: 'Tax Center', icon: <FileText size={20} /> },
+  { path: '/strategies/spending', label: 'Spending', icon: <CreditCard size={20} /> },
+  { path: '/strategies/buy-borrow-die', label: 'Buy/Borrow/Die', icon: <Banknote size={20} /> },
+  { path: '/', label: 'Notifications', icon: <Bell size={20} /> },
+  { path: '/data-ingestion', label: 'Import Data', icon: <Database size={20} /> },
 ]
 
-const strategiesGroup: NavGroup = {
-  label: 'Strategies',
-  icon: <Target size={20} />,
+const moreGroup: NavGroup = {
+  label: 'More',
+  icon: <Layers size={20} />,
   items: [
-    { path: '/strategies/tax-optimization', label: 'Tax Optimization', icon: <Lightbulb size={18} /> },
-    { path: '/strategies/options-selling', label: 'Options Selling', icon: <LineChart size={18} /> },
-    { path: '/strategies/buy-borrow-die', label: 'Buy/Borrow/Die', icon: <Banknote size={18} /> },
-    { path: '/strategies/retirement-deductions', label: 'Retirement Deductions', icon: <PiggyBank size={18} /> },
-    { path: '/strategies/management', label: 'Strategy Management', icon: <Settings size={18} /> },
-    { path: '/strategies/learning', label: 'RLHF Learning', icon: <Brain size={18} /> },
+    { path: '/equity', label: 'Private Equity', icon: <DollarSign size={18} /> },
+    { path: '/real-estate', label: 'Real Estate', icon: <Building2 size={18} /> },
+    { path: '/cash', label: 'Cash', icon: <Receipt size={18} /> },
+    { path: '/india-investments', label: 'India Holdings', icon: <Globe size={18} /> },
+    { path: '/airbnb', label: 'Airbnb', icon: <Building2 size={18} /> },
+    { path: '/tax', label: 'Tax Center', icon: <FileText size={18} /> },
+    { path: '/strategies/retirement-deductions', label: 'Retirement', icon: <PiggyBank size={18} /> },
+    { path: '/strategies/tax-optimization', label: 'Tax Planning', icon: <Lightbulb size={18} /> },
+    { path: '/strategies/management', label: 'Strategy Settings', icon: <Settings size={18} /> },
+    { path: '/integrations/plaid', label: 'Bank Connections', icon: <Link2 size={18} /> },
   ],
 }
-
-const bottomNavItems: NavItem[] = [
-  { path: '/estate-planning', label: 'Estate Planning', icon: <ScrollText size={20} /> },
-  { path: '/india-investments', label: 'India Investments', icon: <Globe size={20} /> },
-  { path: '/integrations/plaid', label: 'Plaid Integration', icon: <Link2 size={20} /> },
-  { path: '/data-ingestion', label: 'Data Ingestion', icon: <Database size={20} /> },
-]
 
 export function Sidebar() {
   const { logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  
-  // Check if any strategy route is active
-  const isStrategyActive = strategiesGroup.items.some(item => 
-    location.pathname.startsWith(item.path)
+
+  // Check if any "More" route is active
+  const isMoreActive = moreGroup.items.some(item =>
+    location.pathname === item.path || location.pathname.startsWith(item.path + '/')
   )
-  
-  const [strategiesExpanded, setStrategiesExpanded] = useState(isStrategyActive)
+
+  const [moreExpanded, setMoreExpanded] = useState(isMoreActive)
 
   const handleLogout = () => {
     logout()
     navigate('/login')
   }
 
-  const toggleStrategies = () => {
-    setStrategiesExpanded(!strategiesExpanded)
+  const toggleMore = () => {
+    setMoreExpanded(!moreExpanded)
   }
 
   return (
@@ -99,7 +95,7 @@ export function Sidebar() {
       </div>
 
       <nav className={styles.nav}>
-        {/* Main nav items */}
+        {/* Top-level nav items */}
         {navItems.map((item) => (
           <NavLink
             key={item.path}
@@ -114,21 +110,21 @@ export function Sidebar() {
           </NavLink>
         ))}
 
-        {/* Strategies group */}
-        <div className={styles.navGroup}>
+        {/* More group */}
+        <div className={`${styles.navGroup} ${styles.moreGroup}`}>
           <button
-            className={`${styles.navGroupHeader} ${isStrategyActive ? styles.active : ''}`}
-            onClick={toggleStrategies}
+            className={`${styles.navGroupHeader} ${isMoreActive ? styles.active : ''}`}
+            onClick={toggleMore}
           >
-            {strategiesGroup.icon}
-            <span>{strategiesGroup.label}</span>
+            {moreGroup.icon}
+            <span>{moreGroup.label}</span>
             <span className={styles.chevron}>
-              {strategiesExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              {moreExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </span>
           </button>
-          
-          <div className={`${styles.navGroupItems} ${strategiesExpanded ? styles.expanded : ''}`}>
-            {strategiesGroup.items.map((item) => (
+
+          <div className={`${styles.navGroupItems} ${moreExpanded ? styles.expanded : ''}`}>
+            {moreGroup.items.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}
@@ -142,20 +138,6 @@ export function Sidebar() {
             ))}
           </div>
         </div>
-
-        {/* Bottom nav items */}
-        {bottomNavItems.map((item) => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            className={({ isActive }) =>
-              `${styles.navItem} ${isActive ? styles.active : ''}`
-            }
-          >
-            {item.icon}
-            <span>{item.label}</span>
-          </NavLink>
-        ))}
       </nav>
 
       <div className={styles.footer}>

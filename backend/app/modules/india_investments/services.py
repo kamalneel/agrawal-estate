@@ -94,7 +94,7 @@ def get_all_india_investments(db: Session, owner: Optional[str] = None) -> Dict[
         ExchangeRate.to_currency == 'INR'
     ).first()
     
-    rate = float(exchange_rate.rate) if exchange_rate and exchange_rate.rate else 83.0  # Default fallback
+    rate = float(exchange_rate.rate) if exchange_rate and exchange_rate.rate else 87.0  # Default fallback
     
     # Filter by owner if specified
     bank_accounts_query = db.query(IndiaBankAccount).filter(IndiaBankAccount.is_active == 'Y')

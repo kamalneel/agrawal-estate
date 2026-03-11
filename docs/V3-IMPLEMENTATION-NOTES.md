@@ -1,8 +1,10 @@
 # V3 Implementation Notes
 
-**Implementation Date:** December 21, 2024  
-**Spec Version:** V3.0 + V3.3 Addendum  
-**Status:** ✅ Complete (V3.3 Addendum Implemented January 7, 2026)
+> **⚠️ ARCHIVED:** This document is superseded by V4. See [ALGORITHM-HISTORY.md](./ALGORITHM-HISTORY.md) for consolidated historical reference and [ALGORITHM-UPGRADE-BEST-PRACTICES.md](./ALGORITHM-UPGRADE-BEST-PRACTICES.md) for implementation guidance.
+
+**Implementation Date:** December 21, 2024
+**Spec Version:** V3.0 + V3.3 Addendum
+**Status:** ❌ ARCHIVED (Superseded by V4 - January 20, 2026)
 
 > **V3.3 Addendum:** See [V3.3-ADDENDUM.md](./V3.3-ADDENDUM.md) for mean reversion awareness, weekly income priority, and flexible ITM debit limits.
 

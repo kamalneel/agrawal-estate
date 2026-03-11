@@ -1,0 +1,264 @@
+/* Shared HoldingsTable styles */
+
+.tableContainer {
+  overflow-x: auto;
+  margin: 0 calc(-1 * var(--space-4));
+  padding: 0 var(--space-4);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-base);
+  table-layout: fixed;
+}
+
+/* Header */
+.table th {
+  padding: var(--space-3) var(--space-3);
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-medium);
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.table th:first-child {
+  text-align: left;
+}
+
+.sortableHeader {
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--duration-fast, 150ms);
+  white-space: nowrap;
+}
+
+.sortableHeader:hover {
+  color: var(--color-text-primary, #fff);
+}
+
+.sortIcon {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: var(--text-xs, 11px);
+}
+
+.headerSub {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-text-tertiary);
+  opacity: 0.8;
+  margin-top: 2px;
+}
+
+/* Body rows */
+.table td {
+  padding: var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.tableRow {
+  transition: background var(--duration-fast) var(--ease-default);
+}
+
+.tableRow:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.tableRow:last-child td {
+  border-bottom: none;
+}
+
+/* Symbol cell */
+.symbolCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.symbolCell strong {
+  font-family: var(--font-mono);
+  font-weight: var(--font-semibold);
+  color: var(--color-accent);
+}
+
+.cashLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.subtitle {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.unsoldLabel {
+  font-size: var(--text-xs);
+  color: #EF4444;
+  font-weight: 500;
+}
+
+/* Value cell */
+.valueCell {
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+}
+
+/* Percent bar (Investment variant) */
+.percentBar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.percentFill {
+  height: 6px;
+  background: var(--color-accent);
+  border-radius: var(--radius-full);
+  opacity: 0.6;
+  width: 50px;
+}
+
+.percentBar span {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+/* Income positive */
+.incomePositive {
+  color: var(--color-positive);
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+}
+
+/* Options badge (Options variant) */
+.optionsCell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.optionsBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-weight: var(--font-semibold);
+  font-size: var(--text-sm);
+}
+
+.optionsFull {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10B981;
+}
+
+.optionsPartial {
+  background: rgba(245, 158, 11, 0.2);
+  color: #F59E0B;
+}
+
+.optionsNone {
+  background: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+}
+
+.soldUnsoldInfo {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.soldCount {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: #10B981;
+}
+
+.unsoldCount {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: #EF4444;
+}
+
+.putsLabel {
+  font-size: var(--text-xs);
+  color: #A855F7;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Income cell with yield (Options variant) */
+.incomeCellWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.yieldPercent {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-weight: normal;
+}
+
+.hardcodedIncome {
+  opacity: 0.7;
+}
+
+.hardcodedMarker {
+  color: #F59E0B;
+  font-weight: bold;
+  margin-right: 2px;
+}
+
+/* CASH row */
+.cashRow {
+  border-left: 3px solid #A855F7;
+}
+
+/* Unsold row */
+.unsoldRow {
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.unsoldRow:hover {
+  background: rgba(239, 68, 68, 0.06);
+}
+
+/* Totals footer row */
+.totalsRow td {
+  border-top: 2px solid var(--color-border-hover, #555);
+  border-bottom: none;
+  padding: var(--space-4) var(--space-3);
+  font-weight: var(--font-bold);
+}
+
+.totalLabel {
+  font-family: var(--font-mono);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
+  letter-spacing: var(--tracking-wide);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .table {
+    font-size: var(--text-xs);
+  }
+}

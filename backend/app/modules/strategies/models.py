@@ -29,6 +29,9 @@ class SoldOptionsSnapshot(Base):
     # Relationship to sold options
     options = relationship("SoldOption", back_populates="snapshot", cascade="all, delete-orphan")
 
+    # Relationship to pending orders
+    pending_orders = relationship("PendingOrder", back_populates="snapshot", cascade="all, delete-orphan")
+
 
 class SoldOption(Base):
     """Individual sold option parsed from a screenshot."""
@@ -51,6 +54,61 @@ class SoldOption(Base):
     
     # Relationship back to snapshot
     snapshot = relationship("SoldOptionsSnapshot", back_populates="options")
+
+
+class PendingOrder(Base):
+    """
+    Pending orders parsed from Robinhood/Schwab paste.
+
+    These are orders that haven't been executed yet (e.g., limit orders for rolls).
+    V5 uses these to:
+    1. Avoid duplicate notifications (if user already has a pending order for a position)
+    2. Advise on pending orders (KEEP, MODIFY, CANCEL, REPLACE)
+    """
+    __tablename__ = 'pending_orders'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id = Column(Integer, ForeignKey('sold_options_snapshots.id', ondelete='CASCADE'), nullable=False)
+
+    # Order identification
+    symbol = Column(String(20), nullable=False)
+    order_type = Column(String(30), nullable=False)  # 'ROLL', 'SELL_TO_OPEN', 'BUY_TO_CLOSE'
+    option_type = Column(String(10), nullable=True)  # 'call' or 'put' (inferred from linked position)
+
+    # Roll details (for ROLL orders)
+    from_expiration = Column(Date, nullable=True)  # Current expiration being rolled from
+    to_expiration = Column(Date, nullable=True)    # Target expiration being rolled to
+    strike_price = Column(Numeric(10, 2), nullable=True)  # Strike (inferred from linked position)
+
+    # Order details
+    contracts = Column(Integer, nullable=False, default=1)
+    limit_price = Column(Numeric(10, 2), nullable=True)  # Limit price for the order (positive = credit)
+
+    # Account info
+    account_name = Column(String(200), nullable=True)
+
+    # Linking to position
+    linked_position_id = Column(Integer, ForeignKey('sold_options.id', ondelete='SET NULL'), nullable=True)
+
+    # Status tracking
+    status = Column(String(20), nullable=False, default='pending')  # 'pending', 'filled', 'cancelled', 'expired'
+
+    # Raw text for debugging
+    raw_text = Column(String(500), nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    snapshot = relationship("SoldOptionsSnapshot", back_populates="pending_orders")
+    linked_position = relationship("SoldOption")
+
+    # Indexes for efficient querying
+    __table_args__ = (
+        Index('idx_pending_order_symbol', 'symbol'),
+        Index('idx_pending_order_status', 'status'),
+        Index('idx_pending_order_account', 'account_name'),
+    )
 
 
 class OptionRollAlert(Base):
@@ -84,12 +142,22 @@ class OptionRollAlert(Base):
 
 
 class OptionPremiumSetting(Base):
-    """Stores weekly premium per contract settings for each symbol."""
+    """Stores weekly premium per contract settings for each symbol, separated by option type."""
     __tablename__ = 'option_premium_settings'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, unique=True)
-    premium_per_contract = Column(Numeric(10, 2), nullable=False)  # Weekly premium per contract
+
+    # CALL premium (also used as legacy premium_per_contract for backward compatibility)
+    premium_per_contract = Column(Numeric(10, 2), nullable=True)  # Weekly CALL premium per contract
+    call_contracts_sold = Column(Integer, nullable=True)  # Number of call contracts in calculation period
+    call_net_total = Column(Numeric(12, 2), nullable=True)  # Total net call income in calculation period
+
+    # PUT premium
+    put_premium_per_contract = Column(Numeric(10, 2), nullable=True)  # Weekly PUT premium per contract
+    put_contracts_sold = Column(Integer, nullable=True)  # Number of put contracts in calculation period
+    put_net_total = Column(Numeric(12, 2), nullable=True)  # Total net put income in calculation period
+
     is_auto_updated = Column(Boolean, default=True)  # Whether this is auto-updated from 4-week average
     last_auto_update = Column(DateTime, nullable=True)  # When it was last auto-updated
     manual_override = Column(Boolean, default=False)  # If True, don't auto-update
@@ -326,4 +394,54 @@ class TelegramMessageTracking(Base):
     __table_args__ = (
         Index('idx_telegram_message_id', 'telegram_message_id', 'telegram_chat_id'),
         Index('idx_telegram_sent_at', 'sent_at'),
+    )
+
+
+class BbdPerformanceMetric(Base):
+    """Cached performance metrics for BBD Assumptions vs Reality."""
+    __tablename__ = 'bbd_performance_metrics'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    period_type = Column(String(10), nullable=False)  # 'year', 'month', 'week'
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    metric_type = Column(String(20), nullable=False)  # 'portfolio_growth', 'options_yield'
+    actual_value = Column(Numeric(18, 2), nullable=True)
+    actual_percent = Column(Numeric(10, 4), nullable=True)
+    expected_value = Column(Numeric(18, 2), nullable=True)
+    expected_percent = Column(Numeric(10, 4), nullable=True)
+    baseline_value = Column(Numeric(18, 2), nullable=True)
+    variance_percent = Column(Numeric(10, 4), nullable=True)
+    variance_value = Column(Numeric(18, 2), nullable=True)
+    data_completeness = Column(String(20), default='complete')
+    computed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_bbd_metric_type', 'metric_type'),
+        Index('idx_bbd_period_type_start', 'period_type', 'period_start'),
+    )
+
+
+class IndiaStrategyHolding(Base):
+    """User's Indian stock portfolio with goal-based target values."""
+    __tablename__ = 'india_strategy_holdings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    exchange = Column(String(10), nullable=False, default='NSE')
+    name = Column(String(200), nullable=True)
+    shares = Column(Numeric(12, 4), nullable=False, default=0)
+    avg_cost_inr = Column(Numeric(12, 2), nullable=True)
+    current_price_inr = Column(Numeric(12, 2), nullable=True)
+    target_value_inr = Column(Numeric(14, 2), nullable=True)
+    account_name = Column(String(200), nullable=False, default='Default')
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_india_strategy_symbol', 'symbol'),
+        Index('idx_india_strategy_account', 'account_name'),
     )

@@ -52,11 +52,6 @@ class InvestmentTransaction(BaseModel):
     ingestion_id = Column(Integer, nullable=True)
     
     __table_args__ = (
-        UniqueConstraint(
-            'source', 'account_id', 'transaction_date', 
-            'transaction_type', 'symbol', 'quantity', 'amount',
-            name='uq_investment_transaction'
-        ),
         Index('idx_transaction_date', 'transaction_date'),
         Index('idx_transaction_symbol', 'symbol'),
     )

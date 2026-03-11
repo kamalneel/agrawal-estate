@@ -38,14 +38,17 @@ def generate_recommendation_id(
     """
     # Create a short hash of the account name for cleaner IDs
     account_hash = hashlib.md5(account_name.encode()).hexdigest()[:8]
-    
+
+    # Normalize option_type to lowercase to prevent duplicates from case differences
+    option_type_normalized = option_type.lower() if option_type else "call"
+
     if strike is not None and expiration is not None:
         # Sold option position
         exp_str = expiration.strftime('%Y%m%d') if isinstance(expiration, date) else str(expiration).replace('-', '')
-        rec_id = f"rec_{symbol}_{account_hash}_{strike}_{exp_str}_{option_type}"
+        rec_id = f"rec_{symbol}_{account_hash}_{strike}_{exp_str}_{option_type_normalized}"
     else:
         # Uncovered position (no sold option yet)
-        rec_id = f"rec_{symbol}_{account_hash}_uncovered_{option_type}"
+        rec_id = f"rec_{symbol}_{account_hash}_uncovered_{option_type_normalized}"
     
     return rec_id
 
@@ -262,3 +265,64 @@ class RecommendationExecution(Base):
     # Relationships
     recommendation = relationship("PositionRecommendation", back_populates="executions")
     snapshot = relationship("RecommendationSnapshot", back_populates="executions")
+
+
+class FollowUpCondition(Base):
+    """
+    V4: Tracks follow-up conditions for two-part recommendations.
+
+    When V4 recommends "CLOSE + wait for recovery", this table tracks:
+    - The original recommendation that set the condition
+    - The condition type and threshold
+    - The reference price when the condition was set
+    - Whether the condition has triggered
+    - The follow-up notification that was sent
+
+    This enables the system to notify when "stock drops 3%" or
+    "stock bounces 2%" as specified in the original recommendation.
+    """
+    __tablename__ = 'follow_up_conditions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Link to original recommendation
+    recommendation_id = Column(Integer, ForeignKey('position_recommendations.id'), nullable=False, index=True)
+    snapshot_id = Column(Integer, ForeignKey('recommendation_snapshots.id'), nullable=False)
+
+    # Position identity (denormalized for quick querying)
+    symbol = Column(String(20), nullable=False, index=True)
+    account_name = Column(String(200), nullable=True)
+
+    # Condition specification
+    condition_type = Column(String(50), nullable=False)  # stock_drops_3_pct, stock_bounces, etc.
+    threshold_pct = Column(Numeric(5, 4), nullable=True)  # 0.03 for 3%
+    threshold_price = Column(Numeric(10, 2), nullable=True)  # Absolute price if applicable
+
+    # Reference point (when condition was set)
+    reference_price = Column(Numeric(10, 2), nullable=False)  # Stock price when condition set
+    reference_date = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Follow-up action to recommend when triggered
+    follow_up_action = Column(String(30), nullable=False)  # RE_ENTER, SELL_NEW, etc.
+
+    # Trigger tracking
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    triggered_at = Column(DateTime, nullable=True)
+    trigger_price = Column(Numeric(10, 2), nullable=True)
+
+    # Follow-up notification
+    follow_up_notification_sent = Column(Boolean, nullable=False, default=False)
+    follow_up_notification_at = Column(DateTime, nullable=True)
+    follow_up_snapshot_id = Column(Integer, nullable=True)  # Snapshot created for follow-up
+
+    # Expiration (conditions don't last forever)
+    expires_at = Column(DateTime, nullable=True)  # NULL = no expiration
+    expired = Column(Boolean, nullable=False, default=False)
+
+    # Metadata
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    recommendation = relationship("PositionRecommendation")
+    original_snapshot = relationship("RecommendationSnapshot", foreign_keys=[snapshot_id])

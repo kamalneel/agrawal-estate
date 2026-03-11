@@ -15,6 +15,60 @@ from decimal import Decimal
 import statistics
 
 
+# Known recurring monthly expenses (manually configured)
+# Based on 5-month analysis (Aug-Dec 2025)
+KNOWN_RECURRING_EXPENSES = [
+    {
+        "description": "Rent",
+        "amount": 8000.00,
+        "day_of_month": 1,
+        "frequency": "monthly",
+        "confidence": 95.0,
+        "category": "housing"
+    },
+    {
+        "description": "Alisha's School (Stratford)",
+        "amount": 2700.00,
+        "day_of_month": 1,
+        "frequency": "monthly",
+        "confidence": 95.0,
+        "category": "education"
+    },
+    {
+        "description": "Amazon (Chase Credit Card)",
+        "amount": 1200.00,
+        "day_of_month": 3,
+        "frequency": "monthly",
+        "confidence": 75.0,
+        "category": "shopping"
+    },
+    {
+        "description": "Car Mortgage (JPMorgan Chase)",
+        "amount": 616.30,
+        "day_of_month": 8,
+        "frequency": "monthly",
+        "confidence": 98.0,
+        "category": "transportation"
+    },
+    {
+        "description": "Robinhood Credit Card",
+        "amount": 7484.00,
+        "day_of_month": 19,
+        "frequency": "monthly",
+        "confidence": 75.0,
+        "category": "credit_card"
+    },
+    {
+        "description": "Costco (Citi Credit Card)",
+        "amount": 1000.00,
+        "day_of_month": 29,
+        "frequency": "monthly",
+        "confidence": 70.0,
+        "category": "groceries"
+    },
+]
+
+
 class RecurringExpense:
     """Represents a recurring expense pattern."""
 
@@ -227,6 +281,20 @@ class ExpenseForecastingService:
         # Simple similarity: check if one contains the other
         return desc1 in desc2 or desc2 in desc1
 
+    def _get_known_recurring_expenses(self) -> List[RecurringExpense]:
+        """Convert known recurring expenses config to RecurringExpense objects."""
+        known_expenses = []
+        for config in KNOWN_RECURRING_EXPENSES:
+            expense = RecurringExpense(config["description"])
+            expense.avg_amount = config["amount"]
+            expense.avg_day_of_month = config["day_of_month"]
+            expense.frequency = config["frequency"]
+            expense.confidence = config["confidence"]
+            # Add a fake occurrence so it counts
+            expense.occurrences = [(date.today(), config["amount"])]
+            known_expenses.append(expense)
+        return known_expenses
+
     def forecast_expenses(
         self,
         year: int,
@@ -249,8 +317,9 @@ class ExpenseForecastingService:
         for y in range(year - historical_years, year + 1):
             all_transactions.extend(self.load_spending_transactions(y))
 
-        # Identify recurring patterns
-        recurring_expenses = self.identify_recurring_expenses(all_transactions)
+        # Use only the manually configured known recurring expenses
+        # (Historical auto-detection is disabled to avoid duplicates/noise)
+        all_recurring_expenses = self._get_known_recurring_expenses()
 
         # Generate forecast
         current_date = datetime.now().date()
@@ -265,7 +334,7 @@ class ExpenseForecastingService:
             predicted_expenses = []
             total_predicted = 0.0
 
-            for expense in recurring_expenses:
+            for expense in all_recurring_expenses:
                 # Skip if not likely to occur this month based on frequency
                 if expense.frequency == "quarterly":
                     # Check if this month aligns with quarterly pattern
@@ -309,7 +378,7 @@ class ExpenseForecastingService:
             })
 
         # Calculate summary statistics
-        total_recurring = len(recurring_expenses)
+        total_recurring = len(all_recurring_expenses)
         avg_monthly_recurring = statistics.mean([m['total_predicted'] for m in forecasted_months]) if forecasted_months else 0
 
         return {
@@ -323,7 +392,8 @@ class ExpenseForecastingService:
                 'total_recurring_expenses_identified': total_recurring,
                 'avg_monthly_recurring_spending': round(avg_monthly_recurring, 2),
                 'historical_years_analyzed': historical_years,
-                'total_transactions_analyzed': len(all_transactions)
+                'total_transactions_analyzed': len(all_transactions),
+                'known_recurring_expenses': len(KNOWN_RECURRING_EXPENSES)
             },
             'recurring_patterns': [
                 {
@@ -334,6 +404,6 @@ class ExpenseForecastingService:
                     'confidence': round(e.confidence, 1),
                     'occurrences': len(e.occurrences)
                 }
-                for e in recurring_expenses
+                for e in all_recurring_expenses
             ]
         }

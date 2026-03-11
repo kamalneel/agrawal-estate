@@ -2,6 +2,7 @@
 Tax module database models.
 """
 
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, Numeric, Date, Text, UniqueConstraint, ForeignKey, Index, Boolean, DateTime
 from sqlalchemy.orm import relationship
 
@@ -258,5 +259,96 @@ class StockLotSale(Base, TimestampMixin):
         Index('idx_stock_lot_sale_tax_year', 'tax_year'),
         Index('idx_stock_lot_sale_date', 'sale_date'),
         Index('idx_stock_lot_sale_is_long_term', 'is_long_term'),
+    )
+
+
+class TaxDocumentUpload(BaseModel):
+    """
+    Uploaded tax documents (1099s, W-2s, etc.) for building the actual tax file.
+
+    Supports document types:
+    - 1099-INT: Interest income
+    - 1099-DIV: Dividend income
+    - 1099-B: Brokerage transactions
+    - 1099-R: Retirement distributions
+    - 1099-MISC: Miscellaneous income
+    - 1099-NEC: Non-employee compensation
+    - 1099-K: Payment card transactions
+    - W-2: Wages and salary
+    - 1098: Mortgage interest
+    - K-1: Partnership income
+    - PROPERTY-TAX: Property tax bills
+    - CHARITABLE: Donation receipts
+    - OTHER: Other documents
+    """
+
+    __tablename__ = "tax_document_uploads"
+
+    tax_year = Column(Integer, nullable=False, index=True)
+    document_type = Column(String(50), nullable=False)  # '1099-INT', 'W-2', etc.
+    institution_name = Column(String(255), nullable=True)
+    institution_ein = Column(String(20), nullable=True)  # Employer ID Number
+
+    # File info
+    file_name = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_hash = Column(String(64), nullable=True)  # SHA256 for dedup
+    file_size = Column(Integer, nullable=True)
+    mime_type = Column(String(100), nullable=True)
+
+    # Dates
+    upload_date = Column(DateTime, default=datetime.utcnow)
+    document_date = Column(Date, nullable=True)  # Date on the document
+
+    # Processing status
+    status = Column(String(20), default='uploaded')  # uploaded, processed, verified
+
+    # Extracted data (JSON of parsed values)
+    extracted_data = Column(Text, nullable=True)
+
+    notes = Column(Text, nullable=True)
+
+    # Relationships
+    actual_tax_items = relationship("ActualTaxItem", back_populates="source_document")
+
+    __table_args__ = (
+        Index('idx_tax_doc_year', 'tax_year'),
+        Index('idx_tax_doc_type', 'document_type'),
+        Index('idx_tax_doc_status', 'status'),
+    )
+
+
+class ActualTaxItem(BaseModel):
+    """
+    Actual tax line items extracted from uploaded documents.
+
+    These are the real values from tax documents that will be compared
+    against forecasted values.
+    """
+
+    __tablename__ = "actual_tax_items"
+
+    tax_year = Column(Integer, nullable=False, index=True)
+
+    # Form line reference (e.g., '1040:1', '1040:2b', 'W-2:1')
+    form_line = Column(String(50), nullable=False)
+
+    description = Column(String(255), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+
+    # Source document link
+    source_document_id = Column(Integer, ForeignKey("tax_document_uploads.id"), nullable=True)
+
+    # Manual entries (not from documents)
+    is_manual_entry = Column(Boolean, default=False)
+
+    notes = Column(Text, nullable=True)
+
+    # Relationships
+    source_document = relationship("TaxDocumentUpload", back_populates="actual_tax_items")
+
+    __table_args__ = (
+        Index('idx_actual_tax_year', 'tax_year'),
+        Index('idx_actual_tax_form_line', 'form_line'),
     )
 

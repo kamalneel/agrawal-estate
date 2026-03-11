@@ -1,20 +1,14 @@
 import { useState, useEffect } from 'react';
-import { 
+import {
   Banknote,
   TrendingUp,
   ArrowRight,
   DollarSign,
   Shield,
   AlertTriangle,
-  CheckCircle2,
-  Info,
   RefreshCw,
-  Settings,
-  BarChart3,
-  Calendar,
 } from 'lucide-react';
 import {
-  LineChart,
   Line,
   XAxis,
   YAxis,
@@ -29,125 +23,66 @@ import {
 import styles from './BuyBorrowDie.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
 
-interface YearlyProjection {
-  year: number;
-  age: number;
-  ending_capital: number;
-  cumulative_borrowing: number;
-  cumulative_interest: number;
-  total_debt: number;
-  net_worth: number;
-  margin_available: number;
-  margin_utilization: number;
-  is_safe: boolean;
+interface TimelineDataPoint {
+  month: string;
+  label: string;
+  total_capital: number | null;
+  margin_available: number | null;
+  cumulative_debt: number | null;
+  net_worth: number | null;
+  proj_total_capital?: number | null;
+  proj_margin_available?: number | null;
+  proj_cumulative_debt?: number | null;
+  proj_net_worth?: number | null;
+  proj_monthly_income?: number | null;
+  is_actual: boolean;
 }
 
-interface ProjectionData {
-  starting_capital: number;
-  projections: YearlyProjection[];
-  summary: {
-    starting_capital: number;
-    final_capital: number;
-    capital_growth_multiple: number;
-    total_borrowed: number;
-    total_interest_paid: number;
-    total_debt: number;
-    final_net_worth: number;
-    strategy_sustainable: boolean;
-    final_margin_utilization: number;
-  };
-}
-
-interface MonthlyActual {
-  year: number;
-  month: number;
-  month_name: string;
+interface IncomeBreakdownRow {
+  month: string;
+  label: string;
   spending: number;
-  income: number;
-  options_income: number;
-  dividend_income: number;  // Separate dividend income
-  interest_income: number;  // Separate interest income (not including dividends)
-  rental_income: number;  // Separate rental income
-  salary_income: number;  // Salary only (not including rental)
-  net_cash_flow: number;
-  cumulative_net: number;
-  cumulative_spending: number;
-  cumulative_income: number;
-}
-
-interface ActualsData {
-  monthly_data: MonthlyActual[];
-  total_spending: number;
+  options: number;
+  dividends: number;
+  interest: number;
+  rental: number;
+  salary: number;
   total_income: number;
-  total_options_income: number;
-  total_interest_income: number;
-  total_salary_income: number;
-  net_position: number;
-  monthly_salary: number;
-  year: number;
-  is_sustainable: boolean;
-  months_of_data: number;
-  annualized_spending: number;
-  annualized_income: number;
-  projected_annual_deficit: number;
+  net: number;
 }
 
-interface YearSummary {
-  year: number;
-  total_income: number;
-  total_spending: number;
-  net_position: number;
-  cumulative_gap: number;
-  months_of_data: number;
-}
-
-interface PredictedExpense {
-  description: string;
-  predicted_date: string;
-  predicted_amount: number;
-  confidence: number;
-  frequency: string;
-  historical_occurrences: number;
-  amount_range: {
-    min: number;
-    max: number;
+interface TimelineResponse {
+  data_points: TimelineDataPoint[];
+  last_actual_month: string | null;
+  time_range: string;
+  assumptions: {
+    annual_growth_rate_pct: number;
+    annual_interest_rate_pct: number;
+    avg_monthly_spending: number;
+    margin_ltv_pct: number;
+    income_offset: boolean;
+    options_yield_pct: number;
+    avg_fixed_income: number;
+    fixed_income_breakdown: {
+      interest: number;
+      dividends: number;
+      rental: number;
+      salary: number;
+    };
   };
-}
-
-interface ForecastedMonth {
-  year: number;
-  month: number;
-  month_name: string;
-  predicted_expenses: PredictedExpense[];
-  total_predicted: number;
-  num_predicted_expenses: number;
-}
-
-interface RecurringPattern {
-  description: string;
-  avg_amount: number;
-  frequency: string;
-  avg_day_of_month: number;
-  confidence: number;
-  occurrences: number;
-}
-
-interface ExpenseForecast {
-  forecast_period: {
-    start_month: ForecastedMonth | null;
-    end_month: ForecastedMonth | null;
-    months_ahead: number;
-  };
-  forecasted_months: ForecastedMonth[];
   summary: {
-    total_recurring_expenses_identified: number;
-    avg_monthly_recurring_spending: number;
-    historical_years_analyzed: number;
-    total_transactions_analyzed: number;
+    current_total_capital: number;
+    current_margin_available: number;
+    current_cumulative_debt: number;
+    current_net_worth: number;
+    current_utilization_pct: number;
+    capital_account_breakdown: { name: string; value: number }[];
+    final_total_capital: number;
+    final_margin_available: number;
+    final_cumulative_debt: number;
+    final_net_worth: number;
   };
-  recurring_patterns: RecurringPattern[];
-  error?: string;
-  note?: string;
+  income_breakdown: IncomeBreakdownRow[];
 }
 
 const formatCurrency = (value: number) => {
@@ -169,189 +104,185 @@ const formatFullCurrency = (value: number) => {
 };
 
 export default function BuyBorrowDie() {
-  const [projection, setProjection] = useState<ProjectionData | null>(null);
-  const [actuals, setActuals] = useState<ActualsData | null>(null);
-  const [allYearsData, setAllYearsData] = useState<YearSummary[] | null>(null);
-  const [forecast, setForecast] = useState<ExpenseForecast | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [actualsLoading, setActualsLoading] = useState(false);
-  const [forecastLoading, setForecastLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'projection' | 'actuals' | 'forecast' | 'settings'>('actuals');  // Default to Actuals
+  // Timeline chart state
+  const [timelineData, setTimelineData] = useState<TimelineResponse | null>(null);
+  const [timelineRange, setTimelineRange] = useState<'data' | '5y' | '10y' | '20y' | '30y' | 'all'>('data');
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [incomeOffset, setIncomeOffset] = useState(false);
 
-  // Year selection for Actuals
-  const [selectedYear, setSelectedYear] = useState<number | 'all'>(2025); // Default to 2025, will update when years load
-  const [availableYears, setAvailableYears] = useState<number[]>([2025]); // Will be updated from API
-  const [isCumulative, setIsCumulative] = useState(true); // Default to cumulative view
+  // Configurable assumptions (displayed as percentages, sent as decimals)
+  const [growthRatePct, setGrowthRatePct] = useState(8);
+  const [marginRatePct, setMarginRatePct] = useState(5);
+  const [marginLtvPct, setMarginLtvPct] = useState(70);
+  const [optionsYieldPct, setOptionsYieldPct] = useState(1);
 
-  // Parameters
-  const [monthlyBorrowing, setMonthlyBorrowing] = useState(20000);
-  const [growthRate, setGrowthRate] = useState(8);
-  const [interestRate, setInterestRate] = useState(5.25);
+  // Assumptions vs Reality state — separate drill-down for each chart
+  const [growthPeriod, setGrowthPeriod] = useState<'year' | 'month' | 'week'>('month');
+  const [growthDrillYear, setGrowthDrillYear] = useState<number | undefined>();
+  const [growthDrillMonth, setGrowthDrillMonth] = useState<number | undefined>();
+  const [growthMetrics, setGrowthMetrics] = useState<any[] | null>(null);
+
+  const [yieldPeriod, setYieldPeriod] = useState<'year' | 'month' | 'week'>('month');
+  const [yieldDrillYear, setYieldDrillYear] = useState<number | undefined>();
+  const [yieldDrillMonth, setYieldDrillMonth] = useState<number | undefined>();
+  const [yieldMetrics, setYieldMetrics] = useState<any[] | null>(null);
+
+  const [borrowPeriod, setBorrowPeriod] = useState<'year' | 'month'>('month');
+  const [borrowDrillYear, setBorrowDrillYear] = useState<number | undefined>();
+  const [borrowMetrics, setBorrowMetrics] = useState<any[] | null>(null);
+
+  const [assumptionSummary, setAssumptionSummary] = useState<any | null>(null);
+  const [, setAssumptionLoading] = useState(false);
+  const [assumptionComputing, setAssumptionComputing] = useState(false);
 
   useEffect(() => {
-    fetchProjection();
-    fetchAvailableYears();
+    fetchTimeline();
+    fetchMetricsFor('portfolio_growth', growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics);
+    fetchMetricsFor('options_yield', yieldPeriod, yieldDrillYear, yieldDrillMonth, setYieldMetrics);
+    fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics);
+    fetchAssumptionSummary();
   }, []);
 
-  useEffect(() => {
-    if (selectedYear === 'all') {
-      fetchAllYearsData();
-    } else {
-      fetchActuals(selectedYear);
-    }
-  }, [selectedYear]);
-
-  const fetchProjection = async () => {
-    setLoading(true);
-    setError(null);
+  const fetchTimeline = async (range?: 'data' | '5y' | '10y' | '20y' | '30y' | 'all', offset?: boolean) => {
+    const r = range ?? timelineRange;
+    const io = offset ?? incomeOffset;
+    setTimelineLoading(true);
     try {
-      const response = await fetch('/api/v1/strategies/buy-borrow-die/projection', {
+      const params = new URLSearchParams({
+        time_range: r,
+        income_offset: String(io),
+        growth_rate: String(growthRatePct / 100),
+        margin_rate: String(marginRatePct / 100),
+        margin_ltv: String(marginLtvPct / 100),
+        options_yield: String(optionsYieldPct / 100),
+      });
+      const response = await fetch(`/api/v1/strategies/buy-borrow-die/timeline?${params}`, {
+        headers: getAuthHeaders(),
+      });
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      const data = await response.json();
+      setTimelineData(data);
+    } catch (err) {
+      console.error('Timeline fetch error:', err);
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchTimeline(timelineRange, incomeOffset);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [timelineRange, incomeOffset, growthRatePct, marginRatePct, marginLtvPct, optionsYieldPct]);
+
+  // Refresh assumptions data when drill-down changes
+  useEffect(() => {
+    fetchMetricsFor('portfolio_growth', growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics);
+  }, [growthPeriod, growthDrillYear, growthDrillMonth]);
+
+  useEffect(() => {
+    fetchMetricsFor('options_yield', yieldPeriod, yieldDrillYear, yieldDrillMonth, setYieldMetrics);
+  }, [yieldPeriod, yieldDrillYear, yieldDrillMonth]);
+
+  useEffect(() => {
+    fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics);
+  }, [borrowPeriod, borrowDrillYear]);
+
+  const fetchMetricsFor = async (
+    metricType: string, periodType: string, year: number | undefined, month: number | undefined,
+    setter: (data: any[]) => void,
+  ) => {
+    setAssumptionLoading(true);
+    try {
+      const params = new URLSearchParams({ metric_type: metricType, period_type: periodType });
+      if (year) params.set('year', String(year));
+      if (month) params.set('month', String(month));
+      const response = await fetch(`/api/v1/strategies/buy-borrow-die/assumptions/metrics?${params}`, {
+        headers: getAuthHeaders(),
+      });
+      if (!response.ok) throw new Error('Failed to load metrics');
+      const data = await response.json();
+      setter(data.metrics);
+    } catch (err) {
+      console.error('Assumptions fetch error:', err);
+      setter([]);
+    } finally {
+      setAssumptionLoading(false);
+    }
+  };
+
+  const fetchAssumptionSummary = async () => {
+    try {
+      const response = await fetch('/api/v1/strategies/buy-borrow-die/assumptions/summary', {
+        headers: getAuthHeaders(),
+      });
+      if (!response.ok) throw new Error('Failed to load summary');
+      setAssumptionSummary(await response.json());
+    } catch (err) {
+      console.error('Summary fetch error:', err);
+    }
+  };
+
+  const computeAssumptions = async () => {
+    setAssumptionComputing(true);
+    try {
+      const response = await fetch('/api/v1/strategies/buy-borrow-die/assumptions/compute?force=true', {
         method: 'POST',
-        headers: {
-          ...getAuthHeaders(),
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          annual_growth_rate: growthRate / 100,
-          monthly_borrowing: monthlyBorrowing,
-          borrowing_interest_rate: interestRate / 100,
-          current_age: 45,
-          end_age: 100,
-          first_year_months: 11,
-          margin_buffer_percent: 0.76,
-        }),
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       });
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      setProjection(data);
+      if (!response.ok) throw new Error('Compute failed');
+      // Refresh all charts + summary
+      await Promise.all([
+        fetchMetricsFor('portfolio_growth', growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics),
+        fetchMetricsFor('options_yield', yieldPeriod, yieldDrillYear, yieldDrillMonth, setYieldMetrics),
+        fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics),
+        fetchAssumptionSummary(),
+      ]);
     } catch (err) {
-      console.error('Fetch error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load projection');
+      console.error('Compute error:', err);
     } finally {
-      setLoading(false);
+      setAssumptionComputing(false);
     }
   };
 
-  const fetchActuals = async (year: number) => {
-    setActualsLoading(true);
-    try {
-      const response = await fetch(`/api/v1/strategies/buy-borrow-die/actuals/${year}`, {
-        headers: getAuthHeaders(),
-      });
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      setActuals(data);
-    } catch (err) {
-      console.error('Fetch actuals error:', err);
-    } finally {
-      setActualsLoading(false);
+  const handleDrillDown = (
+    entry: any, periodType: string,
+    setDrillYear: (v: number | undefined) => void,
+    setDrillMonth: (v: number | undefined) => void,
+    setPeriod: (v: 'year' | 'month' | 'week') => void,
+  ) => {
+    if (periodType === 'year' && entry?.period_start) {
+      setDrillYear(parseInt(entry.period_start.substring(0, 4)));
+      setDrillMonth(undefined);
+      setPeriod('month');
+    } else if (periodType === 'month' && entry?.period_start) {
+      setDrillYear(parseInt(entry.period_start.substring(0, 4)));
+      setDrillMonth(parseInt(entry.period_start.substring(5, 7)));
+      setPeriod('week');
     }
   };
 
-  const fetchAvailableYears = async () => {
-    const currentYear = new Date().getFullYear();
-    try {
-      const response = await fetch(`/api/v1/strategies/buy-borrow-die/actuals/years`, {
-        headers: getAuthHeaders(),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const years = data.years || [currentYear];
-        setAvailableYears(years);
-        // If selected year is not in available years, select the first available
-        if (years.length > 0 && !years.includes(selectedYear as number)) {
-          setSelectedYear(years[0]);
-        }
-      }
-    } catch (err) {
-      console.error('Fetch available years error:', err);
-      // Default to current year if API fails
-      setAvailableYears([currentYear]);
+  const handleBreadcrumb = (
+    level: 'year' | 'month',
+    setPeriod: (v: 'year' | 'month' | 'week') => void,
+    setDrillYear: (v: number | undefined) => void,
+    setDrillMonth: (v: number | undefined) => void,
+  ) => {
+    if (level === 'year') {
+      setPeriod('year');
+      setDrillYear(undefined);
+      setDrillMonth(undefined);
+    } else {
+      setPeriod('month');
+      setDrillMonth(undefined);
     }
   };
 
-  const fetchAllYearsData = async () => {
-    setActualsLoading(true);
-    try {
-      const response = await fetch(`/api/v1/strategies/buy-borrow-die/actuals/all-years`, {
-        headers: getAuthHeaders(),
-      });
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      setAllYearsData(data.yearly_summaries);
-    } catch (err) {
-      console.error('Fetch all years error:', err);
-    } finally {
-      setActualsLoading(false);
-    }
-  };
-
-  const fetchForecast = async (monthsAhead: number = 3, historicalYears: number = 2) => {
-    setForecastLoading(true);
-    try {
-      const response = await fetch(
-        `/api/v1/strategies/buy-borrow-die/expense-forecast?months_ahead=${monthsAhead}&historical_years=${historicalYears}`,
-        { headers: getAuthHeaders() }
-      );
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      setForecast(data);
-    } catch (err) {
-      console.error('Fetch forecast error:', err);
-      // Set empty forecast on error
-      setForecast({
-        forecast_period: { start_month: null, end_month: null, months_ahead: monthsAhead },
-        forecasted_months: [],
-        summary: {
-          total_recurring_expenses_identified: 0,
-          avg_monthly_recurring_spending: 0,
-          historical_years_analyzed: historicalYears,
-          total_transactions_analyzed: 0
-        },
-        recurring_patterns: [],
-        error: 'Failed to load forecast',
-        note: 'No expense data available for forecasting.'
-      });
-    } finally {
-      setForecastLoading(false);
-    }
-  };
-
-  // Fetch forecast when forecast tab is selected
-  useEffect(() => {
-    if (activeTab === 'forecast' && !forecast) {
-      fetchForecast();
-    }
-  }, [activeTab]);
-
-  // Chart data
-  const chartData = projection?.projections.map(p => ({
-    age: p.age,
-    year: p.year,
-    'Portfolio': p.ending_capital,
-    'Debt': p.total_debt,
-    'Net Worth': p.net_worth,
-    'Interest': p.cumulative_interest,
-    margin: p.margin_utilization,
-  })) || [];
+  // Determine x-axis interval: show yearly ticks for projections, every month for actuals-only
+  const timelineXInterval = timelineRange === 'all' ? 23 : (timelineRange === '30y' || timelineRange === '20y') ? 23 : timelineRange !== 'data' ? 11 : 0;
+  const useLogScale = timelineRange === 'all';
+  const logTicks = [10000, 100000, 1000000, 10000000, 100000000];
 
   return (
     <div className={styles.container}>
@@ -391,726 +322,888 @@ export default function BuyBorrowDie() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className={styles.tabs}>
-        <button
-          className={`${styles.tab} ${activeTab === 'projection' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('projection')}
-        >
-          📊 Projection
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'actuals' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('actuals')}
-        >
-          📈 Actuals
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'forecast' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('forecast')}
-        >
-          🔮 Forecast
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'settings' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('settings')}
-        >
-          ⚙️ Settings
-        </button>
-      </div>
-
       {/* Main Content */}
       <div className={styles.projectionContent}>
-        {loading && (
-          <div className={styles.loadingState}>
-            <RefreshCw size={32} className={styles.spinner} />
-            <p>Calculating projection...</p>
-          </div>
-        )}
 
-        {error && (
-          <div className={styles.errorState}>
-            <AlertTriangle size={32} />
-            <p>{error}</p>
-            <button onClick={fetchProjection}>Retry</button>
-          </div>
-        )}
+        {/* ═══════════════ Section 1: BBD Timeline ═══════════════ */}
+        <div className={styles.section}>
+          <h2 className={styles.sectionHeader}>Buy, Borrow, Die — Timeline</h2>
+          <p className={styles.sectionSubtitle}>Capital, margin, and debt over time</p>
 
-        {!loading && !error && projection && activeTab === 'projection' && (
-          <>
-            {/* Summary Cards */}
-            <div className={styles.summaryGrid}>
-              <div className={styles.summaryCard}>
-                <span className={styles.summaryLabel}>Starting Capital</span>
-                <span className={styles.summaryValue}>{formatFullCurrency(projection.summary.starting_capital)}</span>
-                <span className={styles.summaryNote}>Neel's + Jaya's Brokerage</span>
-              </div>
-              <div className={styles.summaryCard}>
-                <span className={styles.summaryLabel}>Final Portfolio (Age 100)</span>
-                <span className={styles.summaryValue}>{formatFullCurrency(projection.summary.final_capital)}</span>
-                <span className={styles.summaryNote}>{projection.summary.capital_growth_multiple}x growth</span>
-              </div>
-              <div className={styles.summaryCard}>
-                <span className={styles.summaryLabel}>Total Borrowed</span>
-                <span className={styles.summaryValue}>{formatFullCurrency(projection.summary.total_borrowed)}</span>
-                <span className={styles.summaryNote}>${(monthlyBorrowing / 1000).toFixed(0)}K/month × 55 years</span>
-              </div>
-              <div className={styles.summaryCard}>
-                <span className={styles.summaryLabel}>Total Interest Paid</span>
-                <span className={styles.summaryValue}>{formatFullCurrency(projection.summary.total_interest_paid)}</span>
-                <span className={styles.summaryNote}>at {interestRate}% rate</span>
-              </div>
-              <div className={`${styles.summaryCard} ${projection.summary.strategy_sustainable ? styles.success : styles.danger}`}>
-                <span className={styles.summaryLabel}>Final Net Worth</span>
-                <span className={styles.summaryValue}>{formatFullCurrency(projection.summary.final_net_worth)}</span>
-                <span className={styles.summaryNote}>
-                  {projection.summary.strategy_sustainable ? '✓ Strategy Sustainable' : '⚠️ Margin Call Risk'}
-                </span>
-              </div>
-              <div className={styles.summaryCard}>
-                <span className={styles.summaryLabel}>Final Margin Utilization</span>
-                <span className={styles.summaryValue}>{projection.summary.final_margin_utilization.toFixed(1)}%</span>
-                <span className={styles.summaryNote}>of 76% margin buffer</span>
-              </div>
-            </div>
-
-            {/* Main Chart */}
-            <div className={styles.chartCard}>
-              <h3 className={styles.chartTitle}>Portfolio Growth vs. Debt Accumulation</h3>
-              <p className={styles.chartSubtitle}>
-                Age 45 to 100 • {growthRate}% annual growth • ${(monthlyBorrowing/1000).toFixed(0)}K/month borrowing • {interestRate}% interest
-              </p>
-              <div className={styles.chartContainer}>
-                <ResponsiveContainer width="100%" height={400}>
-                  <ComposedChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                    <XAxis dataKey="age" stroke="#888" />
-                    <YAxis stroke="#888" tickFormatter={formatCurrency} />
-                    <Tooltip 
-                      formatter={(value: number, name: string) => [formatFullCurrency(value), name]}
-                      labelFormatter={(age) => `Age ${age}`}
-                    />
-                    <Legend />
-                    <Area type="monotone" dataKey="Portfolio" fill="rgba(16, 185, 129, 0.2)" stroke="#10B981" strokeWidth={2} />
-                    <Line type="monotone" dataKey="Debt" stroke="#EF4444" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="Net Worth" stroke="#3B82F6" strokeWidth={3} dot={false} />
-                    <Line type="monotone" dataKey="Interest" stroke="#F59E0B" strokeWidth={2} strokeDasharray="5 5" dot={false} />
-                    <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* Margin Chart */}
-            <div className={styles.chartCard}>
-              <h3 className={styles.chartTitle}>Margin Utilization Over Time</h3>
-              <div className={styles.chartContainer}>
-                <ResponsiveContainer width="100%" height={250}>
-                  <ComposedChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                    <XAxis dataKey="age" stroke="#888" />
-                    <YAxis stroke="#888" domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
-                    <Tooltip formatter={(v: number) => [`${v.toFixed(1)}%`, 'Margin Used']} />
-                    <ReferenceLine y={100} stroke="#EF4444" strokeDasharray="5 5" />
-                    <ReferenceLine y={80} stroke="#F59E0B" strokeDasharray="3 3" />
-                    <Area type="monotone" dataKey="margin" fill="rgba(139, 92, 246, 0.3)" stroke="#8B5CF6" strokeWidth={2} name="Margin %" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* Key Insight */}
-            <div className={styles.insightCard}>
-              <DollarSign size={24} className={styles.insightIcon} />
-              <div>
-                <h4 className={styles.insightTitle}>Key Tax Insight</h4>
-                <p className={styles.insightText}>
-                  By borrowing ${(monthlyBorrowing/1000).toFixed(0)}K/month instead of selling assets, you avoid capital gains taxes 
-                  on {formatFullCurrency(projection.summary.total_borrowed)} of spending over 55 years. At a ~25% combined 
-                  tax rate, that's approximately <strong>{formatFullCurrency(projection.summary.total_borrowed * 0.25)}</strong> in 
-                  taxes never paid. When you pass, heirs receive the stepped-up basis and can sell assets 
-                  to repay the {formatFullCurrency(projection.summary.total_debt)} debt tax-free.
-                </p>
-              </div>
-            </div>
-          </>
-        )}
-
-        {activeTab === 'actuals' && (
-          <>
-            {/* Year Selector */}
+          {/* Time Range Selector + Income Toggle */}
+          <div className={styles.timelineControls}>
             <div className={styles.yearSelector}>
-              <Calendar size={18} />
-              <span className={styles.yearLabel}>Year:</span>
-              {availableYears.map(year => (
+              {([['data', 'Actuals Only'], ['5y', 'Next 5 Years'], ['10y', 'Next 10 Years'], ['20y', 'Next 20 Years'], ['30y', 'Next 30 Years'], ['all', 'To Age 100']] as const).map(([key, label]) => (
                 <button
-                  key={year}
-                  className={`${styles.yearButton} ${selectedYear === year ? styles.activeYear : ''}`}
-                  onClick={() => setSelectedYear(year)}
+                  key={key}
+                  className={`${styles.yearButton} ${timelineRange === key ? styles.activeYear : ''}`}
+                  onClick={() => setTimelineRange(key)}
                 >
-                  {year}
+                  {label}
                 </button>
               ))}
+            </div>
+            <div className={styles.incomeToggle}>
+              <span>Offset by Income</span>
               <button
-                className={`${styles.yearButton} ${selectedYear === 'all' ? styles.activeYear : ''}`}
-                onClick={() => setSelectedYear('all')}
+                className={`${styles.yearButton} ${incomeOffset ? styles.activeYear : ''}`}
+                onClick={() => setIncomeOffset(!incomeOffset)}
               >
-                All Years
+                {incomeOffset ? 'ON' : 'OFF'}
               </button>
             </div>
+          </div>
 
-            {actualsLoading && (
-              <div className={styles.loadingState}>
-                <RefreshCw size={32} className={styles.spinner} />
-                <p>Loading actuals...</p>
+          {/* Assumptions Settings */}
+          {timelineRange !== 'data' && (
+            <div className={styles.inlineSettingsRow}>
+              <div className={styles.inlineSettingItem}>
+                <label>Growth Rate</label>
+                <div className={styles.inlineSettingInput}>
+                  <input
+                    type="number"
+                    value={growthRatePct}
+                    onChange={(e) => setGrowthRatePct(Number(e.target.value))}
+                    step={0.5}
+                    min={0}
+                    max={20}
+                  />
+                  <span>%/yr</span>
+                </div>
               </div>
-            )}
-
-            {/* All Years View */}
-            {!actualsLoading && selectedYear === 'all' && allYearsData && (
-              <>
-                <div className={styles.chartCard}>
-                  <h3 className={styles.chartTitle}>Year-over-Year Comparison</h3>
-                  <div className={styles.tableContainer}>
-                    <table className={styles.actualsTable}>
-                      <thead>
-                        <tr>
-                          <th>Year</th>
-                          <th>Income</th>
-                          <th>Spending</th>
-                          <th>Annual Gap</th>
-                          <th>Cumulative Gap</th>
-                          <th>Months</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {allYearsData.map((yearData) => (
-                          <tr 
-                            key={yearData.year} 
-                            className={yearData.net_position >= 0 ? styles.positiveRow : styles.negativeRow}
-                            onClick={() => setSelectedYear(yearData.year)}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <td><strong>{yearData.year}</strong></td>
-                            <td className={styles.income}>{formatFullCurrency(yearData.total_income)}</td>
-                            <td className={styles.spending}>{formatFullCurrency(yearData.total_spending)}</td>
-                            <td className={yearData.net_position >= 0 ? styles.positive : styles.negative}>
-                              {yearData.net_position >= 0 ? '+' : ''}{formatFullCurrency(yearData.net_position)}
-                            </td>
-                            <td className={yearData.cumulative_gap >= 0 ? styles.positive : styles.negative}>
-                              {yearData.cumulative_gap >= 0 ? '+' : ''}{formatFullCurrency(yearData.cumulative_gap)}
-                            </td>
-                            <td>{yearData.months_of_data}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              <div className={styles.inlineSettingItem}>
+                <label>Margin Interest</label>
+                <div className={styles.inlineSettingInput}>
+                  <input
+                    type="number"
+                    value={marginRatePct}
+                    onChange={(e) => setMarginRatePct(Number(e.target.value))}
+                    step={0.5}
+                    min={0}
+                    max={20}
+                  />
+                  <span>%/yr</span>
+                </div>
+              </div>
+              <div className={styles.inlineSettingItem}>
+                <label>Margin LTV</label>
+                <div className={styles.inlineSettingInput}>
+                  <input
+                    type="number"
+                    value={marginLtvPct}
+                    onChange={(e) => setMarginLtvPct(Number(e.target.value))}
+                    step={5}
+                    min={10}
+                    max={90}
+                  />
+                  <span>%</span>
+                </div>
+              </div>
+              {incomeOffset && (
+                <div className={styles.inlineSettingItem}>
+                  <label>Options Yield</label>
+                  <div className={styles.inlineSettingInput}>
+                    <input
+                      type="number"
+                      value={optionsYieldPct}
+                      onChange={(e) => setOptionsYieldPct(Number(e.target.value))}
+                      step={0.1}
+                      min={0}
+                      max={5}
+                    />
+                    <span>%/mo</span>
                   </div>
-                  <p className={styles.chartSubtitle} style={{ marginTop: '12px' }}>
-                    Click on a year to see monthly breakdown
+                </div>
+              )}
+            </div>
+          )}
+
+          {timelineLoading && (
+            <div className={styles.loadingState}>
+              <RefreshCw size={32} className={styles.spinner} />
+              <p>Loading timeline...</p>
+            </div>
+          )}
+
+          {!timelineLoading && timelineData && timelineData.data_points.length > 0 && (
+            <>
+              {/* Summary Cards */}
+              <div className={styles.summaryGrid}>
+                <div className={styles.summaryCard} title={timelineData.summary.capital_account_breakdown.map(a => `${a.name}: ${formatFullCurrency(a.value)}`).join('\n')}>
+                  <span className={styles.summaryLabel}>Total Capital</span>
+                  <span className={styles.summaryValue}>{formatFullCurrency(timelineData.summary.current_total_capital)}</span>
+                  <span className={styles.summaryNote}>Taxable accounts only</span>
+                </div>
+                <div className={styles.summaryCard}>
+                  <span className={styles.summaryLabel}>Margin Available</span>
+                  <span className={styles.summaryValue}>{formatFullCurrency(timelineData.summary.current_margin_available)}</span>
+                  <span className={styles.summaryNote}>{timelineData.assumptions.margin_ltv_pct}% LTV</span>
+                </div>
+                <div className={styles.summaryCard}>
+                  <span className={styles.summaryLabel}>Cumulative Debt</span>
+                  <span className={styles.summaryValue}>{formatFullCurrency(timelineData.summary.current_cumulative_debt)}</span>
+                  <span className={styles.summaryNote}>{timelineData.summary.current_utilization_pct.toFixed(1)}% utilization</span>
+                </div>
+                {timelineRange !== 'data' && (
+                  <div className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>Projected Final Net Worth</span>
+                    <span className={styles.summaryValue}>{formatFullCurrency(timelineData.summary.final_net_worth)}</span>
+                    <span className={styles.summaryNote}>
+                      {timelineData.assumptions.annual_growth_rate_pct}% growth, {timelineData.assumptions.annual_interest_rate_pct}% interest
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Timeline Chart */}
+              <div className={styles.chartCard}>
+                <h3 className={styles.chartTitle}>Capital, Margin & Debt Timeline</h3>
+                <p className={styles.chartSubtitle}>
+                  {timelineRange === 'data'
+                    ? 'Showing actual data only'
+                    : `Solid = actual, dashed = projected (${timelineData.assumptions.annual_growth_rate_pct}% growth, ${formatCurrency(timelineData.assumptions.avg_monthly_spending)}/mo spending, ${timelineData.assumptions.annual_interest_rate_pct}% interest${timelineData.assumptions.income_offset ? `, income = ${timelineData.assumptions.options_yield_pct}%/mo yield + ${formatCurrency(timelineData.assumptions.fixed_income_breakdown?.interest ?? 0)} int + ${formatCurrency(timelineData.assumptions.fixed_income_breakdown?.dividends ?? 0)} div + ${formatCurrency(timelineData.assumptions.fixed_income_breakdown?.rental ?? 0)} rental + ${formatCurrency(timelineData.assumptions.fixed_income_breakdown?.salary ?? 0)} salary` : ''})`
+                  }
+                </p>
+                <div className={styles.chartContainer}>
+                  <ResponsiveContainer width="100%" height={400}>
+                    <ComposedChart data={timelineData.data_points} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                      <XAxis
+                        dataKey="label"
+                        stroke="#888"
+                        interval={timelineXInterval}
+                        tickFormatter={(label: string) => {
+                          // For projection ranges, show just the year (e.g. "2030")
+                          if (timelineRange !== 'data') {
+                            const parts = label.split(' ');
+                            return parts.length > 1 ? parts[1] : label;
+                          }
+                          return label;
+                        }}
+                        angle={0}
+                        textAnchor="middle"
+                        height={30}
+                        fontSize={12}
+                      />
+                      <YAxis
+                        stroke="#888"
+                        tickFormatter={formatCurrency}
+                        scale={useLogScale ? 'log' : 'linear'}
+                        domain={useLogScale ? [10000, 'auto'] : [0, 'auto']}
+                        ticks={useLogScale ? logTicks : undefined}
+                        allowDataOverflow={useLogScale}
+                      />
+                      <Tooltip
+                        content={({ active, payload, label }: any) => {
+                          if (!active || !payload?.length) return null;
+                          const point = payload[0]?.payload;
+                          const yr = parseInt(point?.month?.substring(0, 4) || '0');
+                          const birthYear = new Date().getFullYear() - 45;
+                          const age = yr - birthYear;
+                          const nameMap: Record<string, string> = {
+                            total_capital: 'Total Capital',
+                            margin_available: 'Margin Available',
+                            cumulative_debt: 'Cumulative Debt',
+                            net_worth: 'Net Worth',
+                            proj_total_capital: 'Total Capital (proj)',
+                            proj_margin_available: 'Margin Available (proj)',
+                            proj_cumulative_debt: 'Cumulative Debt (proj)',
+                            proj_net_worth: 'Net Worth (proj)',
+                          };
+                          const colorMap: Record<string, string> = {
+                            total_capital: '#10B981', proj_total_capital: '#10B981',
+                            margin_available: '#3B82F6', proj_margin_available: '#3B82F6',
+                            cumulative_debt: '#EF4444', proj_cumulative_debt: '#EF4444',
+                            net_worth: '#F59E0B', proj_net_worth: '#F59E0B',
+                          };
+                          const assumptions = timelineData?.assumptions;
+                          const isProjected = !point?.is_actual;
+                          const projIncome = point?.proj_monthly_income;
+                          const actualIncome = point?.actual_monthly_income;
+                          const cumulativeIncome = point?.cumulative_income;
+                          return (
+                            <div className={styles.customTooltip}>
+                              <p className={styles.tooltipTitle}>{label} — Age {age}</p>
+                              <div className={styles.tooltipContent}>
+                                {payload.filter((p: any) => {
+                                  if (p.value == null) return false;
+                                  // On the bridge point (actual month with projected fields),
+                                  // skip proj_ keys to avoid duplicate rows
+                                  if (point?.is_actual && p.dataKey.startsWith('proj_')) return false;
+                                  return true;
+                                }).map((p: any, i: number) => (
+                                  <p key={i} style={{ color: colorMap[p.dataKey] || '#ccc' }}>
+                                    {nameMap[p.dataKey] || p.dataKey}: {formatCurrency(p.value)}
+                                  </p>
+                                ))}
+                                {/* Actual month spending & income info */}
+                                {!isProjected && (
+                                  <div style={{ borderTop: '1px solid var(--color-border)', marginTop: '6px', paddingTop: '6px' }}>
+                                    {point?.actual_monthly_spending != null && point.actual_monthly_spending > 0 && (
+                                      <p style={{ color: '#EF4444', fontSize: '11px' }}>
+                                        Spending this month: {formatFullCurrency(point.actual_monthly_spending)}
+                                      </p>
+                                    )}
+                                    {assumptions?.income_offset && actualIncome != null && (
+                                      <p style={{ color: '#10B981', fontSize: '11px' }}>
+                                        Income this month: {formatFullCurrency(actualIncome)}
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Projected month income info */}
+                                {isProjected && assumptions && (
+                                  <>
+                                    <p style={{ borderTop: '1px solid var(--color-border)', marginTop: '6px', paddingTop: '6px', color: '#888', fontSize: '11px' }}>
+                                      Spending: {formatCurrency(assumptions.avg_monthly_spending)}/mo
+                                    </p>
+                                    {assumptions.income_offset && projIncome != null && (
+                                      <p style={{ color: '#10B981', fontSize: '11px' }}>
+                                        Income: {formatCurrency(projIncome)}/mo ({assumptions.options_yield_pct}% yield + {formatCurrency(assumptions.fixed_income_breakdown?.interest ?? 0)} int + {formatCurrency(assumptions.fixed_income_breakdown?.dividends ?? 0)} div + {formatCurrency(assumptions.fixed_income_breakdown?.rental ?? 0)} rental + {formatCurrency(assumptions.fixed_income_breakdown?.salary ?? 0)} salary)
+                                      </p>
+                                    )}
+                                    {assumptions.income_offset && projIncome != null && (
+                                      <p style={{ color: '#ccc', fontSize: '11px', fontWeight: 600 }}>
+                                        Net borrowing: {formatCurrency(Math.max(0, assumptions.avg_monthly_spending - projIncome))}/mo
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Legend
+                        formatter={(value: string) => {
+                          const nameMap: Record<string, string> = {
+                            total_capital: 'Total Capital',
+                            margin_available: 'Margin Available',
+                            cumulative_debt: 'Cumulative Debt',
+                            net_worth: 'Net Worth',
+                          };
+                          return nameMap[value] || value;
+                        }}
+                      />
+                      {/* Actual lines (solid) */}
+                      <Line type="monotone" dataKey="total_capital" stroke="#10B981" strokeWidth={2} dot={false} connectNulls={false} />
+                      <Line type="monotone" dataKey="margin_available" stroke="#3B82F6" strokeWidth={2} dot={false} connectNulls={false} />
+                      <Line type="monotone" dataKey="cumulative_debt" stroke="#EF4444" strokeWidth={2} dot={false} connectNulls={false} />
+                      <Line type="monotone" dataKey="net_worth" stroke="#F59E0B" strokeWidth={2} dot={false} connectNulls={false} />
+                      {/* Projected lines (dashed, same colors) */}
+                      {timelineRange !== 'data' && (
+                        <>
+                          <Line type="monotone" dataKey="proj_total_capital" stroke="#10B981" strokeWidth={2} strokeDasharray="5 5" dot={false} connectNulls={false} legendType="none" />
+                          <Line type="monotone" dataKey="proj_margin_available" stroke="#3B82F6" strokeWidth={2} strokeDasharray="5 5" dot={false} connectNulls={false} legendType="none" />
+                          <Line type="monotone" dataKey="proj_cumulative_debt" stroke="#EF4444" strokeWidth={2} strokeDasharray="5 5" dot={false} connectNulls={false} legendType="none" />
+                          <Line type="monotone" dataKey="proj_net_worth" stroke="#F59E0B" strokeWidth={2} strokeDasharray="5 5" dot={false} connectNulls={false} legendType="none" />
+                        </>
+                      )}
+                      {/* "Now" reference line at actual→projected transition */}
+                      {timelineRange !== 'data' && timelineData.last_actual_month && (
+                        <ReferenceLine
+                          x={timelineData.data_points.find(d => d.month === timelineData.last_actual_month)?.label}
+                          stroke="#888"
+                          strokeDasharray="3 3"
+                          label={{ value: 'Now', position: 'top', fill: '#888', fontSize: 12 }}
+                        />
+                      )}
+                      <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Monthly Income Breakdown Table */}
+              {incomeOffset && timelineData.income_breakdown && timelineData.income_breakdown.length > 0 && (
+                <div className={styles.tableContainer}>
+                  <h4 style={{ marginBottom: '0.5rem', color: 'var(--color-text-secondary)' }}>Monthly Income Breakdown</h4>
+                  <table className={styles.actualsTable}>
+                    <thead>
+                      <tr>
+                        <th>Month</th>
+                        <th>Spending</th>
+                        <th>Options</th>
+                        <th>Dividends</th>
+                        <th>Interest</th>
+                        <th>Rental</th>
+                        <th>Salary</th>
+                        <th>Total Income</th>
+                        <th>Net</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {timelineData.income_breakdown.map((row) => (
+                        <tr key={row.month} className={row.net >= 0 ? styles.positiveRow : styles.negativeRow}>
+                          <td>{row.label}</td>
+                          <td className={styles.spending}>{formatFullCurrency(row.spending)}</td>
+                          <td>{formatFullCurrency(row.options)}</td>
+                          <td>{formatFullCurrency(row.dividends)}</td>
+                          <td>{formatFullCurrency(row.interest)}</td>
+                          <td>{formatFullCurrency(row.rental)}</td>
+                          <td>{formatFullCurrency(row.salary)}</td>
+                          <td className={styles.income}>{formatFullCurrency(row.total_income)}</td>
+                          <td className={row.net >= 0 ? styles.income : styles.spending}>
+                            {formatFullCurrency(row.net)}
+                          </td>
+                        </tr>
+                      ))}
+                      {/* Totals row */}
+                      <tr style={{ fontWeight: 'bold', borderTop: '2px solid var(--color-border)' }}>
+                        <td>Total</td>
+                        <td className={styles.spending}>
+                          {formatFullCurrency(timelineData.income_breakdown.reduce((s, r) => s + r.spending, 0))}
+                        </td>
+                        <td>{formatFullCurrency(timelineData.income_breakdown.reduce((s, r) => s + r.options, 0))}</td>
+                        <td>{formatFullCurrency(timelineData.income_breakdown.reduce((s, r) => s + r.dividends, 0))}</td>
+                        <td>{formatFullCurrency(timelineData.income_breakdown.reduce((s, r) => s + r.interest, 0))}</td>
+                        <td>{formatFullCurrency(timelineData.income_breakdown.reduce((s, r) => s + r.rental, 0))}</td>
+                        <td>{formatFullCurrency(timelineData.income_breakdown.reduce((s, r) => s + r.salary, 0))}</td>
+                        <td className={styles.income}>
+                          {formatFullCurrency(timelineData.income_breakdown.reduce((s, r) => s + r.total_income, 0))}
+                        </td>
+                        {(() => {
+                          const totalNet = timelineData.income_breakdown.reduce((s, r) => s + r.net, 0);
+                          return (
+                            <td className={totalNet >= 0 ? styles.income : styles.spending}>
+                              {formatFullCurrency(totalNet)}
+                            </td>
+                          );
+                        })()}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Key Insight */}
+              <div className={styles.insightCard}>
+                <DollarSign size={24} className={styles.insightIcon} />
+                <div>
+                  <h4 className={styles.insightTitle}>Key Tax Insight</h4>
+                  <p className={styles.insightText}>
+                    By borrowing against your portfolio instead of selling assets, you avoid capital gains taxes
+                    on all spending. At a ~25% combined tax rate, every $100K borrowed instead of sold saves
+                    approximately <strong>$25,000</strong> in taxes. When you pass, heirs receive the stepped-up
+                    basis and can sell assets to repay the debt tax-free.
                   </p>
                 </div>
-              </>
-            )}
-
-            {/* Single Year View */}
-            {!actualsLoading && selectedYear !== 'all' && actuals && (
-              <>
-                {/* Summary Cards */}
-                <div className={styles.summaryGrid}>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Total Income (2025)</span>
-                    <span className={`${styles.summaryValue} ${styles.positive}`}>{formatFullCurrency(actuals.total_income)}</span>
-                    <span className={styles.summaryNote}>
-                      Salary+Rental: {formatFullCurrency(actuals.total_salary_income)} • Options: {formatFullCurrency(actuals.total_options_income)} • Interest+Div: {formatFullCurrency(actuals.total_interest_income)}
-                    </span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Income from Option + dividend + interest + rental</span>
-                    <span className={`${styles.summaryValue} ${styles.positive}`}>
-                      {formatFullCurrency(
-                        actuals.monthly_data.reduce((sum, m) => 
-                          sum + m.options_income + m.dividend_income + m.interest_income + m.rental_income, 0
-                        )
-                      )}
-                    </span>
-                    <span className={styles.summaryNote}>
-                      Options + Dividends + Interest + Rental (excludes salaries)
-                    </span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Total Spending (2025)</span>
-                    <span className={`${styles.summaryValue} ${styles.negative}`}>{formatFullCurrency(actuals.total_spending)}</span>
-                    <span className={styles.summaryNote}>From brokerage account</span>
-                  </div>
-                  <div className={`${styles.summaryCard} ${actuals.projected_annual_deficit > 0 ? styles.danger : styles.success}`}>
-                    <span className={styles.summaryLabel}>Projected Annual Gap</span>
-                    <span className={styles.summaryValue}>
-                      {actuals.projected_annual_deficit > 0 ? '-' : '+'}{formatFullCurrency(Math.abs(actuals.projected_annual_deficit))}
-                    </span>
-                    <span className={styles.summaryNote}>
-                      {actuals.projected_annual_deficit > 0 ? 'Deficit if trend continues' : 'Surplus if trend continues'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Income vs Spending Bar Chart */}
-                <div className={styles.chartCard}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                    <div>
-                      <h3 className={styles.chartTitle}>Income vs Spending by Month</h3>
-                      <p className={styles.chartSubtitle}>
-                        Green bars = Income • Purple bars = Income from Option + dividend + interest + rental • Red bars = Spending
-                      </p>
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <button
-                        onClick={() => setIsCumulative(false)}
-                        style={{
-                          padding: '8px 16px',
-                          borderRadius: '6px',
-                          border: '1px solid var(--color-border)',
-                          backgroundColor: !isCumulative ? 'var(--color-accent)' : 'transparent',
-                          color: !isCumulative ? 'var(--color-text-inverse)' : 'var(--color-text-secondary)',
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          fontWeight: !isCumulative ? '600' : '400',
-                          transition: 'all 0.2s',
-                        }}
-                      >
-                        Non-Cumulative
-                      </button>
-                      <button
-                        onClick={() => setIsCumulative(true)}
-                        style={{
-                          padding: '8px 16px',
-                          borderRadius: '6px',
-                          border: '1px solid var(--color-border)',
-                          backgroundColor: isCumulative ? 'var(--color-accent)' : 'transparent',
-                          color: isCumulative ? 'var(--color-text-inverse)' : 'var(--color-text-secondary)',
-                          cursor: 'pointer',
-                          fontSize: '14px',
-                          fontWeight: isCumulative ? '600' : '400',
-                          transition: 'all 0.2s',
-                        }}
-                      >
-                        Cumulative
-                      </button>
-                    </div>
-                  </div>
-                  <div className={styles.chartContainer}>
-                    <ResponsiveContainer width="100%" height={400}>
-                      <ComposedChart 
-                        data={(() => {
-                          const filtered = actuals.monthly_data.filter(m => m.income > 0 || m.spending > 0);
-                          let cumulativeIncome = 0;
-                          let cumulativeIncomeFromOptions = 0;
-                          let cumulativeSpending = 0;
-                          
-                          return filtered.map(m => {
-                            // Income from Options + Dividends + Interest + Rental (excluding salaries)
-                            const incomeFromOptionsDividendInterestRental = 
-                              m.options_income + m.dividend_income + m.interest_income + m.rental_income;
-                            
-                            if (isCumulative) {
-                              cumulativeIncome += m.income;
-                              cumulativeIncomeFromOptions += incomeFromOptionsDividendInterestRental;
-                              cumulativeSpending += m.spending;
-                              
-                              return {
-                                ...m,
-                                income: cumulativeIncome,
-                                income_from_options_dividend_interest_rental: cumulativeIncomeFromOptions,
-                                spending: cumulativeSpending,
-                              };
-                            } else {
-                              return {
-                                ...m,
-                                income_from_options_dividend_interest_rental: incomeFromOptionsDividendInterestRental,
-                              };
-                            }
-                          });
-                        })()} 
-                        margin={{ top: 20, right: 60, left: 20, bottom: 20 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                        <XAxis 
-                          dataKey="month_name" 
-                          stroke="#888" 
-                          tick={{ fontSize: 12 }}
-                          tickFormatter={(value) => value.substring(0, 3)}
-                        />
-                        <YAxis 
-                          yAxisId="left"
-                          stroke="#888" 
-                          tickFormatter={formatCurrency}
-                        />
-                        <Tooltip 
-                          formatter={(value: number, name: string) => [formatFullCurrency(value), name]}
-                          labelFormatter={(label) => label}
-                          contentStyle={{
-                            backgroundColor: 'var(--color-bg-primary)',
-                            border: '1px solid var(--color-border)',
-                            borderRadius: '8px',
-                          }}
-                        />
-                        <Legend />
-                        <ReferenceLine yAxisId="left" y={0} stroke="#666" strokeDasharray="3 3" />
-                        <Area 
-                          yAxisId="left"
-                          type="monotone" 
-                          dataKey="income" 
-                          fill="rgba(16, 185, 129, 0.3)" 
-                          stroke="#10B981" 
-                          strokeWidth={2}
-                          name="Income"
-                        />
-                        <Area 
-                          yAxisId="left"
-                          type="monotone" 
-                          dataKey="income_from_options_dividend_interest_rental" 
-                          fill="rgba(168, 85, 247, 0.3)" 
-                          stroke="#A855F7" 
-                          strokeWidth={2}
-                          name="Income from Option + dividend + interest + rental"
-                        />
-                        <Area 
-                          yAxisId="left"
-                          type="monotone" 
-                          dataKey="spending" 
-                          fill="rgba(239, 68, 68, 0.3)" 
-                          stroke="#EF4444" 
-                          strokeWidth={2}
-                          name="Spending"
-                        />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                {/* Monthly Details Table */}
-                <div className={styles.chartCard}>
-                  <h3 className={styles.chartTitle}>Monthly Breakdown</h3>
-                  <div className={styles.tableContainer}>
-                    <table className={styles.actualsTable}>
-                      <thead>
-                        <tr>
-                          <th>Month</th>
-                          <th>Spending</th>
-                          <th>Options</th>
-                          <th>Salary+Rental</th>
-                          <th>Int+Div</th>
-                          <th>Total Income</th>
-                          <th>Net</th>
-                          <th>Cumulative</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {actuals.monthly_data.filter(m => m.income > 0 || m.spending > 0).map((month) => (
-                          <tr key={month.month} className={month.net_cash_flow >= 0 ? styles.positiveRow : styles.negativeRow}>
-                            <td>{month.month_name}</td>
-                            <td className={styles.spending}>
-                              {month.spending > 0 ? formatFullCurrency(month.spending) : '-'}
-                            </td>
-                            <td>{month.options_income > 0 ? formatFullCurrency(month.options_income) : '-'}</td>
-                            <td>{month.salary_income > 0 ? formatFullCurrency(month.salary_income) : '-'}</td>
-                            <td>{month.interest_income > 0 ? formatFullCurrency(month.interest_income) : '-'}</td>
-                            <td className={styles.income}>{formatFullCurrency(month.income)}</td>
-                            <td className={month.net_cash_flow >= 0 ? styles.positive : styles.negative}>
-                              {month.net_cash_flow >= 0 ? '+' : ''}{formatFullCurrency(month.net_cash_flow)}
-                            </td>
-                            <td className={month.cumulative_net >= 0 ? styles.positive : styles.negative}>
-                              {month.cumulative_net >= 0 ? '+' : ''}{formatFullCurrency(month.cumulative_net)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Data Source Info */}
-                <div className={styles.insightCard}>
-                  <Info size={24} className={styles.insightIcon} />
-                  <div>
-                    <h4 className={styles.insightTitle}>Data Sources</h4>
-                    <p className={styles.insightText}>
-                      <strong>Income:</strong> Options premiums, dividends, interest, salary, and rental income - 
-                      same data as the Income page.<br/>
-                      <strong>Spending:</strong> All money leaving brokerage accounts (withdrawals, credit card payments, transfers to spending).
-                    </p>
-                    <button 
-                      className={styles.refreshButton}
-                      onClick={fetchActuals}
-                      style={{ marginTop: '12px' }}
-                    >
-                      <RefreshCw size={16} />
-                      Refresh Data
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        )}
-
-        {activeTab === 'forecast' && (
-          <>
-            {forecastLoading && (
-              <div className={styles.loadingState}>
-                <RefreshCw size={32} className={styles.spinner} />
-                <p>Analyzing expense patterns...</p>
               </div>
-            )}
+            </>
+          )}
+        </div>
 
-            {!forecastLoading && forecast && (
-              <>
-                {/* Summary Cards */}
-                <div className={styles.summaryGrid}>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Recurring Expenses Identified</span>
-                    <span className={styles.summaryValue}>{forecast.summary.total_recurring_expenses_identified}</span>
-                    <span className={styles.summaryNote}>Based on {forecast.summary.historical_years_analyzed} years of data</span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Avg Monthly Recurring</span>
-                    <span className={`${styles.summaryValue} ${styles.negative}`}>
-                      {formatFullCurrency(forecast.summary.avg_monthly_recurring_spending)}
-                    </span>
-                    <span className={styles.summaryNote}>From {forecast.summary.total_transactions_analyzed} transactions</span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Forecast Period</span>
-                    <span className={styles.summaryValue}>{forecast.forecast_period.months_ahead} months</span>
-                    <span className={styles.summaryNote}>
-                      {forecast.forecasted_months[0]?.month_name} - {forecast.forecasted_months[forecast.forecasted_months.length - 1]?.month_name}
-                    </span>
-                  </div>
-                </div>
+        {/* ═══════════════ Section 2: Growth ═══════════════ */}
+        <div className={styles.section}>
+          <div className={styles.pageHeaderRow}>
+            <div>
+              <h2 className={styles.sectionHeader}>Growth</h2>
+              <p className={styles.sectionSubtitle}>Portfolio value change — assumed 8%/yr</p>
+            </div>
+            <button
+              className={styles.refreshButton}
+              onClick={computeAssumptions}
+              disabled={assumptionComputing}
+            >
+              <RefreshCw size={16} className={assumptionComputing ? styles.spinner : ''} />
+              {assumptionComputing ? 'Refreshing...' : 'Refresh Data'}
+            </button>
+          </div>
 
-                {/* Forecasted Expenses by Month */}
-                <div className={styles.chartCard}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                    <h3 className={styles.chartTitle}>Forecasted Expenses by Month</h3>
-                    <button
-                      className={styles.refreshButton}
-                      onClick={() => fetchForecast()}
-                      style={{ padding: '8px 16px', fontSize: '14px' }}
-                    >
-                      <RefreshCw size={16} />
-                      Refresh Forecast
-                    </button>
-                  </div>
+          {(() => {
+            const s = assumptionSummary;
+            const years = s ? Object.keys(s.annual_growth || {}).sort() : [];
+            const fmtPctAmt = (pct: number | null, amt: number | null) => {
+              const pctStr = pct !== null && pct !== undefined ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : 'N/A';
+              const amtStr = amt !== null && amt !== undefined ? formatFullCurrency(amt) : '';
+              return { pctStr, amtStr };
+            };
 
-                  {forecast.forecasted_months.length === 0 ? (
-                    <div className={styles.emptyState}>
-                      <p>No forecast data available. Import more transaction history to enable forecasting.</p>
+            const growthCards = s ? (
+              <div className={styles.summaryGrid}>
+                {(() => { const v = fmtPctAmt(s.avg_monthly_growth_pct, s.avg_monthly_growth_amt); return (
+                  <div className={`${styles.summaryCard} ${s.avg_monthly_growth_pct !== null && s.avg_monthly_growth_pct >= s.expected_monthly_growth_pct ? styles.success : styles.danger}`}>
+                    <span className={styles.summaryLabel}>Avg Monthly Growth</span>
+                    <span className={styles.summaryValue}>{v.pctStr}</span>
+                    <span className={styles.summaryNote}>{v.amtStr} / mo</span>
+                    <span className={styles.summaryNote}>Target: {s.expected_monthly_growth_pct?.toFixed(2)}%/mo (8%/yr)</span>
+                  </div>
+                ); })()}
+                {(() => { const v = fmtPctAmt(s.cumulative_growth_pct, s.cumulative_growth_amt); return (
+                  <div className={`${styles.summaryCard} ${s.cumulative_growth_pct !== null && s.cumulative_growth_pct > 0 ? styles.success : styles.danger}`}>
+                    <span className={styles.summaryLabel}>Cumulative Growth</span>
+                    <span className={styles.summaryValue}>{v.pctStr}</span>
+                    <span className={styles.summaryNote}>{v.amtStr}</span>
+                    <span className={styles.summaryNote}>Since Jan 2025</span>
+                  </div>
+                ); })()}
+                {years.map(yr => {
+                  const g = s.annual_growth?.[yr];
+                  const gv = fmtPctAmt(g?.percent, g?.amount);
+                  return (
+                    <div key={`growth-${yr}`} className={`${styles.summaryCard} ${g?.percent !== null && g?.percent !== undefined && g?.percent >= s.expected_annual_growth_pct ? styles.success : styles.danger}`}>
+                      <span className={styles.summaryLabel}>{yr} Growth</span>
+                      <span className={styles.summaryValue}>{gv.pctStr}</span>
+                      <span className={styles.summaryNote}>{gv.amtStr}</span>
+                      <span className={styles.summaryNote}>Target: {s.expected_annual_growth_pct}%/yr</span>
                     </div>
-                  ) : (
-                    <div className={styles.tableContainer}>
+                  );
+                })}
+              </div>
+            ) : null;
+
+            return (
+              <div>
+                {growthCards}
+
+                <div className={styles.chartCard}>
+                  {/* Breadcrumb */}
+                  <div className={styles.breadcrumb}>
+                    <button
+                      className={styles.breadcrumbItem}
+                      onClick={() => handleBreadcrumb('year', setGrowthPeriod, setGrowthDrillYear, setGrowthDrillMonth)}
+                      style={{ fontWeight: growthPeriod === 'year' ? '700' : '400' }}
+                    >
+                      All Years
+                    </button>
+                    {growthDrillYear && (
+                      <>
+                        <span className={styles.breadcrumbSep}>/</span>
+                        <button
+                          className={styles.breadcrumbItem}
+                          onClick={() => handleBreadcrumb('month', setGrowthPeriod, setGrowthDrillYear, setGrowthDrillMonth)}
+                          style={{ fontWeight: growthPeriod === 'month' ? '700' : '400' }}
+                        >
+                          {growthDrillYear}
+                        </button>
+                      </>
+                    )}
+                    {growthDrillMonth && (
+                      <>
+                        <span className={styles.breadcrumbSep}>/</span>
+                        <span className={styles.breadcrumbItem} style={{ fontWeight: '700' }}>
+                          {new Date(2000, growthDrillMonth - 1).toLocaleString('default', { month: 'long' })}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  <h3 className={styles.chartTitle}>Growth — Actual vs Assumed (8%/yr)</h3>
+                  <p className={styles.chartSubtitle}>
+                    Portfolio value change — assumed ~0.64%/mo {growthPeriod !== 'week' ? ' — click a bar to drill down' : ''}
+                  </p>
+
+                  {growthMetrics && growthMetrics.length > 0 && (
+                    <div className={styles.chartContainer}>
+                      <ResponsiveContainer width="100%" height={350}>
+                        <ComposedChart
+                          data={growthMetrics}
+                          margin={{ top: 20, right: 60, left: 20, bottom: 20 }}
+                          onClick={(e: any) => {
+                            if (e && e.activePayload && e.activePayload[0]) {
+                              handleDrillDown(e.activePayload[0].payload, growthPeriod, setGrowthDrillYear, setGrowthDrillMonth, setGrowthPeriod);
+                            }
+                          }}
+                          style={{ cursor: growthPeriod !== 'week' ? 'pointer' : 'default' }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                          <XAxis dataKey="period_label" stroke="#888" tick={{ fontSize: 12 }} />
+                          <YAxis stroke="#888" tickFormatter={(v: number) => `${v.toFixed(1)}%`} />
+                          <Tooltip
+                            formatter={(value: number, name: string) => [`${value.toFixed(3)}%`, name]}
+                            contentStyle={{ backgroundColor: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', borderRadius: '8px' }}
+                          />
+                          <Legend />
+                          <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+                          <Area type="monotone" dataKey="actual_percent" name="Actual %" fill="rgba(16, 185, 129, 0.2)" stroke="#10B981" strokeWidth={2} />
+                          <Line type="monotone" dataKey="expected_percent" name="Assumed %" stroke="#F59E0B" strokeWidth={2} strokeDasharray="8 4" dot={false} />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {growthMetrics && growthMetrics.length === 0 && (
+                    <div className={styles.loadingState}>
+                      <AlertTriangle size={32} />
+                      <p>No data. Click "Refresh Data" above.</p>
+                    </div>
+                  )}
+
+                  {/* Table */}
+                  {growthMetrics && growthMetrics.length > 0 && (
+                    <div className={styles.tableContainer} style={{ marginTop: '16px' }}>
                       <table className={styles.actualsTable}>
                         <thead>
                           <tr>
-                            <th>Month</th>
-                            <th>Expense</th>
-                            <th>Predicted Date</th>
-                            <th>Amount</th>
-                            <th>Confidence</th>
-                            <th>Frequency</th>
-                            <th>Occurrences</th>
+                            <th>Period</th>
+                            <th>Baseline</th>
+                            <th>Actual</th>
+                            <th>Expected</th>
+                            <th>Actual %</th>
+                            <th>Expected %</th>
+                            <th>Variance</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {forecast.forecasted_months.map((month) => (
-                            month.predicted_expenses.map((expense, idx) => (
-                              <tr key={`${month.month}-${idx}`}>
-                                {idx === 0 && (
-                                  <td rowSpan={month.predicted_expenses.length} style={{
-                                    fontWeight: 'bold',
-                                    borderRight: '1px solid rgba(255,255,255,0.1)',
-                                    verticalAlign: 'top',
-                                    paddingTop: '16px'
-                                  }}>
-                                    <div>
-                                      {month.month_name} {month.year}
-                                      <div style={{ fontSize: '0.85em', color: '#a3a3a3', marginTop: '4px' }}>
-                                        Total: {formatFullCurrency(month.total_predicted)}
-                                      </div>
-                                    </div>
-                                  </td>
-                                )}
-                                <td style={{ fontSize: '0.9em' }}>{expense.description}</td>
-                                <td>{new Date(expense.predicted_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
-                                <td className={styles.spending}>
-                                  {formatFullCurrency(expense.predicted_amount)}
-                                  {expense.amount_range && (
-                                    <div style={{ fontSize: '0.75em', color: '#737373' }}>
-                                      Range: {formatCurrency(expense.amount_range.min)} - {formatCurrency(expense.amount_range.max)}
-                                    </div>
-                                  )}
-                                </td>
-                                <td>
-                                  <div style={{
-                                    display: 'inline-block',
-                                    padding: '4px 8px',
-                                    borderRadius: '4px',
-                                    fontSize: '0.85em',
-                                    backgroundColor: expense.confidence >= 70 ? 'rgba(16, 185, 129, 0.2)' :
-                                                     expense.confidence >= 50 ? 'rgba(255, 184, 0, 0.2)' :
-                                                     'rgba(239, 68, 68, 0.2)',
-                                    color: expense.confidence >= 70 ? '#10B981' :
-                                           expense.confidence >= 50 ? '#FFB800' :
-                                           '#EF4444'
-                                  }}>
-                                    {expense.confidence.toFixed(0)}%
-                                  </div>
-                                </td>
-                                <td style={{ textTransform: 'capitalize' }}>{expense.frequency}</td>
-                                <td style={{ textAlign: 'center' }}>{expense.historical_occurrences}</td>
-                              </tr>
-                            ))
+                          {growthMetrics.map((m: any, idx: number) => (
+                            <tr
+                              key={idx}
+                              className={(m.variance_percent || 0) >= 0 ? styles.positiveRow : styles.negativeRow}
+                              onClick={() => handleDrillDown(m, growthPeriod, setGrowthDrillYear, setGrowthDrillMonth, setGrowthPeriod)}
+                              style={{ cursor: growthPeriod !== 'week' ? 'pointer' : 'default' }}
+                            >
+                              <td><strong>{m.period_label}</strong></td>
+                              <td>{m.baseline_value !== null ? formatFullCurrency(m.baseline_value) : '-'}</td>
+                              <td>{m.actual_value !== null ? formatFullCurrency(m.actual_value) : '-'}</td>
+                              <td>{m.expected_value !== null ? formatFullCurrency(m.expected_value) : '-'}</td>
+                              <td className={m.actual_percent >= (m.expected_percent || 0) ? styles.positive : styles.negative}>
+                                {m.actual_percent !== null ? `${m.actual_percent.toFixed(2)}%` : '-'}
+                              </td>
+                              <td>{m.expected_percent !== null ? `${m.expected_percent.toFixed(2)}%` : '-'}</td>
+                              <td className={(m.variance_percent || 0) >= 0 ? styles.positive : styles.negative}>
+                                {m.variance_percent !== null ? `${m.variance_percent >= 0 ? '+' : ''}${m.variance_percent.toFixed(2)}%` : '-'}
+                              </td>
+                            </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                   )}
                 </div>
+              </div>
+            );
+          })()}
+        </div>
 
-                {/* Recurring Patterns */}
-                {forecast.recurring_patterns.length > 0 && (
-                  <div className={styles.chartCard}>
-                    <h3 className={styles.chartTitle}>Identified Recurring Patterns</h3>
-                    <p className={styles.chartSubtitle}>
-                      These expense patterns were identified from your transaction history
-                    </p>
-                    <div className={styles.tableContainer}>
+        {/* ═══════════════ Section 3: Earnings ═══════════════ */}
+        <div className={styles.section}>
+          <h2 className={styles.sectionHeader}>Earnings</h2>
+          <p className={styles.sectionSubtitle}>Options income — assumed 12%/yr</p>
+
+          {(() => {
+            const s = assumptionSummary;
+            const years = s ? Object.keys(s.annual_earnings || {}).sort() : [];
+            const fmtPctAmt = (pct: number | null, amt: number | null) => {
+              const pctStr = pct !== null && pct !== undefined ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : 'N/A';
+              const amtStr = amt !== null && amt !== undefined ? formatFullCurrency(amt) : '';
+              return { pctStr, amtStr };
+            };
+
+            const earningsCards = s ? (
+              <div className={styles.summaryGrid}>
+                {(() => { const v = fmtPctAmt(s.avg_monthly_earnings_pct, s.avg_monthly_earnings_amt); return (
+                  <div className={`${styles.summaryCard} ${s.avg_monthly_earnings_pct !== null && s.avg_monthly_earnings_pct >= s.expected_monthly_earnings_pct ? styles.success : styles.danger}`}>
+                    <span className={styles.summaryLabel}>Avg Monthly Earnings</span>
+                    <span className={styles.summaryValue}>{v.pctStr}</span>
+                    <span className={styles.summaryNote}>{v.amtStr} / mo</span>
+                    <span className={styles.summaryNote}>Target: {s.expected_monthly_earnings_pct}%/mo (12%/yr)</span>
+                  </div>
+                ); })()}
+                {(() => { const v = fmtPctAmt(s.cumulative_earnings_pct, s.cumulative_earnings_amt); return (
+                  <div className={`${styles.summaryCard} ${s.cumulative_earnings_pct !== null && s.cumulative_earnings_pct >= 0 ? styles.success : styles.danger}`}>
+                    <span className={styles.summaryLabel}>Cumulative Earnings</span>
+                    <span className={styles.summaryValue}>{v.pctStr}</span>
+                    <span className={styles.summaryNote}>{v.amtStr}</span>
+                    <span className={styles.summaryNote}>Since Jan 2025</span>
+                  </div>
+                ); })()}
+                {years.map(yr => {
+                  const e = s.annual_earnings?.[yr];
+                  const ev = fmtPctAmt(e?.percent, e?.amount);
+                  return (
+                    <div key={`earn-${yr}`} className={`${styles.summaryCard} ${e?.percent !== null && e?.percent !== undefined && e?.percent >= s.expected_annual_earnings_pct ? styles.success : styles.danger}`}>
+                      <span className={styles.summaryLabel}>{yr} Earnings</span>
+                      <span className={styles.summaryValue}>{ev.pctStr}</span>
+                      <span className={styles.summaryNote}>{ev.amtStr}</span>
+                      <span className={styles.summaryNote}>Target: {s.expected_annual_earnings_pct}%/yr</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null;
+
+            return (
+              <div>
+                {earningsCards}
+
+                <div className={styles.chartCard}>
+                  {/* Breadcrumb */}
+                  <div className={styles.breadcrumb}>
+                    <button
+                      className={styles.breadcrumbItem}
+                      onClick={() => handleBreadcrumb('year', setYieldPeriod, setYieldDrillYear, setYieldDrillMonth)}
+                      style={{ fontWeight: yieldPeriod === 'year' ? '700' : '400' }}
+                    >
+                      All Years
+                    </button>
+                    {yieldDrillYear && (
+                      <>
+                        <span className={styles.breadcrumbSep}>/</span>
+                        <button
+                          className={styles.breadcrumbItem}
+                          onClick={() => handleBreadcrumb('month', setYieldPeriod, setYieldDrillYear, setYieldDrillMonth)}
+                          style={{ fontWeight: yieldPeriod === 'month' ? '700' : '400' }}
+                        >
+                          {yieldDrillYear}
+                        </button>
+                      </>
+                    )}
+                    {yieldDrillMonth && (
+                      <>
+                        <span className={styles.breadcrumbSep}>/</span>
+                        <span className={styles.breadcrumbItem} style={{ fontWeight: '700' }}>
+                          {new Date(2000, yieldDrillMonth - 1).toLocaleString('default', { month: 'long' })}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  <h3 className={styles.chartTitle}>Earnings — Actual vs Assumed (12%/yr)</h3>
+                  <p className={styles.chartSubtitle}>
+                    Options income as % of portfolio value {yieldPeriod !== 'week' ? ' — click a bar to drill down' : ''}
+                  </p>
+
+                  {yieldMetrics && yieldMetrics.length > 0 && (
+                    <div className={styles.chartContainer}>
+                      <ResponsiveContainer width="100%" height={350}>
+                        <ComposedChart
+                          data={yieldMetrics}
+                          margin={{ top: 20, right: 60, left: 20, bottom: 20 }}
+                          onClick={(e: any) => {
+                            if (e && e.activePayload && e.activePayload[0]) {
+                              handleDrillDown(e.activePayload[0].payload, yieldPeriod, setYieldDrillYear, setYieldDrillMonth, setYieldPeriod);
+                            }
+                          }}
+                          style={{ cursor: yieldPeriod !== 'week' ? 'pointer' : 'default' }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                          <XAxis dataKey="period_label" stroke="#888" tick={{ fontSize: 12 }} />
+                          <YAxis stroke="#888" tickFormatter={(v: number) => `${v.toFixed(1)}%`} />
+                          <Tooltip
+                            formatter={(value: number, name: string) => [`${value.toFixed(3)}%`, name]}
+                            contentStyle={{ backgroundColor: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', borderRadius: '8px' }}
+                          />
+                          <Legend />
+                          <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+                          <Area type="monotone" dataKey="actual_percent" name="Actual %" fill="rgba(139, 92, 246, 0.2)" stroke="#8B5CF6" strokeWidth={2} />
+                          <Line type="monotone" dataKey="expected_percent" name="Assumed %" stroke="#F59E0B" strokeWidth={2} strokeDasharray="8 4" dot={false} />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {yieldMetrics && yieldMetrics.length === 0 && (
+                    <div className={styles.loadingState}>
+                      <AlertTriangle size={32} />
+                      <p>No data. Click "Refresh Data" above.</p>
+                    </div>
+                  )}
+
+                  {/* Table */}
+                  {yieldMetrics && yieldMetrics.length > 0 && (
+                    <div className={styles.tableContainer} style={{ marginTop: '16px' }}>
                       <table className={styles.actualsTable}>
                         <thead>
                           <tr>
-                            <th>Description</th>
-                            <th>Avg Amount</th>
-                            <th>Frequency</th>
-                            <th>Avg Day</th>
-                            <th>Confidence</th>
-                            <th>Occurrences</th>
+                            <th>Period</th>
+                            <th>Baseline</th>
+                            <th>Actual</th>
+                            <th>Expected</th>
+                            <th>Actual %</th>
+                            <th>Expected %</th>
+                            <th>Variance</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {forecast.recurring_patterns
-                            .sort((a, b) => b.avg_amount - a.avg_amount)
-                            .map((pattern, idx) => (
-                              <tr key={idx}>
-                                <td style={{ fontWeight: '500' }}>{pattern.description}</td>
-                                <td className={styles.spending}>{formatFullCurrency(pattern.avg_amount)}</td>
-                                <td style={{ textTransform: 'capitalize' }}>{pattern.frequency}</td>
-                                <td>Day {pattern.avg_day_of_month}</td>
-                                <td>
-                                  <div style={{
-                                    display: 'inline-block',
-                                    padding: '4px 8px',
-                                    borderRadius: '4px',
-                                    fontSize: '0.85em',
-                                    backgroundColor: pattern.confidence >= 70 ? 'rgba(16, 185, 129, 0.2)' :
-                                                     pattern.confidence >= 50 ? 'rgba(255, 184, 0, 0.2)' :
-                                                     'rgba(239, 68, 68, 0.2)',
-                                    color: pattern.confidence >= 70 ? '#10B981' :
-                                           pattern.confidence >= 50 ? '#FFB800' :
-                                           '#EF4444'
-                                  }}>
-                                    {pattern.confidence.toFixed(0)}%
-                                  </div>
-                                </td>
-                                <td style={{ textAlign: 'center' }}>{pattern.occurrences}</td>
-                              </tr>
-                            ))}
+                          {yieldMetrics.map((m: any, idx: number) => (
+                            <tr
+                              key={idx}
+                              className={(m.variance_percent || 0) >= 0 ? styles.positiveRow : styles.negativeRow}
+                              onClick={() => handleDrillDown(m, yieldPeriod, setYieldDrillYear, setYieldDrillMonth, setYieldPeriod)}
+                              style={{ cursor: yieldPeriod !== 'week' ? 'pointer' : 'default' }}
+                            >
+                              <td><strong>{m.period_label}</strong></td>
+                              <td>{m.baseline_value !== null ? formatFullCurrency(m.baseline_value) : '-'}</td>
+                              <td>{m.actual_value !== null ? formatFullCurrency(m.actual_value) : '-'}</td>
+                              <td>{m.expected_value !== null ? formatFullCurrency(m.expected_value) : '-'}</td>
+                              <td className={m.actual_percent >= (m.expected_percent || 0) ? styles.positive : styles.negative}>
+                                {m.actual_percent !== null ? `${m.actual_percent.toFixed(2)}%` : '-'}
+                              </td>
+                              <td>{m.expected_percent !== null ? `${m.expected_percent.toFixed(2)}%` : '-'}</td>
+                              <td className={(m.variance_percent || 0) >= 0 ? styles.positive : styles.negative}>
+                                {m.variance_percent !== null ? `${m.variance_percent >= 0 ? '+' : ''}${m.variance_percent.toFixed(2)}%` : '-'}
+                              </td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
 
-                {/* Info Card */}
-                <div className={styles.insightCard}>
-                  <Info size={24} className={styles.insightIcon} />
-                  <div>
-                    <h4 className={styles.insightTitle}>How Forecasting Works</h4>
-                    <p className={styles.insightText}>
-                      The system analyzes your historical Robinhood spending transactions to identify recurring patterns.
-                      Expenses with similar descriptions and amounts (within 15% tolerance) are grouped together.
-                      <br/><br/>
-                      <strong>Confidence Score:</strong> Based on consistency of amounts and timing. Higher scores mean more predictable expenses.
-                      <br/>
-                      <strong>Frequency:</strong> Determined from the gaps between occurrences (monthly, quarterly, or annual).
-                      <br/><br/>
-                      {forecast.error && (
-                        <span style={{ color: '#EF4444' }}>⚠️ {forecast.error}</span>
-                      )}
-                      {forecast.note && (
-                        <span style={{ color: '#FFB800' }}>💡 {forecast.note}</span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        )}
+        {/* ═══════════════ Section 4: Borrow ═══════════════ */}
+        <div className={styles.section}>
+          <h2 className={styles.sectionHeader}>Borrow</h2>
+          <p className={styles.sectionSubtitle}>Simulated margin borrowing — 5% annual interest on cumulative spending</p>
 
-        {!loading && !error && activeTab === 'settings' && (
-          <div className={styles.settingsCard}>
-            <h3 className={styles.settingsTitle}>
-              <Settings size={20} />
-              Projection Parameters
-            </h3>
-            <div className={styles.settingsGrid}>
-              <div className={styles.settingItem}>
-                <label>Annual Growth Rate</label>
-                <div className={styles.inputGroup}>
-                  <input
-                    type="number"
-                    value={growthRate}
-                    onChange={(e) => setGrowthRate(parseFloat(e.target.value))}
-                    step="0.5"
-                    min="0"
-                    max="20"
-                  />
-                  <span>%</span>
+          {(() => {
+            const s = assumptionSummary;
+
+            const borrowCards = s && s.margin_available !== null ? (
+              <div className={styles.summaryGrid}>
+                <div className={styles.summaryCard}>
+                  <span className={styles.summaryLabel}>Margin Available</span>
+                  <span className={styles.summaryValue}>{s.margin_available !== null ? formatFullCurrency(s.margin_available) : 'N/A'}</span>
+                  <span className={styles.summaryNote}>70% of Neel + Jaya brokerage</span>
+                </div>
+                <div className={`${styles.summaryCard} ${s.current_margin_utilization_pct !== null && s.current_margin_utilization_pct <= 30 ? styles.success : styles.danger}`}>
+                  <span className={styles.summaryLabel}>Margin Used</span>
+                  <span className={styles.summaryValue}>{s.current_margin_balance !== null ? formatFullCurrency(s.current_margin_balance) : 'N/A'}</span>
+                  <span className={styles.summaryNote}>
+                    {s.current_margin_utilization_pct !== null ? `${s.current_margin_utilization_pct.toFixed(1)}% utilization` : ''}
+                    {s.total_interest_accrued ? ` (incl. ${formatFullCurrency(s.total_interest_accrued)} interest)` : ''}
+                  </span>
+                </div>
+                <div className={styles.summaryCard}>
+                  <span className={styles.summaryLabel}>2025 Expenses</span>
+                  <span className={styles.summaryValue}>{s.annual_spending?.['2025'] ? formatFullCurrency(s.annual_spending['2025']) : 'N/A'}</span>
+                  <span className={styles.summaryNote}>Total annual spending</span>
+                </div>
+                <div className={styles.summaryCard}>
+                  <span className={styles.summaryLabel}>Avg Monthly Spending</span>
+                  <span className={styles.summaryValue}>{s.avg_monthly_borrowing_amt !== null ? `${formatFullCurrency(s.avg_monthly_borrowing_amt)}/mo` : 'N/A'}</span>
+                  <span className={styles.summaryNote}>Averaged across all months</span>
                 </div>
               </div>
-              <div className={styles.settingItem}>
-                <label>Monthly Borrowing</label>
-                <div className={styles.inputGroup}>
-                  <span>$</span>
-                  <input
-                    type="number"
-                    value={monthlyBorrowing}
-                    onChange={(e) => setMonthlyBorrowing(parseFloat(e.target.value))}
-                    step="1000"
-                    min="0"
-                  />
+            ) : null;
+
+            // Borrow drill-down: year → month only (no weekly)
+            const handleBorrowDrillDown = (entry: any) => {
+              if (borrowPeriod === 'year' && entry?.period_start) {
+                setBorrowDrillYear(parseInt(entry.period_start.substring(0, 4)));
+                setBorrowPeriod('month');
+              }
+            };
+
+            const handleBorrowBreadcrumb = () => {
+              setBorrowPeriod('year');
+              setBorrowDrillYear(undefined);
+            };
+
+            return (
+              <div>
+                {borrowCards}
+
+                <div className={styles.chartCard}>
+                  {/* Breadcrumb */}
+                  <div className={styles.breadcrumb}>
+                    <button
+                      className={styles.breadcrumbItem}
+                      onClick={handleBorrowBreadcrumb}
+                      style={{ fontWeight: borrowPeriod === 'year' ? '700' : '400' }}
+                    >
+                      All Years
+                    </button>
+                    {borrowDrillYear && (
+                      <>
+                        <span className={styles.breadcrumbSep}>/</span>
+                        <span className={styles.breadcrumbItem} style={{ fontWeight: '700' }}>
+                          {borrowDrillYear}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  <h3 className={styles.chartTitle}>Cumulative Margin Balance — Actual vs Average Spending</h3>
+                  <p className={styles.chartSubtitle}>
+                    Net withdrawals with 5% simulated interest {borrowPeriod === 'year' ? ' — click a bar to drill down' : ''}
+                  </p>
+
+                  {borrowMetrics && borrowMetrics.length > 0 && (
+                    <div className={styles.chartContainer}>
+                      <ResponsiveContainer width="100%" height={350}>
+                        <ComposedChart
+                          data={borrowMetrics}
+                          margin={{ top: 20, right: 60, left: 20, bottom: 20 }}
+                          onClick={(e: any) => {
+                            if (e && e.activePayload && e.activePayload[0]) {
+                              handleBorrowDrillDown(e.activePayload[0].payload);
+                            }
+                          }}
+                          style={{ cursor: borrowPeriod === 'year' ? 'pointer' : 'default' }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                          <XAxis dataKey="period_label" stroke="#888" tick={{ fontSize: 12 }} />
+                          <YAxis stroke="#888" tickFormatter={(v: number) => formatCurrency(v)} />
+                          <Tooltip
+                            formatter={(value: number, name: string) => [formatFullCurrency(value), name]}
+                            contentStyle={{ backgroundColor: 'var(--color-bg-primary)', border: '1px solid var(--color-border)', borderRadius: '8px' }}
+                          />
+                          <Legend />
+                          <Area type="monotone" dataKey="actual_value" name="Margin Balance" fill="rgba(245, 158, 11, 0.2)" stroke="#F59E0B" strokeWidth={2} />
+                          <Line type="monotone" dataKey="expected_value" name="Expected (avg)" stroke="#EF4444" strokeWidth={2} strokeDasharray="8 4" dot={false} />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {borrowMetrics && borrowMetrics.length === 0 && (
+                    <div className={styles.loadingState}>
+                      <AlertTriangle size={32} />
+                      <p>No data. Click "Refresh Data" above.</p>
+                    </div>
+                  )}
+
+                  {/* Table */}
+                  {borrowMetrics && borrowMetrics.length > 0 && (
+                    <div className={styles.tableContainer} style={{ marginTop: '16px' }}>
+                      <table className={styles.actualsTable}>
+                        <thead>
+                          <tr>
+                            <th>Period</th>
+                            <th>Margin Avail (70%)</th>
+                            <th>Margin Balance</th>
+                            <th>Expected</th>
+                            <th>Utilization %</th>
+                            <th>Expected Util.</th>
+                            <th>Variance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {borrowMetrics.map((m: any, idx: number) => (
+                            <tr
+                              key={idx}
+                              className={(m.variance_percent || 0) <= 0 ? styles.positiveRow : styles.negativeRow}
+                              onClick={() => handleBorrowDrillDown(m)}
+                              style={{ cursor: borrowPeriod === 'year' ? 'pointer' : 'default' }}
+                            >
+                              <td><strong>{m.period_label}</strong></td>
+                              <td>{m.baseline_value !== null ? formatFullCurrency(m.baseline_value) : '-'}</td>
+                              <td>{m.actual_value !== null ? formatFullCurrency(m.actual_value) : '-'}</td>
+                              <td>{m.expected_value !== null ? formatFullCurrency(m.expected_value) : '-'}</td>
+                              <td className={m.actual_percent <= (m.expected_percent || 0) ? styles.positive : styles.negative}>
+                                {m.actual_percent !== null ? `${m.actual_percent.toFixed(1)}%` : '-'}
+                              </td>
+                              <td>{m.expected_percent !== null ? `${m.expected_percent.toFixed(1)}%` : '-'}</td>
+                              <td className={(m.variance_percent || 0) <= 0 ? styles.positive : styles.negative}>
+                                {m.variance_percent !== null ? `${m.variance_percent >= 0 ? '+' : ''}${m.variance_percent.toFixed(1)}%` : '-'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className={styles.settingItem}>
-                <label>Interest Rate</label>
-                <div className={styles.inputGroup}>
-                  <input
-                    type="number"
-                    value={interestRate}
-                    onChange={(e) => setInterestRate(parseFloat(e.target.value))}
-                    step="0.25"
-                    min="0"
-                    max="15"
-                  />
-                  <span>%</span>
-                </div>
-              </div>
-            </div>
-            <button className={styles.applyButton} onClick={fetchProjection}>
-              <RefreshCw size={18} />
-              Recalculate Projection
-            </button>
-          </div>
-        )}
+            );
+          })()}
+        </div>
+
       </div>
     </div>
   );

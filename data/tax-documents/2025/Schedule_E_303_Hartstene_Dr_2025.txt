@@ -1,0 +1,73 @@
+Schedule E — Rental Income and Expenses
+Tax Year 2025
+
+Property:       303 Hartstene Dr, Redwood City, CA 94065
+Owner:          Neel Kamal & Jaya Agrawal
+Purchase Price: $760,000
+Mortgage:       Paid off
+Days Rented:    334   (Jan 1 - Feb 28, Apr 1 - Dec 31)
+Days Vacant:    31    (March — tenant transition)
+
+================================================================================
+RENTAL INCOME
+================================================================================
+
+  Month       Tenant              Rent
+  ─────       ──────              ────
+  January     Old tenant          $5,300.00
+  February    Old tenant          $5,300.00
+  March       VACANT                  $0.00
+  April       New tenant          $6,300.00
+  May         New tenant          $6,300.00
+  June        New tenant          $6,300.00
+  July        New tenant          $6,300.00
+  August      New tenant          $6,300.00
+  September   New tenant          $6,300.00
+  October     New tenant          $6,300.00
+  November    New tenant          $6,300.00
+  December    New tenant          $6,300.00
+                                  ─────────
+  TOTAL INCOME                   $67,300.00
+
+================================================================================
+EXPENSES
+================================================================================
+
+  Line  Category                    Amount        Notes
+  ────  ────────                    ──────        ─────
+    5   Advertising                   $600.00
+    6   Auto and Travel               $250.00
+    7   Cleaning and Maintenance    $1,500.00
+    9   Insurance                     $700.00
+   10   Legal and Professional        $300.00
+   12   Mortgage Interest               $0.00     Paid off
+   14   Repairs                     $2,200.00     Refrigerator
+   15   Supplies                      $800.00
+   16   Taxes (Property Tax)       $11,995.51     $5,904.14 (Mar 16) + $6,091.37 (Dec 8)
+   19   Other (HOA)                 $5,040.00     $420/month x 12
+                                   ──────────
+       TOTAL EXPENSES              $23,385.51
+
+================================================================================
+DEPRECIATION
+================================================================================
+
+  Purchase Price:                 $760,000.00
+  Land Value (20%):              -$152,000.00
+  Building Value (80%):           $608,000.00
+  Recovery Period:                27.5 years (residential)
+  Annual Depreciation:             $22,419.00    (from 2024 tax return, straight-line)
+
+================================================================================
+SUMMARY
+================================================================================
+
+  Gross Rental Income              $67,300.00
+  Less: Expenses                  -$23,385.51
+  Less: Depreciation              -$22,419.00
+                                   ──────────
+  NET RENTAL INCOME (Schedule E)   $21,495.49
+
+================================================================================
+Prepared: February 13, 2026
+Source: Owner records, property tax payment receipts, 2024 tax return (depreciation)

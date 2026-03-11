@@ -706,6 +706,11 @@ class OptionsStrategyRecommendationService:
                         
             except Exception as exec_error:
                 logger.error(f"[SAVE_REC] ❌ ERROR executing upsert for {rec.id}: {exec_error}")
+                # Rollback to reset session state and allow subsequent saves to continue
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
         
         try:
             self.db.commit()
@@ -767,38 +772,63 @@ class OptionsStrategyRecommendationService:
             # For cash_secured_put, the option_type is PUT
             if rec.type == 'cash_secured_put':
                 option_type = 'put'
-            
-            # Skip if we don't have required fields
-            if not source_strike or not source_expiration_str:
-                logger.debug(f"[DUAL_WRITE] Skipping {rec.id}: missing source_strike or source_expiration")
-                return None
-            
-            # Parse expiration date
-            if isinstance(source_expiration_str, str):
-                source_expiration = date.fromisoformat(source_expiration_str)
-            elif isinstance(source_expiration_str, date):
-                source_expiration = source_expiration_str
+
+            # For new_covered_call, use uncovered position ID (position identity, not recommendation target)
+            # This prevents duplicates when the recommended strike changes
+            if rec.type == 'new_covered_call':
+                rec_id = generate_recommendation_id(
+                    symbol=symbol,
+                    account_name=account_name,
+                    strike=None,  # Uncovered position - no strike
+                    expiration=None,  # Uncovered position - no expiration
+                    option_type=option_type
+                )
+                source_strike = context.get('strike_price') or context.get('recommended_strike')
+                source_expiration = None
+                if context.get('expiration_date'):
+                    exp_str = context.get('expiration_date')
+                    if isinstance(exp_str, str):
+                        source_expiration = date.fromisoformat(exp_str)
+                    elif isinstance(exp_str, date):
+                        source_expiration = exp_str
             else:
-                logger.debug(f"[DUAL_WRITE] Skipping {rec.id}: invalid expiration format")
-                return None
+                # For roll_options and cash_secured_put, use strike/expiration for ID
+                # Skip if we don't have required fields
+                if not source_strike or not source_expiration_str:
+                    logger.debug(f"[DUAL_WRITE] Skipping {rec.id}: missing source_strike or source_expiration")
+                    return None
+
+                # Parse expiration date
+                if isinstance(source_expiration_str, str):
+                    source_expiration = date.fromisoformat(source_expiration_str)
+                elif isinstance(source_expiration_str, date):
+                    source_expiration = source_expiration_str
+                else:
+                    logger.debug(f"[DUAL_WRITE] Skipping {rec.id}: invalid expiration format")
+                    return None
+
+                # Generate stable recommendation ID
+                rec_id = generate_recommendation_id(
+                    symbol=symbol,
+                    account_name=account_name,
+                    strike=float(source_strike),
+                    expiration=source_expiration,
+                    option_type=option_type
+                )
             
-            # Generate stable recommendation ID
-            rec_id = generate_recommendation_id(
-                symbol=symbol,
-                account_name=account_name,
-                strike=float(source_strike),
-                expiration=source_expiration,
-                option_type=option_type
-            )
-            
-            # Find or create recommendation
+            # Find or create recommendation (don't filter by status - may be reactivating)
             existing = self.db.query(PositionRecommendation).filter(
-                PositionRecommendation.recommendation_id == rec_id,
-                PositionRecommendation.status == 'active'
+                PositionRecommendation.recommendation_id == rec_id
             ).first()
-            
+
             if existing:
                 recommendation = existing
+                # Reactivate if it was resolved
+                if recommendation.status != 'active':
+                    recommendation.status = 'active'
+                    recommendation.resolved_at = None
+                    recommendation.resolution_type = None
+                    recommendation.resolution_notes = None
                 snapshot_number = (recommendation.total_snapshots or 0) + 1
             else:
                 # Determine position_type based on recommendation type
@@ -835,18 +865,25 @@ class OptionsStrategyRecommendationService:
                     RecommendationSnapshot.recommendation_id == recommendation.id
                 ).order_by(RecommendationSnapshot.snapshot_number.desc()).first()
             
-            # Determine action from recommendation type
-            action = rec.action_type.upper() if rec.action_type else 'UNKNOWN'
-            if 'roll' in rec.type.lower():
-                action = 'ROLL_WEEKLY'
-            elif 'itm' in rec.type.lower():
-                action = 'ROLL_ITM'
-            elif 'pull_back' in rec.type.lower():
-                action = 'PULL_BACK'
-            elif 'close' in rec.type.lower():
-                action = 'CLOSE'
-            elif rec.type == 'cash_secured_put' or rec.action_type == 'sell_put':
-                action = 'SELL_PUT'
+            # Determine action from recommendation
+            # V4 recommendations have explicit action field - use it directly
+            if hasattr(rec, 'action') and rec.action and rec.action not in ('monitor', 'unknown'):
+                action = rec.action.upper()
+            elif rec.action_type:
+                action = rec.action_type.upper()
+            else:
+                # Fallback: derive from type (for non-V4 recommendations)
+                action = 'UNKNOWN'
+                if 'roll' in rec.type.lower():
+                    action = 'ROLL_WEEKLY'
+                elif 'itm' in rec.type.lower():
+                    action = 'ROLL_ITM'
+                elif 'pull_back' in rec.type.lower():
+                    action = 'PULL_BACK'
+                elif 'close' in rec.type.lower():
+                    action = 'CLOSE'
+                elif rec.type == 'cash_secured_put' or rec.action_type == 'sell_put':
+                    action = 'SELL_PUT'
             
             # Detect changes
             action_changed = prev_snapshot and prev_snapshot.recommended_action != action
@@ -919,7 +956,12 @@ class OptionsStrategyRecommendationService:
             return (recommendation, snapshot, should_notify)
             
         except Exception as e:
-            logger.error(f"[DUAL_WRITE] ❌ Error for {rec.id}: {e}", exc_info=True)
+            logger.error(f"[DUAL_WRITE] ❌ Error for {rec.id}: {e}")
+            # Rollback to reset session state after errors like UniqueViolation
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
             return None
     
     def _should_notify_v2(

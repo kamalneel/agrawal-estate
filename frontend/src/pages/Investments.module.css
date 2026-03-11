@@ -123,24 +123,7 @@
   color: var(--color-negative);
 }
 
-/* Chart Section */
-.chartSection {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  padding: var(--space-8);
-  margin-bottom: var(--space-8);
-}
-
-.chartSection h2 {
-  font-size: var(--text-xl);
-  margin-bottom: var(--space-6);
-}
-
-.chartContainer {
-  margin: 0 calc(-1 * var(--space-4));
-}
-
+/* Chart - single data point fallback (used inside ChartWrapper children) */
 .chartEmpty {
   display: flex;
   flex-direction: column;
@@ -151,9 +134,6 @@
   font-size: var(--text-sm);
   text-align: center;
   padding: var(--space-8);
-  background: var(--color-bg-secondary);
-  border-radius: var(--radius-lg);
-  border: 1px dashed var(--color-border);
   gap: var(--space-4);
 }
 
@@ -177,28 +157,11 @@
   color: var(--color-accent);
 }
 
-.chartTooltip {
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  box-shadow: var(--shadow-lg);
-}
-
-.tooltipMonth {
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--space-1);
-}
-
-.tooltipValue {
-  font-family: var(--font-mono);
-  font-size: var(--text-lg);
-  font-weight: var(--font-bold);
-  color: var(--color-accent);
-}
-
 /* Accounts Section */
+.accountsSection {
+  margin-bottom: var(--space-8);
+}
+
 .accountsSection h2 {
   font-size: var(--text-xl);
   margin-bottom: var(--space-6);
@@ -393,105 +356,8 @@
   margin-bottom: var(--space-6);
 }
 
-/* Table */
-.tableContainer {
-  overflow-x: auto;
-  margin: 0 calc(-1 * var(--space-4));
-  padding: 0 var(--space-4);
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-
-.table th {
-  text-align: left;
-  padding: var(--space-3) var(--space-4);
-  color: var(--color-text-tertiary);
-  font-weight: var(--font-medium);
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-wide);
-  border-bottom: 1px solid var(--color-border);
-  white-space: nowrap;
-}
-
-.table td {
-  padding: var(--space-4);
-  border-bottom: 1px solid var(--color-border);
-  vertical-align: middle;
-}
-
-.tableRow {
-  transition: background var(--duration-fast) var(--ease-default);
-}
-
-.tableRow:hover {
-  background: var(--color-bg-tertiary);
-}
-
-.tableRow:last-child td {
-  border-bottom: none;
-}
-
-.alignRight {
-  text-align: right;
-}
-
-.symbol {
-  font-family: var(--font-mono);
-  font-weight: var(--font-semibold);
-  color: var(--color-accent);
-}
-
-.name {
-  color: var(--color-text-secondary);
-  max-width: 200px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.totalValue {
-  font-family: var(--font-mono);
-  font-weight: var(--font-medium);
-}
-
-.changeCell {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  white-space: nowrap;
-}
-
 .positive { color: var(--color-positive); }
 .negative { color: var(--color-negative); }
-
-/* Percent Bar */
-.percentBar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 120px;
-}
-
-.percentFill {
-  height: 6px;
-  background: var(--color-accent);
-  border-radius: var(--radius-full);
-  opacity: 0.6;
-  flex: 1;
-  max-width: 60px;
-}
-
-.percentBar span {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  min-width: 40px;
-  text-align: right;
-}
 
 /* Loading, Error, Empty States */
 .loadingState,
@@ -762,6 +628,307 @@
   color: #EF4444;
 }
 
+/* Capital Flow Section */
+.capitalFlowSection {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-8);
+  margin-bottom: var(--space-8);
+}
+
+.capitalFlowHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-6);
+}
+
+.capitalFlowHeader h2 {
+  font-size: var(--text-xl);
+  margin: 0;
+}
+
+.thresholdSelect {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.thresholdSelect:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.capitalFlowTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.capitalFlowTable th {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.capitalFlowTable th:last-child,
+.capitalFlowTable td:last-child {
+  text-align: right;
+}
+
+.capitalFlowTable td {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.capitalFlowTable tbody tr {
+  transition: background var(--duration-fast);
+}
+
+.capitalFlowTable tbody tr:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.capitalFlowTable tbody tr.highlighted {
+  background: rgba(0, 214, 50, 0.06);
+}
+
+.typeBadge {
+  display: inline-block;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.typeBuy {
+  background: rgba(0, 214, 50, 0.12);
+  color: var(--color-positive);
+}
+
+.typeSell {
+  background: rgba(255, 90, 90, 0.12);
+  color: var(--color-negative);
+}
+
+.amountBuy {
+  color: var(--color-positive);
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+}
+
+.amountSell {
+  color: var(--color-negative);
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+}
+
+.capitalFlowTable tfoot td {
+  padding: var(--space-4);
+  font-weight: var(--font-semibold);
+  border-top: 2px solid var(--color-border);
+  border-bottom: none;
+}
+
+.footerLabel {
+  color: var(--color-text-secondary);
+}
+
+.footerStats {
+  display: flex;
+  gap: var(--space-6);
+  justify-content: flex-end;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.footerBuys {
+  color: var(--color-positive);
+}
+
+.footerSells {
+  color: var(--color-negative);
+}
+
+.footerNet {
+  color: var(--color-text-primary);
+  font-weight: var(--font-bold);
+}
+
+.monoCell {
+  font-family: var(--font-mono);
+}
+
+.accountCell {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.noEvents {
+  text-align: center;
+  padding: var(--space-8);
+  color: var(--color-text-tertiary);
+}
+
+/* Option Premium Column */
+.premiumClickable {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--duration-fast);
+}
+
+.premiumClickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.premiumPositive {
+  color: var(--color-positive);
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+}
+
+.premiumNegative {
+  color: var(--color-negative);
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
+}
+
+.expandIcon {
+  transition: transform var(--duration-fast) var(--ease-default);
+  flex-shrink: 0;
+}
+
+.expandIcon.rotated {
+  transform: rotate(90deg);
+}
+
+.chainExpandedRow td {
+  background: var(--color-bg-tertiary);
+  padding: 0 !important;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chainExpandedRow:hover td {
+  background: var(--color-bg-tertiary) !important;
+}
+
+.chainDetails {
+  padding: var(--space-4) var(--space-6);
+}
+
+.chainSummary {
+  display: flex;
+  gap: var(--space-6);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.chainStat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chainStatLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chainStatValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+.chainTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.chainTable th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chainTable th:last-child,
+.chainTable td:last-child {
+  text-align: right;
+}
+
+.chainTable td {
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.tradeOpen {
+  color: var(--color-positive);
+  font-weight: var(--font-semibold);
+}
+
+.tradeClose {
+  color: var(--color-negative);
+  font-weight: var(--font-semibold);
+}
+
+.premiumDash {
+  color: var(--color-text-tertiary);
+}
+
+/* Chart event marker tooltip */
+.eventTooltip {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 180px;
+}
+
+.eventTooltipTitle {
+  font-weight: var(--font-semibold);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.eventTooltipRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  padding: 2px 0;
+}
+
+.eventTooltipRow span:last-child {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .heroValue {
@@ -788,10 +955,6 @@
 
   .table {
     font-size: var(--text-xs);
-  }
-
-  .name {
-    max-width: 100px;
   }
 }
 

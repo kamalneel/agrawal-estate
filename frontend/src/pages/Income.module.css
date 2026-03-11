@@ -103,22 +103,116 @@
   color: var(--color-positive);
 }
 
-.heroRefresh {
+.heroRight {
   position: relative;
   z-index: 1;
-  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: flex-end;
+  flex-shrink: 0;
+  max-width: 340px;
+}
+
+.heroRefresh {
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-lg);
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: all var(--duration-normal) var(--ease-default);
+  align-self: flex-end;
 }
 
 .heroRefresh:hover {
   background: var(--color-bg-hover);
   color: var(--color-accent);
   border-color: var(--color-accent);
+}
+
+.heroEarningsCards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.heroEarningsCard {
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+
+.heroEarningsCard.earningsSuccess {
+  border-color: var(--color-positive);
+  background: var(--color-positive-muted);
+}
+
+.heroEarningsCard.earningsDanger {
+  border-color: var(--color-negative);
+  background: var(--color-negative-muted);
+}
+
+.heroEarningsLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  white-space: nowrap;
+}
+
+.heroEarningsRight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-0-5);
+}
+
+.heroEarningsValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+
+.heroEarningsNote {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .heroRight {
+    max-width: 280px;
+  }
+}
+
+@media (max-width: 900px) {
+  .hero {
+    flex-direction: column;
+  }
+  .heroRight {
+    max-width: 100%;
+    width: 100%;
+    align-items: stretch;
+    margin-top: var(--space-4);
+  }
+  .heroRefresh {
+    align-self: flex-start;
+  }
+  .heroEarningsCards {
+    flex-direction: row;
+  }
+  .heroEarningsCard {
+    flex: 1;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -434,27 +528,7 @@
   color: #00D632;
 }
 
-/* Chart Tooltip */
-.chartTooltip {
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  box-shadow: var(--shadow-lg);
-}
-
-.tooltipMonth {
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--space-1);
-}
-
-.tooltipValue {
-  font-family: var(--font-mono);
-  font-size: var(--text-lg);
-  font-weight: var(--font-semibold);
-  color: var(--color-positive);
-}
+/* Tooltip styles now provided by shared ChartTooltip component */
 
 /* ═══════════════════════════════════════════════════════════════
    ACCOUNT BREAKDOWN SECTION
@@ -983,29 +1057,6 @@
   color: var(--color-text-tertiary);
 }
 
-/* Week Cell Data in Table */
-.weekCellData {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.contractCount {
-  font-size: var(--text-xs);
-  color: var(--color-text-tertiary);
-  font-family: var(--font-mono);
-}
-
-.cellAmount {
-  font-size: var(--text-sm);
-  font-family: var(--font-mono);
-}
-
-.alignCenter {
-  text-align: center;
-}
-
 /* Loading & Error States */
 .loading {
   display: flex;
@@ -1132,16 +1183,172 @@
   .w2Row {
     grid-template-columns: 60px 1fr 100px 100px;
   }
-  
+
   .w2Header span:nth-child(5),
   .w2Header span:nth-child(6),
   .w2Row span:nth-child(5),
   .w2Row span:nth-child(6) {
     display: none;
   }
-  
+
   .summaryGrid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   EARNINGS SECTION - Options yield vs assumed 12%/yr
+   ═══════════════════════════════════════════════════════════════ */
+
+.earningsSection {
+  margin-bottom: var(--space-10);
+}
+
+
+.earningsChartCard {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  margin-bottom: var(--space-6);
+}
+
+.earningsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.earningsHeader .tabs {
+  flex-shrink: 0;
+}
+
+.earningsChartTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  margin: 0 0 var(--space-1) 0;
+}
+
+.earningsChartSubtitle {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  margin: 0 0 var(--space-4) 0;
+}
+
+.earningsChartContainer {
+  width: 100%;
+}
+
+.earningsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.earningsTable th,
+.earningsTable td {
+  padding: var(--space-2) var(--space-3);
+  text-align: right;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.earningsTable th {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  background: var(--color-bg-tertiary);
+}
+
+.earningsGroupHeader th[colspan] {
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  border-bottom: 2px solid var(--color-border-hover);
+}
+
+.earningsTable th:first-child,
+.earningsTable td:first-child {
+  text-align: left;
+}
+
+.earningsTable td {
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+
+.earningsHighlightCol {
+  background: rgba(0, 214, 50, 0.06);
+  color: var(--color-accent) !important;
+}
+
+.taxableToggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.toggleBtn {
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  border: none;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+}
+
+.toggleBtn:hover {
+  color: var(--color-text-secondary);
+}
+
+.toggleActive {
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+  font-weight: var(--font-semibold);
+}
+
+.earningsPositiveRow {
+  background: var(--color-accent-subtle);
+}
+
+.earningsNegativeRow {
+  background: var(--color-negative-muted);
+}
+
+.earningsHighlightedRow {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.earningsHighlightedRow td {
+  color: var(--color-text-primary);
+  font-weight: var(--font-semibold);
+}
+
+.earningsTotalRow {
+  background: var(--color-bg-tertiary);
+  border-top: 2px solid var(--color-border);
+}
+
+.earningsTotalRow td {
+  color: var(--color-text-primary);
+  font-weight: var(--font-semibold);
+  border-bottom: none;
+}
+
+.earningsTableContainer {
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  overflow-x: auto;
 }
 

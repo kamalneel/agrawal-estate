@@ -1,9 +1,11 @@
 # V3 Trading Philosophy
 
-**Version:** 3.3  
-**Created:** December 21, 2024  
-**Updated:** January 7, 2026  
-**Status:** ✅ ACTIVE
+> **⚠️ ARCHIVED:** This document is superseded by V4. See [ALGORITHM-HISTORY.md](./ALGORITHM-HISTORY.md) for consolidated historical reference and [OPTIONS-NOTIFICATION-ALGORITHM-V4.md](./OPTIONS-NOTIFICATION-ALGORITHM-V4.md) for the current specification.
+
+**Version:** 3.3
+**Created:** December 21, 2024
+**Updated:** January 7, 2026
+**Status:** ❌ ARCHIVED (Superseded by V4 - January 20, 2026)
 
 ---
 

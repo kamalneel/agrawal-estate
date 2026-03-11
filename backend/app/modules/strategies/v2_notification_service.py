@@ -115,9 +115,8 @@ class V2NotificationService:
                 if self._should_notify_smart(rec, latest_snapshot):
                     result['smart'].append(notif_item)
         
-        # Sort by priority within each list
-        for key in result:
-            result[key].sort(key=lambda x: self.PRIORITY_ORDER.get(x['priority'], 99))
+        # V4: All notifications are treated equally - no priority sorting
+        # Priority is kept in the data for RLHF analysis but not used for ordering
         
         return result
     
@@ -127,107 +126,149 @@ class V2NotificationService:
         snapshot: RecommendationSnapshot
     ) -> Dict[str, Any]:
         """Build a notification item from a recommendation and its snapshot."""
-        
+
         # Determine action type for display
         action = snapshot.recommended_action
         action_display = self._format_action(action)
-        
-        # Build title based on action and position type
-        is_uncovered = rec.position_type == 'uncovered' or rec.source_strike is None
-        
-        if action.upper().startswith('ROLL'):
-            # Get contracts and option type
-            contracts = rec.source_contracts or 1
-            opt_type = (rec.option_type or 'call').upper()
 
-            # Format source expiration
-            source_exp_str = ""
-            if rec.source_expiration:
-                source_exp_str = rec.source_expiration.strftime('%m/%d')
+        # Build title based on action and position type
+        # Format: "Roll 17 AAPL $267.5 call 1/30 to $280 call 2/07 · Earn $90"
+        is_uncovered = rec.position_type == 'uncovered' or rec.source_strike is None
+        contracts = rec.source_contracts or 1
+        opt_type = (rec.option_type or 'call').lower()  # lowercase: "call" not "CALL"
+
+        # Helper to format dates as M/DD (no leading zero)
+        def fmt_date(d):
+            if d is None:
+                return ""
+            return f"{d.month}/{d.day}"
+
+        # Helper to format strike price
+        def fmt_strike(s):
+            if s is None:
+                return ""
+            s = float(s)
+            if s >= 100:
+                return f"${s:.0f}"
+            else:
+                return f"${s:.2f}"
+
+        if action.upper().startswith('ROLL'):
+            # Format: Roll 3 HOOD $110 put 1/16 to $109 put 1/23
+            source_exp = fmt_date(rec.source_expiration)
 
             if snapshot.target_strike:
-                # Format: ROLL: 3 HOOD PUT Options from $110.00 01/16 → $109.00 01/23
-                target_exp_str = ""
-                if snapshot.target_expiration:
-                    target_exp_str = f" {snapshot.target_expiration.strftime('%m/%d')}"
-
-                title = f"{action_display}: {contracts} {rec.symbol} {opt_type} Options from ${rec.source_strike} {source_exp_str} → ${snapshot.target_strike}{target_exp_str}"
+                target_exp = fmt_date(snapshot.target_expiration)
+                title = f"Roll {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type} {source_exp} to {fmt_strike(snapshot.target_strike)} {opt_type} {target_exp}"
             else:
-                title = f"{action_display}: {contracts} {rec.symbol} {opt_type} Options ${rec.source_strike} {source_exp_str}"
+                title = f"Roll {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type} {source_exp}"
 
             # Add net cost/credit for ROLL
             if snapshot.net_cost:
                 net_cost = float(snapshot.net_cost)
                 if net_cost > 0:
-                    title += f" · ${net_cost:.2f} debit"
+                    title += f" · ${net_cost:.0f} debit"
                 elif net_cost < 0:
-                    title += f" · ${abs(net_cost):.2f} credit"
-                # If zero, it's a zero-cost roll - don't add anything
-                
+                    title += f" · Earn ${abs(net_cost):.0f}"
+
         elif action.upper() == 'CLOSE':
-            title = f"CLOSE: {rec.symbol} ${rec.source_strike} - Cannot escape"
+            # Format: Close 1 MU $350 call 4/17
+            source_exp = fmt_date(rec.source_expiration)
+            title = f"Close {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type} {source_exp}"
             # Add estimated close cost if available
             if snapshot.estimated_cost_to_close:
                 title += f" · ~${float(snapshot.estimated_cost_to_close):.0f} to close"
-                
+
         elif action.upper() == 'SELL':
             if is_uncovered:
-                # Uncovered position - show contracts and target
-                contracts = rec.source_contracts or 1
-                # Format expiration date as MM/DD
+                # Format: SELL: 9 NVDA $200 calls for 01/30 · Stock $188 · Earn $315
                 exp_str = ""
                 if snapshot.target_expiration:
                     exp_str = f" for {snapshot.target_expiration.strftime('%m/%d')}"
 
                 if snapshot.target_strike:
-                    title = f"SELL: {contracts} {rec.symbol} ${snapshot.target_strike:.0f} calls{exp_str}"
+                    title = f"SELL: {contracts} {rec.symbol} ${float(snapshot.target_strike):.0f} calls{exp_str}"
                 else:
                     title = f"SELL: {rec.symbol} calls{exp_str}"
                 if snapshot.stock_price:
-                    title += f" · Stock ${snapshot.stock_price:.0f}"
+                    title += f" · Stock ${float(snapshot.stock_price):.0f}"
                 # Add premium for SELL (or indicate unavailable)
                 if snapshot.target_premium:
                     total_premium = float(snapshot.target_premium) * contracts
                     title += f" · Earn ${total_premium:.0f}"
                 else:
-                    # Premium data not available - be transparent about it
                     title += f" · Premium not available"
             else:
-                # Format expiration date as MM/DD
+                # Existing position SELL
                 exp_str = ""
                 if snapshot.target_expiration:
                     exp_str = f" for {snapshot.target_expiration.strftime('%m/%d')}"
 
                 if snapshot.target_strike:
-                    title = f"SELL: {rec.symbol} ${snapshot.target_strike} calls{exp_str}"
+                    title = f"SELL: {rec.symbol} ${float(snapshot.target_strike):.0f} calls{exp_str}"
                 else:
-                    title = f"SELL: {rec.symbol} calls{exp_str} · Stock ${snapshot.stock_price:.0f}" if snapshot.stock_price else f"SELL: {rec.symbol} calls{exp_str}"
-        elif action.upper() == 'SELL_PUT':
-            # Cash-secured put recommendation
-            exp_str = ""
-            if rec.source_expiration:
-                exp_str = f" {rec.source_expiration.strftime('%m/%d')}"
+                    title = f"SELL: {rec.symbol} calls{exp_str}"
+                if snapshot.stock_price:
+                    title += f" · Stock ${float(snapshot.stock_price):.0f}"
 
+        elif action.upper() == 'SELL_PUT':
+            # Format: Sell 1 AAPL $180 put 1/30 · Earn $150
+            source_exp = fmt_date(rec.source_expiration)
             if rec.source_strike:
-                title = f"SELL PUT: {rec.symbol} ${rec.source_strike}{exp_str}"
+                title = f"Sell {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} put {source_exp}"
             else:
-                title = f"SELL PUT: {rec.symbol}{exp_str}"
-            if snapshot.stock_price:
-                title += f" · Stock ${snapshot.stock_price:.0f}"
+                title = f"Sell {contracts} {rec.symbol} put {source_exp}"
             # Add premium for SELL PUT
             if snapshot.target_premium:
                 title += f" · Earn ${float(snapshot.target_premium) * 100:.0f}"
+
         elif action.upper() == 'WAIT':
-            # WAIT recommendation for uncovered position
-            contracts = rec.source_contracts or 1
-            title = f"⏸️ WAIT: {rec.symbol} ({contracts} uncovered)"
-            if snapshot.stock_price:
-                title += f" · Stock ${snapshot.stock_price:.0f}"
+            # Format: Wait on NVDA (9 uncovered)
+            title = f"Wait on {rec.symbol} ({contracts} uncovered)"
+
+        elif action.upper() == 'COMPRESS':
+            # Format: Compress 2 AVGO $360 put 2/6 to $330 put 2/13 (weekly)
+            # COMPRESS = roll to shorter-dated weekly option at escape strike
+            source_exp = fmt_date(rec.source_expiration)
+
+            # Use the stored target expiration from V4 evaluation (not recalculated)
+            target_exp = fmt_date(snapshot.target_expiration) if snapshot.target_expiration else fmt_date(rec.source_expiration)
+
+            # Use target strike if available, otherwise same strike
+            target_strike = snapshot.target_strike if snapshot.target_strike else rec.source_strike
+
+            title = f"Compress {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type} {source_exp} to {fmt_strike(target_strike)} {opt_type} {target_exp} (weekly)"
+
+            # Show estimated roll cost from the V4/V5 evaluation
+            # Note: net_cost is stored as TOTAL DOLLARS (already * 100 * contracts)
+            if snapshot.net_cost is not None:
+                net = float(snapshot.net_cost)
+                if net < 0:
+                    # Negative net_cost = credit
+                    title += f" · Earn ${abs(net):.0f}"
+                elif net > 0:
+                    title += f" · Cost ${net:.0f}"
+
+        elif action.upper() == 'LET_EXPIRE':
+            # Format: Let Expire 1 IBIT $53 call 1/24
+            source_exp = fmt_date(rec.source_expiration)
+            title = f"Let Expire {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type} {source_exp}"
+
+        elif action.upper() == 'HOLD':
+            # Format: Hold 1 TSLA $420 call 2/07
+            source_exp = fmt_date(rec.source_expiration)
+            title = f"Hold {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type} {source_exp}"
+
+        elif action.upper() in ('WAIT_FOR_PULLBACK', 'WAIT_FOR_RECOVERY'):
+            # Format: Wait 1 AAPL $200 call 2/07
+            source_exp = fmt_date(rec.source_expiration)
+            title = f"Wait {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type} {source_exp}"
         else:
+            # Fallback
             if rec.source_strike:
-                title = f"{action_display}: {rec.symbol} ${rec.source_strike}"
+                title = f"{action.title()} {contracts} {rec.symbol} {fmt_strike(rec.source_strike)} {opt_type}"
             else:
-                title = f"{action_display}: {rec.symbol}"
+                title = f"{action.title()} {rec.symbol}"
         
         # Build description - simplify long detailed analysis
         raw_reason = snapshot.reason or f"{action_display} recommended"
@@ -255,9 +296,9 @@ class V2NotificationService:
         description = re.sub(r'\*\*([^*]+)\*\*', r'\1', description)  # Remove **bold**
         description = description.replace('**', '').replace('*', '')
         
-        # Final truncation if still too long
-        if len(description) > 200:
-            description = description[:200] + "..."
+        # Final truncation if still too long (V4 has detailed reasoning, allow more)
+        if len(description) > 500:
+            description = description[:500] + "..."
         
         # Add snapshot context
         snapshot_info = f"Snap #{snapshot.snapshot_number}"
@@ -416,6 +457,12 @@ class V2NotificationService:
             'SELL_PUT': 'SELL PUT',
             'HOLD': 'HOLD',
             'NO_ACTION': 'HOLD',
+            # V4 actions
+            'LET_EXPIRE': 'LET EXPIRE',
+            'COMPRESS': 'COMPRESS',
+            'WAIT_FOR_PULLBACK': 'WAIT',
+            'WAIT_FOR_RECOVERY': 'WAIT',
+            'ROLL': 'ROLL',
         }
         return action_map.get(action.upper(), action.upper())
     
@@ -589,13 +636,11 @@ class V2NotificationService:
                 # Add snapshot info
                 line += f" _(snap #{snap_num})_"
 
-                # Add change indicators
+                # Add change indicators (action and target only, priority removed in V4)
                 if item.get('action_changed'):
                     line += " ⚡"
                 if item.get('target_changed'):
                     line += " 🎯"
-                if item.get('priority_changed'):
-                    line += " ⬆️"
 
                 lines.append(line)
 
@@ -748,10 +793,7 @@ class V2NotificationService:
             # Sell opportunities go to both verbose and smart (they're always "new")
             result['verbose'].extend(sell_opps)
             result['smart'].extend(sell_opps)
-            
-            # Re-sort by priority
-            for key in result:
-                result[key].sort(key=lambda x: self.PRIORITY_ORDER.get(x['priority'], 99))
+            # V4: No priority sorting - all notifications treated equally
         
         return result
 

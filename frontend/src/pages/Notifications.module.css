@@ -1952,3 +1952,158 @@
   animation: fadeIn 0.3s ease;
 }
 
+/* Test Mode Toggle Button */
+.testModeToggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.testModeToggle:hover {
+  border-color: #f59e0b;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.testModeToggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.testModeActive {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  border-color: #f59e0b;
+  color: white;
+}
+
+.testModeActive:hover {
+  background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
+  color: white;
+}
+
+/* Schwab Token Status */
+.schwabStatus {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: help;
+}
+
+.schwabValid {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.schwabExpired {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.schwabNotConfigured {
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.1);
+  border: 1px solid rgba(107, 114, 128, 0.2);
+}
+
+.schwabAuthButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.5rem;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 4px;
+  color: #f59e0b;
+  font-size: 0.7rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.schwabAuthButton:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: rgba(245, 158, 11, 0.6);
+}
+
+.schwabAuthButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.schwabAuthWaiting {
+  color: #f59e0b;
+  font-size: 0.7rem;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Test Mode Banner */
+.testModeBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(217, 119, 6, 0.1) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 10px;
+  margin-bottom: 1rem;
+  color: #92400e;
+}
+
+.testModeBannerContent {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.testModeBannerContent svg {
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+
+.testModeBannerContent span {
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.testModeBannerContent strong {
+  font-weight: 600;
+  color: #b45309;
+}
+
+.testModeBannerClose {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.375rem;
+  border-radius: 6px;
+  color: #92400e;
+  transition: all 0.2s ease;
+}
+
+.testModeBannerClose:hover {
+  background: rgba(245, 158, 11, 0.2);
+  color: #b45309;
+}
+

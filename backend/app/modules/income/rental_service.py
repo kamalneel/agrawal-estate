@@ -10,6 +10,7 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
+from sqlalchemy import func
 from app.core.database import SessionLocal
 from app.modules.income.models import (
     RentalProperty as RentalPropertyModel,
@@ -17,6 +18,7 @@ from app.modules.income.models import (
     RentalMonthlyIncome,
     RentalExpense as RentalExpenseModel,
 )
+from app.modules.real_estate.models import PropertyRentalExpense
 
 
 @dataclass
@@ -132,6 +134,9 @@ class RentalIncomeService:
                     
                     self.properties.append(prop)
 
+            # Sync expenses from Real Estate tab (rental_annual_expenses)
+            self._sync_expenses_from_real_estate(db)
+
             # Project current year's rental income if no data exists
             self._project_current_year_income(db)
 
@@ -143,6 +148,51 @@ class RentalIncomeService:
             db.close()
 
         return self.properties
+
+    def _sync_expenses_from_real_estate(self, db) -> None:
+        """
+        Override expense data with values from the Real Estate tab's
+        rental_annual_expenses table, which is the user-editable source of truth.
+        """
+        for prop in self.properties:
+            expense_rows = db.query(PropertyRentalExpense).filter(
+                PropertyRentalExpense.property_id == 1,  # single property for now
+                PropertyRentalExpense.tax_year == prop.year,
+            ).all()
+
+            if not expense_rows:
+                continue
+
+            # Rebuild expenses from Real Estate tab data
+            total_expenses = sum(float(e.amount or 0) for e in expense_rows)
+            prop.total_expenses = total_expenses
+            prop.net_income = prop.gross_income - total_expenses
+
+            prop.property_tax = 0.0
+            prop.hoa = 0.0
+            prop.maintenance = 0.0
+            prop.other_expenses = 0.0
+            prop.expenses = []
+
+            for e in expense_rows:
+                amt = float(e.amount or 0)
+                if amt <= 0:
+                    continue
+
+                cat = e.category.lower()
+                if 'property_tax' in cat:
+                    prop.property_tax = amt
+                elif 'hoa' in cat:
+                    prop.hoa = amt
+                elif cat in ('maintenance', 'cleaning_and_maintenance', 'cleaning_maintenance', 'repairs'):
+                    prop.maintenance += amt
+                else:
+                    prop.other_expenses += amt
+
+                prop.expenses.append(RentalExpense(
+                    category=e.category.replace('_', ' ').title(),
+                    amount=amt
+                ))
 
     def _project_current_year_income(self, db) -> None:
         """

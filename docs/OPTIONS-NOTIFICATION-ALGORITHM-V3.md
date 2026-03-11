@@ -1,10 +1,12 @@
 # OPTIONS NOTIFICATION & RECOMMENDATION ALGORITHM V3.0
 
-**Version:** 3.0 → **3.3**  
-**Status:** ✅ IMPLEMENTED  
-**Created:** December 21, 2024  
-**Last Updated:** January 7, 2026  
-**Migration From:** V2.3  
+> **⚠️ ARCHIVED:** This document is superseded by V4. See [ALGORITHM-HISTORY.md](./ALGORITHM-HISTORY.md) for consolidated historical reference and [OPTIONS-NOTIFICATION-ALGORITHM-V4.md](./OPTIONS-NOTIFICATION-ALGORITHM-V4.md) for the current specification.
+
+**Version:** 3.0 → **3.3**
+**Status:** ❌ ARCHIVED (Superseded by V4 - January 20, 2026)
+**Created:** December 21, 2024
+**Last Updated:** January 7, 2026
+**Migration From:** V2.3
 **Philosophy:** Patient position management aligned with actual trading strategy
 
 ---

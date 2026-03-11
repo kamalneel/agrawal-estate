@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Building2,
   TrendingUp,
@@ -14,6 +15,7 @@ import {
   DollarSign,
   Check,
   Pencil,
+  AlertTriangle,
 } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import styles from './Equity.module.css'
@@ -36,6 +38,7 @@ interface CompanyHolding {
   total_rsas: number
   safe_principal: number
   estimated_value: number
+  dissolution_status: string | null
 }
 
 interface Grant {
@@ -84,6 +87,15 @@ interface SAFE {
   status: string
 }
 
+interface CapitalEvent {
+  id: number
+  event_date: string | null
+  event_type: string
+  amount: number | null
+  description: string | null
+  contributor: string | null
+}
+
 interface CompanyDetail {
   company: {
     id: number
@@ -95,11 +107,14 @@ interface CompanyDetail {
     qsbs_eligible: boolean
     qsbs_notes: string | null
     notes: string | null
+    total_capital_invested: number | null
+    section_1244_eligible: boolean
   }
   grants: Grant[]
   shares: ShareHolding[]
   rsas: RSA[]
   safes: SAFE[]
+  capital_events: CapitalEvent[]
 }
 
 interface EquitySummary {
@@ -168,10 +183,12 @@ function StatusBadge({ status }: { status: string }) {
 function CompanyCard({
   company,
   onClick,
+  onDissolutionClick,
   delay,
 }: {
   company: CompanyHolding
   onClick: () => void
+  onDissolutionClick?: () => void
   delay: number
 }) {
   const hasValue = company.estimated_value > 0
@@ -239,6 +256,18 @@ function CompanyCard({
         <div className={styles.companyValue}>
           <span className={styles.valueLabel}>Estimated Value</span>
           <span className={styles.valueAmount}>{formatCurrency(company.estimated_value)}</span>
+        </div>
+      )}
+
+      {company.dissolution_status === 'in_progress' && onDissolutionClick && (
+        <div
+          className={styles.dissolutionButton}
+          onClick={(e) => { e.stopPropagation(); onDissolutionClick() }}
+          role="button"
+          tabIndex={0}
+        >
+          <AlertTriangle size={14} />
+          Dissolution Workflow
         </div>
       )}
 
@@ -422,6 +451,68 @@ function SAFEsSection({ safes }: { safes: SAFE[] }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+// Capital Events Section
+function CapitalEventsSection({ events, totalCapitalInvested, section1244Eligible }: {
+  events: CapitalEvent[]
+  totalCapitalInvested: number | null
+  section1244Eligible: boolean
+}) {
+  if (events.length === 0) return null
+
+  const total = events.reduce((sum, e) => sum + (e.amount || 0), 0)
+
+  return (
+    <div className={styles.section}>
+      <h3 className={styles.sectionTitle}>
+        <DollarSign size={20} />
+        Capital Events ({events.length})
+        {section1244Eligible && (
+          <span className={styles.section1244Badge}>
+            <BadgeCheck size={14} />
+            Section 1244 Eligible
+          </span>
+        )}
+      </h3>
+      <div className={styles.tableContainer}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th>Description</th>
+              <th>Contributor</th>
+              <th className={styles.alignRight}>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((event) => (
+              <tr key={event.id} className={styles.tableRow}>
+                <td className={styles.date}>{formatDate(event.event_date)}</td>
+                <td>
+                  <span className={styles.eventTypeBadge}>
+                    {(event.event_type || '').replace('_', ' ')}
+                  </span>
+                </td>
+                <td className={styles.eventDescription}>{event.description || '—'}</td>
+                <td>{event.contributor || '—'}</td>
+                <td className={clsx(styles.alignRight, styles.highlight)}>
+                  {event.amount != null ? formatCurrencyPrecise(event.amount) : '—'}
+                </td>
+              </tr>
+            ))}
+            <tr className={styles.totalRow}>
+              <td colSpan={4} className={styles.totalLabel}>Total Capital Invested</td>
+              <td className={clsx(styles.alignRight, styles.totalAmount)}>
+                {formatCurrencyPrecise(totalCapitalInvested ?? total)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   )
@@ -624,6 +715,7 @@ function EquityCalculatorRow({
 
 // Main Component
 export function Equity() {
+  const navigate = useNavigate()
   const [summary, setSummary] = useState<EquitySummary | null>(null)
   const [selectedCompany, setSelectedCompany] = useState<CompanyDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -755,6 +847,7 @@ export function Equity() {
     const hasShares = selectedCompany.shares.length > 0
     const hasRSAs = selectedCompany.rsas.length > 0
     const hasSAFEs = selectedCompany.safes.length > 0
+    const hasCapitalEvents = (selectedCompany.capital_events || []).length > 0
 
     // Calculate totals
     const totalShares = selectedCompany.shares
@@ -835,6 +928,13 @@ export function Equity() {
         {hasShares && <SharesTable shares={selectedCompany.shares} />}
         {hasRSAs && <RSAsSection rsas={selectedCompany.rsas} />}
         {hasSAFEs && <SAFEsSection safes={selectedCompany.safes} />}
+        {hasCapitalEvents && (
+          <CapitalEventsSection
+            events={selectedCompany.capital_events}
+            totalCapitalInvested={company.total_capital_invested}
+            section1244Eligible={company.section_1244_eligible}
+          />
+        )}
       </div>
     )
   }
@@ -942,6 +1042,11 @@ export function Equity() {
               key={company.id}
               company={company}
               onClick={() => fetchCompanyDetail(company.id)}
+              onDissolutionClick={
+                company.dissolution_status === 'in_progress'
+                  ? () => navigate('/equity/dissolution')
+                  : undefined
+              }
               delay={index * 50}
             />
           ))}

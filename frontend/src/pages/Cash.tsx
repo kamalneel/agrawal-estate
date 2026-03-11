@@ -1,17 +1,13 @@
 import { useState, useEffect } from 'react'
 import {
-  Banknote,
   Building2,
   RefreshCw,
   TrendingUp,
   Clock,
   CheckCircle,
-  Upload,
-  User,
   CreditCard,
   Landmark,
   PiggyBank,
-  ChartLine,
 } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import {
@@ -22,11 +18,20 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  BarChart,
-  Bar,
 } from 'recharts'
 import styles from './Cash.module.css'
 import clsx from 'clsx'
+import {
+  formatCurrency,
+  formatCurrencyShort,
+  ChartTooltip,
+  ChartWrapper,
+  GRID_PROPS,
+  X_AXIS_PROPS,
+  Y_AXIS_PROPS,
+  CHART_MARGINS,
+  CHART_GREEN,
+} from '../components/charts'
 
 const API_BASE = '/api/v1'
 
@@ -71,16 +76,6 @@ interface CashHistoryItem {
   year: number
 }
 
-// Helper functions
-const formatCurrency = (value: number) => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return 'N/A'
   const date = new Date(dateStr)
@@ -89,24 +84,6 @@ const formatDate = (dateStr: string | null) => {
     day: 'numeric',
     year: 'numeric',
   })
-}
-
-// Custom Tooltip for Charts
-interface ChartTooltipProps {
-  active?: boolean
-  payload?: Array<{ value: number; payload: CashHistoryItem }>
-}
-
-function ChartTooltip({ active, payload }: ChartTooltipProps) {
-  if (active && payload && payload.length) {
-    return (
-      <div className={styles.chartTooltip}>
-        <div className={styles.tooltipMonth}>{payload[0].payload.formatted}</div>
-        <div className={styles.tooltipValue}>{formatCurrency(payload[0].value)}</div>
-      </div>
-    )
-  }
-  return null
 }
 
 // Source icons
@@ -400,58 +377,33 @@ export function Cash() {
       </section>
 
       {/* Cash History Chart */}
-      <section className={styles.chartSection}>
-        <div className={styles.chartHeader}>
-          <h2>Cash Balance History</h2>
-          <div className={styles.chartTotal}>
-            {formatCurrency(summary?.total_cash || 0)}
-          </div>
-        </div>
-
-        {history.length > 0 ? (
-          <div className={styles.chartContainer}>
-            <ResponsiveContainer width="100%" height={350}>
-              <AreaChart data={history} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                <defs>
-                  <linearGradient id="cashGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#00D632" stopOpacity={0.3} />
-                    <stop offset="100%" stopColor="#00D632" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                <XAxis
-                  dataKey="formatted"
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fill: '#737373', fontSize: 11 }}
-                  dy={10}
-                />
-                <YAxis
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fill: '#737373', fontSize: 11 }}
-                  tickFormatter={(v) => `$${(v / 1000).toFixed(0)}K`}
-                  dx={-10}
-                  width={60}
-                />
-                <Tooltip content={<ChartTooltip />} />
-                <Area
-                  type="monotone"
-                  dataKey="value"
-                  stroke="#00D632"
-                  strokeWidth={2}
-                  fill="url(#cashGradient)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <div className={styles.chartEmpty}>
-            <ChartLine size={48} className={styles.chartEmptyIcon} />
-            <p>No historical data available yet.<br />Upload bank statements to track cash over time.</p>
-          </div>
-        )}
-      </section>
+      <ChartWrapper
+        title="Cash Balance History"
+        isEmpty={history.length === 0}
+        emptyMessage="No historical data available yet. Upload bank statements to track cash over time."
+      >
+        <ResponsiveContainer width="100%" height={350}>
+          <AreaChart data={history} margin={CHART_MARGINS}>
+            <defs>
+              <linearGradient id="cashGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.3} />
+                <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid {...GRID_PROPS} />
+            <XAxis dataKey="formatted" {...X_AXIS_PROPS} />
+            <YAxis {...Y_AXIS_PROPS} tickFormatter={formatCurrencyShort} width={60} />
+            <Tooltip content={<ChartTooltip labelKey="formatted" />} />
+            <Area
+              type="monotone"
+              dataKey="value"
+              stroke={CHART_GREEN}
+              strokeWidth={2}
+              fill="url(#cashGradient)"
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </ChartWrapper>
 
       {/* All Accounts */}
       {summary && summary.accounts.length > 0 && (

@@ -27,6 +27,8 @@ from app.modules.real_estate.models import Property, Mortgage, MortgagePayment, 
 from app.modules.estate_planning.models import (
     EstateDocument, Beneficiary, AssetAllocation, ImportantContact
 )
+from app.modules.spending.models import SpendingTransaction
+from app.modules.airbnb.models import AirbnbProperty, AirbnbPointsBlock, AirbnbDocument, AirbnbLink
 
 
 # Alembic Config object

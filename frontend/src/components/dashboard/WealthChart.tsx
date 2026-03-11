@@ -8,6 +8,15 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import styles from './WealthChart.module.css'
+import {
+  formatCurrency as sharedFormatCurrency,
+  formatCurrencyShort,
+  GRID_PROPS,
+  X_AXIS_PROPS,
+  Y_AXIS_PROPS,
+  CHART_MARGINS,
+  CHART_GREEN,
+} from '../charts'
 
 interface WealthDataPoint {
   year: number
@@ -21,23 +30,12 @@ interface WealthChartProps {
 
 const formatCurrency = (value: number | undefined) => {
   if (value === undefined || value === null || isNaN(value)) return '$0'
-  if (value >= 1000000) {
-    return `$${(value / 1000000).toFixed(1)}M`
-  }
-  if (value >= 1000) {
-    return `$${(value / 1000).toFixed(0)}K`
-  }
-  return `$${value}`
+  return formatCurrencyShort(value)
 }
 
 const formatFullCurrency = (value: number | undefined) => {
   if (value === undefined || value === null || isNaN(value)) return '$0'
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value)
+  return sharedFormatCurrency(value)
 }
 
 interface CustomTooltipProps {
@@ -66,43 +64,30 @@ export function WealthChart({ data }: WealthChartProps) {
   return (
     <div className={styles.chartContainer}>
       <ResponsiveContainer width="100%" height={400}>
-        <AreaChart
-          data={data}
-          margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
-        >
+        <AreaChart data={data} margin={CHART_MARGINS}>
           <defs>
             <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#00D632" stopOpacity={0.3} />
-              <stop offset="100%" stopColor="#00D632" stopOpacity={0} />
+              <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.3} />
+              <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid
-            strokeDasharray="3 3"
-            stroke="rgba(255,255,255,0.05)"
-            vertical={false}
-          />
+          <CartesianGrid {...GRID_PROPS} />
           <XAxis
             dataKey="year"
-            axisLine={false}
-            tickLine={false}
-            tick={{ fill: '#737373', fontSize: 12 }}
-            dy={10}
+            {...X_AXIS_PROPS}
             interval={2}
             tickFormatter={(year) => `${year}`}
           />
           <YAxis
-            axisLine={false}
-            tickLine={false}
-            tick={{ fill: '#737373', fontSize: 12 }}
+            {...Y_AXIS_PROPS}
             tickFormatter={formatCurrency}
-            dx={-10}
             width={80}
           />
           <Tooltip content={<CustomTooltip />} />
           <Area
             type="monotone"
             dataKey="netWorth"
-            stroke="#00D632"
+            stroke={CHART_GREEN}
             strokeWidth={3}
             fill="url(#wealthGradient)"
             animationDuration={1500}
@@ -125,4 +110,3 @@ export function WealthChart({ data }: WealthChartProps) {
     </div>
   )
 }
-

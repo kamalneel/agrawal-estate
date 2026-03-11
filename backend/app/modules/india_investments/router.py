@@ -10,6 +10,7 @@ from decimal import Decimal
 from pydantic import BaseModel
 
 from app.core.database import get_db
+from app.core.auth import get_current_user
 from app.modules.india_investments.models import (
     IndiaBankAccount,
     IndiaInvestmentAccount,
@@ -97,6 +98,7 @@ class FatherMutualFundHoldingCreate(BaseModel):
     return_5y: Optional[float] = None
     fund_category: Optional[str] = None
     notes: Optional[str] = None
+    owner: str = "Father"
 
 
 class FatherMutualFundHoldingUpdate(BaseModel):
@@ -117,7 +119,8 @@ class FatherMutualFundHoldingUpdate(BaseModel):
 @router.get("/bank-accounts")
 async def list_bank_accounts(
     db: Session = Depends(get_db),
-    owner: Optional[str] = None
+    owner: Optional[str] = None,
+    user=Depends(get_current_user),
 ):
     """List all bank accounts."""
     query = db.query(IndiaBankAccount).filter(IndiaBankAccount.is_active == 'Y')
@@ -145,7 +148,8 @@ async def list_bank_accounts(
 @router.post("/bank-accounts")
 async def create_bank_account(
     account: BankAccountCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Create a new bank account."""
     bank_account = IndiaBankAccount(
@@ -176,7 +180,8 @@ async def create_bank_account(
 @router.get("/investment-accounts")
 async def list_investment_accounts(
     db: Session = Depends(get_db),
-    owner: Optional[str] = None
+    owner: Optional[str] = None,
+    user=Depends(get_current_user),
 ):
     """List all investment accounts."""
     query = db.query(IndiaInvestmentAccount).filter(IndiaInvestmentAccount.is_active == 'Y')
@@ -203,7 +208,8 @@ async def list_investment_accounts(
 @router.post("/investment-accounts")
 async def create_investment_account(
     account: InvestmentAccountCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Create a new investment account."""
     investment_account = IndiaInvestmentAccount(
@@ -233,7 +239,8 @@ async def create_investment_account(
 @router.get("/stocks")
 async def list_stocks(
     db: Session = Depends(get_db),
-    investment_account_id: Optional[int] = None
+    investment_account_id: Optional[int] = None,
+    user=Depends(get_current_user),
 ):
     """List all stocks."""
     query = db.query(IndiaStock)
@@ -263,7 +270,8 @@ async def list_stocks(
 @router.post("/stocks")
 async def create_stock(
     stock: StockCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Create or update a stock holding."""
     # Calculate current value and P&L
@@ -300,7 +308,8 @@ async def create_stock(
 @router.get("/mutual-funds")
 async def list_mutual_funds(
     db: Session = Depends(get_db),
-    investment_account_id: Optional[int] = None
+    investment_account_id: Optional[int] = None,
+    user=Depends(get_current_user),
 ):
     """List all mutual funds."""
     query = db.query(IndiaMutualFund)
@@ -331,7 +340,8 @@ async def list_mutual_funds(
 @router.post("/mutual-funds")
 async def create_mutual_fund(
     mf: MutualFundCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Create or update a mutual fund holding."""
     # Calculate current value and P&L
@@ -369,7 +379,8 @@ async def create_mutual_fund(
 @router.get("/fixed-deposits")
 async def list_fixed_deposits(
     db: Session = Depends(get_db),
-    bank_account_id: Optional[int] = None
+    bank_account_id: Optional[int] = None,
+    user=Depends(get_current_user),
 ):
     """List all fixed deposits."""
     from datetime import date as date_type
@@ -414,7 +425,8 @@ async def list_fixed_deposits(
 @router.post("/fixed-deposits")
 async def create_fixed_deposit(
     fd: FixedDepositCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Create a new fixed deposit."""
     from datetime import date as date_type
@@ -457,7 +469,7 @@ async def create_fixed_deposit(
 
 # Exchange Rate
 @router.get("/exchange-rate")
-async def get_exchange_rate(db: Session = Depends(get_db)):
+async def get_exchange_rate(db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Get current USD to INR exchange rate."""
     try:
         rate = db.query(ExchangeRate).filter(
@@ -470,7 +482,7 @@ async def get_exchange_rate(db: Session = Depends(get_db)):
             rate = ExchangeRate(
                 from_currency='USD',
                 to_currency='INR',
-                rate=Decimal('83.0'),
+                rate=Decimal('87.0'),
             )
             db.add(rate)
             db.commit()
@@ -489,7 +501,7 @@ async def get_exchange_rate(db: Session = Depends(get_db)):
         return {
             "from_currency": "USD",
             "to_currency": "INR",
-            "rate": 83.0,
+            "rate": 87.0,
             "updated_at": None,
         }
 
@@ -497,7 +509,8 @@ async def get_exchange_rate(db: Session = Depends(get_db)):
 @router.put("/exchange-rate")
 async def update_exchange_rate(
     rate_update: ExchangeRateUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Update USD to INR exchange rate."""
     rate = db.query(ExchangeRate).filter(
@@ -530,7 +543,8 @@ async def update_exchange_rate(
 @router.get("/summary")
 async def get_summary(
     db: Session = Depends(get_db),
-    owner: Optional[str] = None
+    owner: Optional[str] = None,
+    user=Depends(get_current_user),
 ):
     """Get summary of all India investments."""
     try:
@@ -542,16 +556,23 @@ async def get_summary(
 
 
 @router.get("/dashboard")
-async def get_dashboard_data(db: Session = Depends(get_db)):
+async def get_dashboard_data(db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Get India investments for dashboard (only Neel's accounts)."""
     return get_dashboard_india_investments(db)
 
 
 # Father's Mutual Fund Holdings
 @router.get("/father-mutual-funds")
-async def list_father_mutual_funds(db: Session = Depends(get_db)):
-    """List all of Father's mutual fund holdings."""
-    holdings = db.query(FatherMutualFundHolding).order_by(
+async def list_father_mutual_funds(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    owner: Optional[str] = None,
+):
+    """List mutual fund holdings, optionally filtered by owner."""
+    query = db.query(FatherMutualFundHolding)
+    if owner:
+        query = query.filter(FatherMutualFundHolding.owner == owner)
+    holdings = query.order_by(
         FatherMutualFundHolding.investment_date.desc()
     ).all()
     
@@ -564,6 +585,7 @@ async def list_father_mutual_funds(db: Session = Depends(get_db)):
         "holdings": [
             {
                 "id": h.id,
+                "owner": h.owner,
                 "investment_date": h.investment_date.isoformat() if h.investment_date else None,
                 "fund_name": h.fund_name,
                 "folio_number": h.folio_number,
@@ -607,7 +629,8 @@ async def list_father_mutual_funds(db: Session = Depends(get_db)):
 @router.post("/father-mutual-funds")
 async def create_father_mutual_fund(
     holding: FatherMutualFundHoldingCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Create a new Father's mutual fund holding."""
     march_2025_cutoff = date(2025, 3, 31)
@@ -621,6 +644,7 @@ async def create_father_mutual_fund(
         amount_march_2025 = Decimal(str(holding.initial_invested_amount))
     
     new_holding = FatherMutualFundHolding(
+        owner=holding.owner,
         investment_date=holding.investment_date,
         fund_name=holding.fund_name,
         folio_number=holding.folio_number,
@@ -652,7 +676,8 @@ async def create_father_mutual_fund(
 async def update_father_mutual_fund(
     holding_id: int,
     updates: FatherMutualFundHoldingUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Update an existing Father's mutual fund holding."""
     holding = db.query(FatherMutualFundHolding).filter(
@@ -728,7 +753,8 @@ async def update_father_mutual_fund(
 @router.delete("/father-mutual-funds/{holding_id}")
 async def delete_father_mutual_fund(
     holding_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Delete a Father's mutual fund holding."""
     holding = db.query(FatherMutualFundHolding).filter(
@@ -740,8 +766,30 @@ async def delete_father_mutual_fund(
     
     db.delete(holding)
     db.commit()
-    
+
     return {"success": True, "message": f"Holding {holding_id} deleted"}
+
+
+# ==================== Price Refresh Endpoints ====================
+
+@router.post("/father-stocks/refresh-prices")
+async def refresh_father_stock_prices_endpoint(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Refresh current prices for all Father's stock holdings from Yahoo Finance."""
+    from app.modules.india_investments.price_service import refresh_father_stock_prices
+    return refresh_father_stock_prices(db)
+
+
+@router.post("/father-mutual-funds/refresh-amounts")
+async def refresh_father_mf_amounts_endpoint(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Refresh current amounts for Father's MF holdings using latest NAV data."""
+    from app.modules.india_investments.price_service import refresh_father_mf_current_amounts
+    return refresh_father_mf_current_amounts(db)
 
 
 # Mapping of common fund names to MFapi scheme codes
@@ -801,7 +849,7 @@ FATHER_FUND_SCHEME_CODES = {
 
 
 @router.post("/father-mutual-funds/refresh-returns")
-async def refresh_father_mutual_fund_returns(db: Session = Depends(get_db)):
+async def refresh_father_mutual_fund_returns(db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Fetch and update 1Y, 3Y, 5Y returns from MFapi.in for all father's mutual fund holdings."""
     from app.modules.india_investments.mf_research_service import (
         get_scheme_nav_history,
@@ -873,7 +921,7 @@ async def refresh_father_mutual_fund_returns(db: Session = Depends(get_db)):
 
 
 @router.post("/father-mutual-funds/enrich-holdings")
-async def enrich_father_mutual_fund_holdings(db: Session = Depends(get_db)):
+async def enrich_father_mutual_fund_holdings(db: Session = Depends(get_db), user=Depends(get_current_user)):
     """
     Enrich Father's mutual fund holdings with data from Kuvera API.
     Fetches: AUM, Expense Ratio, Fund Rating, Volatility, etc.
@@ -993,7 +1041,7 @@ class FatherStockHoldingCreate(BaseModel):
 
 
 @router.get("/father-stocks")
-async def list_father_stocks(db: Session = Depends(get_db)):
+async def list_father_stocks(db: Session = Depends(get_db), user=Depends(get_current_user)):
     """List all of Father's stock holdings."""
     holdings = db.query(FatherStockHolding).order_by(
         FatherStockHolding.investment_date.desc()
@@ -1027,7 +1075,7 @@ async def list_father_stocks(db: Session = Depends(get_db)):
             "total_invested": total_invested,
             "total_march_2025": total_march_2025,
             "total_current": total_current,
-            "total_gain_loss": total_march_2025 - total_invested if total_march_2025 else None,
+            "total_gain_loss": (total_current - total_invested) if total_current else (total_march_2025 - total_invested) if total_march_2025 else None,
             "count": len(holdings),
         }
     }
@@ -1036,7 +1084,8 @@ async def list_father_stocks(db: Session = Depends(get_db)):
 @router.post("/father-stocks")
 async def create_father_stock(
     holding: FatherStockHoldingCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Create a new Father's stock holding."""
     new_holding = FatherStockHolding(
@@ -1064,7 +1113,8 @@ async def create_father_stock(
 async def update_father_stock(
     holding_id: int,
     holding: FatherStockHoldingCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Update a Father's stock holding."""
     db_holding = db.query(FatherStockHolding).filter(
@@ -1095,7 +1145,8 @@ async def update_father_stock(
 @router.delete("/father-stocks/{holding_id}")
 async def delete_father_stock(
     holding_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
 ):
     """Delete a Father's stock holding."""
     holding = db.query(FatherStockHolding).filter(

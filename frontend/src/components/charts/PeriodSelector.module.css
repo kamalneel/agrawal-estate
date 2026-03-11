@@ -1,0 +1,26 @@
+.periodButtons {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.periodButton {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-tertiary);
+  transition: all var(--duration-fast) var(--ease-default);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+
+.periodButton:hover {
+  color: var(--color-text-secondary);
+}
+
+.periodButtonActive {
+  background: var(--color-bg-secondary);
+  color: var(--color-accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}

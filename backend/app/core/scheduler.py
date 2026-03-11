@@ -70,14 +70,12 @@ class RecommendationScheduler:
         )
         
         # =================================================================
-        # SCAN 2: 8:00 AM - Post-Opening Urgent (V2)
+        # SCAN 2: 8:00 AM - Post-Opening Urgent (Version-aware)
         # =================================================================
         # Purpose: Catch urgent state changes from market open volatility
-        # Evaluates: Newly ITM positions, new pull-back opportunities,
-        #           earnings TODAY, positions >10% deeper ITM, expiring TODAY
-        # NOTE: Using V2 system - notifications reference snapshot numbers
+        # Routes to V4 or V5 based on ALGORITHM_VERSION
         self.scheduler.add_job(
-            lambda: self.check_and_notify_v2(scan_type='8am_post_open'),
+            lambda: self._run_versioned_check(scan_type='8am_post_open'),
             trigger=CronTrigger(
                 hour=8,
                 minute=0,
@@ -85,17 +83,17 @@ class RecommendationScheduler:
                 timezone=PT
             ),
             id='scan_2_post_open',
-            name='V3 Scan 2: Post-Opening Urgent (8:00 AM PT) [V2]',
+            name='Scan 2: Post-Opening (8:00 AM PT)',
             replace_existing=True
         )
-        
+
         # =================================================================
-        # SCAN 3: 12:00 PM - Midday Opportunities (V2)
+        # SCAN 3: 12:00 PM - Midday (Version-aware)
         # =================================================================
         # Purpose: Check for intraday opportunities
-        # Evaluates: Pull-back opportunities, significant moves (>10% since morning)
+        # Routes to V4 or V5 based on ALGORITHM_VERSION
         self.scheduler.add_job(
-            lambda: self.check_and_notify_v2(scan_type='12pm_midday'),
+            lambda: self._run_versioned_check(scan_type='12pm_midday'),
             trigger=CronTrigger(
                 hour=12,
                 minute=0,
@@ -103,17 +101,17 @@ class RecommendationScheduler:
                 timezone=PT
             ),
             id='scan_3_midday',
-            name='V3 Scan 3: Midday Opportunities (12:00 PM PT) [V2]',
+            name='Scan 3: Midday (12:00 PM PT)',
             replace_existing=True
         )
-        
+
         # =================================================================
-        # SCAN 4: 12:45 PM - Pre-Close Urgent (V2)
+        # SCAN 4: 12:45 PM - Pre-Close (Version-aware)
         # =================================================================
         # Purpose: Last 15 minutes before market close (1:00 PM PT)
-        # Evaluates: Expiring TODAY, Smart Assignment (IRA), Triple Witching
+        # Routes to V4 or V5 based on ALGORITHM_VERSION
         self.scheduler.add_job(
-            lambda: self.check_and_notify_v2(scan_type='1245pm_pre_close'),
+            lambda: self._run_versioned_check(scan_type='1245pm_pre_close'),
             trigger=CronTrigger(
                 hour=12,
                 minute=45,
@@ -121,18 +119,17 @@ class RecommendationScheduler:
                 timezone=PT
             ),
             id='scan_4_pre_close',
-            name='V3 Scan 4: Pre-Close Urgent (12:45 PM PT) [V2]',
+            name='Scan 4: Pre-Close (12:45 PM PT)',
             replace_existing=True
         )
-        
+
         # =================================================================
-        # SCAN 5: 8:00 PM - Evening Planning (V2)
+        # SCAN 5: 8:00 PM - Evening Planning (Version-aware)
         # =================================================================
-        # Purpose: Next day preparation (informational only)
-        # Evaluates: Earnings TOMORROW, Ex-dividend TOMORROW, 
-        #           Positions expiring TOMORROW
+        # Purpose: Next day preparation
+        # Routes to V4 or V5 based on ALGORITHM_VERSION
         self.scheduler.add_job(
-            lambda: self.check_and_notify_v2(scan_type='8pm_evening'),
+            lambda: self._run_versioned_check(scan_type='8pm_evening'),
             trigger=CronTrigger(
                 hour=20,
                 minute=0,
@@ -140,7 +137,7 @@ class RecommendationScheduler:
                 timezone=PT
             ),
             id='scan_5_evening',
-            name='V3 Scan 5: Evening Planning (8:00 PM PT)',
+            name='Scan 5: Evening Planning (8:00 PM PT)',
             replace_existing=True
         )
         
@@ -150,7 +147,27 @@ class RecommendationScheduler:
         # Per V3 spec: Only 5 scans per weekday, no weekend notifications
         # Market is closed, no action can be taken
         
+        # =================================================================
+        # DAILY PORTFOLIO SNAPSHOT: 8:15 PM PT (Weekdays)
+        # =================================================================
+        # Purpose: Record daily portfolio values for growth charts
+        # Runs 15 minutes after evening scan so prices are fresh
+        # Populates portfolio_snapshots + investment_holdings_history
+        self.scheduler.add_job(
+            self.take_daily_portfolio_snapshot,
+            trigger=CronTrigger(
+                hour=20,
+                minute=15,
+                day_of_week='mon-fri',
+                timezone=PT
+            ),
+            id='daily_portfolio_snapshot',
+            name='Daily Portfolio Snapshot (8:15 PM PT)',
+            replace_existing=True
+        )
+
         logger.info("V3 Schedule configured: 5 daily scans (6AM, 8AM, 12PM, 12:45PM, 8PM) weekdays only")
+        logger.info("Daily portfolio snapshot configured: 8:15 PM PT weekdays")
 
         # =================================================================
         # EXPENSE NOTIFICATIONS
@@ -263,9 +280,9 @@ class RecommendationScheduler:
                     logger.warning(f"Failed to fetch TA for {symbol}: {e}")
             
             logger.info(f"Completed technical analysis for {len(symbols)} symbols")
-            
-            # Now run the V2-native recommendation check with notifications
-            self.check_and_notify_v2(send_notifications=True, scan_type='6am_main')
+
+            # Now run versioned recommendation check with notifications
+            self._run_versioned_check(scan_type='6am_main')
             
         except Exception as e:
             logger.error(f"Error in daily technical analysis: {e}", exc_info=True)
@@ -826,16 +843,328 @@ class RecommendationScheduler:
             #                 )
 
             logger.info("[V2] V2-native notification check complete (verbose mode only)")
-            
+
         except Exception as e:
             logger.error(f"[V2] Error in V2 recommendation check: {e}", exc_info=True)
         finally:
             db.close()
-    
+
+    # =========================================================================
+    # VERSION-AWARE ROUTING
+    # =========================================================================
+
+    def _run_versioned_check(self, scan_type: str = None, send_notifications: bool = True):
+        """
+        Route to appropriate version's check method based on ALGORITHM_VERSION.
+
+        This enables instant rollback by changing environment variable:
+        - ALGORITHM_VERSION=v5 → Uses V5 with LIFE_SUPPORT
+        - ALGORITHM_VERSION=v4 → Uses V4 (instant rollback)
+        """
+        from app.modules.strategies.algorithm_config import ALGORITHM_VERSION
+
+        version = ALGORITHM_VERSION.lower()
+        logger.info(f"[SCHEDULER] Running versioned check: version={version}, scan_type={scan_type}")
+
+        if version == 'v5':
+            self.check_and_notify_v5(send_notifications=send_notifications, scan_type=scan_type)
+        else:
+            # Default to V4 for any other version (including v4, v3, v2, v1)
+            self.check_and_notify_v4(send_notifications=send_notifications, scan_type=scan_type)
+
+    # =========================================================================
+    # V5 NOTIFICATION METHOD
+    # =========================================================================
+
+    def check_and_notify_v5(self, send_notifications: bool = True, scan_type: str = None):
+        """
+        V5-native recommendation check and notification.
+
+        V5 extends V4 with LIFE_SUPPORT category:
+        - All V4 features (conviction-based evaluation)
+        - NEW: ROLL_BIWEEKLY action for stuck positions
+        - NEW: ROLL_MONTHLY action for deeply stuck positions
+        - NEW: Tracks stuck_category (HEALTHY, STUCK, LIFE_SUPPORT, DROWNING)
+        - NEW: IV-based thresholds for categorization
+
+        Args:
+            send_notifications: Whether to actually send Telegram notifications
+            scan_type: Optional scan identifier (e.g., '6am', '12pm')
+        """
+        db: Session = SessionLocal()
+        try:
+            logger.info(f"[V5] Running V5-native recommendation check (scan_type={scan_type})...")
+
+            # Step 1: Get current positions from sold_options
+            from app.modules.strategies.models import SoldOption, SoldOptionsSnapshot
+            from sqlalchemy import func
+
+            latest_snapshots = db.query(
+                func.max(SoldOptionsSnapshot.id).label('max_snapshot_id')
+            ).group_by(SoldOptionsSnapshot.account_name).subquery()
+
+            positions = db.query(SoldOption).filter(
+                SoldOption.status == 'open',
+                SoldOption.snapshot_id.in_(
+                    db.query(latest_snapshots.c.max_snapshot_id)
+                )
+            ).all()
+
+            logger.info(f"[V5] Found {len(positions)} active sold options")
+
+            # Step 2: Get cost basis and weekly income data
+            cost_basis_map = self._get_cost_basis_map(db)
+            weekly_income_map = self._get_weekly_income_map(db)
+
+            if not cost_basis_map:
+                logger.warning("[V5] Cost basis map is empty - put assignment assessment may not work correctly")
+            else:
+                logger.info(f"[V5] Loaded cost basis for {len(cost_basis_map)} symbols")
+
+            if not weekly_income_map:
+                logger.warning("[V5] Weekly income map is empty - using default $50/week for compression calculations")
+            else:
+                logger.info(f"[V5] Loaded weekly income targets for {len(weekly_income_map)} symbols")
+
+            # Step 3: Get ALL V5 notifications
+            from app.modules.strategies.v5_notification_service import get_v5_notification_service
+            v5_service = get_v5_notification_service(db)
+
+            notifications = v5_service.get_all_v5_notifications(
+                positions=positions,
+                cost_basis_map=cost_basis_map,
+                weekly_income_map=weekly_income_map,
+                include_uncovered=True,
+                include_follow_ups=True
+            )
+
+            logger.info(f"[V5] Total notifications: {len(notifications)}")
+
+            # Count LIFE_SUPPORT actions for logging
+            life_support_count = sum(
+                1 for n in notifications
+                if n.get('action') in ('ROLL_BIWEEKLY', 'ROLL_MONTHLY')
+            )
+            if life_support_count > 0:
+                logger.info(f"[V5] LIFE_SUPPORT actions: {life_support_count}")
+
+            # Step 4: Save to history tables
+            if notifications:
+                saved = v5_service.save_v5_to_history(notifications, scan_type=scan_type)
+                logger.info(f"[V5] Saved {saved} notifications to history for web UI")
+
+            if not send_notifications:
+                logger.info("[V5] Notifications disabled, skipping send")
+                return
+
+            # Step 5: Send notifications via Telegram
+            if notifications:
+                notification_service = get_notification_service()
+
+                message = v5_service.format_telegram_message(notifications)
+                if message and notification_service.telegram_enabled:
+                    success, message_id = notification_service._send_telegram(message)
+                    if success:
+                        logger.info(f"[V5] Sent Telegram notification ({len(notifications)} items)")
+                    else:
+                        logger.error("[V5] Failed to send Telegram notification")
+                elif not message:
+                    logger.info("[V5] No message to send (empty after formatting)")
+                elif not notification_service.telegram_enabled:
+                    logger.info("[V5] Telegram not enabled, skipping send")
+            else:
+                logger.info("[V5] No notifications to send")
+
+            logger.info("[V5] V5-native notification check complete")
+
+        except Exception as e:
+            logger.error(f"[V5] Error in V5 recommendation check: {e}", exc_info=True)
+        finally:
+            db.close()
+
+    # =========================================================================
+    # V4 NOTIFICATION METHOD
+    # =========================================================================
+
+    def check_and_notify_v4(self, send_notifications: bool = True, scan_type: str = None):
+        """
+        V4-native recommendation check and notification.
+
+        V4 Philosophy:
+        - Believe in holdings, hold forever
+        - Mean reversion is inevitable
+        - Primary goal: weekly income
+        - Tactical timing (sell when up, buy when down)
+        - Avoid forced assignment
+
+        V4 Features:
+        - Evaluates EXISTING positions (HOLD, ROLL, COMPRESS, CLOSE, etc.)
+        - Detects UNCOVERED positions (SELL, WAIT)
+        - Checks FOLLOW-UP conditions from previous recommendations
+        - Rich reasoning in every notification
+        - No priority-based sorting (all notifications equal)
+
+        Args:
+            send_notifications: Whether to actually send Telegram notifications
+            scan_type: Optional scan identifier (e.g., '6am', '12pm')
+        """
+        db: Session = SessionLocal()
+        try:
+            logger.info(f"[V4] Running V4-native recommendation check (scan_type={scan_type})...")
+
+            # Step 1: Get current positions from sold_options
+            # IMPORTANT: Only get positions from the LATEST snapshot per account
+            # to avoid duplicates from historical snapshots
+            from app.modules.strategies.models import SoldOption, SoldOptionsSnapshot
+            from sqlalchemy import func
+
+            # Subquery to get the latest snapshot_id per account
+            latest_snapshots = db.query(
+                func.max(SoldOptionsSnapshot.id).label('max_snapshot_id')
+            ).group_by(SoldOptionsSnapshot.account_name).subquery()
+
+            positions = db.query(SoldOption).filter(
+                SoldOption.status == 'open',
+                SoldOption.snapshot_id.in_(
+                    db.query(latest_snapshots.c.max_snapshot_id)
+                )
+            ).all()
+
+            logger.info(f"[V4] Found {len(positions)} active sold options")
+
+            # Step 2: Get cost basis and weekly income data (with warnings)
+            cost_basis_map = self._get_cost_basis_map(db)
+            weekly_income_map = self._get_weekly_income_map(db)
+
+            if not cost_basis_map:
+                logger.warning("[V4] Cost basis map is empty - put assignment assessment may not work correctly")
+            else:
+                logger.info(f"[V4] Loaded cost basis for {len(cost_basis_map)} symbols")
+
+            if not weekly_income_map:
+                logger.warning("[V4] Weekly income map is empty - using default $50/week for compression calculations")
+            else:
+                logger.info(f"[V4] Loaded weekly income targets for {len(weekly_income_map)} symbols")
+
+            # Step 3: Get ALL V4 notifications using the comprehensive method
+            from app.modules.strategies.v4_notification_service import get_v4_notification_service
+            v4_service = get_v4_notification_service(db)
+
+            # This single call handles:
+            # - Existing position evaluation
+            # - Uncovered position detection
+            # - Follow-up condition triggers
+            notifications = v4_service.get_all_v4_notifications(
+                positions=positions,
+                cost_basis_map=cost_basis_map,
+                weekly_income_map=weekly_income_map,
+                include_uncovered=True,
+                include_follow_ups=True
+            )
+
+            logger.info(f"[V4] Total notifications: {len(notifications)}")
+
+            # Step 4: Save to V2 history tables (so they appear on Notifications page)
+            if notifications:
+                saved = v4_service.save_v4_to_history(notifications, scan_type=scan_type)
+                logger.info(f"[V4] Saved {saved} notifications to V2 history for web UI")
+
+            if not send_notifications:
+                logger.info("[V4] Notifications disabled, skipping send")
+                return
+
+            # Step 5: Send notifications via Telegram
+            if notifications:
+                notification_service = get_notification_service()
+
+                message = v4_service.format_telegram_message(notifications)
+                if message and notification_service.telegram_enabled:
+                    success, message_id = notification_service._send_telegram(message)
+                    if success:
+                        logger.info(f"[V4] Sent Telegram notification ({len(notifications)} items)")
+                    else:
+                        logger.error("[V4] Failed to send Telegram notification")
+                elif not message:
+                    logger.info("[V4] No message to send (empty after formatting)")
+                elif not notification_service.telegram_enabled:
+                    logger.info("[V4] Telegram not enabled, skipping send")
+            else:
+                logger.info("[V4] No notifications to send")
+
+            logger.info("[V4] V4-native notification check complete")
+
+        except Exception as e:
+            logger.error(f"[V4] Error in V4 recommendation check: {e}", exc_info=True)
+        finally:
+            db.close()
+
+    def _get_cost_basis_map(self, db: Session) -> Dict[str, float]:
+        """Get cost basis for all symbols from portfolio holdings."""
+        try:
+            from app.modules.investments.models import InvestmentHolding
+            holdings = db.query(InvestmentHolding).all()
+
+            cost_basis_map = {}
+            for h in holdings:
+                if h.symbol and h.cost_basis:
+                    cost_basis_map[h.symbol] = float(h.cost_basis)
+
+            return cost_basis_map
+        except Exception as e:
+            logger.warning(f"Could not get cost basis map: {e}")
+            return {}
+
+    def _get_weekly_income_map(self, db: Session) -> Dict[str, float]:
+        """Get weekly premium income targets from option_premium_settings."""
+        try:
+            from app.modules.strategies.models import OptionPremiumSetting
+            settings = db.query(OptionPremiumSetting).all()
+
+            income_map = {}
+            for s in settings:
+                if s.symbol and s.premium_per_contract:
+                    income_map[s.symbol] = float(s.premium_per_contract)
+
+            return income_map
+        except Exception as e:
+            logger.warning(f"Could not get weekly income map: {e}")
+            return {}
+
+    # =========================================================================
+    # PORTFOLIO SNAPSHOT METHOD
+    # =========================================================================
+
+    def take_daily_portfolio_snapshot(self):
+        """
+        Take a daily snapshot of all portfolio holdings and values.
+
+        Called at 8:15 PM PT weekdays, 15 minutes after the evening scan.
+        Populates portfolio_snapshots and investment_holdings_history tables.
+        """
+        db: Session = SessionLocal()
+        try:
+            logger.info("Taking daily portfolio snapshot...")
+
+            from app.modules.investments.snapshot_service import take_daily_snapshot
+
+            stats = take_daily_snapshot(db)
+
+            logger.info(
+                f"Daily portfolio snapshot complete: "
+                f"{stats['accounts_snapshot']} accounts, "
+                f"{stats['holdings_snapshot']} holdings, "
+                f"total ${stats['total_portfolio_value']:,.0f}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error in daily portfolio snapshot: {e}", exc_info=True)
+        finally:
+            db.close()
+
     # =========================================================================
     # RLHF LEARNING METHODS
     # =========================================================================
-    
+
     def run_daily_reconciliation(self):
         """
         Run daily reconciliation of recommendations to executions.
@@ -1050,12 +1379,50 @@ def stop_scheduler():
 
 
 def trigger_manual_check(send_notifications: bool = True):
-    """Manually trigger a recommendation check (for testing)."""
+    """Manually trigger a versioned recommendation check (V4 or V5 based on ALGORITHM_VERSION)."""
     if _scheduler:
-        _scheduler.check_and_notify(send_notifications=send_notifications)
+        _scheduler._run_versioned_check(send_notifications=send_notifications)
     else:
         # Create temporary scheduler for one-time check
         temp_scheduler = RecommendationScheduler()
-        temp_scheduler.check_and_notify(send_notifications=send_notifications)
+        temp_scheduler._run_versioned_check(send_notifications=send_notifications)
         temp_scheduler.shutdown()
 
+
+def trigger_v4_check(send_notifications: bool = True):
+    """
+    Manually trigger a V4 recommendation check.
+
+    V4 uses the conviction-based evaluation with:
+    - Rich reasoning in every notification
+    - HOLD notifications enabled
+    - Two-part action follow-up tracking
+    - No priority sorting
+    """
+    if _scheduler:
+        _scheduler.check_and_notify_v4(send_notifications=send_notifications)
+    else:
+        # Create temporary scheduler for one-time check
+        temp_scheduler = RecommendationScheduler()
+        temp_scheduler.check_and_notify_v4(send_notifications=send_notifications)
+        temp_scheduler.shutdown()
+
+
+def trigger_v5_check(send_notifications: bool = True):
+    """
+    Manually trigger a V5 recommendation check.
+
+    V5 extends V4 with LIFE_SUPPORT category:
+    - All V4 features (conviction-based evaluation)
+    - ROLL_BIWEEKLY action for stuck positions
+    - ROLL_MONTHLY action for deeply stuck positions
+    - Tracks stuck_category (HEALTHY, STUCK, LIFE_SUPPORT, DROWNING)
+    - IV-based thresholds for categorization
+    """
+    if _scheduler:
+        _scheduler.check_and_notify_v5(send_notifications=send_notifications)
+    else:
+        # Create temporary scheduler for one-time check
+        temp_scheduler = RecommendationScheduler()
+        temp_scheduler.check_and_notify_v5(send_notifications=send_notifications)
+        temp_scheduler.shutdown()

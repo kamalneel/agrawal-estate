@@ -6,15 +6,24 @@ ARCHITECTURE: All endpoints query the database directly.
 The database is the SINGLE SOURCE OF TRUTH.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import date
+from pydantic import BaseModel as PydanticBaseModel
 
 from app.core.database import get_db
 from app.modules.income.rental_service import get_rental_service
 from app.modules.income.salary_service import get_salary_service, reset_salary_service
 from app.modules.income import db_queries
+
+
+class SalaryProjectionCreate(PydanticBaseModel):
+    person: str
+    monthly_net: float
+    effective_from: str  # YYYY-MM
+    effective_to: Optional[str] = None
+    notes: Optional[str] = None
 
 router = APIRouter()
 
@@ -53,13 +62,15 @@ async def get_options_income(
     summary = db_queries.get_options_income_summary(db, year=year)
     monthly = db_queries.get_options_income_monthly(db, year=year)
     by_account = db_queries.get_options_income_by_account(db, year=year)
+    by_symbol = db_queries.get_options_income_by_symbol(db, year=year)
     transactions = db_queries.get_options_transactions(db, year=year, limit=100)
-    
+
     return {
         'total_income': summary['total_income'],
         'transaction_count': summary['transaction_count'],
         'monthly': monthly,
         'by_account': by_account,
+        'by_symbol': by_symbol,
         'transactions': transactions
     }
 
@@ -215,6 +226,39 @@ async def get_stock_lending_chart_data(
 # ACCOUNT-SPECIFIC ENDPOINTS - Direct database queries
 # =============================================================================
 
+@router.get("/accounts/{account_name}/income-by-symbol")
+async def get_account_income_by_symbol(
+    account_name: str,
+    year: Optional[int] = Query(default=None, description="Filter by year (None = all time)"),
+    month: Optional[int] = Query(default=None, description="Filter by month (1-12, None = full year)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get options and dividend income by symbol for a specific account,
+    filtered by time period.
+    """
+    from app.modules.investments.models import InvestmentAccount
+
+    account = db.query(InvestmentAccount).filter(
+        InvestmentAccount.account_name == account_name
+    ).first()
+
+    if not account:
+        return {'options_by_symbol': {}, 'dividends_by_symbol': {}}
+
+    options_by_symbol = db_queries.get_options_income_by_symbol(
+        db, year=year, month=month, account_id=account.account_id
+    )
+    dividends_by_symbol = db_queries.get_dividend_by_symbol(
+        db, year=year, month=month, account_id=account.account_id
+    )
+
+    return {
+        'options_by_symbol': options_by_symbol,
+        'dividends_by_symbol': dividends_by_symbol,
+    }
+
+
 @router.get("/accounts/{account_name}/options")
 async def get_account_options_detail(
     account_name: str,
@@ -261,16 +305,65 @@ async def get_account_options_weekly(
     """
     Get weekly breakdown of options income for a specific account and month.
     Returns data organized by symbol and week with totals.
+    Uses Mon-Fri trading weeks and separates puts from calls.
     """
     from app.modules.investments.models import InvestmentAccount, InvestmentTransaction
     from sqlalchemy import extract
-    from datetime import datetime
-    
+    from datetime import datetime, date, timedelta
+    import calendar
+    import re
+
     # Find the account
     account = db.query(InvestmentAccount).filter(
         InvestmentAccount.account_name == account_name
     ).first()
-    
+
+    # Compute trading weeks that overlap this month
+    first_day = date(year, month, 1)
+    last_day = date(year, month, calendar.monthrange(year, month)[1])
+
+    # Find the Monday of the week containing the first day of the month
+    first_monday = first_day - timedelta(days=first_day.weekday())
+
+    # Build list of trading weeks (each defined by its Monday)
+    weeks_list = []
+    monday = first_monday
+    week_index = 1
+    while monday <= last_day:
+        friday = monday + timedelta(days=4)
+        # Only include weeks that overlap with the month
+        week_start_in_month = max(monday, first_day)
+        week_end_in_month = min(friday, last_day)
+
+        if week_start_in_month <= week_end_in_month:
+            month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            m_abbr = month_names[week_start_in_month.month - 1]
+            if week_start_in_month == week_end_in_month:
+                label = f"{m_abbr} {week_start_in_month.day}"
+                range_str = label
+            else:
+                end_m_abbr = month_names[week_end_in_month.month - 1]
+                if week_start_in_month.month == week_end_in_month.month:
+                    label = f"{m_abbr} {week_start_in_month.day}-{week_end_in_month.day}"
+                else:
+                    label = f"{m_abbr} {week_start_in_month.day}-{end_m_abbr} {week_end_in_month.day}"
+                range_str = label
+
+            weeks_list.append({
+                'key': f'week{week_index}',
+                'label': label,
+                'range': range_str,
+                'monday': monday,
+            })
+            week_index += 1
+
+        monday += timedelta(days=7)
+
+    week_keys = [w['key'] for w in weeks_list]
+    # Map Monday date -> week key
+    monday_to_week = {w['monday']: w['key'] for w in weeks_list}
+
     if not account:
         return {
             'error': 'Account not found',
@@ -279,96 +372,92 @@ async def get_account_options_weekly(
             'month_total': 0,
             'weekly_data': {},
             'symbols': [],
-            'weekly_totals': {'week1': 0, 'week2': 0, 'week3': 0, 'week4': 0, 'week5': 0},
-            'weekly_counts': {'week1': 0, 'week2': 0, 'week3': 0, 'week4': 0, 'week5': 0},
+            'weeks': [{'key': w['key'], 'label': w['label'], 'range': w['range']} for w in weeks_list],
+            'weekly_totals': {k: 0 for k in week_keys},
+            'weekly_counts': {k: 0 for k in week_keys},
             'transaction_count': 0,
         }
-    
+
     # Get transactions for the specified month
     transactions = db.query(InvestmentTransaction).filter(
         InvestmentTransaction.account_id == account.account_id,
-        InvestmentTransaction.transaction_type.in_(['STO', 'BTC']),
+        InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
         extract('year', InvestmentTransaction.transaction_date) == year,
         extract('month', InvestmentTransaction.transaction_date) == month
     ).all()
-    
+
     # Initialize weekly totals
-    weekly_totals = {
-        'week1': {'count': 0, 'amount': 0.0},
-        'week2': {'count': 0, 'amount': 0.0},
-        'week3': {'count': 0, 'amount': 0.0},
-        'week4': {'count': 0, 'amount': 0.0},
-        'week5': {'count': 0, 'amount': 0.0},
-    }
-    
+    weekly_totals = {k: {'count': 0, 'amount': 0.0} for k in week_keys}
+
     # Organize by symbol and week
     by_symbol = {}
     month_total = 0.0
-    
+
+    def _is_put(description: str) -> bool:
+        """Check if transaction description indicates a put option."""
+        if not description:
+            return False
+        return bool(re.search(r'\bPut\b', description, re.IGNORECASE))
+
     for txn in transactions:
-        symbol = txn.symbol or 'OTHER'
-        day = txn.transaction_date.day
-        week = min((day - 1) // 7 + 1, 5)  # Week 1-5
-        week_key = f'week{week}'
+        base_symbol = txn.symbol or 'OTHER'
+        # Separate puts from calls
+        desc = txn.description or ''
+        if _is_put(desc):
+            symbol = f"{base_symbol} (Put)"
+        else:
+            symbol = base_symbol
+
+        txn_date = txn.transaction_date
+        if isinstance(txn_date, datetime):
+            txn_date = txn_date.date()
+        txn_monday = txn_date - timedelta(days=txn_date.weekday())
+        week_key = monday_to_week.get(txn_monday)
+        if not week_key:
+            # Transaction falls on a weekend or outside computed weeks; assign to nearest
+            closest = min(weeks_list, key=lambda w: abs((w['monday'] - txn_monday).days))
+            week_key = closest['key']
+
         amount = float(txn.amount or 0)
+        is_sto = txn.transaction_type == 'STO'
         contract_count = abs(txn.quantity) if txn.quantity else 1
-        
+
         if symbol not in by_symbol:
-            by_symbol[symbol] = {
-                'week1': {'count': 0, 'amount': 0.0},
-                'week2': {'count': 0, 'amount': 0.0},
-                'week3': {'count': 0, 'amount': 0.0},
-                'week4': {'count': 0, 'amount': 0.0},
-                'week5': {'count': 0, 'amount': 0.0},
-                'total_count': 0,
-                'total_amount': 0.0,
-            }
-        
-        by_symbol[symbol][week_key]['count'] += contract_count
+            by_symbol[symbol] = {k: {'count': 0, 'amount': 0.0} for k in week_keys}
+            by_symbol[symbol]['total_count'] = 0
+            by_symbol[symbol]['total_amount'] = 0.0
+
+        if is_sto:
+            by_symbol[symbol][week_key]['count'] += contract_count
+            by_symbol[symbol]['total_count'] += contract_count
+            weekly_totals[week_key]['count'] += contract_count
         by_symbol[symbol][week_key]['amount'] += amount
-        by_symbol[symbol]['total_count'] += contract_count
         by_symbol[symbol]['total_amount'] += amount
-        
-        weekly_totals[week_key]['count'] += contract_count
+
         weekly_totals[week_key]['amount'] += amount
-        
+
         month_total += amount
-    
+
     # Convert to the format expected by frontend
     weekly_data = {}
     for symbol, data in by_symbol.items():
-        weekly_data[symbol] = {
-            'week1': {'count': data['week1']['count'], 'amount': data['week1']['amount']},
-            'week2': {'count': data['week2']['count'], 'amount': data['week2']['amount']},
-            'week3': {'count': data['week3']['count'], 'amount': data['week3']['amount']},
-            'week4': {'count': data['week4']['count'], 'amount': data['week4']['amount']},
-            'week5': {'count': data['week5']['count'], 'amount': data['week5']['amount']},
-            'total': {'count': data['total_count'], 'amount': data['total_amount']},
-        }
-    
+        entry = {k: {'count': data[k]['count'], 'amount': data[k]['amount']} for k in week_keys}
+        entry['total_count'] = data['total_count']
+        entry['total_amount'] = data['total_amount']
+        weekly_data[symbol] = entry
+
     # Sort symbols by total amount
     sorted_symbols = sorted(by_symbol.keys(), key=lambda s: by_symbol[s]['total_amount'], reverse=True)
-    
+
     return {
         'month': f"{year}-{month:02d}",
         'month_formatted': datetime(year, month, 1).strftime('%B %Y'),
         'month_total': month_total,
         'weekly_data': weekly_data,
         'symbols': sorted_symbols,
-        'weekly_totals': {
-            'week1': weekly_totals['week1']['amount'],
-            'week2': weekly_totals['week2']['amount'],
-            'week3': weekly_totals['week3']['amount'],
-            'week4': weekly_totals['week4']['amount'],
-            'week5': weekly_totals['week5']['amount'],
-        },
-        'weekly_counts': {
-            'week1': weekly_totals['week1']['count'],
-            'week2': weekly_totals['week2']['count'],
-            'week3': weekly_totals['week3']['count'],
-            'week4': weekly_totals['week4']['count'],
-            'week5': weekly_totals['week5']['count'],
-        },
+        'weeks': [{'key': w['key'], 'label': w['label'], 'range': w['range']} for w in weeks_list],
+        'weekly_totals': {k: weekly_totals[k]['amount'] for k in week_keys},
+        'weekly_counts': {k: weekly_totals[k]['count'] for k in week_keys},
         'transaction_count': len(transactions),
     }
 
@@ -427,6 +516,80 @@ async def get_salary_income(db: Session = Depends(get_db)):
     """
     service = get_salary_service(db=db)
     return service.get_salary_summary()
+
+
+# =============================================================================
+# SALARY PROJECTIONS - Config for BBD income offset
+# (Must be registered before /salary/{year} to avoid path conflict)
+# =============================================================================
+
+@router.get("/salary/projections")
+async def list_salary_projections(db: Session = Depends(get_db)):
+    """List all salary projection records."""
+    from sqlalchemy import text
+    rows = db.execute(text(
+        "SELECT id, person, monthly_net, effective_from, effective_to, notes "
+        "FROM salary_projections ORDER BY person, effective_from"
+    )).fetchall()
+    return {
+        'projections': [
+            {
+                'id': r[0],
+                'person': r[1],
+                'monthly_net': float(r[2]),
+                'effective_from': r[3],
+                'effective_to': r[4],
+                'notes': r[5],
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/salary/projections")
+async def create_salary_projection(body: SalaryProjectionCreate, db: Session = Depends(get_db)):
+    """Create or upsert a salary projection by (person, effective_from)."""
+    from sqlalchemy import text
+    existing = db.execute(text(
+        "SELECT id FROM salary_projections WHERE person = :person AND effective_from = :ef"
+    ), {'person': body.person, 'ef': body.effective_from}).fetchone()
+
+    if existing:
+        db.execute(text(
+            "UPDATE salary_projections SET monthly_net = :mn, effective_to = :et, notes = :n, updated_at = NOW() "
+            "WHERE id = :id"
+        ), {'mn': body.monthly_net, 'et': body.effective_to, 'n': body.notes, 'id': existing[0]})
+        row_id = existing[0]
+    else:
+        result = db.execute(text(
+            "INSERT INTO salary_projections (person, monthly_net, effective_from, effective_to, notes, created_at, updated_at) "
+            "VALUES (:p, :mn, :ef, :et, :n, NOW(), NOW()) RETURNING id"
+        ), {'p': body.person, 'mn': body.monthly_net, 'ef': body.effective_from, 'et': body.effective_to, 'n': body.notes})
+        row_id = result.fetchone()[0]
+
+    db.commit()
+    return {
+        'id': row_id,
+        'person': body.person,
+        'monthly_net': body.monthly_net,
+        'effective_from': body.effective_from,
+        'effective_to': body.effective_to,
+        'notes': body.notes,
+    }
+
+
+@router.delete("/salary/projections/{projection_id}")
+async def delete_salary_projection(projection_id: int, db: Session = Depends(get_db)):
+    """Delete a salary projection."""
+    from sqlalchemy import text
+    result = db.execute(text(
+        "DELETE FROM salary_projections WHERE id = :id RETURNING id"
+    ), {'id': projection_id})
+    deleted = result.fetchone()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Projection not found")
+    db.commit()
+    return {'status': 'deleted', 'id': projection_id}
 
 
 @router.get("/salary/{year}")

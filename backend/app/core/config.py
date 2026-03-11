@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     PROCESSED_DIR: Path = DATA_DIR / "processed"
     FAILED_DIR: Path = DATA_DIR / "failed"
     DOCUMENTS_DIR: Path = DATA_DIR / "documents"
+    TAX_DOCUMENTS_DIR: Path = DATA_DIR / "tax-documents"
+    AIRBNB_DOCUMENTS_DIR: Path = DATA_DIR / "airbnb-documents"
+    RENTAL_DOCUMENTS_DIR: Path = DATA_DIR / "rental-documents"
     
     # Security
     SECRET_KEY: str = "agrawal-estate-planner-secret-key-change-in-production"
@@ -77,11 +80,20 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_WHATSAPP_FROM: Optional[str] = None
     WHATSAPP_TO: Optional[str] = None
-    
+
     # Plaid API Configuration
     PLAID_CLIENT_ID: Optional[str] = None
     PLAID_SECRET: Optional[str] = None
     PLAID_ENV: str = "sandbox"  # sandbox, development, or production
+
+    # Testing Mode Configuration
+    # When OPTIONS_TEST_MODE=true, the system uses stored data instead of live API calls
+    # This prevents Yahoo Finance rate limiting during testing
+    OPTIONS_TEST_MODE: bool = False
+
+    # When true, cache is infinite outside market hours (prices don't change anyway)
+    # This reduces unnecessary API calls during off-hours testing
+    OPTIONS_INFINITE_CACHE_OFF_HOURS: bool = True
     
     class Config:
         env_file = ".env"

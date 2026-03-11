@@ -29,35 +29,90 @@ logger = logging.getLogger(__name__)
 _price_cache: Dict[str, Tuple[datetime, Dict]] = {}
 _CACHE_TTL_SECONDS = 300  # 5 minutes (default)
 
+# Import pytz for timezone handling
+import pytz
+
+
+def _is_test_mode() -> bool:
+    """Check if OPTIONS_TEST_MODE is enabled."""
+    try:
+        from app.core.config import settings
+        return getattr(settings, 'OPTIONS_TEST_MODE', False)
+    except Exception:
+        return False
+
+
+def _use_infinite_cache_off_hours() -> bool:
+    """Check if infinite cache is enabled for off-hours."""
+    try:
+        from app.core.config import settings
+        return getattr(settings, 'OPTIONS_INFINITE_CACHE_OFF_HOURS', True)
+    except Exception:
+        return True
+
+
+def _is_market_hours() -> bool:
+    """Check if we're within market hours (6:30 AM - 1:00 PM PT, Mon-Fri)."""
+    try:
+        PT = pytz.timezone('America/Los_Angeles')
+        now = datetime.now(PT)
+        weekday = now.weekday()
+
+        # Weekend = not market hours
+        if weekday >= 5:
+            return False
+
+        current_time = now.hour * 60 + now.minute
+        market_open = 6 * 60 + 30   # 6:30 AM PT
+        market_close = 13 * 60      # 1:00 PM PT
+
+        return market_open <= current_time <= market_close
+    except Exception:
+        return False
+
 
 def _get_cache_ttl() -> int:
     """
-    Get cache TTL based on market hours.
-    
+    Get cache TTL based on market hours and configuration.
+
     During market hours (6:30 AM - 1:00 PM PT, Mon-Fri): 5 minutes
-    Outside market hours: 1 hour (reduces unnecessary API calls)
+    Outside market hours with INFINITE_CACHE: 24 hours (prices don't change)
+    Outside market hours without INFINITE_CACHE: 30 minutes
+    Test mode: Always use infinite cache
     """
     try:
-        now = datetime.now(pytz.timezone('America/Los_Angeles'))
+        # Test mode = infinite cache (24 hours)
+        if _is_test_mode():
+            logger.debug("[TA_CACHE] Test mode enabled - using 24h cache")
+            return 86400  # 24 hours
+
+        PT = pytz.timezone('America/Los_Angeles')
+        now = datetime.now(PT)
         hour = now.hour
         minute = now.minute
         weekday = now.weekday()
-        
-        # Weekend - use long cache
-        if weekday >= 5:
-            return 3600  # 1 hour
-        
+
         # Convert to minutes since midnight for easier comparison
         current_time = hour * 60 + minute
         market_open = 6 * 60 + 30   # 6:30 AM PT
         market_close = 13 * 60      # 1:00 PM PT (market closes 1 PM PT)
-        
-        # During market hours
-        if market_open <= current_time <= market_close:
+
+        # During market hours - short cache
+        if weekday < 5 and market_open <= current_time <= market_close:
             return 300  # 5 minutes
-        
+
         # Outside market hours
-        return 1800  # 30 minutes (not as long as weekend, but still reduced)
+        if _use_infinite_cache_off_hours():
+            # Use 24-hour cache - prices don't change when market is closed
+            logger.debug("[TA_CACHE] Market closed, using 24h cache (infinite mode)")
+            return 86400  # 24 hours
+        else:
+            # Weekend
+            if weekday >= 5:
+                return 3600  # 1 hour
+            # Weekday outside hours
+            return 1800  # 30 minutes
+
     except Exception:
         return 300  # Default to 5 minutes if timezone fails
 
