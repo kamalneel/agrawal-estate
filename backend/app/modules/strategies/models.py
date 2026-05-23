@@ -424,6 +424,40 @@ class BbdPerformanceMetric(Base):
     )
 
 
+class MarginMonthlyBalance(Base):
+    """Monthly margin balance extracted from Robinhood brokerage statements.
+    Negative closing_balance = margin borrowed; positive = cash on hand (no margin)."""
+    __tablename__ = 'margin_monthly_balances'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_name = Column(String(200), nullable=False)  # 'neel_brokerage', 'jaya_brokerage'
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False)
+    opening_balance = Column(Numeric(14, 2), nullable=True)
+    closing_balance = Column(Numeric(14, 2), nullable=True)
+    portfolio_value = Column(Numeric(18, 2), nullable=True)
+    source = Column(String(50), nullable=True, default='statement')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_margin_balance_account_period', 'account_name', 'year', 'month', unique=True),
+    )
+
+
+class BbdSettings(Base):
+    """Single-row table storing configurable BBD strategy assumptions."""
+    __tablename__ = 'bbd_settings'
+
+    id = Column(Integer, primary_key=True, default=1)
+    assumed_annual_growth = Column(Numeric(6, 4), nullable=False, default=Decimal('0.08'))
+    assumed_combined_return = Column(Numeric(6, 4), nullable=False, default=Decimal('0.16'))
+    assumed_monthly_yield = Column(Numeric(6, 4), nullable=False, default=Decimal('0.01'))
+    assumed_annual_margin_rate = Column(Numeric(6, 4), nullable=False, default=Decimal('0.05'))
+    margin_ltv = Column(Numeric(6, 4), nullable=False, default=Decimal('0.70'))
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class IndiaStrategyHolding(Base):
     """User's Indian stock portfolio with goal-based target values."""
     __tablename__ = 'india_strategy_holdings'

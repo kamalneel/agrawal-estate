@@ -39,6 +39,7 @@ import {
   Pie,
 } from 'recharts';
 import styles from './OptionsSelling.module.css';
+import TechnicalAnalysisModal from '../components/TechnicalAnalysisModal';
 import { getAuthHeaders } from '../contexts/AuthContext';
 import {
   HoldingsTable,
@@ -112,6 +113,13 @@ interface SymbolSummary {
   is_cash_row?: boolean;
 }
 
+interface OptionSignal {
+  action: 'sell' | 'hold' | 'buy_back';
+  confidence: 'strong' | 'moderate' | 'weak';
+  score: number;
+  reason: string;
+}
+
 interface PutPremiumData {
   symbol: string;
   put_premium_per_contract: number;
@@ -129,6 +137,32 @@ interface PortfolioSummary {
   yearly_income: number;
   weekly_yield_percent: number;
   yearly_yield_percent: number;
+  total_cash_for_puts?: number;
+}
+
+interface PutPosition {
+  account: string;
+  strike_price: number;
+  contracts: number;
+  value_locked: number;
+  expiration_date: string | null;
+  original_premium: number | null;
+  current_premium: number | null;
+}
+
+interface PutSymbolSummary {
+  symbol: string;
+  total_contracts: number;
+  shares_equivalent: number;
+  value_locked: number;
+  current_price: number | null;
+  strikes: number[];
+  positions: PutPosition[];
+  weekly_income: number;
+  monthly_income: number;
+  yearly_income: number;
+  account_count: number;
+  accounts: string[];
 }
 
 interface SoldOptionsSnapshot {
@@ -162,6 +196,7 @@ interface OptionsData {
   income_periods?: IncomePeriods;
   sold_options_snapshot?: SoldOptionsSnapshot | null;
   symbols: SymbolSummary[];
+  put_symbols: PutSymbolSummary[];
   accounts: Account[];
 }
 
@@ -369,6 +404,9 @@ export default function OptionsSelling() {
   const [activeTab, setActiveTab] = useState<string>('overview');
   const [dataLastUpdated, setDataLastUpdated] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [taSymbol, setTaSymbol] = useState<string | null>(null);
+  const [optionSignals, setOptionSignals] = useState<Record<string, OptionSignal>>({});
+  const [signalsLoading, setSignalsLoading] = useState(false);
   
   // Settings
   const [defaultPremium, setDefaultPremium] = useState(60);
@@ -559,6 +597,35 @@ export default function OptionsSelling() {
       setIsRefreshing(false);
     }
   };
+
+  // Fetch directional signals for all symbols when data loads
+  const fetchOptionSignals = async (symbols: SymbolSummary[]) => {
+    setSignalsLoading(true);
+    try {
+      const payload = symbols
+        .filter(s => !s.is_cash_row && s.symbol !== 'CASH')
+        .map(s => ({ symbol: s.symbol, utilization: s.utilization_status || 'none' }));
+      const response = await fetch('/api/v1/strategies/technical-analysis/batch-signals', {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: payload }),
+      });
+      if (response.ok) {
+        const result = await response.json();
+        setOptionSignals(result.signals || {});
+      }
+    } catch (err) {
+      console.error('Failed to fetch option signals:', err);
+    } finally {
+      setSignalsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (data?.symbols?.length) {
+      fetchOptionSignals(data.symbols);
+    }
+  }, [data?.symbols]);
 
   // Manual refresh function - forces a fresh fetch
   const handleRefresh = () => {
@@ -1084,6 +1151,18 @@ export default function OptionsSelling() {
     return [...data.accounts].sort((a, b) => getAccountOrder(a) - getAccountOrder(b));
   }, [data]);
 
+  // Call symbols only (exclude CASH/put rows)
+  const callSymbols = sortedSymbols.filter(s => !s.is_cash_row && s.symbol !== 'CASH');
+
+  // Put symbols: open positions (with value locked) sorted by value locked, then historical-only by yearly income
+  const sortedPutSymbols = useMemo(() => {
+    if (!data?.put_symbols) return [];
+    return [...data.put_symbols].sort((a, b) => {
+      if (b.value_locked !== a.value_locked) return b.value_locked - a.value_locked;
+      return Math.abs(b.yearly_income) - Math.abs(a.yearly_income);
+    });
+  }, [data?.put_symbols]);
+
   // Chart data using calculated values
   const symbolChartData = sortedSymbols.slice(0, 6).map((sym, idx) => ({
     name: sym.symbol,
@@ -1379,9 +1458,15 @@ export default function OptionsSelling() {
               </div>
             </div>
 
-            {/* Symbol Breakdown Table */}
+            {/* Covered Calls Table */}
             <div className={styles.tableCard}>
-              <h3 className={styles.tableTitle}>Options by Stock Symbol</h3>
+              <div className={styles.tableSectionHeader}>
+                <div className={styles.tableSectionTitle}>
+                  <TrendingUp size={18} />
+                  <h3 className={styles.tableTitle}>Covered Calls by Symbol</h3>
+                </div>
+                <span className={styles.tableSectionBadge}>{callSymbols.length} symbol{callSymbols.length !== 1 ? 's' : ''}</span>
+              </div>
               <table className={styles.table}>
                 <thead>
                   <tr>
@@ -1399,6 +1484,9 @@ export default function OptionsSelling() {
                     </th>
                     <th rowSpan={2} className={styles.sortableHeader} onClick={() => handleOverviewSort('options')}>
                       Options {getSortIcon('options', overviewSort)}
+                    </th>
+                    <th rowSpan={2} className={styles.signalHeader}>
+                      Signal
                     </th>
                     <th colSpan={2} className={styles.tableGroupHeader}>
                       Weekly
@@ -1425,90 +1513,226 @@ export default function OptionsSelling() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedSymbols.map((symbol) => {
-                    const isCashRow = symbol.is_cash_row || symbol.symbol === 'CASH';
-
-                    return (
-                      <tr
-                        key={symbol.symbol}
-                        className={`${symbol.utilization_status === 'none' ? styles.unsoldRow : ''} ${isCashRow ? styles.cashRow : ''}`}
-                      >
-                        <td>
-                          <div className={styles.symbolCell}>
-                            <strong>{symbol.symbol}</strong>
-                            <span className={styles.accountCount}>
-                              {isCashRow ? 'Cash-Secured Puts' : `${symbol.account_count} account${symbol.account_count > 1 ? 's' : ''}`}
-                            </span>
-                          </div>
-                        </td>
-                        <td>{formatCurrency(symbol.value)}</td>
-                        <td>{isCashRow ? '-' : symbol.shares.toLocaleString()}</td>
-                        <td>{isCashRow ? '-' : formatCurrency(symbol.price)}</td>
-                        <td>
-                          {isCashRow ? (
-                            <span className={styles.putsLabel}>Puts</span>
-                          ) : (
-                            <div className={styles.optionsCell}>
-                              <span className={`${styles.optionsBadge} ${
-                                symbol.utilization_status === 'full' ? styles.optionsFull :
-                                symbol.utilization_status === 'partial' ? styles.optionsPartial :
-                                styles.optionsNone
-                              }`}>
-                                {symbol.options}
-                              </span>
-                              {symbol.sold_contracts !== undefined && symbol.unsold_contracts !== undefined && (
-                                <div className={styles.soldUnsoldInfo}>
-                                  {symbol.sold_contracts > 0 && (
-                                    <span className={styles.soldCount} title="Sold">
-                                      <CheckCircle size={12} /> {symbol.sold_contracts}
-                                    </span>
-                                  )}
-                                  {symbol.unsold_contracts > 0 && (
-                                    <span className={styles.unsoldCount} title="Unsold">
-                                      <XCircle size={12} /> {symbol.unsold_contracts}
-                                    </span>
-                                  )}
-                                </div>
+                  {callSymbols.map((symbol) => (
+                    <tr
+                      key={symbol.symbol}
+                      className={symbol.utilization_status === 'none' ? styles.unsoldRow : ''}
+                    >
+                      <td>
+                        <div className={styles.symbolCell}>
+                          <strong
+                            className={styles.clickableSymbol}
+                            onClick={() => setTaSymbol(symbol.symbol)}
+                          >
+                            {symbol.symbol}
+                          </strong>
+                          <span className={styles.accountCount}>
+                            {symbol.account_count} account{symbol.account_count > 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      </td>
+                      <td>{formatCurrency(symbol.value)}</td>
+                      <td>{symbol.shares.toLocaleString()}</td>
+                      <td>{formatCurrency(symbol.price)}</td>
+                      <td>
+                        <div className={styles.optionsCell}>
+                          <span className={`${styles.optionsBadge} ${
+                            symbol.utilization_status === 'full' ? styles.optionsFull :
+                            symbol.utilization_status === 'partial' ? styles.optionsPartial :
+                            styles.optionsNone
+                          }`}>
+                            {symbol.options}
+                          </span>
+                          {symbol.sold_contracts !== undefined && symbol.unsold_contracts !== undefined && (
+                            <div className={styles.soldUnsoldInfo}>
+                              {symbol.sold_contracts > 0 && (
+                                <span className={styles.soldCount} title="Sold">
+                                  <CheckCircle size={12} /> {symbol.sold_contracts}
+                                </span>
+                              )}
+                              {symbol.unsold_contracts > 0 && (
+                                <span className={styles.unsoldCount} title="Unsold">
+                                  <XCircle size={12} /> {symbol.unsold_contracts}
+                                </span>
                               )}
                             </div>
                           )}
-                        </td>
-                        <td className={styles.expectedCol}>
-                          {formatCurrency(symbol.expectedWeekly)}
-                        </td>
-                        <td className={`${styles.actualCol} ${symbol.actualWeekly >= symbol.expectedWeekly ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
-                          {formatCurrency(symbol.actualWeekly)}
-                        </td>
-                        <td className={styles.expectedCol}>
-                          {formatCurrency(symbol.expectedMonthly)}
-                        </td>
-                        <td className={`${styles.actualCol} ${symbol.actualMonthly >= symbol.expectedMonthly ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
-                          {formatCurrency(symbol.actualMonthly)}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                        </div>
+                      </td>
+                      <td>
+                        {optionSignals[symbol.symbol] ? (
+                          <div
+                            className={`${styles.signalBadge} ${styles[`signal_${optionSignals[symbol.symbol].action}`]} ${styles[`confidence_${optionSignals[symbol.symbol].confidence}`]}`}
+                            title={optionSignals[symbol.symbol].reason}
+                          >
+                            <span className={styles.signalAction}>
+                              {optionSignals[symbol.symbol].action === 'sell' ? 'SELL' :
+                               optionSignals[symbol.symbol].action === 'buy_back' ? 'BUY BACK' : 'HOLD'}
+                            </span>
+                            <span className={styles.signalConfidence}>
+                              {optionSignals[symbol.symbol].confidence}
+                            </span>
+                          </div>
+                        ) : signalsLoading ? (
+                          <RefreshCw size={14} className={styles.spinner} />
+                        ) : (
+                          <span>—</span>
+                        )}
+                      </td>
+                      <td className={styles.expectedCol}>{formatCurrency(symbol.expectedWeekly)}</td>
+                      <td className={`${styles.actualCol} ${symbol.actualWeekly >= symbol.expectedWeekly ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
+                        {formatCurrency(symbol.actualWeekly)}
+                      </td>
+                      <td className={styles.expectedCol}>{formatCurrency(symbol.expectedMonthly)}</td>
+                      <td className={`${styles.actualCol} ${symbol.actualMonthly >= symbol.expectedMonthly ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
+                        {formatCurrency(symbol.actualMonthly)}
+                      </td>
+                    </tr>
+                  ))}
                   <tr className={styles.totalRow}>
                     <td><strong>TOTAL</strong></td>
-                    <td><strong>{formatCurrency(portfolioTotals.total_value)}</strong></td>
+                    <td><strong>{formatCurrency(callSymbols.reduce((s, sym) => s + sym.value, 0))}</strong></td>
                     <td></td>
                     <td></td>
                     <td><strong>{portfolioTotals.total_options}</strong></td>
+                    <td></td>
                     <td className={styles.expectedCol}>
-                      <strong>{formatCurrency(portfolioTotals.total_value * 0.01 / 4)}</strong>
+                      <strong>{formatCurrency(callSymbols.reduce((s, sym) => s + sym.expectedWeekly, 0))}</strong>
                     </td>
-                    <td className={`${styles.actualCol} ${portfolioTotals.weekly_income >= portfolioTotals.total_value * 0.01 / 4 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
-                      <strong>{formatCurrency(portfolioTotals.weekly_income)}</strong>
+                    <td className={styles.actualCol}>
+                      <strong>{formatCurrency(callSymbols.reduce((s, sym) => s + sym.actualWeekly, 0))}</strong>
                     </td>
                     <td className={styles.expectedCol}>
-                      <strong>{formatCurrency(portfolioTotals.total_value * 0.01)}</strong>
+                      <strong>{formatCurrency(callSymbols.reduce((s, sym) => s + sym.expectedMonthly, 0))}</strong>
                     </td>
-                    <td className={`${styles.actualCol} ${portfolioTotals.monthly_income >= portfolioTotals.total_value * 0.01 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
-                      <strong>{formatCurrency(portfolioTotals.monthly_income)}</strong>
+                    <td className={styles.actualCol}>
+                      <strong>{formatCurrency(callSymbols.reduce((s, sym) => s + sym.actualMonthly, 0))}</strong>
                     </td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+
+            {/* Cash-Secured Puts Table */}
+            <div className={styles.tableCard}>
+              <div className={styles.putsSectionHeader}>
+                <div className={styles.tableSectionTitle}>
+                  <TrendingDown size={18} />
+                  <h3 className={styles.tableTitle}>Cash-Secured Puts by Symbol</h3>
+                </div>
+                <div className={styles.cashAvailableStat}>
+                  <Wallet size={14} />
+                  <span className={styles.cashAvailableLabel}>Cash Available</span>
+                  <strong className={styles.cashAvailableValue}>
+                    {formatCurrency(data.portfolio_summary.total_cash_for_puts ?? 0)}
+                  </strong>
+                </div>
+              </div>
+
+              {sortedPutSymbols.length === 0 ? (
+                <div className={styles.putsEmptyState}>
+                  <p>No put positions recorded yet. Sell a cash-secured put and upload a snapshot to see it here.</p>
+                </div>
+              ) : (
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th className={styles.numericCol}>Value Locked</th>
+                      <th className={styles.numericCol}>Shares</th>
+                      <th className={styles.numericCol}>Strike</th>
+                      <th className={styles.numericCol}>Stock Price</th>
+                      <th className={styles.numericCol}>Options</th>
+                      <th className={styles.actualCol}>
+                        Weekly
+                        {data?.income_periods?.weekly && <span className={styles.periodLabel}>{data.income_periods.weekly.label}</span>}
+                      </th>
+                      <th className={styles.actualCol}>
+                        Monthly
+                        {data?.income_periods?.monthly && <span className={styles.periodLabel}>{data.income_periods.monthly.label}</span>}
+                      </th>
+                      <th className={styles.actualCol}>
+                        Yearly
+                        {data?.income_periods?.yearly && <span className={styles.periodLabel}>{data.income_periods.yearly.label}</span>}
+                      </th>
+                      <th>Accounts</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedPutSymbols.map((put) => {
+                      const strikeLabel = put.strikes.length === 0 ? '—'
+                        : put.strikes.length === 1 ? `$${put.strikes[0].toLocaleString()}`
+                        : put.strikes.map(s => `$${s}`).join(', ');
+                      return (
+                        <tr key={put.symbol}>
+                          <td>
+                            <div className={styles.symbolCell}>
+                              <strong
+                                className={styles.clickableSymbol}
+                                onClick={() => setTaSymbol(put.symbol)}
+                              >
+                                {put.symbol}
+                              </strong>
+                              <span className={styles.accountCount}>
+                                {put.account_count} account{put.account_count !== 1 ? 's' : ''}
+                              </span>
+                            </div>
+                          </td>
+                          <td className={styles.numericCol}>
+                            {put.value_locked > 0 ? formatCurrency(put.value_locked) : '—'}
+                          </td>
+                          <td className={styles.numericCol}>
+                            {put.shares_equivalent > 0 ? put.shares_equivalent.toLocaleString() : '—'}
+                          </td>
+                          <td className={styles.numericCol}>
+                            <span className={styles.strikeBadge}>{strikeLabel}</span>
+                          </td>
+                          <td className={styles.numericCol}>
+                            {put.current_price != null ? `$${put.current_price.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : '—'}
+                          </td>
+                          <td className={styles.numericCol}>
+                            {put.total_contracts > 0 ? put.total_contracts : '—'}
+                          </td>
+                          <td className={`${styles.actualCol} ${put.weekly_income > 0 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
+                            {formatCurrency(put.weekly_income)}
+                          </td>
+                          <td className={`${styles.actualCol} ${put.monthly_income > 0 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
+                            {formatCurrency(put.monthly_income)}
+                          </td>
+                          <td className={`${styles.actualCol} ${put.yearly_income > 0 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
+                            {formatCurrency(put.yearly_income)}
+                          </td>
+                          <td>
+                            <span className={styles.accountCount}>{put.accounts.join(', ')}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    <tr className={styles.totalRow}>
+                      <td><strong>TOTAL</strong></td>
+                      <td className={styles.numericCol}>
+                        <strong>{formatCurrency(sortedPutSymbols.reduce((s, p) => s + p.value_locked, 0))}</strong>
+                      </td>
+                      <td className={styles.numericCol}></td>
+                      <td className={styles.numericCol}></td>
+                      <td className={styles.numericCol}></td>
+                      <td className={styles.numericCol}>
+                        <strong>{sortedPutSymbols.reduce((s, p) => s + p.total_contracts, 0)}</strong>
+                      </td>
+                      <td className={styles.actualCol}>
+                        <strong>{formatCurrency(sortedPutSymbols.reduce((s, p) => s + p.weekly_income, 0))}</strong>
+                      </td>
+                      <td className={styles.actualCol}>
+                        <strong>{formatCurrency(sortedPutSymbols.reduce((s, p) => s + p.monthly_income, 0))}</strong>
+                      </td>
+                      <td className={styles.actualCol}>
+                        <strong>{formatCurrency(sortedPutSymbols.reduce((s, p) => s + p.yearly_income, 0))}</strong>
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
             </div>
           </>
         )}
@@ -1532,7 +1756,7 @@ export default function OptionsSelling() {
                 </div>
                 <div className={styles.accountStat}>
                   <span className={styles.statLabel}>Options Available</span>
-                  <span className={styles.statValue}>{account.total_options}</span>
+                  <span className={styles.statValue}>{account.unsold_options ?? account.total_options}</span>
                 </div>
                 <div className={`${styles.accountStat} ${styles.highlight}`}>
                   <span className={styles.statLabel}>Weekly Income</span>
@@ -2670,6 +2894,12 @@ export default function OptionsSelling() {
           </div>
         )}
       </div>
+
+      <TechnicalAnalysisModal
+        symbol={taSymbol || ''}
+        isOpen={!!taSymbol}
+        onClose={() => setTaSymbol(null)}
+      />
     </div>
   );
 }

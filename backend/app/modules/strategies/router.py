@@ -1043,12 +1043,25 @@ async def get_bbd_assumption_metrics(
     from app.modules.strategies.bbd_performance_service import BbdPerformanceService
 
     service = BbdPerformanceService(db)
+
+    # Auto-compute incremental metrics so new months are always available
+    service.compute_all(force=False)
+    db.commit()
+
     metrics = service.get_metrics(metric_type, period_type, year, month)
 
+    # For growth metrics, exclude the current in-progress month to avoid misleading partial returns.
+    # For options_yield, keep partial months so the income page can show expected income and
+    # capital baseline for the current month even before the month completes.
+    if period_type == 'month' and metric_type in ('portfolio_growth', 'pure_growth'):
+        metrics = [m for m in metrics if m.get('data_completeness') != 'partial']
+
     if metric_type == 'portfolio_growth':
-        assumed_rate = '8%/year'
+        assumed_rate = '20%/year (8% growth + 12% options income)'
+    elif metric_type == 'pure_growth':
+        assumed_rate = '8%/year (market appreciation only)'
     elif metric_type == 'options_yield':
-        assumed_rate = '1%/month'
+        assumed_rate = '1%/month (12%/year)'
     else:
         assumed_rate = '5% margin interest'
 
@@ -1058,6 +1071,56 @@ async def get_bbd_assumption_metrics(
         'assumed_rate': assumed_rate,
         'metrics': metrics,
     }
+
+
+
+@router.get("/buy-borrow-die/settings")
+async def get_bbd_settings(db: Session = Depends(get_db)):
+    """Return the current BBD configurable assumptions."""
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+    svc = BbdPerformanceService(db)
+    return {
+        'assumed_annual_growth': float(svc.ASSUMED_ANNUAL_GROWTH),
+        'assumed_combined_return': float(svc.ASSUMED_COMBINED_RETURN),
+        'assumed_monthly_yield': float(svc.ASSUMED_MONTHLY_YIELD),
+        'assumed_annual_margin_rate': float(svc.ASSUMED_ANNUAL_MARGIN_RATE),
+        'margin_ltv': svc.MARGIN_LTV,
+    }
+
+
+class BbdSettingsUpdate(BaseModel):
+    assumed_annual_growth: float
+    assumed_combined_return: float
+    assumed_monthly_yield: float
+    assumed_annual_margin_rate: float
+    margin_ltv: float
+
+
+@router.put("/buy-borrow-die/settings")
+async def update_bbd_settings(payload: BbdSettingsUpdate, db: Session = Depends(get_db)):
+    """Update BBD assumptions and trigger a full recompute."""
+    try:
+        db.execute(text(
+            "UPDATE bbd_settings SET "
+            "assumed_annual_growth=:g, assumed_combined_return=:cr, "
+            "assumed_monthly_yield=:y, assumed_annual_margin_rate=:r, "
+            "margin_ltv=:ltv, updated_at=NOW() WHERE id=1"
+        ), {
+            'g': payload.assumed_annual_growth,
+            'cr': payload.assumed_combined_return,
+            'y': payload.assumed_monthly_yield,
+            'r': payload.assumed_annual_margin_rate,
+            'ltv': payload.margin_ltv,
+        })
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"PUT /buy-borrow-die/settings failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+    svc = BbdPerformanceService(db)
+    count = svc.compute_all(force=True)
+    return {'status': 'saved', 'periods_recomputed': count}
 
 
 @router.post("/buy-borrow-die/assumptions/compute")
@@ -1875,7 +1938,31 @@ def calculate_actual_income_for_holdings(
                 'yearly': yearly_call_income.get(account_name, {}).get(sym, 0),
             }
 
-    return account_income, symbol_income, portfolio_totals, date_ranges, put_income_by_account, account_symbol_income
+    # Per-symbol PUT income (for puts breakdown table)
+    weekly_put_by_sym = get_actual_options_income(db, *date_ranges['last_week'], option_type='put')
+    monthly_put_by_sym = get_actual_options_income(db, *date_ranges['last_month'], option_type='put')
+    yearly_put_by_sym = get_actual_options_income(db, *date_ranges['last_year'], option_type='put')
+
+    all_put_syms: set = set()
+    for acct_data in [weekly_put_by_sym, monthly_put_by_sym, yearly_put_by_sym]:
+        for syms in acct_data.values():
+            all_put_syms.update(syms.keys())
+
+    put_symbol_income: Dict[str, Dict] = {}
+    for sym in all_put_syms:
+        acct_set: set = set()
+        for src in [weekly_put_by_sym, monthly_put_by_sym, yearly_put_by_sym]:
+            for acct_name, syms in src.items():
+                if sym in syms:
+                    acct_set.add(acct_name)
+        put_symbol_income[sym] = {
+            'weekly': sum(acct.get(sym, 0) for acct in weekly_put_by_sym.values()),
+            'monthly': sum(acct.get(sym, 0) for acct in monthly_put_by_sym.values()),
+            'yearly': sum(acct.get(sym, 0) for acct in yearly_put_by_sym.values()),
+            'accounts': list(acct_set),
+        }
+
+    return account_income, symbol_income, portfolio_totals, date_ranges, put_income_by_account, account_symbol_income, put_symbol_income
 
 
 @router.post("/options-selling/income-projection-with-status")
@@ -2098,8 +2185,9 @@ async def calculate_options_income_with_sold_status(
 
     date_ranges = None
     actual_portfolio_totals = None
+    put_symbol_income: Dict[str, Dict] = {}
     try:
-        actual_account_income, actual_symbol_income, actual_portfolio_totals, date_ranges, put_income_by_account, actual_account_symbol_income = \
+        actual_account_income, actual_symbol_income, actual_portfolio_totals, date_ranges, put_income_by_account, actual_account_symbol_income, put_symbol_income = \
             calculate_actual_income_for_holdings(db, accounts, symbols)
 
         # Update symbol-level income with actuals
@@ -2345,6 +2433,110 @@ async def calculate_options_income_with_sold_status(
             }
         }
 
+    # Build per-symbol put position data from sold_by_account (already computed above)
+    # Collect put option IDs and raw position info
+    put_option_ids: list = []
+    put_positions_raw: Dict[str, list] = {}  # symbol -> [{account, id, strike_price, contracts}]
+    for acct_name, acct_data in sold_by_account.items():
+        for sym, opts in acct_data.get("by_symbol", {}).items():
+            for opt in opts:
+                if opt.get("option_type", "").lower() == "put":
+                    put_option_ids.append(opt["id"])
+                    put_positions_raw.setdefault(sym, []).append({
+                        "account": acct_name,
+                        "id": opt["id"],
+                        "strike_price": opt["strike_price"],
+                        "contracts": opt["contracts_sold"],
+                    })
+
+    # Fetch expiration dates and premiums for put positions
+    put_detail_by_id: Dict[int, Dict] = {}
+    if put_option_ids:
+        put_opts_full = db.query(SoldOption).filter(SoldOption.id.in_(put_option_ids)).all()
+        for po in put_opts_full:
+            put_detail_by_id[po.id] = {
+                "expiration_date": po.expiration_date.isoformat() if po.expiration_date else None,
+                "original_premium": float(po.original_premium) if po.original_premium else None,
+                "current_premium": float(po.premium_per_contract) if po.premium_per_contract else None,
+            }
+
+    # Get current stock prices for put symbols (from holdings dict if available)
+    put_sym_prices: Dict[str, Optional[float]] = {sym: symbols[sym]["price"] if sym in symbols else None for sym in put_positions_raw}
+
+    # For symbols not in holdings (pure put plays with no stock owned), query directly
+    missing_price_syms = [s for s, p in put_sym_prices.items() if p is None]
+    if missing_price_syms:
+        placeholders = ', '.join(f':sym{i}' for i in range(len(missing_price_syms)))
+        params = {f'sym{i}': s for i, s in enumerate(missing_price_syms)}
+        price_rows = db.execute(text(f"""
+            SELECT DISTINCT ON (ih.symbol) ih.symbol, ih.current_price
+            FROM investment_holdings ih
+            WHERE ih.symbol IN ({placeholders})
+            AND ih.current_price IS NOT NULL
+            ORDER BY ih.symbol, ih.current_price DESC
+        """), params)
+        for row in price_rows:
+            sym, price = row
+            if price and put_sym_prices.get(sym) is None:
+                put_sym_prices[sym] = float(price)
+
+    # Assemble put_position_data per symbol
+    put_position_data: Dict[str, Dict] = {}
+    for sym, raw_positions in put_positions_raw.items():
+        total_contracts = 0
+        value_locked = 0.0
+        full_positions = []
+        for rp in raw_positions:
+            detail = put_detail_by_id.get(rp["id"], {})
+            contracts = rp["contracts"]
+            strike = rp["strike_price"]
+            locked = strike * 100 * contracts
+            total_contracts += contracts
+            value_locked += locked
+            full_positions.append({
+                "account": rp["account"],
+                "strike_price": strike,
+                "contracts": contracts,
+                "value_locked": round(locked, 0),
+                "expiration_date": detail.get("expiration_date"),
+                "original_premium": detail.get("original_premium"),
+                "current_premium": detail.get("current_premium"),
+            })
+        put_position_data[sym] = {
+            "total_contracts": total_contracts,
+            "shares_equivalent": total_contracts * 100,
+            "value_locked": round(value_locked, 0),
+            "current_price": put_sym_prices.get(sym),
+            "positions": full_positions,
+            "strikes": sorted(set(p["strike_price"] for p in full_positions)),
+        }
+
+    # Build put_symbols_list merging income + position data
+    all_put_syms_set = set(put_symbol_income.keys()) | set(put_position_data.keys())
+    put_symbols_list = []
+    for sym in all_put_syms_set:
+        income = put_symbol_income.get(sym, {"weekly": 0, "monthly": 0, "yearly": 0, "accounts": []})
+        pos = put_position_data.get(sym, {})
+        income_accounts = set(income.get("accounts", []))
+        pos_accounts = set(p["account"] for p in pos.get("positions", []))
+        all_accounts = sorted(income_accounts | pos_accounts)
+        put_symbols_list.append({
+            "symbol": sym,
+            "total_contracts": pos.get("total_contracts", 0),
+            "shares_equivalent": pos.get("shares_equivalent", 0),
+            "value_locked": pos.get("value_locked", 0),
+            "current_price": pos.get("current_price"),
+            "strikes": pos.get("strikes", []),
+            "positions": pos.get("positions", []),
+            "weekly_income": round(income["weekly"], 2),
+            "monthly_income": round(income["monthly"], 2),
+            "yearly_income": round(income["yearly"], 2),
+            "account_count": len(all_accounts),
+            "accounts": all_accounts,
+        })
+    # Sort by value locked (open positions first), then by yearly income
+    put_symbols_list.sort(key=lambda x: (x["value_locked"], abs(x["yearly_income"])), reverse=True)
+
     result = {
         "params": {
             "default_premium": default_premium,
@@ -2361,11 +2553,13 @@ async def calculate_options_income_with_sold_status(
             "monthly_income": round(total_monthly, 0),
             "yearly_income": round(total_yearly, 0),
             "weekly_yield_percent": round(weekly_yield, 3),
-            "yearly_yield_percent": round(yearly_yield, 2)
+            "yearly_yield_percent": round(yearly_yield, 2),
+            "total_cash_for_puts": round(total_cash, 0)
         },
         "income_periods": income_periods,
         "sold_options_snapshot": sold_data.get("snapshot"),
         "symbols": symbols_list,
+        "put_symbols": put_symbols_list,
         "accounts": [accounts[name] for name in account_order if accounts[name]["total_options"] > 0]
     }
 
@@ -4250,6 +4444,159 @@ def _get_summary_recommendation(indicators) -> str:
         return "Neutral - no strong signals"
     
     return ", ".join(signals).capitalize()
+
+
+def _compute_option_signal(indicators, utilization: str) -> dict:
+    """
+    Compute a directional signal for a symbol's options.
+
+    Returns a dict with:
+      action: "sell" | "hold" | "buy_back"
+      confidence: "strong" | "moderate" | "weak"
+      reason: short human-readable explanation
+    """
+    score = 0  # positive = sell, negative = buy back, near 0 = hold
+    reasons = []
+
+    # RSI signals
+    if indicators.rsi_14 >= 70:
+        score += 2
+        reasons.append("overbought RSI")
+    elif indicators.rsi_14 >= 60:
+        score += 1
+        reasons.append("elevated RSI")
+    elif indicators.rsi_14 <= 30:
+        score -= 2
+        reasons.append("oversold RSI")
+    elif indicators.rsi_14 <= 40:
+        score -= 1
+        reasons.append("low RSI")
+
+    # Trend signals — bearish trend is good for selling calls (stock stays flat/drops)
+    if indicators.trend == "bearish":
+        score += 1
+        reasons.append("bearish trend")
+    elif indicators.trend == "bullish":
+        score -= 1
+        reasons.append("bullish trend")
+
+    # Bollinger Band position
+    if indicators.bb_position in ("above_upper",):
+        score += 1
+        reasons.append("above upper BB")
+    elif indicators.bb_position in ("below_lower",):
+        score -= 1
+        reasons.append("below lower BB")
+
+    # Price vs moving averages — below 50-day MA = safer to sell calls
+    if indicators.ma_50 and indicators.current_price < indicators.ma_50 * 0.97:
+        score += 1
+        reasons.append("below 50-day MA")
+    elif indicators.ma_50 and indicators.current_price > indicators.ma_50 * 1.03:
+        score -= 1
+        reasons.append("above 50-day MA")
+
+    # Earnings proximity — risky to sell near earnings
+    if indicators.earnings_within_week:
+        score -= 2
+        reasons.append("earnings within week")
+
+    # Determine action based on score and current utilization
+    if utilization == "none":
+        # All options are unsold — decide sell vs hold
+        if score >= 2:
+            action, confidence = "sell", "strong"
+        elif score >= 1:
+            action, confidence = "sell", "moderate"
+        elif score <= -2:
+            action, confidence = "hold", "strong"
+        elif score <= -1:
+            action, confidence = "hold", "moderate"
+        else:
+            action, confidence = "sell", "weak"
+    elif utilization == "full":
+        # All sold — decide buy back vs hold
+        if score <= -2:
+            action, confidence = "buy_back", "strong"
+        elif score <= -1:
+            action, confidence = "buy_back", "moderate"
+        elif score >= 2:
+            action, confidence = "hold", "strong"
+        elif score >= 1:
+            action, confidence = "hold", "moderate"
+        else:
+            action, confidence = "hold", "weak"
+    else:
+        # Partial — could go either way
+        if score >= 2:
+            action, confidence = "sell", "strong"
+        elif score >= 1:
+            action, confidence = "sell", "moderate"
+        elif score <= -2:
+            action, confidence = "buy_back", "strong"
+        elif score <= -1:
+            action, confidence = "buy_back", "moderate"
+        else:
+            action, confidence = "hold", "weak"
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "score": score,
+        "reason": "; ".join(reasons) if reasons else "no strong signals",
+    }
+
+
+@router.post("/technical-analysis/batch-signals")
+async def get_batch_signals(
+    request: Request,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Get directional option signals for multiple symbols at once.
+
+    Request body: { "symbols": [{ "symbol": "AAPL", "utilization": "partial" }, ...] }
+    Returns: { "signals": { "AAPL": { "action": "sell", "confidence": "strong", "reason": "..." }, ... } }
+    """
+    from app.modules.strategies.technical_analysis import get_technical_analysis_service
+    import logging
+
+    logger = logging.getLogger(__name__)
+    body = await request.json()
+    symbol_requests = body.get("symbols", [])
+
+    ta_service = get_technical_analysis_service()
+    signals = {}
+
+    for item in symbol_requests:
+        sym = item.get("symbol", "").upper()
+        utilization = item.get("utilization", "none")
+
+        if not sym or sym == "CASH":
+            continue
+
+        try:
+            indicators = ta_service.get_technical_indicators(sym)
+            if indicators:
+                signals[sym] = _compute_option_signal(indicators, utilization)
+            else:
+                signals[sym] = {
+                    "action": "hold",
+                    "confidence": "weak",
+                    "score": 0,
+                    "reason": "no data available",
+                }
+        except Exception as e:
+            logger.warning(f"Failed to get TA for {sym}: {e}")
+            signals[sym] = {
+                "action": "hold",
+                "confidence": "weak",
+                "score": 0,
+                "reason": "analysis unavailable",
+            }
+
+    return {"signals": signals}
 
 
 @router.get("/technical-analysis/{symbol}/strike-recommendation")
