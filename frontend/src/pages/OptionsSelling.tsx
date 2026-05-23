@@ -156,6 +156,7 @@ interface PutSymbolSummary {
   shares_equivalent: number;
   value_locked: number;
   current_price: number | null;
+  avg_cost_per_share: number | null;
   strikes: number[];
   positions: PutPosition[];
   weekly_income: number;
@@ -415,6 +416,10 @@ export default function OptionsSelling() {
   const [putPremiums, setPutPremiums] = useState<Record<string, PutPremiumData>>({});
   const [delta, setDelta] = useState(10);
   const [weeksPerYear, setWeeksPerYear] = useState(50);
+
+  // V6 account-type delta targets
+  const [iraDelta, setIraDelta] = useState(75);
+  const [taxableDelta, setTaxableDelta] = useState(90);
 
   // Sorting state for premium sections (Settings tab)
   type PremiumSortField = 'netTotal' | 'roc' | 'premium' | 'symbol';
@@ -952,6 +957,30 @@ export default function OptionsSelling() {
   };
 
 
+  // V6: determine delta target by account type
+  const getV6DeltaTarget = (accountType: string) => {
+    return ['retirement', 'ira', 'roth_ira'].includes(accountType)
+      ? { delta: iraDelta, label: 'IRA', style: 'ira' as const }
+      : { delta: taxableDelta, label: 'Taxable', style: 'taxable' as const };
+  };
+
+  // V6: assignment stance for puts — compare strike vs cost basis
+  const getAssignmentStance = (put: PutSymbolSummary): { label: string; stance: 'good' | 'neutral' | 'bad' } | null => {
+    if (!put.avg_cost_per_share || put.avg_cost_per_share === 0 || put.strikes.length === 0) return null;
+    const avgStrike = put.strikes.reduce((a, b) => a + b, 0) / put.strikes.length;
+    const diff = (avgStrike - put.avg_cost_per_share) / put.avg_cost_per_share;
+    if (diff < -0.02) return { label: 'Lowers avg', stance: 'good' };
+    if (diff <= 0.02) return { label: 'Neutral', stance: 'neutral' };
+    return { label: 'Raises avg', stance: 'bad' };
+  };
+
+  // V6: nearest expiration across all positions for a put symbol
+  const getNearestExpiry = (put: PutSymbolSummary): string | null => {
+    const dates = put.positions.map(p => p.expiration_date).filter(Boolean) as string[];
+    if (dates.length === 0) return null;
+    return dates.sort()[0];
+  };
+
   const acknowledgeAlert = async (alertId: number, action: string) => {
     try {
       await fetch(
@@ -1217,7 +1246,7 @@ export default function OptionsSelling() {
           <div>
             <h1 className={styles.title}>Options Selling Strategy</h1>
             <p className={styles.subtitle}>
-              Weekly income from selling covered calls using Delta {delta} strategy
+              Weekly income from the options wheel — covered calls + cash-secured puts
             </p>
           </div>
         </div>
@@ -1282,12 +1311,13 @@ export default function OptionsSelling() {
         </button>
         {sortedAccounts.map((account) => {
           const accountName = account.account_name.split("'s ")[0];
-          const accountType = account.account_type === 'retirement' ? 'IRA' : 
+          const accountType = account.account_type === 'retirement' ? 'IRA' :
                              account.account_type === 'ira' ? 'IRA' :
                              account.account_type === 'roth_ira' ? 'Roth' :
                              'Inv';
           const shortLabel = `${accountName}'s ${accountType}`;
-          
+          const v6 = getV6DeltaTarget(account.account_type);
+
           return (
             <button
               key={account.account_id}
@@ -1295,6 +1325,9 @@ export default function OptionsSelling() {
               onClick={() => setActiveTab(account.account_id)}
             >
               <span>{shortLabel}</span>
+              <span className={v6.style === 'ira' ? styles.deltaChipIra : styles.deltaChipTaxable}>
+                Δ{v6.delta}
+              </span>
               {account.unsold_options !== undefined && account.unsold_options > 0 && (
                 <span className={styles.unsoldBadge}>{account.unsold_options}</span>
               )}
@@ -1374,17 +1407,24 @@ export default function OptionsSelling() {
             {/* Strategy Info */}
             <div className={styles.strategyInfo}>
               <div className={styles.strategyDetail}>
-                <DollarSign size={20} />
+                <TrendingDown size={20} />
                 <div>
-                  <span className={styles.strategyLabel}>Premium (per symbol)</span>
-                  <span className={styles.strategyValue}>Customized in Settings</span>
+                  <span className={styles.strategyLabel}>IRA Puts</span>
+                  <span className={styles.strategyValue}>Delta {iraDelta} — aggressive, trade freely</span>
                 </div>
               </div>
               <div className={styles.strategyDetail}>
                 <TrendingUp size={20} />
                 <div>
-                  <span className={styles.strategyLabel}>Delta Strategy</span>
-                  <span className={styles.strategyValue}>Delta {delta} (~{100 - delta}% win rate)</span>
+                  <span className={styles.strategyLabel}>Taxable Puts</span>
+                  <span className={styles.strategyValue}>Delta {taxableDelta} — conservative, trillion+ only</span>
+                </div>
+              </div>
+              <div className={styles.strategyDetail}>
+                <DollarSign size={20} />
+                <div>
+                  <span className={styles.strategyLabel}>Total Options Income</span>
+                  <span className={styles.strategyValue}>Calls + Puts · {formatCurrency(portfolioTotals.weekly_income)}/wk</span>
                 </div>
               </div>
               <div className={styles.strategyDetail}>
@@ -1643,6 +1683,8 @@ export default function OptionsSelling() {
                       <th className={styles.numericCol}>Strike</th>
                       <th className={styles.numericCol}>Stock Price</th>
                       <th className={styles.numericCol}>Options</th>
+                      <th>Expiry</th>
+                      <th>Assignment</th>
                       <th className={styles.actualCol}>
                         Weekly
                         {data?.income_periods?.weekly && <span className={styles.periodLabel}>{data.income_periods.weekly.label}</span>}
@@ -1693,6 +1735,35 @@ export default function OptionsSelling() {
                           <td className={styles.numericCol}>
                             {put.total_contracts > 0 ? put.total_contracts : '—'}
                           </td>
+                          <td>
+                            {(() => {
+                              const exp = getNearestExpiry(put);
+                              if (!exp) return <span className={styles.accountCount}>—</span>;
+                              const expDate = new Date(exp + 'T00:00:00');
+                              const daysOut = Math.round((expDate.getTime() - Date.now()) / 86400000);
+                              const label = expDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                              return (
+                                <span className={daysOut <= 2 ? styles.expiringWarning : styles.expiryLabel}>
+                                  {label} {daysOut >= 0 ? `(${daysOut}d)` : '(exp)'}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td>
+                            {(() => {
+                              const stance = getAssignmentStance(put);
+                              if (!stance) return <span className={styles.accountCount}>—</span>;
+                              return (
+                                <span className={
+                                  stance.stance === 'good' ? styles.assignmentGood :
+                                  stance.stance === 'neutral' ? styles.assignmentNeutral :
+                                  styles.assignmentBad
+                                }>
+                                  {stance.label}
+                                </span>
+                              );
+                            })()}
+                          </td>
                           <td className={`${styles.actualCol} ${put.weekly_income > 0 ? styles.incomeOnTarget : styles.incomeBelowTarget}`}>
                             {formatCurrency(put.weekly_income)}
                           </td>
@@ -1719,6 +1790,8 @@ export default function OptionsSelling() {
                       <td className={styles.numericCol}>
                         <strong>{sortedPutSymbols.reduce((s, p) => s + p.total_contracts, 0)}</strong>
                       </td>
+                      <td></td>
+                      <td></td>
                       <td className={styles.actualCol}>
                         <strong>{formatCurrency(sortedPutSymbols.reduce((s, p) => s + p.weekly_income, 0))}</strong>
                       </td>
@@ -1770,6 +1843,16 @@ export default function OptionsSelling() {
                   <span className={styles.statLabel}>Yearly Income</span>
                   <span className={styles.statValue}>{formatCurrency(accountTotals.yearly)}</span>
                 </div>
+                {(() => {
+                  const v6 = getV6DeltaTarget(account.account_type);
+                  return (
+                    <div className={`${styles.accountStat} ${v6.style === 'ira' ? styles.v6DeltaStatIra : styles.v6DeltaStatTaxable}`}>
+                      <span className={styles.statLabel}>V6 Put Delta</span>
+                      <span className={styles.statValue}>Δ{v6.delta}</span>
+                      <span className={styles.statNote}>{v6.label} · {v6.style === 'ira' ? 'trade freely' : 'trillion+ only'}</span>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Sold Options Data Info */}
@@ -2259,8 +2342,8 @@ export default function OptionsSelling() {
                 <div className={styles.putOpportunitiesTitle}>
                   <Target size={24} />
                   <div>
-                    <h2>Put Selling Opportunities</h2>
-                    <p>Stocks with favorable TA conditions for selling cash-secured puts</p>
+                    <h2>Put Entry Opportunities</h2>
+                    <p>Stocks with favorable TA entry conditions (RSI oversold / lower Bollinger band)</p>
                   </div>
                 </div>
                 <div className={styles.putOpportunitiesActions}>
@@ -2402,11 +2485,14 @@ export default function OptionsSelling() {
                 </div>
               )}
 
+              <div className={styles.v6DeltaNote}>
+                <strong>V6 Delta Targets:</strong> Strike shown here is for reference (conservative OTM). For actual trades: IRA accounts sell at delta ~{iraDelta} (much closer to ATM), taxable accounts at delta ~{taxableDelta}. Classify each stock as <em>runaway</em> (structural catalyst → roll at zero cost) or <em>oscillating</em> (sentiment → use RSI entry, expect mean reversion).
+              </div>
               <div className={styles.putLegend}>
-                <span><strong>Grade A+ (≥90):</strong> Strong recommend</span>
-                <span><strong>Grade A (≥80):</strong> Recommend</span>
-                <span><strong>RSI {'<'} 40:</strong> Near oversold (good)</span>
-                <span><strong>BB% {'<'} 35:</strong> Lower half (good)</span>
+                <span><strong>Grade A+ (≥90):</strong> Strong TA entry signal</span>
+                <span><strong>Grade A (≥80):</strong> Good TA entry signal</span>
+                <span><strong>RSI {'<'} 40:</strong> Near oversold — good entry for oscillating stocks</span>
+                <span><strong>BB% {'<'} 35:</strong> Lower Bollinger band — near support</span>
               </div>
             </div>
 
@@ -2632,9 +2718,63 @@ export default function OptionsSelling() {
               Options Strategy Parameters
             </h3>
             
+            {/* V6 Account-Type Delta Targets */}
+            <div className={styles.v6DeltaSettings}>
+              <div className={styles.v6DeltaSettingsTitle}>V6 Put Delta Targets (by Account Type)</div>
+              <div className={styles.settingsRow}>
+                <div className={styles.settingItem}>
+                  <label>IRA Put Delta</label>
+                  <div className={styles.inputGroup}>
+                    <input
+                      type="number"
+                      value={iraDelta}
+                      onChange={(e) => setIraDelta(parseInt(e.target.value) || 75)}
+                      step="5"
+                      min="50"
+                      max="95"
+                    />
+                  </div>
+                  <span className={styles.settingHint}>
+                    Aggressive — no tax on assignment, trade freely. Default: 75.
+                  </span>
+                </div>
+                <div className={styles.settingItem}>
+                  <label>Taxable Put Delta</label>
+                  <div className={styles.inputGroup}>
+                    <input
+                      type="number"
+                      value={taxableDelta}
+                      onChange={(e) => setTaxableDelta(parseInt(e.target.value) || 90)}
+                      step="5"
+                      min="70"
+                      max="99"
+                    />
+                  </div>
+                  <span className={styles.settingHint}>
+                    Conservative — tax-sensitive, trillion+ stocks only. Default: 90.
+                  </span>
+                </div>
+                <div className={styles.settingItem}>
+                  <label>Active Weeks per Year</label>
+                  <div className={styles.inputGroup}>
+                    <input
+                      type="number"
+                      value={weeksPerYear}
+                      onChange={(e) => setWeeksPerYear(parseInt(e.target.value) || 50)}
+                      min="40"
+                      max="52"
+                    />
+                  </div>
+                  <span className={styles.settingHint}>
+                    Weeks actively selling options
+                  </span>
+                </div>
+              </div>
+            </div>
+
             <div className={styles.settingsRow}>
               <div className={styles.settingItem}>
-                <label>Delta</label>
+                <label>Income Projection Delta</label>
                 <div className={styles.inputGroup}>
                   <input
                     type="number"
@@ -2646,23 +2786,7 @@ export default function OptionsSelling() {
                   />
                 </div>
                 <span className={styles.settingHint}>
-                  Delta 10 = ~90% win rate
-                </span>
-              </div>
-
-              <div className={styles.settingItem}>
-                <label>Active Weeks per Year</label>
-                <div className={styles.inputGroup}>
-                  <input
-                    type="number"
-                    value={weeksPerYear}
-                    onChange={(e) => setWeeksPerYear(parseInt(e.target.value) || 50)}
-                    min="40"
-                    max="52"
-                  />
-                </div>
-                <span className={styles.settingHint}>
-                  Weeks actively selling options
+                  Used in backend income projection model (reference only)
                 </span>
               </div>
 
@@ -2842,49 +2966,52 @@ export default function OptionsSelling() {
             )}
 
             <div className={styles.deltaGuide}>
-              <h4>Delta Guide (Reference)</h4>
+              <h4>V6 Delta Reference — Puts</h4>
               <table className={styles.deltaTable}>
                 <thead>
                   <tr>
                     <th>Delta</th>
-                    <th>Win Rate</th>
-                    <th>Est. Premium</th>
-                    <th>Risk Level</th>
+                    <th>Assignment Probability</th>
+                    <th>Premium Level</th>
+                    <th>Account Type</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr className={delta === 5 ? styles.selected : ''}>
-                    <td>5</td>
-                    <td>~95%</td>
-                    <td>$30-40/contract</td>
-                    <td>Very Low</td>
+                  <tr className={taxableDelta === 90 ? styles.selected : ''}>
+                    <td>90</td>
+                    <td>~90% chance of assignment</td>
+                    <td>Very high — near ATM</td>
+                    <td>Taxable (conservative)</td>
                   </tr>
-                  <tr className={delta === 10 ? styles.selected : ''}>
-                    <td>10</td>
-                    <td>~90%</td>
-                    <td>$50-80/contract</td>
-                    <td>Low</td>
+                  <tr className={iraDelta === 80 ? styles.selected : ''}>
+                    <td>80</td>
+                    <td>~80% chance of assignment</td>
+                    <td>High</td>
+                    <td>IRA (aggressive range)</td>
                   </tr>
-                  <tr className={delta === 15 ? styles.selected : ''}>
-                    <td>15</td>
-                    <td>~85%</td>
-                    <td>$80-120/contract</td>
-                    <td>Medium-Low</td>
+                  <tr className={iraDelta === 75 ? styles.selected : ''}>
+                    <td>75</td>
+                    <td>~75% chance of assignment</td>
+                    <td>High</td>
+                    <td>IRA (default)</td>
                   </tr>
-                  <tr className={delta === 20 ? styles.selected : ''}>
-                    <td>20</td>
-                    <td>~80%</td>
-                    <td>$100-150/contract</td>
-                    <td>Medium</td>
+                  <tr className={iraDelta === 70 ? styles.selected : ''}>
+                    <td>70</td>
+                    <td>~70% chance of assignment</td>
+                    <td>Moderate-High</td>
+                    <td>IRA (less aggressive)</td>
                   </tr>
-                  <tr className={delta === 30 ? styles.selected : ''}>
-                    <td>30</td>
-                    <td>~70%</td>
-                    <td>$150-250/contract</td>
-                    <td>Higher</td>
+                  <tr>
+                    <td>10–20</td>
+                    <td>10–20% chance of assignment</td>
+                    <td>Low — far OTM</td>
+                    <td>Old V3.4 strategy (not recommended)</td>
                   </tr>
                 </tbody>
               </table>
+              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-tertiary)', marginTop: 'var(--space-2)' }}>
+                V6 note: High delta = you WANT to be assigned (you believe in the stock). The premium is higher, and assignment is the plan, not the risk.
+              </p>
             </div>
 
             <button className={styles.applyButton} onClick={applySettings}>

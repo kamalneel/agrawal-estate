@@ -2526,6 +2526,7 @@ async def calculate_options_income_with_sold_status(
             "shares_equivalent": pos.get("shares_equivalent", 0),
             "value_locked": pos.get("value_locked", 0),
             "current_price": pos.get("current_price"),
+            "avg_cost_per_share": symbols.get(sym, {}).get("avg_cost_per_share"),
             "strikes": pos.get("strikes", []),
             "positions": pos.get("positions", []),
             "weekly_income": round(income["weekly"], 2),
