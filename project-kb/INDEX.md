@@ -6,8 +6,14 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 
 ## Playbook — Universal
 
+### Communication
+- [Preferences Captured Over Time](playbook/universal/communication/preferences-captured-over-time.md) — communication style is iteratively captured, not pre-specified; covers email, notifications, content, personal messages
+
 ### Design
 - [Always Use Design Tokens](playbook/universal/design/always-use-design-tokens.md) — never hardcode colors/spacing, use CSS variables from tokens.css
+
+### Finance
+*(no entries yet — add rules for investment philosophy, risk tolerance, financial decision principles)*
 
 ### Process
 - [Three Authoritative Data Sources](playbook/universal/process/three-authoritative-data-sources.md) — all data enters via PDF/CSV statements, activity CSVs, or Robinhood paste
@@ -20,7 +26,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 
 ## Playbook — Project-Specific
 
-(none yet)
+*(none yet)*
 
 ---
 
@@ -34,6 +40,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Buy-Borrow-Die Strategy](wiki/concepts/buy-borrow-die.md) — buy assets, borrow against them, avoid capital gains
 - [Options Selling Strategy](wiki/concepts/options-selling-strategy.md) — weekly income via covered calls/puts, V6 algorithm (puts primary, runaway vs. oscillating, account-type delta)
 - [Data Ingestion Pipeline](wiki/concepts/data-ingestion-pipeline.md) — file-based import with automatic deduplication
+- [Communication Agent](wiki/concepts/communication-agent.md) — Gmail/Calendar/Drive MCP integration; drafts email, manages calendar, preferences captured iteratively
 
 ## Strategy Spec Docs (V6)
 - [V6 Philosophy](../docs/OPTIONS-STRATEGY-V6-PHILOSOPHY.md) — the "why": beliefs, lessons, account-type rules, runaway vs. oscillating
