@@ -1893,6 +1893,138 @@ export default function OptionsSelling() {
                   defaultSortKey="options"
                 />
               </div>
+
+              {/* Account-specific Puts Table */}
+              {(() => {
+                const accountPuts = sortedPutSymbols
+                  .map(put => {
+                    const acctPositions = put.positions.filter(p => p.account === account.account_name);
+                    if (acctPositions.length === 0) return null;
+                    const totalContracts = acctPositions.reduce((s, p) => s + p.contracts, 0);
+                    const valueLocked = acctPositions.reduce((s, p) => s + p.value_locked, 0);
+                    return {
+                      ...put,
+                      positions: acctPositions,
+                      total_contracts: totalContracts,
+                      shares_equivalent: totalContracts * 100,
+                      value_locked: valueLocked,
+                      strikes: [...new Set(acctPositions.map(p => p.strike_price))].sort((a, b) => a - b),
+                    };
+                  })
+                  .filter(Boolean) as typeof sortedPutSymbols;
+
+                if (accountPuts.length === 0) return null;
+
+                const v6 = getV6DeltaTarget(account.account_type);
+
+                return (
+                  <div className={styles.tableCard}>
+                    <div className={styles.tableSectionHeader}>
+                      <div className={styles.tableSectionTitle}>
+                        <TrendingDown size={18} />
+                        <h3 className={styles.tableTitle}>Cash-Secured Puts</h3>
+                      </div>
+                      <div className={styles.putsAccountMeta}>
+                        <span className={v6.style === 'ira' ? styles.deltaChipIra : styles.deltaChipTaxable}>
+                          Δ{v6.delta} target
+                        </span>
+                        <span className={styles.tableSectionBadge}>
+                          {accountPuts.length} symbol{accountPuts.length !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    </div>
+                    <table className={styles.table}>
+                      <thead>
+                        <tr>
+                          <th>Symbol</th>
+                          <th className={styles.numericCol}>Value Locked</th>
+                          <th className={styles.numericCol}>Shares</th>
+                          <th className={styles.numericCol}>Strike</th>
+                          <th className={styles.numericCol}>Stock Price</th>
+                          <th className={styles.numericCol}>Options</th>
+                          <th>Expiry</th>
+                          <th>Assignment</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {accountPuts.map(put => {
+                          const strikeLabel = put.strikes.length === 0 ? '—'
+                            : put.strikes.length === 1 ? `$${put.strikes[0].toLocaleString()}`
+                            : put.strikes.map(s => `$${s}`).join(', ');
+                          return (
+                            <tr key={put.symbol}>
+                              <td>
+                                <div className={styles.symbolCell}>
+                                  <strong
+                                    className={styles.clickableSymbol}
+                                    onClick={() => setTaSymbol(put.symbol)}
+                                  >
+                                    {put.symbol}
+                                  </strong>
+                                </div>
+                              </td>
+                              <td className={styles.numericCol}>{formatCurrency(put.value_locked)}</td>
+                              <td className={styles.numericCol}>{put.shares_equivalent.toLocaleString()}</td>
+                              <td className={styles.numericCol}>
+                                <span className={styles.strikeBadge}>{strikeLabel}</span>
+                              </td>
+                              <td className={styles.numericCol}>
+                                {put.current_price != null
+                                  ? `$${put.current_price.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                                  : '—'}
+                              </td>
+                              <td className={styles.numericCol}>{put.total_contracts}</td>
+                              <td>
+                                {(() => {
+                                  const exp = getNearestExpiry(put);
+                                  if (!exp) return <span className={styles.accountCount}>—</span>;
+                                  const expDate = new Date(exp + 'T00:00:00');
+                                  const daysOut = Math.round((expDate.getTime() - Date.now()) / 86400000);
+                                  const label = expDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                                  return (
+                                    <span className={daysOut <= 2 ? styles.expiringWarning : styles.expiryLabel}>
+                                      {label} {daysOut >= 0 ? `(${daysOut}d)` : '(exp)'}
+                                    </span>
+                                  );
+                                })()}
+                              </td>
+                              <td>
+                                {(() => {
+                                  const stance = getAssignmentStance(put);
+                                  if (!stance) return <span className={styles.accountCount}>—</span>;
+                                  return (
+                                    <span className={
+                                      stance.stance === 'good' ? styles.assignmentGood :
+                                      stance.stance === 'neutral' ? styles.assignmentNeutral :
+                                      styles.assignmentBad
+                                    }>
+                                      {stance.label}
+                                    </span>
+                                  );
+                                })()}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        <tr className={styles.totalRow}>
+                          <td><strong>TOTAL</strong></td>
+                          <td className={styles.numericCol}>
+                            <strong>{formatCurrency(accountPuts.reduce((s, p) => s + p.value_locked, 0))}</strong>
+                          </td>
+                          <td className={styles.numericCol}></td>
+                          <td className={styles.numericCol}></td>
+                          <td className={styles.numericCol}></td>
+                          <td className={styles.numericCol}>
+                            <strong>{accountPuts.reduce((s, p) => s + p.total_contracts, 0)}</strong>
+                          </td>
+                          <td></td>
+                          <td></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </div>
           );
         })}
