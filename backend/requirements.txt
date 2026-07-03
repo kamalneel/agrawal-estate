@@ -37,6 +37,7 @@ twilio==9.3.5            # For WhatsApp notifications via Twilio (optional)
 
 # AI/Vision for screenshot parsing
 openai==1.55.0           # OpenAI API for vision/OCR
+anthropic>=0.50.0        # Anthropic Claude for options improvement ideas
 
 # Development
 pytest==8.3.4

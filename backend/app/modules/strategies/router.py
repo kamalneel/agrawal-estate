@@ -2461,9 +2461,13 @@ async def calculate_options_income_with_sold_status(
             }
 
     # Get current stock prices for put symbols (from holdings dict if available)
-    put_sym_prices: Dict[str, Optional[float]] = {sym: symbols[sym]["price"] if sym in symbols else None for sym in put_positions_raw}
+    # Seed from open-position symbols + all symbols with historical put income
+    all_price_syms = set(put_positions_raw.keys()) | set(put_symbol_income.keys())
+    put_sym_prices: Dict[str, Optional[float]] = {
+        sym: symbols[sym]["price"] if sym in symbols else None for sym in all_price_syms
+    }
 
-    # For symbols not in holdings (pure put plays with no stock owned), query directly
+    # For symbols not in holdings, look up from investment_holdings history
     missing_price_syms = [s for s, p in put_sym_prices.items() if p is None]
     if missing_price_syms:
         placeholders = ', '.join(f':sym{i}' for i in range(len(missing_price_syms)))
@@ -2512,7 +2516,13 @@ async def calculate_options_income_with_sold_status(
         }
 
     # Build put_symbols_list merging income + position data
-    all_put_syms_set = set(put_symbol_income.keys()) | set(put_position_data.keys())
+    # Retired symbols (active=False) are excluded unless they have an open position
+    retired_syms = {
+        s.symbol for s in db.query(OptionPremiumSetting).filter(OptionPremiumSetting.active == False).all()
+    }
+    all_put_syms_set = (
+        (set(put_symbol_income.keys()) - retired_syms) | set(put_position_data.keys())
+    )
     put_symbols_list = []
     for sym in all_put_syms_set:
         income = put_symbol_income.get(sym, {"weekly": 0, "monthly": 0, "yearly": 0, "accounts": []})
@@ -3142,6 +3152,152 @@ async def list_monitored_positions(
         "status_filter": status,
         "price_update_time": price_update_time.isoformat() if price_update_time else None,
         "using_live_prices": use_live_prices
+    }
+
+
+@router.get("/option-monitor/yield-scan")
+async def get_yield_scan(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Fetch live option yield data for both tiers:
+    - Tier 1 (mega-cap): AAPL, MSFT, NVDA, AVGO, GOOGL, AMZN, META, TSLA, LLY — calls at delta 10 and 20
+    - Tier 2 (sub-$1T): current DB holdings excluding Tier 1 and crypto — puts at delta 20 and 10
+    """
+    from app.modules.strategies.option_data_service import get_option_chain
+    from app.modules.investments.models import InvestmentHolding
+    from datetime import date, timedelta, datetime as dt
+
+    today = date.today()
+    days_to_friday = (4 - today.weekday()) % 7 or 7
+    next_friday = today + timedelta(days=days_to_friday)
+
+    TIER1 = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "AMZN", "META", "TSLA", "LLY"}
+    EXCLUDED = {"FDRXX", "SPAXX", "VMFXX"}  # money markets only
+    # Supplemental Tier 2 universe — historically used for puts, always show even if not currently held
+    TIER2_SUPPLEMENTAL = {"PLTR", "HOOD", "COIN", "AMD", "SHOP", "INTC", "RKLB", "NFLX",
+                          "CRCL", "FIG", "MSTR", "MU", "IBIT"}
+
+    TIER1_NOTES = {"TSLA": "carve-out", "LLY": "named inclusion"}
+    TIER1_ORDER = ["AVGO", "META", "TSLA", "NVDA", "AMZN", "MSFT", "GOOGL", "LLY", "AAPL"]
+
+    def _find_closest(options_df, target_delta: float):
+        df = options_df.copy()
+        df = df.dropna(subset=["delta", "bid", "ask"])
+        df["delta_abs"] = df["delta"].abs()
+        df = df[df["delta_abs"] > 0]
+        if df.empty:
+            return None
+        df["mid"] = (df["bid"] + df["ask"]) / 2
+        row = df.iloc[(df["delta_abs"] - target_delta).abs().argsort()[:1]]
+        strike = float(row["strike"].values[0])
+        delta_act = float(row["delta_abs"].values[0])
+        mid = float(row["mid"].values[0])
+        premium = round(mid * 100, 2)
+        yld = round(premium / (strike * 100) * 100, 2) if strike > 0 else 0
+        return {"strike": strike, "delta": round(delta_act, 3), "premium": premium, "yield_pct": yld}
+
+    def _stock_price(chain):
+        calls = chain.get("calls")
+        if calls is None or calls.empty:
+            return None
+        df = calls.dropna(subset=["delta"])
+        df = df[df["delta"].abs() > 0]
+        if df.empty:
+            return None
+        atm = df.iloc[(df["delta"].abs() - 0.50).abs().argsort()[:1]]
+        return float(atm["strike"].values[0])
+
+    # ── Tier 1 calls ────────────────────────────────────────────────────────
+    tier1_results = []
+    for symbol in TIER1_ORDER:
+        try:
+            chain = get_option_chain(symbol, next_friday)
+            if not chain or "calls" not in chain:
+                tier1_results.append({"symbol": symbol, "error": "no data"})
+                continue
+            price = _stock_price(chain)
+            d10 = _find_closest(chain["calls"], 0.10)
+            d20 = _find_closest(chain["calls"], 0.20)
+            tier1_results.append({
+                "symbol": symbol,
+                "stock_price": price,
+                "note": TIER1_NOTES.get(symbol, ""),
+                "d10": d10,
+                "d20": d20,
+            })
+        except Exception as e:
+            tier1_results.append({"symbol": symbol, "error": str(e)[:80]})
+
+    # ── Tier 2 puts — DB holdings merged with supplemental universe ─────────
+    try:
+        holdings = db.query(InvestmentHolding).filter(InvestmentHolding.quantity > 0).all()
+    except Exception:
+        holdings = []
+
+    # Group DB holdings by symbol
+    tier2_map: dict = {}
+    for h in holdings:
+        sym = h.symbol
+        if not sym or len(sym) > 6:
+            continue
+        if sym in TIER1 or sym in EXCLUDED:
+            continue
+        if sym not in tier2_map:
+            tier2_map[sym] = {"qty": 0, "accounts": []}
+        tier2_map[sym]["qty"] += float(h.quantity or 0)
+        acct = str(h.account_id)
+        if acct not in tier2_map[sym]["accounts"]:
+            tier2_map[sym]["accounts"].append(acct)
+
+    # Add supplemental tickers not already in DB holdings
+    for sym in TIER2_SUPPLEMENTAL:
+        if sym not in tier2_map:
+            tier2_map[sym] = {"qty": 0, "accounts": []}
+
+    tier2_results = []
+    for symbol, info in sorted(tier2_map.items()):
+        qty = int(info["qty"])
+        accts = info["accounts"]
+        if qty > 0:
+            holdings_note = f"{qty} shares"
+        else:
+            holdings_note = "watchlist"
+        try:
+            chain = get_option_chain(symbol, next_friday)
+            if not chain or "puts" not in chain:
+                tier2_results.append({"symbol": symbol, "holdings": holdings_note, "error": "no data"})
+                continue
+            puts_df = chain["puts"].copy()
+            puts_df["delta"] = -puts_df["delta"].abs()  # normalise to negative
+            price = None
+            if "calls" in chain:
+                price = _stock_price(chain)
+
+            d20 = _find_closest(puts_df, 0.20)   # user "delta 80" = 80% OTM
+            d10 = _find_closest(puts_df, 0.10)   # user "delta 90" = 90% OTM
+            tier2_results.append({
+                "symbol": symbol,
+                "stock_price": price,
+                "holdings": holdings_note,
+                "d80": d20,  # user label
+                "d90": d10,  # user label
+            })
+        except Exception as e:
+            tier2_results.append({"symbol": symbol, "holdings": holdings_note, "error": str(e)[:80]})
+
+    # Sort Tier 2 by d80 yield descending
+    def _sort_key(r):
+        d = r.get("d80") or {}
+        return d.get("yield_pct", -1)
+    tier2_results.sort(key=_sort_key, reverse=True)
+
+    return {
+        "expiry": next_friday.isoformat(),
+        "fetched_at": dt.utcnow().isoformat(),
+        "tier1_calls": tier1_results,
+        "tier2_puts": tier2_results,
     }
 
 
@@ -4653,6 +4809,42 @@ async def get_strike_recommendation(
             "trend": indicators.trend if indicators else None,
         }
     }
+
+
+@router.get("/put-scouting")
+async def get_put_scouting(
+    symbols: str = Query(..., description="Comma-separated list of symbols"),
+    weeks: int = Query(default=1, description="Weeks until expiration"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    """
+    Return delta-80 and delta-90 strike/premium projections for a list of symbols.
+    Used by the Put Scouting panel on the Options Income page.
+    Fetches all symbols in parallel via a thread pool.
+    """
+    from app.modules.strategies.technical_analysis import get_technical_analysis_service
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    symbol_list = [s.strip().upper() for s in symbols.split(',') if s.strip()]
+    if not symbol_list:
+        return []
+
+    ta_service = get_technical_analysis_service()
+
+    def scout(sym: str):
+        try:
+            return ta_service.scout_put_strikes(sym, probability_targets=[0.80, 0.90], weeks=weeks)
+        except Exception as e:
+            return {"symbol": sym, "error": str(e), "targets": []}
+
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=min(len(symbol_list), 8)) as pool:
+        tasks = [loop.run_in_executor(pool, scout, sym) for sym in symbol_list]
+        results = await asyncio.gather(*tasks)
+
+    return [r for r in results if r is not None]
 
 
 @router.get("/technical-analysis/{symbol}/volatility-risk")
@@ -6287,4 +6479,478 @@ async def trigger_schwab_auth(user=Depends(get_current_user)):
     thread.start()
 
     return {"message": "Browser opened for Schwab login. Complete the OAuth flow to re-authenticate."}
+
+
+# ============================================================================
+# IMPROVEMENT IDEAS — AI-POWERED SELF-IMPROVEMENT LOOP
+# ============================================================================
+
+_IMPROVEMENT_SYSTEM_PROMPT = """You are an expert options income advisor analyzing a single brokerage account.
+
+V6 Strategy Rules:
+- Puts are the PRIMARY income engine; calls are secondary
+- IRA/retirement accounts: Delta 75, trade aggressively, any stock is fine
+- Taxable accounts: Delta 90 (deep OTM), trillion-dollar-market-cap stocks only (AAPL, NVDA, META, MSFT, TSLA, AMZN, GOOG)
+- Preferred expirations: 1-2 weeks out; never beyond 4 weeks
+- Runaway stocks (structural catalyst): roll at zero cost; do NOT close
+- Oscillating stocks (sentiment/macro): use RSI < 45 as entry signal
+- Unsold contracts = idle income — should always be sold unless there's a strong hold reason
+- Available cash = put-selling capacity; cash sitting idle loses 1-2% weekly yield
+
+Your task: Given the account snapshot below, generate 3-5 specific, actionable improvement ideas.
+
+IMPORTANT RULES for ideas:
+- Reference exact symbols, contracts, and dollar amounts from the data
+- If a symbol has unsold contracts, flag it with estimated income opportunity
+- If cash is available and no puts are open, suggest puts to sell
+- Do NOT suggest selling calls on symbols with <100 shares
+- Do NOT suggest IRA-type strategies on taxable accounts and vice versa
+- Ideas must be immediately executable this week
+
+Return ONLY a JSON array (no markdown, no explanation outside JSON):
+[
+  {
+    "symbol": "AAPL",
+    "title": "3 unsold contracts — $X idle",
+    "action": "Sell 3x $185 puts expiring Jun 6 at Delta 90",
+    "expected_income": "$630 (~$210/contract)",
+    "rationale": "RSI at 42 (oscillating), near lower BB support, cash-secured, lowers avg cost if assigned"
+  }
+]
+
+If there are no specific improvements (everything is fully utilized), return a single idea about optimizing expirations or rolling for more premium."""
+
+
+@router.post("/options-selling/improvement-ideas")
+async def generate_improvement_ideas(
+    request: Request,
+    user=Depends(get_current_user)
+):
+    """Generate AI-powered improvement ideas for an account's options income."""
+    import asyncio
+    import anthropic
+    import json as _json
+
+    raw = "[]"
+    account_name = "Unknown Account"
+    try:
+        payload = await request.json()
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+
+        account_name = payload.get("account_name", "Unknown Account")
+        account_type = payload.get("account_type", "brokerage")
+        account_value = float(payload.get("account_value") or 0)
+        holdings = payload.get("holdings", [])
+        cash_available = float(payload.get("cash_available") or 0)
+        put_positions = payload.get("put_positions", [])
+        technical_signals = payload.get("technical_signals", {})
+        weekly_income = float(payload.get("weekly_income") or 0)
+        monthly_income = float(payload.get("monthly_income") or 0)
+        ira_delta = payload.get("ira_delta", 75)
+        taxable_delta = payload.get("taxable_delta", 90)
+
+        is_ira = account_type in ("retirement", "ira", "roth_ira")
+        delta_target = ira_delta if is_ira else taxable_delta
+
+        lines = [
+            f"Account: {account_name}",
+            f"Type: {'IRA/Retirement' if is_ira else 'Taxable Brokerage'} (Delta target: {delta_target})",
+            f"Total Value: ${account_value:,.0f}",
+            f"Cash Available for Puts: ${cash_available:,.0f}",
+            f"Last Week Income: ${weekly_income:,.0f} | Last Month: ${monthly_income:,.0f}",
+            "",
+            "HOLDINGS (covered call candidates):",
+        ]
+
+        for h in holdings:
+            symbol = h.get("symbol", "")
+            options = h.get("options", 0)
+            sold = h.get("sold_contracts", 0)
+            unsold = h.get("unsold_contracts", 0)
+            value = float(h.get("value") or 0)
+            weekly = float(h.get("weekly_income") or 0)
+            utilization = h.get("utilization_status", "none")
+
+            ta = technical_signals.get(symbol, {})
+            rsi_str = f"RSI:{ta.get('rsi'):.0f}" if isinstance(ta.get("rsi"), (int, float)) else ""
+            bb_str = f"BB:{ta.get('bb_position_pct'):.0f}%" if isinstance(ta.get("bb_position_pct"), (int, float)) else ""
+            trend_str = str(ta.get("trend", "") or "")
+            ta_str = " | ".join(filter(None, [rsi_str, bb_str, trend_str]))
+
+            status = "FULLY SOLD" if utilization == "full" else f"PARTIAL ({sold} sold, {unsold} unsold)" if utilization == "partial" else f"NONE SOLD ({options} available)"
+            lines.append(f"  {symbol}: {options} contracts | ${value:,.0f} value | ${weekly:,.0f}/wk | Status: {status}" + (f" | TA: {ta_str}" if ta_str else ""))
+
+        if put_positions:
+            lines.append("")
+            lines.append("OPEN PUT POSITIONS:")
+            for p in put_positions:
+                exp = p.get("expiration_date") or "?"
+                value_locked = float(p.get("value_locked") or 0)
+                lines.append(f"  {p.get('symbol')}: {p.get('contracts')}x ${p.get('strike_price')} put | Locked: ${value_locked:,.0f} | Exp: {exp}")
+        else:
+            lines.append("")
+            lines.append("OPEN PUT POSITIONS: None")
+
+        context = "\n".join(lines)
+
+        def _call_claude() -> str:
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=os.getenv("AGENT_MODEL", "claude-sonnet-4-6"),
+                max_tokens=2048,
+                system=_IMPROVEMENT_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": f"Generate improvement ideas for this account:\n\n{context}"}],
+            )
+            return response.content[0].text if response.content else "[]"
+
+        raw = await asyncio.to_thread(_call_claude)
+
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```", 2)[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.rsplit("```", 1)[0].strip()
+
+        # Sanitize: escape literal newlines/tabs inside JSON string values
+        # (Claude sometimes includes unescaped newlines in multi-sentence strings)
+        def _sanitize_json_strings(s: str) -> str:
+            result = []
+            in_string = False
+            i = 0
+            while i < len(s):
+                c = s[i]
+                if in_string:
+                    if c == '\\':
+                        result.append(c)
+                        i += 1
+                        if i < len(s):
+                            result.append(s[i])
+                        i += 1
+                        continue
+                    elif c == '"':
+                        in_string = False
+                        result.append(c)
+                    elif c == '\n':
+                        result.append('\\n')
+                    elif c == '\r':
+                        result.append('\\r')
+                    elif c == '\t':
+                        result.append('\\t')
+                    else:
+                        result.append(c)
+                else:
+                    if c == '"':
+                        in_string = True
+                        result.append(c)
+                    else:
+                        result.append(c)
+                i += 1
+            return ''.join(result)
+
+        ideas = _json.loads(_sanitize_json_strings(raw))
+        return {"ideas": ideas, "account_name": account_name}
+
+    except _json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Claude ideas response: {e}\nRaw: {raw}")
+        return {"ideas": [], "error": "Failed to parse AI response", "account_name": account_name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback as _tb
+        logger.error(f"improvement-ideas EXCEPTION:\n{_tb.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+# ============================================================================
+# POSITION COVERAGE ANALYSIS
+# Combines equity cost basis, realized G/L, and covered-call income per symbol.
+# ============================================================================
+
+@router.get("/position-coverage")
+async def get_position_coverage(
+    years: str = Query(default="2025,2026", description="Comma-separated list of years"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    For each equity symbol with covered-call activity, compute:
+      - Total capital deployed (all accounts)
+      - Realized equity gain/loss (taxable accounts exact; retirement estimated)
+      - Net call-option income (STO credits minus BTC debits, calls only)
+      - Total return and return-on-capital %
+      - Entry date, exit date, holding period, position status (open/closed/partial)
+
+    Returns both an aggregate (all-accounts) summary and a per-account breakdown.
+    """
+    from app.modules.tax.models import StockLot, StockLotSale
+    from app.modules.investments.models import InvestmentTransaction
+    from sqlalchemy import extract, or_, func
+    from collections import defaultdict
+    import math
+
+    year_list = [int(y.strip()) for y in years.split(",") if y.strip().isdigit()]
+    if not year_list:
+        year_list = [2025, 2026]
+
+    TAXABLE = {"neel_brokerage", "jaya_brokerage"}
+    RETIREMENT = {"neel_retirement", "jaya_ira", "jaya_roth_ira", "neel_roth_ira", "alisha_brokerage"}
+
+    # ── Step 1: Discover symbols that have CALL activity in any account ────
+    year_filters = or_(*[
+        extract("year", InvestmentTransaction.transaction_date) == y
+        for y in year_list
+    ])
+
+    call_txns = db.query(InvestmentTransaction).filter(
+        InvestmentTransaction.transaction_type.in_(["STO", "BTC"]),
+        year_filters,
+    ).all()
+    call_txns = [t for t in call_txns if "call" in (t.description or "").lower()]
+
+    symbols_with_calls = sorted(set(t.symbol for t in call_txns if t.symbol))
+
+    if not symbols_with_calls:
+        return {"symbols": [], "by_account": [], "years": year_list}
+
+    # ── Step 2: Build call income per (symbol, account) ───────────────────
+    call_data: dict = defaultdict(lambda: defaultdict(lambda: {"sto": 0.0, "btc": 0.0, "count": 0}))
+    for t in call_txns:
+        amt = float(t.amount or 0)
+        if t.transaction_type == "STO":
+            call_data[t.symbol][t.account_id]["sto"] += amt
+            call_data[t.symbol][t.account_id]["count"] += 1
+        else:
+            call_data[t.symbol][t.account_id]["btc"] += amt
+
+    # ── Step 3: Capital + equity G/L from StockLot / StockLotSale ─────────
+    # Taxable: exact data from lot tracker
+    lots = db.query(StockLot).filter(StockLot.symbol.in_(symbols_with_calls)).all()
+    sales = (
+        db.query(StockLotSale)
+        .join(StockLot, StockLotSale.lot_id == StockLot.lot_id)
+        .filter(StockLot.symbol.in_(symbols_with_calls))
+        .all()
+    )
+
+    # Build lot maps
+    lots_by_sym_acct: dict = defaultdict(list)
+    for lot in lots:
+        lots_by_sym_acct[(lot.symbol, lot.account_id)].append(lot)
+
+    sales_by_sym_acct: dict = defaultdict(list)
+    for sale in sales:
+        lot = next((l for l in lots if l.lot_id == sale.lot_id), None)
+        if lot:
+            sales_by_sym_acct[(lot.symbol, lot.account_id)].append(sale)
+
+    # Retirement: BUY / SELL transactions
+    ret_buys = db.query(InvestmentTransaction).filter(
+        InvestmentTransaction.symbol.in_(symbols_with_calls),
+        InvestmentTransaction.transaction_type == "BUY",
+        InvestmentTransaction.account_id.in_(RETIREMENT),
+        InvestmentTransaction.amount < 0,
+    ).all()
+
+    ret_sells = db.query(InvestmentTransaction).filter(
+        InvestmentTransaction.symbol.in_(symbols_with_calls),
+        InvestmentTransaction.transaction_type == "SELL",
+        InvestmentTransaction.account_id.in_(RETIREMENT),
+        InvestmentTransaction.amount > 0,
+    ).all()
+
+    ret_buy_by: dict = defaultdict(lambda: {"qty": 0.0, "amt": 0.0, "dates": []})
+    for t in ret_buys:
+        k = (t.symbol, t.account_id)
+        ret_buy_by[k]["qty"] += float(t.quantity or 0)
+        ret_buy_by[k]["amt"] += abs(float(t.amount or 0))
+        if t.transaction_date:
+            d = t.transaction_date if isinstance(t.transaction_date, date) else t.transaction_date.date()
+            ret_buy_by[k]["dates"].append(d)
+
+    ret_sell_by: dict = defaultdict(lambda: {"qty": 0.0, "proceeds": 0.0, "dates": []})
+    for t in ret_sells:
+        k = (t.symbol, t.account_id)
+        ret_sell_by[k]["qty"] += float(t.quantity or 0)
+        ret_sell_by[k]["proceeds"] += float(t.amount or 0)
+        if t.transaction_date:
+            d = t.transaction_date if isinstance(t.transaction_date, date) else t.transaction_date.date()
+            ret_sell_by[k]["dates"].append(d)
+
+    # ── Step 4: Aggregate per (symbol, account) row ───────────────────────
+    all_accounts: set = set()
+    for t in call_txns:
+        all_accounts.add(t.account_id)
+    for lot in lots:
+        all_accounts.add(lot.account_id)
+
+    rows: list = []
+
+    for sym in symbols_with_calls:
+        for acct in sorted(all_accounts):
+            lot_list = lots_by_sym_acct.get((sym, acct), [])
+            sale_list = sales_by_sym_acct.get((sym, acct), [])
+            c = call_data.get(sym, {}).get(acct, {"sto": 0.0, "btc": 0.0, "count": 0})
+            rb = ret_buy_by.get((sym, acct), {"qty": 0.0, "amt": 0.0, "dates": []})
+            rs = ret_sell_by.get((sym, acct), {"qty": 0.0, "proceeds": 0.0, "dates": []})
+
+            # Capital
+            if lot_list:
+                capital = sum(float(l.cost_basis) for l in lot_list)
+            elif rb["amt"] > 0:
+                capital = rb["amt"]
+            else:
+                capital = 0.0
+
+            if capital == 0 and c["sto"] == 0:
+                continue  # no activity in this symbol/account
+
+            # Equity G/L
+            if sale_list:
+                equity_gl = sum(float(s.gain_loss) for s in sale_list)
+            elif rb["qty"] > 0 and rs["qty"] > 0:
+                avg_cost = rb["amt"] / rb["qty"]
+                equity_gl = rs["proceeds"] - avg_cost * rs["qty"]
+            else:
+                equity_gl = 0.0
+
+            # Call income
+            call_income = c["sto"] + c["btc"]
+
+            # Entry / exit dates
+            entry_dates = []
+            if lot_list:
+                entry_dates += [l.purchase_date for l in lot_list if l.purchase_date]
+            if rb["dates"]:
+                entry_dates += rb["dates"]
+
+            exit_dates = []
+            if sale_list:
+                exit_dates += [s.sale_date for s in sale_list]
+            if rs["dates"]:
+                exit_dates += rs["dates"]
+
+            entry_date = min(entry_dates).isoformat() if entry_dates else None
+
+            # Status
+            open_qty = sum(float(l.quantity_remaining) for l in lot_list) if lot_list else 0.0
+            ret_unsold = max(0, rb["qty"] - rs["qty"]) if rb["qty"] > 0 else 0.0
+            if lot_list or rb["qty"] > 0:
+                if open_qty > 0 or ret_unsold > 0:
+                    status = "open" if (open_qty + ret_unsold) >= sum(float(l.quantity) for l in lot_list) + rb["qty"] - 0.01 else "partial"
+                    exit_date = None
+                else:
+                    status = "closed"
+                    exit_date = max(exit_dates).isoformat() if exit_dates else None
+            else:
+                status = "calls_only"
+                exit_date = None
+
+            # Holding period
+            if entry_date and exit_date:
+                days = (date.fromisoformat(exit_date) - date.fromisoformat(entry_date)).days
+            elif entry_date:
+                days = (date.today() - date.fromisoformat(entry_date)).days
+            else:
+                days = None
+
+            total_return = equity_gl + call_income
+            return_pct = round(total_return / capital * 100, 1) if capital > 0 else None
+            annualized_pct = None
+            if return_pct is not None and days and days > 0 and capital > 0:
+                base = 1 + total_return / capital
+                if base > 0:  # guard against complex result from fractional power of negative
+                    annualized_pct = round((base ** (365 / days) - 1) * 100, 1)
+
+            shares_total = sum(float(l.quantity) for l in lot_list) + rb["qty"]
+            rows.append({
+                "symbol": sym,
+                "account_id": acct,
+                "is_taxable": acct in TAXABLE,
+                "capital": round(capital, 2),
+                "equity_gl": round(equity_gl, 2),
+                "call_income": round(call_income, 2),
+                "total_return": round(total_return, 2),
+                "return_pct": round(return_pct, 1) if return_pct is not None else None,
+                "annualized_pct": annualized_pct,
+                "entry_date": entry_date,
+                "exit_date": exit_date,
+                "status": status,
+                "holding_days": days,
+                "shares_held": round(open_qty + ret_unsold, 2),
+                "shares_total": round(shares_total, 2),
+            })
+
+    # ── Step 5: Roll up to symbol-level aggregate ─────────────────────────
+    sym_agg: dict = defaultdict(lambda: {
+        "capital": 0.0, "equity_gl": 0.0, "call_income": 0.0,
+        "entry_dates": [], "exit_dates": [], "statuses": set(),
+        "shares_held": 0.0, "shares_total": 0.0,
+    })
+    for r in rows:
+        a = sym_agg[r["symbol"]]
+        a["capital"]      += r["capital"]
+        a["equity_gl"]    += r["equity_gl"]
+        a["call_income"]  += r["call_income"]
+        a["shares_held"]  += r.get("shares_held", 0.0)
+        a["shares_total"] += r.get("shares_total", 0.0)
+        if r["entry_date"]:
+            a["entry_dates"].append(r["entry_date"])
+        if r["exit_date"]:
+            a["exit_dates"].append(r["exit_date"])
+        a["statuses"].add(r["status"])
+
+    aggregates = []
+    for sym in symbols_with_calls:
+        a = sym_agg[sym]
+        cap = a["capital"]
+        eq  = a["equity_gl"]
+        cal = a["call_income"]
+        tot = eq + cal
+        pct = round(tot / cap * 100, 1) if cap > 0 else None
+        entry = min(a["entry_dates"]) if a["entry_dates"] else None
+        exit_ = max(a["exit_dates"]) if a["exit_dates"] else None
+        statuses = a["statuses"]
+        if "open" in statuses and "closed" not in statuses and "partial" not in statuses:
+            status = "open"        # all shares still held
+        elif "partial" in statuses or ("open" in statuses and "closed" in statuses):
+            status = "partial"     # some shares sold, some still held
+        else:
+            status = "closed"      # all shares fully exited
+
+        days = None
+        annualized = None
+        if entry:
+            ref = date.fromisoformat(exit_) if exit_ and status == "closed" else date.today()
+            days = (ref - date.fromisoformat(entry)).days
+            if pct is not None and days > 0 and cap > 0:
+                base = 1 + tot / cap
+                if base > 0:
+                    annualized = round((base ** (365 / days) - 1) * 100, 1)
+
+        aggregates.append({
+            "symbol": sym,
+            "capital": round(cap, 2),
+            "equity_gl": round(eq, 2),
+            "call_income": round(cal, 2),
+            "total_return": round(tot, 2),
+            "return_pct": pct,
+            "annualized_pct": annualized,
+            "entry_date": entry,
+            "exit_date": exit_,
+            "status": status,
+            "holding_days": days,
+            "shares_held": round(a["shares_held"], 2),
+            "shares_total": round(a["shares_total"], 2),
+        })
+
+    aggregates.sort(key=lambda x: -(x["total_return"] or 0))
+
+    return {
+        "years": year_list,
+        "symbols": aggregates,
+        "by_account": rows,
+    }
 

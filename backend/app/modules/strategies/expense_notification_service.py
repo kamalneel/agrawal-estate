@@ -178,21 +178,21 @@ class ExpenseNotificationService:
                     'error': 'Failed to format message'
                 }
 
-            # Send notification via Telegram
             from app.shared.services.notifications import get_notification_service
             notification_service = get_notification_service()
 
-            if not notification_service.telegram_enabled:
-                logger.warning("Telegram notifications not enabled - cannot send expense reminder")
+            if not notification_service.email_enabled:
+                logger.warning("Email notifications not enabled - cannot send expense reminder")
                 return {
                     'success': False,
                     'expenses_found': len(expenses),
                     'notification_sent': False,
-                    'error': 'Telegram not enabled'
+                    'error': 'Email not enabled'
                 }
 
-            # Send Telegram message
-            success, message_id = notification_service._send_telegram(message)
+            tomorrow = date.today() + timedelta(days=1)
+            subject = f"💰 Expense Reminder — {tomorrow.strftime('%A, %b %-d')}"
+            success = notification_service.send_message(message, subject=subject)
 
             if success:
                 logger.info(f"Expense notification sent successfully for {len(expenses)} expense(s)")
@@ -200,16 +200,15 @@ class ExpenseNotificationService:
                     'success': True,
                     'expenses_found': len(expenses),
                     'notification_sent': True,
-                    'telegram_message_id': message_id,
                     'total_amount': sum(e['amount'] for e in expenses)
                 }
             else:
-                logger.error("Failed to send expense notification via Telegram")
+                logger.error("Failed to send expense notification via email")
                 return {
                     'success': False,
                     'expenses_found': len(expenses),
                     'notification_sent': False,
-                    'error': 'Telegram send failed'
+                    'error': 'Email send failed'
                 }
 
         except Exception as e:

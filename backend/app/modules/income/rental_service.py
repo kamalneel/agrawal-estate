@@ -140,6 +140,9 @@ class RentalIncomeService:
             # Project current year's rental income if no data exists
             self._project_current_year_income(db)
 
+            # Cap current year to only months actually received
+            self._cap_to_received_months()
+
             self._loaded = True
 
         except Exception as e:
@@ -268,6 +271,42 @@ class RentalIncomeService:
                 ))
 
             self.properties.append(prop)
+
+    def _cap_to_received_months(self) -> None:
+        """
+        For the current year, trim income and expenses to months actually received.
+
+        The DB may have all 12 months pre-populated from a rental agreement, but
+        future months haven't been collected yet. This ensures gross income, expenses,
+        and net income only reflect months up to and including today.
+        """
+        current_year = date.today().year
+        current_month = date.today().month
+
+        for prop in self.properties:
+            if prop.year != current_year:
+                continue
+
+            # Drop future months from the monthly breakdown
+            prop.monthly_income = [
+                m for m in prop.monthly_income
+                if int(m.month.split('-')[1]) <= current_month
+            ]
+
+            # Recompute gross from actual received months
+            prop.gross_income = sum(m.amount for m in prop.monthly_income)
+
+            # Prorate annual expenses to the fraction of the year elapsed
+            ratio = current_month / 12
+            prop.total_expenses = round(prop.total_expenses * ratio, 2)
+            prop.property_tax = round(prop.property_tax * ratio, 2)
+            prop.hoa = round(prop.hoa * ratio, 2)
+            prop.maintenance = round(prop.maintenance * ratio, 2)
+            prop.other_expenses = round(prop.other_expenses * ratio, 2)
+            for expense in prop.expenses:
+                expense.amount = round(expense.amount * ratio, 2)
+
+            prop.net_income = round(prop.gross_income - prop.total_expenses, 2)
 
     def load_all_properties(self) -> List[RentalProperty]:
         """Load all rental properties from database."""

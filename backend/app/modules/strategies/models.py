@@ -4,7 +4,7 @@ Models for strategies module including sold options tracking.
 
 from datetime import datetime, date
 from decimal import Decimal
-from sqlalchemy import Column, Integer, String, DateTime, Date, Text, Numeric, ForeignKey, JSON, Boolean, Index
+from sqlalchemy import Column, Integer, String, DateTime, Date, Text, Numeric, ForeignKey, JSON, Boolean, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -158,6 +158,7 @@ class OptionPremiumSetting(Base):
     put_contracts_sold = Column(Integer, nullable=True)  # Number of put contracts in calculation period
     put_net_total = Column(Numeric(12, 2), nullable=True)  # Total net put income in calculation period
 
+    active = Column(Boolean, default=True)  # False = retired; excluded from puts history table unless position is open
     is_auto_updated = Column(Boolean, default=True)  # Whether this is auto-updated from 4-week average
     last_auto_update = Column(DateTime, nullable=True)  # When it was last auto-updated
     manual_override = Column(Boolean, default=False)  # If True, don't auto-update
@@ -167,15 +168,66 @@ class OptionPremiumSetting(Base):
 
 
 class AccountCashBalance(Base):
-    """Stores cash balances per account for put selling calculations."""
+    """Stores cash balances per account for put selling calculations.
+
+    Full Robinhood cash breakdown (from the "Cash" section copy-paste):
+      cash               = free cash (not margin, not locked)
+      margin_total       = total margin credit line available
+      margin_used        = amount borrowed from margin (positive = debt)
+      options_collateral = cash locked as put collateral (positive = your money, locked)
+      pending_orders     = cash reserved for pending stock/option orders (positive)
+      net_total          = Robinhood's "Total" line (buying power remaining)
+
+    True cash contribution = cash + options_collateral + pending_orders - margin_used
+    (options_collateral is your money, just locked; margin_used is borrowed and owed back)
+    """
     __tablename__ = 'account_cash_balances'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     account_name = Column(String(200), nullable=False, unique=True)
     cash_balance = Column(Numeric(12, 2), nullable=False)
+
+    # Full Robinhood cash breakdown (nullable — populated when user pastes cash section)
+    margin_total       = Column(Numeric(12, 2), nullable=True)
+    margin_used        = Column(Numeric(12, 2), nullable=True)  # stored positive
+    options_collateral = Column(Numeric(12, 2), nullable=True)  # stored positive
+    pending_orders     = Column(Numeric(12, 2), nullable=True)  # stored positive
+    net_total          = Column(Numeric(12, 2), nullable=True)  # Robinhood "Total" line
+
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AccountCashBalanceHistory(Base):
+    """One row per account per paste date — used to build the True Portfolio time-series chart.
+
+    true_cash is pre-computed at save time:
+      brokerage: cash_balance + options_collateral + pending_orders - margin_used
+      ira:       cash_balance + options_collateral   (no margin)
+    """
+    __tablename__ = 'account_cash_balance_history'
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    account_name   = Column(String(200), nullable=False)
+    snapshot_date  = Column(Date, nullable=False)
+    account_format = Column(String(20), nullable=True)   # 'brokerage' or 'ira'
+
+    cash_balance       = Column(Numeric(12, 2), nullable=False)
+    margin_total       = Column(Numeric(12, 2), nullable=True)
+    margin_used        = Column(Numeric(12, 2), nullable=True)
+    options_collateral = Column(Numeric(12, 2), nullable=True)
+    pending_orders     = Column(Numeric(12, 2), nullable=True)
+    net_total          = Column(Numeric(12, 2), nullable=True)
+    true_cash          = Column(Numeric(12, 2), nullable=False)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('account_name', 'snapshot_date', name='uq_cash_balance_history'),
+        Index('idx_cash_history_date',    'snapshot_date'),
+        Index('idx_cash_history_account', 'account_name'),
+    )
 
 
 class StrategyRecommendationRecord(Base):

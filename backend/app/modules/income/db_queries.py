@@ -107,6 +107,48 @@ def get_options_income_monthly(
     return {row.month: float(row.total or 0) for row in query.all()}
 
 
+def get_options_income_by_type_monthly(db: Session, taxable_only: bool = False) -> Dict[str, Dict[str, float]]:
+    """
+    Return monthly options income split into calls and puts.
+
+    Uses description to determine type ('Call' → call, 'Put' → put).
+    Returns: { 'YYYY-MM': { 'calls': float, 'puts': float } }
+    """
+    from sqlalchemy import text
+
+    account_filter = ""
+    if taxable_only:
+        account_filter = "AND ia.account_type NOT IN ('retirement', 'ira', 'roth_ira', 'traditional_ira', '401k', 'hsa')"
+
+    rows = db.execute(text(f"""
+        SELECT
+            TO_CHAR(transaction_date, 'YYYY-MM') AS month,
+            CASE
+                WHEN description ILIKE '%call%' THEN 'calls'
+                WHEN description ILIKE '%put%'  THEN 'puts'
+                ELSE 'other'
+            END AS option_type,
+            SUM(amount) AS total
+        FROM investment_transactions it
+        JOIN investment_accounts ia
+          ON it.account_id = ia.account_id AND it.source = ia.source
+        WHERE it.transaction_type IN ('STO', 'BTC', 'STC', 'BTO')
+        {account_filter}
+        GROUP BY month, option_type
+        ORDER BY month
+    """)).fetchall()
+
+    result: Dict[str, Dict[str, float]] = {}
+    for row in rows:
+        month = row.month
+        if month not in result:
+            result[month] = {'calls': 0.0, 'puts': 0.0}
+        if row.option_type in ('calls', 'puts'):
+            result[month][row.option_type] += float(row.total or 0)
+
+    return result
+
+
 def get_options_income_by_account(
     db: Session,
     year: Optional[int] = None

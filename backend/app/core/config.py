@@ -64,22 +64,14 @@ class Settings(BaseSettings):
     # Allow all origins in development (for home network)
     CORS_ALLOW_ALL: bool = True
     
-    # Notification settings (optional)
-    TELEGRAM_BOT_TOKEN: Optional[str] = None
-    TELEGRAM_CHAT_ID: Optional[str] = None
-    
-    # Email notification settings (optional)
-    SMTP_HOST: Optional[str] = None
-    SMTP_PORT: Optional[int] = None
-    SMTP_USER: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
-    NOTIFY_EMAIL: Optional[str] = None
-    
-    # WhatsApp via Twilio (optional)
-    TWILIO_ACCOUNT_SID: Optional[str] = None
-    TWILIO_AUTH_TOKEN: Optional[str] = None
-    TWILIO_WHATSAPP_FROM: Optional[str] = None
-    WHATSAPP_TO: Optional[str] = None
+    # Resend email assistant
+    RESEND_API_KEY: Optional[str] = None
+    AGENT_FROM: str = "Agrawal Estate Planner <assistant@neellab.info>"
+    AGENT_USER_EMAIL: str = "neelkamal@gmail.com"
+    AGENT_INBOX_ADDRESS: str = "assistant@neellab.info"
+    AGENT_USER_NAME: str = "Neel"
+    RESEND_WEBHOOK_SECRET: Optional[str] = None
+    AGENT_MODEL: str = "claude-sonnet-4-6"
 
     # Plaid API Configuration
     PLAID_CLIENT_ID: Optional[str] = None

@@ -20,6 +20,7 @@ class RecordType(Enum):
     INCOME_ENTRY = "income_entry"
     CASH_SNAPSHOT = "cash_snapshot"
     SPENDING = "spending"
+    CAPITAL_GAIN = "capital_gain"
 
 
 @dataclass

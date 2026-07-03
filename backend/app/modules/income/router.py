@@ -75,6 +75,15 @@ async def get_options_income(
     }
 
 
+@router.get("/options/by-type")
+async def get_options_by_type(taxable_only: bool = False, db: Session = Depends(get_db)):
+    """
+    Monthly options income split into calls vs puts.
+    Returns { 'YYYY-MM': { calls: float, puts: float } }
+    """
+    return db_queries.get_options_income_by_type_monthly(db, taxable_only=taxable_only)
+
+
 @router.get("/options/chart")
 async def get_options_chart_data(
     start_year: Optional[int] = Query(default=None, description="Start year for chart data"),
@@ -854,3 +863,67 @@ async def import_income_to_database():
         "message": "Income data imported to database",
         **result
     }
+
+
+@router.get("/monthly-positions")
+async def get_monthly_positions(db: Session = Depends(get_db)):
+    """
+    Monthly equity and cash positions for the income table.
+
+    Equity: last trading-day stock value per month from investment_holdings_history.
+    Cash:   most recent account_cash_balance_history snapshot on or before the last day
+            of each month (carry-forward so gaps between pastes are filled in).
+
+    Returns { equity: {'YYYY-MM': float}, cash: {'YYYY-MM': float} }
+    """
+    from sqlalchemy import text
+
+    equity_rows = db.execute(text("""
+        SELECT
+            TO_CHAR(snapshot_date, 'YYYY-MM') AS month,
+            SUM(market_value) AS total
+        FROM investment_holdings_history
+        WHERE snapshot_date = (
+            SELECT MAX(h2.snapshot_date)
+            FROM investment_holdings_history h2
+            WHERE TO_CHAR(h2.snapshot_date, 'YYYY-MM') = TO_CHAR(investment_holdings_history.snapshot_date, 'YYYY-MM')
+        )
+        GROUP BY month
+        ORDER BY month
+    """)).fetchall()
+
+    cash_rows = db.execute(text("""
+        WITH months AS (
+            SELECT DISTINCT TO_CHAR(snapshot_date, 'YYYY-MM') AS month
+            FROM account_cash_balance_history
+        )
+        SELECT
+            m.month,
+            (
+                SELECT SUM(c.true_cash)
+                FROM account_cash_balance_history c
+                WHERE c.snapshot_date <= (TO_DATE(m.month, 'YYYY-MM') + INTERVAL '1 month' - INTERVAL '1 day')::date
+                  AND c.snapshot_date = (
+                      SELECT MAX(c2.snapshot_date)
+                      FROM account_cash_balance_history c2
+                      WHERE c2.account_name = c.account_name
+                        AND c2.snapshot_date <= (TO_DATE(m.month, 'YYYY-MM') + INTERVAL '1 month' - INTERVAL '1 day')::date
+                  )
+            ) AS total_cash
+        FROM months m
+        ORDER BY m.month
+    """)).fetchall()
+
+    equity = {row.month: float(row.total or 0) for row in equity_rows}
+    cash   = {row.month: float(row.total_cash or 0) for row in cash_rows}
+
+    # Fill cash for months that have equity but no cash snapshot yet (carry-forward from latest available)
+    sorted_months = sorted(set(equity.keys()) | set(cash.keys()))
+    last_cash = 0.0
+    for m in sorted_months:
+        if m in cash:
+            last_cash = cash[m]
+        elif last_cash > 0:
+            cash[m] = last_cash
+
+    return {"equity": equity, "cash": cash}

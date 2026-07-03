@@ -41,7 +41,7 @@ interface NavGroup {
 const navItems: NavItem[] = [
   { path: '/dashboard', label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
   { path: '/income', label: 'Income', icon: <Wallet size={20} /> },
-  { path: '/strategies/options-selling', label: 'Option Income', icon: <LineChart size={20} /> },
+  { path: '/strategies/options-selling', label: 'Option Execution', icon: <LineChart size={20} /> },
   { path: '/investments', label: 'Investments', icon: <TrendingUp size={20} /> },
   { path: '/strategies/spending', label: 'Spending', icon: <CreditCard size={20} /> },
   { path: '/strategies/buy-borrow-die', label: 'Buy/Borrow/Die', icon: <Banknote size={20} /> },

@@ -29,7 +29,7 @@ import {
   formatCurrency,
   formatCurrencyShort,
   formatPercent,
-  ChartTooltip,
+
   ChartWrapper,
   PERIOD_PRESETS,
   GRID_PROPS,
@@ -157,15 +157,25 @@ const getAccountTypeDisplay = (type: string) => {
 
 
 // Account Card Component
+interface CashAccountData {
+  true_cash: number
+  cash: number
+  options_collateral: number
+  margin_used: number
+  pending_orders: number
+}
+
 interface AccountCardProps {
   account: Account
   onClick: () => void
   delay: number
+  cashData?: CashAccountData
 }
 
-function AccountCard({ account, onClick, delay }: AccountCardProps) {
+function AccountCard({ account, onClick, delay, cashData }: AccountCardProps) {
   const Icon = account.icon
   const isPositive = account.change >= 0
+  const trueValue = cashData ? account.value + cashData.true_cash : null
 
   return (
     <button
@@ -187,7 +197,20 @@ function AccountCard({ account, onClick, delay }: AccountCardProps) {
           </span>
         </div>
       </div>
-      <div className={styles.accountValue}>{formatCurrency(account.value)}</div>
+      {trueValue !== null ? (
+        <>
+          <div className={styles.accountValue}>{formatCurrency(trueValue)}</div>
+          <div style={{ fontSize: '0.78rem', color: 'var(--color-text-tertiary)', display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 2, marginBottom: 4 }}>
+            <span>{formatCurrency(account.value)} stocks</span>
+            <span style={{ color: 'var(--color-text-secondary)' }}>+{formatCurrency(cashData!.true_cash)} cash</span>
+            {cashData!.margin_used > 0 && (
+              <span style={{ color: 'var(--color-negative, #FF5A5A)' }}>−{formatCurrency(cashData!.margin_used)} margin</span>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className={styles.accountValue}>{formatCurrency(account.value)}</div>
+      )}
       <div className={clsx(styles.accountChange, isPositive ? styles.positive : styles.negative)}>
         {isPositive ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
         <span>{formatCurrency(Math.abs(account.change))}</span>
@@ -263,12 +286,12 @@ export function Investments() {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [chartData, setChartData] = useState<MonthlyData[]>([])
-  const [accountChartData, setAccountChartData] = useState<MonthlyData[]>([])
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [growthSummary, setGrowthSummary] = useState<GrowthSummary | null>(null)
   const [chartPeriod, setChartPeriod] = useState<string | null>('ytd')
-  const [accountChartPeriod, setAccountChartPeriod] = useState<string | null>(null)
+
   const [stockGrowthData, setStockGrowthData] = useState<Record<string, { growth_ytd: number | null; growth_1y: number | null; growth_5y: number | null; holding_period_days: number | null }> | null>(_stockGrowthCache?.data ?? null)
   const [capitalEvents, setCapitalEvents] = useState<CapitalEvent[]>([])
   const [capitalThreshold, setCapitalThreshold] = useState(5000)
@@ -277,6 +300,12 @@ export function Investments() {
   const [cfSortDir, setCfSortDir] = useState<'asc' | 'desc'>('desc')
   const [optionChains, setOptionChains] = useState<Record<string, OptionChainInfo>>({})
   const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set())
+  const [cashBreakdown, setCashBreakdown] = useState<{ total_true_cash: number; total_margin_used: number; total_options_collateral: number; accounts: (CashAccountData & { account_name: string })[] } | null>(null)
+  const [truePortfolioHistory, setTruePortfolioHistory] = useState<{ date: string; stock_value: number; true_cash: number; true_portfolio: number; is_real: boolean }[]>([])
+  const [realDataStart, setRealDataStart] = useState<string | null>(null)
+  const [acctTruePortHistory, setAcctTruePortHistory] = useState<{ date: string; stock_value: number; true_cash: number; true_portfolio: number; is_real: boolean }[]>([])
+  const [acctRealDataStart, setAcctRealDataStart] = useState<string | null>(null)
+  const [acctTruePortPeriod, setAcctTruePortPeriod] = useState<string | null>(null)
 
   // Fetch stock growth data (with frontend cache to avoid re-fetching on page navigation)
   const fetchStockGrowth = async (force = false) => {
@@ -372,9 +401,7 @@ export function Investments() {
           value: h.value,
         }))
 
-        if (accountId) {
-          setAccountChartData(history)
-        } else {
+        if (!accountId) {
           setChartData(history)
         }
       } else {
@@ -388,16 +415,17 @@ export function Investments() {
   // Fetch account-specific history when account is selected
   const handleAccountSelect = (account: Account) => {
     setSelectedAccount(account)
-    setAccountChartData([]) // Clear previous data
-    setAccountChartPeriod(null) // Reset to "All" period
+    setAcctTruePortHistory([])
+    setAcctRealDataStart(null)
+    setAcctTruePortPeriod(null)
+    fetch(`${API_BASE}/ingestion/robinhood-cash/portfolio-history/by-account/${account.id}`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.history) setAcctTruePortHistory(d.history)
+        if (d?.real_data_start) setAcctRealDataStart(d.real_data_start)
+      })
+      .catch(() => {})
   }
-
-  // Fetch chart data when selected account or period changes
-  useEffect(() => {
-    if (selectedAccount) {
-      fetchPortfolioHistory(selectedAccount.id, accountChartPeriod)
-    }
-  }, [selectedAccount?.id, accountChartPeriod])
 
   // Fetch holdings with LIVE prices from Yahoo Finance
   const fetchHoldings = async () => {
@@ -463,11 +491,57 @@ export function Investments() {
     fetchGrowthSummary()
     fetchStockGrowth()
     fetchCapitalEvents('ytd')
+    fetch(`${API_BASE}/ingestion/robinhood-cash/balances`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setCashBreakdown(d))
+      .catch(() => {})
+    fetch(`${API_BASE}/ingestion/robinhood-cash/portfolio-history`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.history) setTruePortfolioHistory(d.history)
+        if (d?.real_data_start) setRealDataStart(d.real_data_start)
+      })
+      .catch(() => {})
   }, [])
 
   const totalEquity = accounts.reduce((sum, acc) => sum + acc.value, 0)
   const totalChange = accounts.reduce((sum, acc) => sum + acc.change, 0)
   const totalChangePercent = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : 0
+
+  // Filter true portfolio history by selected chart period (client-side)
+  const filteredTruePortfolioHistory = useMemo(() => {
+    if (!truePortfolioHistory.length) return truePortfolioHistory
+    if (!chartPeriod) return truePortfolioHistory
+    const today = new Date()
+    let cutoff: Date
+    switch (chartPeriod) {
+      case '1d': cutoff = new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000); break
+      case '1w': cutoff = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000); break
+      case '30d': cutoff = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000); break
+      case '90d': cutoff = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000); break
+      case 'ytd': cutoff = new Date(today.getFullYear(), 0, 1); break
+      case '1y': cutoff = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000); break
+      default: return truePortfolioHistory
+    }
+    const cutoffStr = cutoff.toISOString().split('T')[0]
+    return truePortfolioHistory.filter(d => d.date >= cutoffStr)
+  }, [truePortfolioHistory, chartPeriod])
+
+  // Filter per-account True Portfolio history by period (client-side)
+  const filteredAcctTruePortHistory = useMemo(() => {
+    if (!acctTruePortHistory.length || !acctTruePortPeriod) return acctTruePortHistory
+    const today = new Date()
+    let cutoff: Date
+    switch (acctTruePortPeriod) {
+      case '30d':  cutoff = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000); break
+      case '90d':  cutoff = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000); break
+      case 'ytd':  cutoff = new Date(today.getFullYear(), 0, 1); break
+      case '1y':   cutoff = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000); break
+      default: return acctTruePortHistory
+    }
+    const cutoffStr = cutoff.toISOString().split('T')[0]
+    return acctTruePortHistory.filter(d => d.date >= cutoffStr)
+  }, [acctTruePortHistory, acctTruePortPeriod])
 
   // Build current price lookup from holdings for Capital Flow table
   const currentPriceMap = useMemo(() => {
@@ -513,15 +587,34 @@ export function Investments() {
 
   // Detail View
   if (selectedAccount) {
+    const selectedIndex = accounts.indexOf(selectedAccount)
+    const prevAccount = selectedIndex > 0 ? accounts[selectedIndex - 1] : null
+    const nextAccount = selectedIndex < accounts.length - 1 ? accounts[selectedIndex + 1] : null
+
     return (
       <div className={styles.page}>
-        <button
-          className={styles.backButton}
-          onClick={() => setSelectedAccount(null)}
-        >
-          <ArrowLeft size={20} />
-          Back to Stocks
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+          <button className={styles.backButton} onClick={() => setSelectedAccount(null)} style={{ margin: 0 }}>
+            <ArrowLeft size={20} />
+            Back to Stocks
+          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+            <button
+              className={styles.backButton}
+              style={{ margin: 0, opacity: prevAccount ? 1 : 0.3, pointerEvents: prevAccount ? 'auto' : 'none' }}
+              onClick={() => prevAccount && handleAccountSelect(prevAccount)}
+            >
+              ← {prevAccount?.name ?? ''}
+            </button>
+            <button
+              className={styles.backButton}
+              style={{ margin: 0, opacity: nextAccount ? 1 : 0.3, pointerEvents: nextAccount ? 'auto' : 'none' }}
+              onClick={() => nextAccount && handleAccountSelect(nextAccount)}
+            >
+              {nextAccount?.name ?? ''} →
+            </button>
+          </div>
+        </div>
 
         <div className={styles.detailHeader}>
           <div
@@ -552,56 +645,112 @@ export function Investments() {
           </div>
         </div>
 
-        {/* Account Growth Chart */}
-        <ChartWrapper
-          title="Account Growth"
-          periodOptions={PERIOD_PRESETS.STANDARD}
-          periodValue={accountChartPeriod}
-          onPeriodChange={setAccountChartPeriod}
-          isEmpty={accountChartData.length === 0}
-          emptyMessage="Loading account history..."
-        >
-          {accountChartData.length > 1 ? (
-            <ResponsiveContainer width="100%" height={250}>
-              <AreaChart data={accountChartData} margin={CHART_MARGINS}>
-                <defs>
-                  <linearGradient id="accountGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={selectedAccount.color} stopOpacity={0.3} />
-                    <stop offset="100%" stopColor={selectedAccount.color} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid {...GRID_PROPS} />
-                <XAxis
-                  dataKey="month"
-                  {...X_AXIS_PROPS}
-                  interval={Math.max(0, Math.floor(accountChartData.length / 8) - 1)}
-                  tickFormatter={(value) => {
-                    const match = value.match(/(\d{4})/);
-                    return match ? match[1] : value;
-                  }}
-                />
-                <YAxis {...Y_AXIS_PROPS} tickFormatter={formatCurrencyShort} />
-                <Tooltip content={<ChartTooltip labelKey="month" />} />
-                <Area
-                  type="monotone"
-                  dataKey="value"
-                  stroke={selectedAccount.color}
-                  strokeWidth={3}
-                  fill="url(#accountGradient)"
-                  animationDuration={1000}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : accountChartData.length === 1 ? (
-            <div className={styles.chartEmpty}>
-              <div className={styles.singleDataPoint}>
-                <span className={styles.dataPointLabel}>{accountChartData[0].month}</span>
-                <span className={styles.dataPointValue}>{formatCurrency(accountChartData[0].value)}</span>
-              </div>
-              <p>Upload more statements to see account growth over time.</p>
-            </div>
-          ) : null}
-        </ChartWrapper>
+        {/* Per-account True Portfolio Chart */}
+        {acctTruePortHistory.length > 1 && (() => {
+          const HIST_COLOR = '#C49A3C'
+          const hasHistorical = filteredAcctTruePortHistory.some(d => !d.is_real)
+          const enrichedAcct = filteredAcctTruePortHistory.map(d => ({
+            ...d,
+            real_true_portfolio: d.is_real ? d.true_portfolio : null,
+            real_stock_value:    d.is_real ? d.stock_value    : null,
+            hist_stock_value:    !d.is_real ? d.stock_value   : null,
+          }))
+          return (
+            <ChartWrapper
+              title="True Portfolio"
+              periodOptions={PERIOD_PRESETS.STANDARD}
+              periodValue={acctTruePortPeriod}
+              onPeriodChange={setAcctTruePortPeriod}
+              isEmpty={filteredAcctTruePortHistory.length === 0}
+              emptyMessage="Loading account history..."
+            >
+              <>
+              <ResponsiveContainer width="100%" height={260}>
+                <AreaChart data={enrichedAcct} margin={CHART_MARGINS}>
+                  <defs>
+                    <linearGradient id="acctTruePortGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.28} />
+                      <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0.02} />
+                    </linearGradient>
+                    <linearGradient id="acctHistGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={HIST_COLOR} stopOpacity={0.18} />
+                      <stop offset="100%" stopColor={HIST_COLOR} stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid {...GRID_PROPS} />
+                  <XAxis
+                    dataKey="date"
+                    {...X_AXIS_PROPS}
+                    interval={Math.max(0, Math.floor(enrichedAcct.length / 8) - 1)}
+                    tickFormatter={(v: string) => new Date(v + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  />
+                  <YAxis {...Y_AXIS_PROPS} tickFormatter={formatCurrencyShort} domain={['auto', 'auto']} />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null
+                      const pt = payload[0]?.payload as typeof enrichedAcct[0]
+                      if (!pt) return null
+                      const label = new Date(pt.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                      return (
+                        <div className={styles.eventTooltip}>
+                          <div className={styles.eventTooltipTitle}>{label}</div>
+                          {pt.is_real ? (
+                            <>
+                              <div className={styles.eventTooltipRow}>
+                                <span>True Portfolio</span>
+                                <span style={{ color: CHART_GREEN, fontWeight: 600 }}>{formatCurrency(pt.true_portfolio)}</span>
+                              </div>
+                              <div className={styles.eventTooltipRow}>
+                                <span>Equity</span>
+                                <span>{formatCurrency(pt.stock_value)}</span>
+                              </div>
+                              <div className={styles.eventTooltipRow}>
+                                <span>Cash</span>
+                                <span>{formatCurrency(pt.true_cash)}</span>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className={styles.eventTooltipRow}>
+                                <span>Equity</span>
+                                <span style={{ color: HIST_COLOR, fontWeight: 600 }}>{formatCurrency(pt.stock_value)}</span>
+                              </div>
+                              <div className={styles.eventTooltipRow}>
+                                <span style={{ color: 'var(--color-text-tertiary)', fontSize: '11px' }}>Cash estimated — not shown</span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )
+                    }}
+                  />
+                  {hasHistorical && (
+                    <Area type="monotone" dataKey="hist_stock_value" stroke={HIST_COLOR} strokeWidth={1.5} strokeDasharray="4 3"
+                      fill="url(#acctHistGradient)" connectNulls={false} dot={false} activeDot={false} />
+                  )}
+                  <Area type="monotone" dataKey="real_true_portfolio" stroke={CHART_GREEN} strokeWidth={2.5}
+                    fill="url(#acctTruePortGradient)" connectNulls={false}
+                    activeDot={{ r: 5, fill: CHART_GREEN, stroke: '#fff', strokeWidth: 2 }} />
+                  <Area type="monotone" dataKey="real_stock_value" stroke={CHART_GREEN} strokeWidth={1.5}
+                    strokeOpacity={0.45} strokeDasharray="5 3" fill="none" connectNulls={false} dot={false} activeDot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+              {hasHistorical && acctRealDataStart && (
+                <div style={{ display: 'flex', gap: '20px', marginTop: '10px', fontSize: '12px', color: 'var(--color-text-tertiary)' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ display: 'inline-block', width: '20px', borderTop: '2px dashed #C49A3C' }} />
+                    Equity only (pre-{new Date(acctRealDataStart + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ display: 'inline-block', width: '20px', borderTop: '2px solid ' + CHART_GREEN }} />
+                    True Portfolio (equity + cash)
+                  </span>
+                </div>
+              )}
+              </>
+            </ChartWrapper>
+          )
+        })()}
 
         <section className={styles.holdingsSection}>
           <h2>Holdings ({selectedAccount.holdings.filter(h => h.symbol !== 'CASH').length})</h2>
@@ -633,8 +782,28 @@ export function Investments() {
       {/* Hero Section */}
       <section className={styles.hero}>
         <div className={styles.heroContent}>
-          <div className={styles.heroLabel}>Total Stock Holdings</div>
-          <div className={styles.heroValue}>{formatCurrency(totalEquity)}</div>
+          {cashBreakdown && cashBreakdown.total_true_cash !== 0 ? (() => {
+            const truePortfolio = totalEquity + cashBreakdown.total_true_cash
+            const trueCash = cashBreakdown.total_true_cash
+            return (
+              <>
+                <div className={styles.heroLabel}>True Portfolio</div>
+                <div className={styles.heroValue}>{formatCurrency(truePortfolio)}</div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--color-text-tertiary)', display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 4 }}>
+                  <span>{formatCurrency(totalEquity)} stocks</span>
+                  <span>+{formatCurrency(trueCash)} cash &amp; collateral</span>
+                  {cashBreakdown.total_margin_used > 0 && (
+                    <span style={{ color: 'var(--color-negative, #FF5A5A)' }}>−{formatCurrency(cashBreakdown.total_margin_used)} margin</span>
+                  )}
+                </div>
+              </>
+            )
+          })() : (
+            <>
+              <div className={styles.heroLabel}>Total Stock Holdings</div>
+              <div className={styles.heroValue}>{formatCurrency(totalEquity)}</div>
+            </>
+          )}
           
           {/* Growth Periods — portfolio-weighted average of individual stock returns */}
           {(() => {
@@ -695,9 +864,9 @@ export function Investments() {
         </button>
       </section>
 
-      {/* Growth Chart */}
+      {/* True Portfolio Chart */}
       <ChartWrapper
-        title="Portfolio Growth"
+        title="True Portfolio"
         periodOptions={PERIOD_PRESETS.EXTENDED}
         periodValue={chartPeriod}
         onPeriodChange={(key) => {
@@ -705,58 +874,102 @@ export function Investments() {
           fetchPortfolioHistory(undefined, key)
           fetchCapitalEvents(key)
         }}
-        isEmpty={chartData.length === 0}
+        isEmpty={filteredTruePortfolioHistory.length === 0 && chartData.length === 0}
         emptyMessage="No historical data yet. Upload account statements to build your portfolio history."
       >
-        {chartData.length > 1 ? (() => {
-          // Merge capital events onto chart data points for dot overlay
-          const isDaily = chartPeriod === '1d' || chartPeriod === '1w' || chartPeriod === '30d' || chartPeriod === '90d'
-          const eventsByLabel = new Map<string, CapitalEvent[]>()
+        {filteredTruePortfolioHistory.length > 1 ? (() => {
+          // Map capital events by date for dot overlay on daily chart
+          const eventsByDate = new Map<string, CapitalEvent[]>()
           for (const event of capitalEvents) {
-            const key = isDaily ? event.formatted : event.month_key
-            if (!eventsByLabel.has(key)) eventsByLabel.set(key, [])
-            eventsByLabel.get(key)!.push(event)
+            const key = event.date
+            if (!eventsByDate.has(key)) eventsByDate.set(key, [])
+            eventsByDate.get(key)!.push(event)
           }
 
-          const enrichedData = chartData.map(d => {
-            const evts = eventsByLabel.get(d.month)
-            if (!evts || evts.length === 0) return { ...d, events: [] as CapitalEvent[] }
-            return { ...d, hasBuy: evts.some(e => e.type === 'BUY'), hasSell: evts.some(e => e.type === 'SELL'), events: evts }
+          const enrichedData = filteredTruePortfolioHistory.map(d => {
+            const evts = eventsByDate.get(d.date) || []
+            const isReal = d.is_real
+            return {
+              ...d,
+              hasBuy: evts.some(e => e.type === 'BUY'),
+              hasSell: evts.some(e => e.type === 'SELL'),
+              events: evts,
+              // Real zone: full true portfolio + equity line
+              real_true_portfolio: isReal ? d.true_portfolio : null,
+              real_stock_value:    isReal ? d.stock_value : null,
+              // Historical zone: equity only, in muted color
+              hist_stock_value:    !isReal ? d.stock_value : null,
+            }
           })
 
+          const hasHistorical = enrichedData.some(d => d.hist_stock_value !== null)
+          const HIST_COLOR = '#C49A3C'
+
           return (
+          <>
           <ResponsiveContainer width="100%" height={300}>
             <AreaChart data={enrichedData} margin={CHART_MARGINS}>
               <defs>
-                <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0} />
+                <linearGradient id="truePortGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.28} />
+                  <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="histEquityGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={HIST_COLOR} stopOpacity={0.18} />
+                  <stop offset="100%" stopColor={HIST_COLOR} stopOpacity={0.02} />
                 </linearGradient>
               </defs>
               <CartesianGrid {...GRID_PROPS} />
               <XAxis
-                dataKey="month"
+                dataKey="date"
                 {...X_AXIS_PROPS}
                 interval={Math.max(0, Math.floor(enrichedData.length / 10) - 1)}
+                tickFormatter={(v: string) => {
+                  const d = new Date(v + 'T00:00:00')
+                  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                }}
               />
               <YAxis
                 {...Y_AXIS_PROPS}
                 tickFormatter={formatCurrencyShort}
-                domain={['dataMin - 50000', 'dataMax + 50000']}
+                domain={['auto', 'auto']}
               />
               <Tooltip
                 content={({ active, payload }) => {
-                  if (!active || !payload || !payload.length) return null
-                  const point = payload[0]?.payload
+                  if (!active || !payload?.length) return null
+                  const point = payload[0]?.payload as { date: string; stock_value: number; true_cash: number; true_portfolio: number; is_real: boolean; events: CapitalEvent[] }
                   if (!point) return null
                   const evts: CapitalEvent[] = point.events || []
+                  const dateLabel = new Date(point.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
                   return (
                     <div className={styles.eventTooltip}>
-                      <div className={styles.eventTooltipTitle}>{point.month}</div>
-                      <div className={styles.eventTooltipRow}>
-                        <span>Portfolio</span>
-                        <span>{formatCurrency(point.value)}</span>
-                      </div>
+                      <div className={styles.eventTooltipTitle}>{dateLabel}</div>
+                      {point.is_real ? (
+                        <>
+                          <div className={styles.eventTooltipRow}>
+                            <span>True Portfolio</span>
+                            <span style={{ color: CHART_GREEN, fontWeight: 600 }}>{formatCurrency(point.true_portfolio)}</span>
+                          </div>
+                          <div className={styles.eventTooltipRow}>
+                            <span>Equity</span>
+                            <span>{formatCurrency(point.stock_value)}</span>
+                          </div>
+                          <div className={styles.eventTooltipRow}>
+                            <span>Cash &amp; Collateral</span>
+                            <span>{formatCurrency(point.true_cash)}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className={styles.eventTooltipRow}>
+                            <span>Equity</span>
+                            <span style={{ color: HIST_COLOR, fontWeight: 600 }}>{formatCurrency(point.stock_value)}</span>
+                          </div>
+                          <div className={styles.eventTooltipRow}>
+                            <span style={{ color: 'var(--color-text-tertiary)', fontSize: '11px' }}>Cash estimated — not shown</span>
+                          </div>
+                        </>
+                      )}
                       {evts.map((e: CapitalEvent, i: number) => (
                         <div key={i} className={styles.eventTooltipRow}>
                           <span style={{ color: e.type === 'BUY' ? '#00D632' : '#FF5A5A' }}>
@@ -769,34 +982,136 @@ export function Investments() {
                   )
                 }}
               />
+              {/* Historical zone: equity only in amber (estimated cash excluded) */}
+              {hasHistorical && (
+                <Area
+                  type="monotone"
+                  dataKey="hist_stock_value"
+                  stroke={HIST_COLOR}
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                  fill="url(#histEquityGradient)"
+                  connectNulls={false}
+                  dot={false}
+                  activeDot={false}
+                />
+              )}
+              {/* Real zone: true portfolio — primary filled area */}
               <Area
                 type="monotone"
-                dataKey="value"
+                dataKey="real_true_portfolio"
                 stroke={CHART_GREEN}
-                strokeWidth={3}
-                fill="url(#equityGradient)"
+                strokeWidth={2.5}
+                fill="url(#truePortGradient)"
+                connectNulls={false}
                 animationDuration={1500}
                 dot={(props: any) => {
                   const { cx, cy, payload } = props
                   if (cx == null || cy == null) return <g key={`dot-${props.index}`} />
-                  const hasBuy = payload.hasBuy
-                  const hasSell = payload.hasSell
-                  if (!hasBuy && !hasSell) return <g key={`dot-${props.index}`} />
+                  if (!payload.hasBuy && !payload.hasSell) return <g key={`dot-${props.index}`} />
                   return (
                     <g key={`dot-${props.index}`} style={{ cursor: 'pointer' }}
-                       onClick={() => setHighlightedDate(payload.month)}>
-                      {hasBuy && (
+                       onClick={() => setHighlightedDate(payload.date)}>
+                      {payload.hasBuy && (
                         <>
                           <circle cx={cx} cy={cy} r={7} fill="#00D632" stroke="#fff" strokeWidth={2} opacity={0.9} />
                           <text x={cx} y={cy + 1} textAnchor="middle" fill="#fff" fontSize={9} fontWeight="bold">B</text>
                         </>
                       )}
-                      {hasSell && (
+                      {payload.hasSell && (
                         <>
                           <circle cx={cx} cy={cy - 18} r={7} fill="#FF5A5A" stroke="#fff" strokeWidth={2} opacity={0.9} />
                           <text x={cx} y={cy - 17} textAnchor="middle" fill="#fff" fontSize={9} fontWeight="bold">S</text>
                         </>
                       )}
+                    </g>
+                  )
+                }}
+                activeDot={{ r: 5, fill: CHART_GREEN, stroke: '#fff', strokeWidth: 2 }}
+              />
+              {/* Real zone: equity dashed secondary line */}
+              <Area
+                type="monotone"
+                dataKey="real_stock_value"
+                stroke={CHART_GREEN}
+                strokeWidth={1.5}
+                strokeOpacity={0.45}
+                strokeDasharray="5 3"
+                fill="none"
+                connectNulls={false}
+                dot={false}
+                activeDot={false}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+          {hasHistorical && realDataStart && (
+            <div style={{ display: 'flex', gap: '20px', marginTop: '10px', fontSize: '12px', color: 'var(--color-text-tertiary)' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ display: 'inline-block', width: '20px', borderTop: '2px dashed #C49A3C' }} />
+                Equity only (cash estimated, unreliable)
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ display: 'inline-block', width: '20px', borderTop: '2px solid ' + CHART_GREEN }} />
+                True Portfolio — real data from {new Date(realDataStart + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </span>
+            </div>
+          )}
+          </>
+          )
+        })() : chartData.length > 1 ? (() => {
+          // Fallback: equity-only chart when true portfolio data is unavailable
+          const isDaily = chartPeriod === '1d' || chartPeriod === '1w' || chartPeriod === '30d' || chartPeriod === '90d'
+          const eventsByLabel = new Map<string, CapitalEvent[]>()
+          for (const event of capitalEvents) {
+            const key = isDaily ? event.formatted : event.month_key
+            if (!eventsByLabel.has(key)) eventsByLabel.set(key, [])
+            eventsByLabel.get(key)!.push(event)
+          }
+          const enrichedData = chartData.map(d => {
+            const evts = eventsByLabel.get(d.month) || []
+            return { ...d, hasBuy: evts.some(e => e.type === 'BUY'), hasSell: evts.some(e => e.type === 'SELL'), events: evts }
+          })
+          return (
+          <ResponsiveContainer width="100%" height={300}>
+            <AreaChart data={enrichedData} margin={CHART_MARGINS}>
+              <defs>
+                <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.3} />
+                  <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid {...GRID_PROPS} />
+              <XAxis dataKey="month" {...X_AXIS_PROPS} interval={Math.max(0, Math.floor(enrichedData.length / 10) - 1)} />
+              <YAxis {...Y_AXIS_PROPS} tickFormatter={formatCurrencyShort} domain={['dataMin - 50000', 'dataMax + 50000']} />
+              <Tooltip
+                content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null
+                  const point = payload[0]?.payload
+                  if (!point) return null
+                  const evts: CapitalEvent[] = point.events || []
+                  return (
+                    <div className={styles.eventTooltip}>
+                      <div className={styles.eventTooltipTitle}>{point.month}</div>
+                      <div className={styles.eventTooltipRow}><span>Portfolio</span><span>{formatCurrency(point.value)}</span></div>
+                      {evts.map((e: CapitalEvent, i: number) => (
+                        <div key={i} className={styles.eventTooltipRow}>
+                          <span style={{ color: e.type === 'BUY' ? '#00D632' : '#FF5A5A' }}>{e.type} {e.symbol}</span>
+                          <span>{formatCurrency(e.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                }}
+              />
+              <Area type="monotone" dataKey="value" stroke={CHART_GREEN} strokeWidth={3} fill="url(#equityGradient)" animationDuration={1500}
+                dot={(props: any) => {
+                  const { cx, cy, payload } = props
+                  if (cx == null || cy == null) return <g key={`dot-${props.index}`} />
+                  if (!payload.hasBuy && !payload.hasSell) return <g key={`dot-${props.index}`} />
+                  return (
+                    <g key={`dot-${props.index}`} style={{ cursor: 'pointer' }} onClick={() => setHighlightedDate(payload.month)}>
+                      {payload.hasBuy && (<><circle cx={cx} cy={cy} r={7} fill="#00D632" stroke="#fff" strokeWidth={2} opacity={0.9} /><text x={cx} y={cy + 1} textAnchor="middle" fill="#fff" fontSize={9} fontWeight="bold">B</text></>)}
+                      {payload.hasSell && (<><circle cx={cx} cy={cy - 18} r={7} fill="#FF5A5A" stroke="#fff" strokeWidth={2} opacity={0.9} /><text x={cx} y={cy - 17} textAnchor="middle" fill="#fff" fontSize={9} fontWeight="bold">S</text></>)}
                     </g>
                   )
                 }}
@@ -1028,14 +1343,20 @@ export function Investments() {
       <section className={styles.accountsSection}>
         <h2>Brokerage Accounts ({accounts.length})</h2>
         <div className={styles.accountsGrid}>
-          {accounts.map((account, index) => (
+          {accounts.map((account, index) => {
+            const cashData = cashBreakdown?.accounts?.find(
+              (a: any) => a.account_name.toLowerCase() === account.name.toLowerCase()
+            )
+            return (
             <AccountCard
               key={account.id}
               account={account}
               onClick={() => handleAccountSelect(account)}
               delay={index * 50}
+              cashData={cashData ?? undefined}
             />
-          ))}
+            )
+          })}
         </div>
       </section>
 

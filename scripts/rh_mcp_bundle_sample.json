@@ -1,0 +1,185 @@
+{
+  "as_of": "2026-07-02",
+  "source_login": "jaya",
+  "instruments": {
+    "31dc1ec3-d0f7-4d4e-8c1f-8a37b284ef8f": {"chain_symbol": "NVDA", "strike_price": "215.0000", "type": "call", "expiration_date": "2026-07-10"},
+    "b839d22b-7b0b-48ce-b779-66d0fac996c5": {"chain_symbol": "AAPL", "strike_price": "315.0000", "type": "call", "expiration_date": "2026-07-10"},
+    "b41c615d-7866-4459-896d-c4e61c8c154f": {"chain_symbol": "TSLA", "strike_price": "432.5000", "type": "call", "expiration_date": "2026-07-10"},
+    "ff4b7340-3f67-46de-9373-4d48ba484518": {"chain_symbol": "AVGO", "strike_price": "385.0000", "type": "put", "expiration_date": "2026-07-10"},
+    "45bf8fbf-d9b6-4e2f-b25b-aa6601306dce": {"chain_symbol": "GOOGL", "strike_price": "370.0000", "type": "put", "expiration_date": "2026-07-10"},
+    "507affff-98b1-46c4-846c-1458a3c9ef80": {"chain_symbol": "SPCX", "strike_price": "162.5000", "type": "put", "expiration_date": "2026-07-10"},
+    "a399f773-5000-46c1-9899-09bb0907d1e7": {"chain_symbol": "GOOGL", "strike_price": "385.0000", "type": "call", "expiration_date": "2026-07-10"},
+    "ec9d9e9c-c0a2-4faa-b8a1-e3304d8b1fdc": {"chain_symbol": "INTC", "strike_price": "150.0000", "type": "call", "expiration_date": "2026-07-10"},
+    "1486810e-ce17-4da5-9519-8ce01fcab36d": {"chain_symbol": "SPCX", "strike_price": "200.0000", "type": "put", "expiration_date": "2026-07-10"}
+  },
+  "option_marks": {
+    "31dc1ec3-d0f7-4d4e-8c1f-8a37b284ef8f": 0.155,
+    "b839d22b-7b0b-48ce-b779-66d0fac996c5": 2.155,
+    "b41c615d-7866-4459-896d-c4e61c8c154f": 1.215,
+    "ff4b7340-3f67-46de-9373-4d48ba484518": 27.15,
+    "45bf8fbf-d9b6-4e2f-b25b-aa6601306dce": 12.875,
+    "507affff-98b1-46c4-846c-1458a3c9ef80": 7.60,
+    "a399f773-5000-46c1-9899-09bb0907d1e7": 0.665,
+    "ec9d9e9c-c0a2-4faa-b8a1-e3304d8b1fdc": 0.40,
+    "1486810e-ce17-4da5-9519-8ce01fcab36d": 39.15
+  },
+  "equity_marks": {
+    "AAPL": 308.24, "TSLA": 392.81, "NVDA": 194.51, "AVGO": 360.34,
+    "SPCX": 161.86, "MU": 975.77, "INTC": 120.41, "GOOGL": 359.53
+  },
+  "accounts": [
+    {
+      "account_name": "Jaya's Brokerage",
+      "account_number": "701552176",
+      "cash_format": "brokerage",
+      "activity_since": "2026-07-01",
+      "portfolio": {"cash": "-46955.41", "buying_power": {"buying_power": "11294.59"}},
+      "equity_positions": [
+        {"symbol": "AAPL", "quantity": "100"},
+        {"symbol": "TSLA", "quantity": "1000"},
+        {"symbol": "NVDA", "quantity": "600"},
+        {"symbol": "AVGO", "quantity": "100"},
+        {"symbol": "SPCX", "quantity": "14"}
+      ],
+      "option_positions": [
+        {"option_id": "31dc1ec3-d0f7-4d4e-8c1f-8a37b284ef8f", "chain_symbol": "NVDA", "type": "short", "quantity": "6", "average_price": "-37.0000"},
+        {"option_id": "b839d22b-7b0b-48ce-b779-66d0fac996c5", "chain_symbol": "AAPL", "type": "short", "quantity": "1", "average_price": "-81.0000"},
+        {"option_id": "b41c615d-7866-4459-896d-c4e61c8c154f", "chain_symbol": "TSLA", "type": "short", "quantity": "10", "average_price": "-715.0000"},
+        {"option_id": "ff4b7340-3f67-46de-9373-4d48ba484518", "chain_symbol": "AVGO", "type": "short", "quantity": "1", "average_price": "-2754.0000"},
+        {"option_id": "45bf8fbf-d9b6-4e2f-b25b-aa6601306dce", "chain_symbol": "GOOGL", "type": "short", "quantity": "1", "average_price": "-2278.0000"},
+        {"option_id": "507affff-98b1-46c4-846c-1458a3c9ef80", "chain_symbol": "SPCX", "type": "short", "quantity": "1", "average_price": "-1355.0000"}
+      ],
+      "option_orders": [
+        {"state": "filled", "chain_symbol": "NVDA", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "215.0000", "option_type": "call", "executions": [
+            {"price": "0.37", "quantity": "2", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"},
+            {"price": "0.37", "quantity": "4", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"}]}]},
+        {"state": "filled", "chain_symbol": "AAPL", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "315.0000", "option_type": "call", "executions": [
+            {"price": "0.81", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"}]}]},
+        {"state": "filled", "chain_symbol": "TSLA", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "432.5000", "option_type": "call", "executions": [
+            {"price": "7.15", "quantity": "10", "trade_date": "2026-07-01", "settlement_date": "2026-07-02"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "420.0000", "option_type": "call", "executions": [
+            {"price": "6.25", "quantity": "10", "trade_date": "2026-07-01", "settlement_date": "2026-07-02"}]}]},
+        {"state": "filled", "chain_symbol": "SPCX", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "162.5000", "option_type": "put", "executions": [
+            {"price": "13.55", "quantity": "1", "trade_date": "2026-06-29", "settlement_date": "2026-06-30"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "162.5000", "option_type": "put", "executions": [
+            {"price": "11.00", "quantity": "1", "trade_date": "2026-06-29", "settlement_date": "2026-06-30"}]}]},
+        {"state": "filled", "chain_symbol": "AVGO", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "385.0000", "option_type": "put", "executions": [
+            {"price": "27.54", "quantity": "1", "trade_date": "2026-06-29", "settlement_date": "2026-06-30"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "385.0000", "option_type": "put", "executions": [
+            {"price": "25.04", "quantity": "1", "trade_date": "2026-06-29", "settlement_date": "2026-06-30"}]}]},
+        {"state": "filled", "chain_symbol": "GOOGL", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "370.0000", "option_type": "put", "executions": [
+            {"price": "22.78", "quantity": "1", "trade_date": "2026-06-29", "settlement_date": "2026-06-30"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "370.0000", "option_type": "put", "executions": [
+            {"price": "21.67", "quantity": "1", "trade_date": "2026-06-29", "settlement_date": "2026-06-30"}]}]},
+        {"state": "filled", "chain_symbol": "TSLA", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-02", "strike_price": "420.0000", "option_type": "call", "executions": [
+            {"price": "1.25", "quantity": "10", "trade_date": "2026-06-29", "settlement_date": "2026-06-30"}]}]},
+        {"state": "filled", "chain_symbol": "GOOGL", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-02", "strike_price": "370.0000", "option_type": "put", "executions": [
+            {"price": "28.68", "quantity": "1", "trade_date": "2026-06-25", "settlement_date": "2026-06-26"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-06-26", "strike_price": "370.0000", "option_type": "put", "executions": [
+            {"price": "28.48", "quantity": "1", "trade_date": "2026-06-25", "settlement_date": "2026-06-26"}]}]},
+        {"state": "filled", "chain_symbol": "AVGO", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-02", "strike_price": "385.0000", "option_type": "put", "executions": [
+            {"price": "14.22", "quantity": "1", "trade_date": "2026-06-25", "settlement_date": "2026-06-26"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-06-26", "strike_price": "390.0000", "option_type": "put", "executions": [
+            {"price": "13.22", "quantity": "1", "trade_date": "2026-06-25", "settlement_date": "2026-06-26"}]}]}
+      ],
+      "equity_orders": []
+    },
+    {
+      "account_name": "Jaya's IRA",
+      "account_number": "534052659",
+      "cash_format": "ira",
+      "activity_since": "2026-07-01",
+      "portfolio": {"cash": "36560.88", "buying_power": {"buying_power": "310.88"}},
+      "equity_positions": [
+        {"symbol": "NVDA", "quantity": "600"},
+        {"symbol": "MU", "quantity": "6"},
+        {"symbol": "INTC", "quantity": "300"},
+        {"symbol": "GOOGL", "quantity": "200"},
+        {"symbol": "SPCX", "quantity": "82"}
+      ],
+      "option_positions": [
+        {"option_id": "a399f773-5000-46c1-9899-09bb0907d1e7", "chain_symbol": "GOOGL", "type": "short", "quantity": "2", "average_price": "-90.0000"},
+        {"option_id": "ec9d9e9c-c0a2-4faa-b8a1-e3304d8b1fdc", "chain_symbol": "INTC", "type": "short", "quantity": "3", "average_price": "-129.6667"},
+        {"option_id": "31dc1ec3-d0f7-4d4e-8c1f-8a37b284ef8f", "chain_symbol": "NVDA", "type": "short", "quantity": "6", "average_price": "-64.0000"},
+        {"option_id": "1486810e-ce17-4da5-9519-8ce01fcab36d", "chain_symbol": "SPCX", "type": "short", "quantity": "1", "average_price": "-3638.0000"},
+        {"option_id": "507affff-98b1-46c4-846c-1458a3c9ef80", "chain_symbol": "SPCX", "type": "short", "quantity": "1", "average_price": "-1398.0000"}
+      ],
+      "option_orders": [
+        {"state": "filled", "chain_symbol": "GOOGL", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "385.0000", "option_type": "call", "executions": [
+            {"price": "0.90", "quantity": "2", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"}]}]},
+        {"state": "filled", "chain_symbol": "INTC", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "150.0000", "option_type": "call", "executions": [
+            {"price": "1.31", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"},
+            {"price": "1.29", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"},
+            {"price": "1.29", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "150.0000", "option_type": "call", "executions": [
+            {"price": "0.04", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"},
+            {"price": "0.02", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"},
+            {"price": "0.02", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"}]}]},
+        {"state": "filled", "chain_symbol": "NVDA", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "215.0000", "option_type": "call", "executions": [
+            {"price": "0.64", "quantity": "6", "trade_date": "2026-06-30", "settlement_date": "2026-07-01"}]}]},
+        {"state": "filled", "chain_symbol": "INTC", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-02", "strike_price": "150.0000", "option_type": "call", "executions": [
+            {"price": "0.85", "quantity": "1", "trade_date": "2026-06-30", "settlement_date": "2026-07-01"},
+            {"price": "0.85", "quantity": "2", "trade_date": "2026-06-30", "settlement_date": "2026-07-01"}]}]},
+        {"state": "filled", "chain_symbol": "SPCX", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "200.0000", "option_type": "put", "executions": [
+            {"price": "36.38", "quantity": "1", "trade_date": "2026-06-30", "settlement_date": "2026-07-01"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "200.0000", "option_type": "put", "executions": [
+            {"price": "35.44", "quantity": "1", "trade_date": "2026-06-30", "settlement_date": "2026-07-01"}]}]},
+        {"state": "filled", "chain_symbol": "SPCX", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "162.5000", "option_type": "put", "executions": [
+            {"price": "13.98", "quantity": "1", "trade_date": "2026-06-26", "settlement_date": "2026-06-29"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "162.5000", "option_type": "put", "executions": [
+            {"price": "11.68", "quantity": "1", "trade_date": "2026-06-26", "settlement_date": "2026-06-29"}]}]}
+      ],
+      "equity_orders": [
+        {"state": "filled", "symbol": "SPCX", "side": "buy", "executions": [
+          {"price": "160.595", "quantity": "2", "timestamp": "2026-07-02T14:00:09.877Z"}]}
+      ]
+    },
+    {
+      "account_name": "Jaya's Roth IRA",
+      "account_number": "704155779",
+      "cash_format": "roth_ira",
+      "activity_since": "2026-06-16",
+      "portfolio": {"cash": "543.42", "buying_power": {"buying_power": "543.42"}},
+      "equity_positions": [
+        {"symbol": "INTC", "quantity": "200"},
+        {"symbol": "MU", "quantity": "34"}
+      ],
+      "option_positions": [
+        {"option_id": "ec9d9e9c-c0a2-4faa-b8a1-e3304d8b1fdc", "chain_symbol": "INTC", "type": "short", "quantity": "2", "average_price": "-126.0000"}
+      ],
+      "option_orders": [
+        {"state": "filled", "chain_symbol": "INTC", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-10", "strike_price": "150.0000", "option_type": "call", "executions": [
+            {"price": "1.27", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"},
+            {"price": "1.25", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-07-02", "strike_price": "150.0000", "option_type": "call", "executions": [
+            {"price": "0.03", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"},
+            {"price": "0.01", "quantity": "1", "trade_date": "2026-07-02", "settlement_date": "2026-07-06"}]}]},
+        {"state": "filled", "chain_symbol": "INTC", "legs": [
+          {"side": "sell", "position_effect": "open", "expiration_date": "2026-07-02", "strike_price": "150.0000", "option_type": "call", "executions": [
+            {"price": "0.93", "quantity": "2", "trade_date": "2026-06-26", "settlement_date": "2026-06-29"}]},
+          {"side": "buy", "position_effect": "close", "expiration_date": "2026-06-26", "strike_price": "145.0000", "option_type": "call", "executions": [
+            {"price": "0.02", "quantity": "2", "trade_date": "2026-06-26", "settlement_date": "2026-06-29"}]}]}
+      ],
+      "equity_orders": [
+        {"state": "filled", "symbol": "MU", "side": "buy", "executions": [
+          {"price": "1182.95", "quantity": "1", "timestamp": "2026-06-26T14:11:40.928Z"}]}
+      ]
+    }
+  ]
+}

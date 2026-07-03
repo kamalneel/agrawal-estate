@@ -128,9 +128,12 @@ For each month chronologically:
   margin_available = brokerage_portfolio_value * 0.70
   utilization_pct = cumulative_margin / margin_available * 100
 
-Expected line:
-  avg_monthly_spend = total_spending / num_months
-  expected_cumulative = expected_cumulative * (1 + monthly_rate) + avg_monthly_spend
+Expected line (max sustainable BBD withdrawal):
+  sustainable_monthly = portfolio_value * (growth_rate - margin_rate) / 12  # = portfolio × 3% / 12
+  expected_cumulative = expected_cumulative * (1 + monthly_rate) + sustainable_monthly
+  # Borrowing at this rate keeps debt/portfolio ratio stable forever (debt grows at same 8% as portfolio)
+  # Under target = green (well within safe leverage)
+  # Over target = red (debt growing faster than portfolio — leverage ratio increasing)
 ```
 
 ### Summary Cards

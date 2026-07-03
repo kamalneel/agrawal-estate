@@ -13,7 +13,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Always Use Design Tokens](playbook/universal/design/always-use-design-tokens.md) — never hardcode colors/spacing, use CSS variables from tokens.css
 
 ### Finance
-*(no entries yet — add rules for investment philosophy, risk tolerance, financial decision principles)*
+- [Definition of Income](playbook/universal/finance/definition-of-income.md) — realized-only, all accounts, tax-independent; call assignment = income at sale, put assignment = strike-basis lot
 
 ### Process
 - [Three Authoritative Data Sources](playbook/universal/process/three-authoritative-data-sources.md) — all data enters via PDF/CSV statements, activity CSVs, or Robinhood paste
@@ -41,6 +41,10 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Options Selling Strategy](wiki/concepts/options-selling-strategy.md) — weekly income via covered calls/puts, V6 algorithm (puts primary, runaway vs. oscillating, account-type delta)
 - [Data Ingestion Pipeline](wiki/concepts/data-ingestion-pipeline.md) — file-based import with automatic deduplication
 - [Communication Agent](wiki/concepts/communication-agent.md) — Gmail/Calendar/Drive MCP integration; drafts email, manages calendar, preferences captured iteratively
+
+## North Star
+- [Application Objectives](../docs/OBJECTIVES.md) — what the app is for: unified income (fixed + dynamic), options execution vs 1%/2% monthly targets, trillion-club investment policy, spending categorization, BBD adherence
+- [Income Unification Spec](../docs/INCOME-UNIFICATION-SPEC.md) — agreed income definition (realized-only, all accounts, call-assignment = income at sale) and design for the unified weekly/monthly/annual view
 
 ## Strategy Spec Docs (V6)
 - [V6 Philosophy](../docs/OPTIONS-STRATEGY-V6-PHILOSOPHY.md) — the "why": beliefs, lessons, account-type rules, runaway vs. oscillating

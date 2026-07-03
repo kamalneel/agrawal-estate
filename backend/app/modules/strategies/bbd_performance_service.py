@@ -14,24 +14,39 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy import func, extract, and_
 from sqlalchemy.orm import Session
 
-from app.modules.strategies.models import BbdPerformanceMetric
+from app.modules.strategies.models import BbdPerformanceMetric, MarginMonthlyBalance, BbdSettings
 from app.modules.investments.models import InvestmentTransaction, InvestmentAccount, PortfolioSnapshot
 from app.modules.spending.models import SpendingTransaction, EXCLUDED_CATEGORIES
 from app.modules.income.models import RentalMonthlyIncome, W2Record, SalaryProjection
 
 
 class BbdPerformanceService:
-    ASSUMED_ANNUAL_GROWTH = Decimal('0.08')       # 8% per year
-    ASSUMED_MONTHLY_YIELD = Decimal('0.01')       # 1% per month
-    ASSUMED_ANNUAL_MARGIN_RATE = Decimal('0.05')  # 5% simulated margin interest
-    MARGIN_LTV = 0.70                             # 70% of portfolio = margin available
-    DATA_CUTOFF_DATE = date(2025, 1, 1)           # Ignore data before this date
-    # External cash flow types for Modified Dietz adjustment (excludes ACH — duplicate of CASH_MOVEMENT)
+    # Fallback defaults (used if DB row is missing)
+    ASSUMED_ANNUAL_GROWTH = Decimal('0.08')
+    ASSUMED_COMBINED_RETURN = Decimal('0.16')
+    ASSUMED_MONTHLY_YIELD = Decimal('0.01')
+    ASSUMED_ANNUAL_MARGIN_RATE = Decimal('0.05')
+    MARGIN_LTV = 0.70
+    DATA_CUTOFF_DATE = date(2025, 1, 1)
     EXTERNAL_FLOW_TYPES = ['CASH_MOVEMENT', 'ACATI', 'ACATO', 'INTERNAL_TRANSFER', 'TRANSFER']
     BROKERAGE_ACCOUNTS = ['neel_brokerage', 'jaya_brokerage']
 
     def __init__(self, db: Session):
         self.db = db
+        self._load_settings()
+
+    def _load_settings(self):
+        """Load configurable BBD assumptions from DB, falling back to class defaults."""
+        try:
+            row = self.db.query(BbdSettings).filter(BbdSettings.id == 1).first()
+            if row:
+                self.ASSUMED_ANNUAL_GROWTH = Decimal(str(row.assumed_annual_growth))
+                self.ASSUMED_COMBINED_RETURN = Decimal(str(row.assumed_combined_return))
+                self.ASSUMED_MONTHLY_YIELD = Decimal(str(row.assumed_monthly_yield))
+                self.ASSUMED_ANNUAL_MARGIN_RATE = Decimal(str(row.assumed_annual_margin_rate))
+                self.MARGIN_LTV = float(row.margin_ltv)
+        except Exception:
+            self.db.rollback()  # Reset session so subsequent queries aren't poisoned
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -44,7 +59,7 @@ class BbdPerformanceService:
         self.db.flush()
 
         count = 0
-        for metric_type in ('portfolio_growth', 'options_yield', 'margin_borrowing'):
+        for metric_type in ('portfolio_growth', 'pure_growth', 'options_yield', 'margin_borrowing'):
             period_types = ('year', 'month') if metric_type == 'margin_borrowing' else ('year', 'month', 'week')
             for period_type in period_types:
                 count += self._compute_metric(metric_type, period_type, force)
@@ -78,6 +93,8 @@ class BbdPerformanceService:
         account sets, and avoids first-to-last pairing missing transferred accounts.
         """
         yearly_growth = self.get_metrics('portfolio_growth', 'year')
+        yearly_pure_growth = self.get_metrics('pure_growth', 'year')
+        monthly_pure_growth = self.get_metrics('pure_growth', 'month')
         monthly_earnings = self.get_metrics('options_yield', 'month')
         yearly_earnings = self.get_metrics('options_yield', 'year')
 
@@ -113,6 +130,43 @@ class BbdPerformanceService:
             if total_months > 0:
                 avg_monthly_growth_pct = round(cumulative_growth_pct / total_months, 4)
                 avg_monthly_growth_amt = round(total_dollar_change / total_months, 2)
+
+        # ── Pure Growth (market appreciation only) ──
+        valid_pure_monthly = [m for m in monthly_pure_growth if m.get('actual_percent') is not None]
+        valid_pure_yearly = [m for m in yearly_pure_growth if m.get('actual_percent') is not None]
+
+        cumulative_pure_growth_pct = None
+        cumulative_pure_growth_amt = None
+        avg_monthly_pure_growth_pct = None
+        avg_monthly_pure_growth_amt = None
+
+        if valid_pure_yearly:
+            compound = 1.0
+            total_dollar_change = 0.0
+            total_months = 0
+            for m in valid_pure_yearly:
+                compound *= (1 + m['actual_percent'] / 100)
+                if m.get('actual_value') is not None and m.get('baseline_value') is not None:
+                    total_dollar_change += (m['actual_value'] - m['baseline_value'])
+                ps = date.fromisoformat(m['period_start'])
+                pe = date.fromisoformat(m['period_end'])
+                actual_end = min(pe, date.today())
+                months_in_period = max(1, (actual_end.year - ps.year) * 12 + actual_end.month - ps.month)
+                total_months += months_in_period
+            cumulative_pure_growth_pct = round((compound - 1) * 100, 2)
+            cumulative_pure_growth_amt = round(total_dollar_change, 2)
+            if total_months > 0:
+                avg_monthly_pure_growth_pct = round(cumulative_pure_growth_pct / total_months, 4)
+                avg_monthly_pure_growth_amt = round(total_dollar_change / total_months, 2)
+
+        annual_pure_growth = {}
+        for m in yearly_pure_growth:
+            dollar_change = round(m['actual_value'] - m['baseline_value'], 2) if m.get('actual_value') is not None and m.get('baseline_value') is not None else None
+            annual_pure_growth[m['period_label']] = {
+                'percent': m['actual_percent'],
+                'amount': dollar_change,
+                'baseline': m.get('baseline_value'),
+            }
 
         # ── Average Monthly Earnings (% and $) ──
         avg_monthly_earnings_pct = round(
@@ -190,21 +244,30 @@ class BbdPerformanceService:
             }
 
         return {
+            # Combined: growth + income
             'avg_monthly_growth_pct': avg_monthly_growth_pct,
             'avg_monthly_growth_amt': avg_monthly_growth_amt,
-            'avg_monthly_earnings_pct': avg_monthly_earnings_pct,
-            'avg_monthly_earnings_amt': avg_monthly_earnings_amt,
             'cumulative_growth_pct': cumulative_growth_pct,
             'cumulative_growth_amt': cumulative_growth_amt,
+            'annual_growth': annual_growth,
+            'expected_monthly_growth_pct': round(((1 + float(self.ASSUMED_COMBINED_RETURN)) ** (1/12) - 1) * 100, 4),
+            'expected_annual_growth_pct': float(self.ASSUMED_COMBINED_RETURN) * 100,
+            # Pure market growth (options income stripped out)
+            'avg_monthly_pure_growth_pct': avg_monthly_pure_growth_pct,
+            'avg_monthly_pure_growth_amt': avg_monthly_pure_growth_amt,
+            'cumulative_pure_growth_pct': cumulative_pure_growth_pct,
+            'cumulative_pure_growth_amt': cumulative_pure_growth_amt,
+            'annual_pure_growth': annual_pure_growth,
+            'expected_monthly_pure_growth_pct': round(((1 + float(self.ASSUMED_ANNUAL_GROWTH)) ** (1/12) - 1) * 100, 4),
+            'expected_annual_pure_growth_pct': float(self.ASSUMED_ANNUAL_GROWTH) * 100,
+            # Options income only
+            'avg_monthly_earnings_pct': avg_monthly_earnings_pct,
+            'avg_monthly_earnings_amt': avg_monthly_earnings_amt,
             'cumulative_earnings_pct': cumulative_earnings_pct,
             'cumulative_earnings_amt': cumulative_earnings_amt,
-            'annual_growth': annual_growth,
             'annual_earnings': annual_earnings,
-            # Expected rates
-            'expected_monthly_growth_pct': round(((1.08) ** (1/12) - 1) * 100, 4),  # ~0.6434%
-            'expected_monthly_earnings_pct': 1.0,  # 1%/mo
-            'expected_annual_growth_pct': 8.0,
-            'expected_annual_earnings_pct': 12.0,  # 12%/yr
+            'expected_monthly_earnings_pct': 1.0,
+            'expected_annual_earnings_pct': 12.0,
             # Borrowing
             'margin_available': margin_available,
             'current_margin_balance': current_margin_balance,
@@ -222,6 +285,8 @@ class BbdPerformanceService:
         """Compute metrics for one metric_type + period_type combo."""
         if metric_type == 'portfolio_growth':
             return self._compute_portfolio_growth(period_type, force)
+        elif metric_type == 'pure_growth':
+            return self._compute_pure_growth(period_type, force)
         elif metric_type == 'options_yield':
             return self._compute_options_yield(period_type, force)
         elif metric_type == 'margin_borrowing':
@@ -232,7 +297,10 @@ class BbdPerformanceService:
 
     def _compute_portfolio_growth(self, period_type: str, force: bool) -> int:
         """Compute portfolio growth metrics using same-store account pairing."""
-        account_months = self._get_account_month_values()
+        account_months = {
+            k: v for k, v in self._get_account_month_values().items()
+            if any(k.startswith(acct) for acct in self.BROKERAGE_ACCOUNTS)
+        }
         all_months = set()
         for acct_data in account_months.values():
             all_months.update(acct_data.keys())
@@ -305,8 +373,8 @@ class BbdPerformanceService:
             flows = self._get_external_cash_flows_for_period(period_start, period_end)
             flows = [f for f in flows if f['account_id'] in paired_ids]
             actual_pct = self._modified_dietz_return(baseline_val, actual_val, flows, period_start, period_end)
-            expected_pct = float(self.ASSUMED_ANNUAL_GROWTH) * 100
-            expected_val = baseline_val * (1 + float(self.ASSUMED_ANNUAL_GROWTH))
+            expected_pct = float(self.ASSUMED_COMBINED_RETURN) * 100
+            expected_val = baseline_val * (1 + float(self.ASSUMED_COMBINED_RETURN))
 
             self._upsert_metric(
                 period_type='year', period_start=period_start, period_end=period_end,
@@ -322,7 +390,7 @@ class BbdPerformanceService:
     def _compute_portfolio_growth_monthly(self, account_months: Dict[str, Dict[str, float]], sorted_months: List[str], force: bool) -> int:
         """Monthly growth: same-store comparison to prior month with Modified Dietz adjustment."""
         today = date.today()
-        monthly_rate = ((1 + float(self.ASSUMED_ANNUAL_GROWTH)) ** (1/12) - 1) * 100
+        monthly_rate = ((1 + float(self.ASSUMED_COMBINED_RETURN)) ** (1/12) - 1) * 100
         count = 0
 
         for i in range(1, len(sorted_months)):
@@ -382,7 +450,7 @@ class BbdPerformanceService:
                 paired_snapshots[sorted_months[i]] = total
 
         today = date.today()
-        weekly_rate = ((1 + float(self.ASSUMED_ANNUAL_GROWTH)) ** (7/365) - 1) * 100
+        weekly_rate = ((1 + float(self.ASSUMED_COMBINED_RETURN)) ** (7/365) - 1) * 100
         count = 0
 
         daily_values = self._interpolate_daily(paired_snapshots)
@@ -424,11 +492,154 @@ class BbdPerformanceService:
             current += timedelta(days=7)
         return count
 
+    # ── Pure Market Growth (portfolio growth minus options income) ────
+
+    def _compute_pure_growth(self, period_type: str, force: bool) -> int:
+        """Pure market growth = portfolio return with options income stripped out.
+        Uses Modified Dietz but adds options income as a synthetic external inflow,
+        so the return reflects only market appreciation."""
+        account_months = {
+            k: v for k, v in self._get_account_month_values().items()
+            if any(k.startswith(acct) for acct in self.BROKERAGE_ACCOUNTS)
+        }
+        all_months = set()
+        for acct_data in account_months.values():
+            all_months.update(acct_data.keys())
+        sorted_months = sorted(all_months)
+
+        if len(sorted_months) < 2:
+            return 0
+
+        monthly_options = self._get_options_income_monthly()
+
+        if period_type == 'year':
+            return self._compute_pure_growth_yearly(account_months, sorted_months, monthly_options, force)
+        elif period_type == 'month':
+            return self._compute_pure_growth_monthly(account_months, sorted_months, monthly_options, force)
+        elif period_type == 'week':
+            return self._compute_portfolio_growth_weekly(account_months, sorted_months, force)
+        return 0
+
+    def _compute_pure_growth_yearly(
+        self,
+        account_months: Dict[str, Dict[str, float]],
+        sorted_months: List[str],
+        monthly_options: Dict[str, float],
+        force: bool,
+    ) -> int:
+        today = date.today()
+        count = 0
+
+        years_with_data: Dict[int, List[str]] = {}
+        for m in sorted_months:
+            years_with_data.setdefault(int(m[:4]), []).append(m)
+
+        for yr, year_months in sorted(years_with_data.items()):
+            if len(year_months) < 2:
+                continue
+
+            jan_key = f"{yr}-01"
+            dec_key = f"{yr - 1}-12"
+            if jan_key in set(sorted_months):
+                baseline_month = jan_key
+            elif dec_key in set(sorted_months):
+                baseline_month = dec_key
+            else:
+                baseline_month = year_months[0]
+
+            actual_month = year_months[-1]
+            baseline_val, actual_val, paired_ids = self._paired_sum(account_months, baseline_month, actual_month)
+            if baseline_val < 10000:
+                continue
+
+            period_start = date(yr, 1, 1)
+            period_end = date(yr, 12, 31)
+            completeness = 'partial' if yr == today.year else 'complete'
+
+            flows = self._get_external_cash_flows_for_period(period_start, period_end)
+            flows = [f for f in flows if f['account_id'] in paired_ids]
+
+            # Treat options income as external inflow so Modified Dietz strips it from market return
+            for m in year_months:
+                income = monthly_options.get(m, 0)
+                if income > 0:
+                    m_yr, m_mo = int(m[:4]), int(m[5:7])
+                    flows.append({'account_id': '_options', 'date': date(m_yr, m_mo, 15), 'amount': income})
+
+            actual_pct = self._modified_dietz_return(baseline_val, actual_val, flows, period_start, period_end)
+            expected_pct = float(self.ASSUMED_ANNUAL_GROWTH) * 100
+            expected_val = baseline_val * (1 + float(self.ASSUMED_ANNUAL_GROWTH))
+
+            self._upsert_metric(
+                period_type='year', period_start=period_start, period_end=period_end,
+                metric_type='pure_growth',
+                actual_value=actual_val, actual_percent=actual_pct,
+                expected_value=expected_val, expected_percent=expected_pct,
+                baseline_value=baseline_val,
+                data_completeness=completeness, force=force,
+            )
+            count += 1
+        return count
+
+    def _compute_pure_growth_monthly(
+        self,
+        account_months: Dict[str, Dict[str, float]],
+        sorted_months: List[str],
+        monthly_options: Dict[str, float],
+        force: bool,
+    ) -> int:
+        today = date.today()
+        monthly_rate = ((1 + float(self.ASSUMED_ANNUAL_GROWTH)) ** (1/12) - 1) * 100
+        count = 0
+
+        for i in range(1, len(sorted_months)):
+            prev_key = sorted_months[i - 1]
+            cur_key = sorted_months[i]
+
+            prev_yr, prev_mo = int(prev_key[:4]), int(prev_key[5:7])
+            cur_yr, cur_mo = int(cur_key[:4]), int(cur_key[5:7])
+            month_gap = (cur_yr - prev_yr) * 12 + (cur_mo - prev_mo)
+            if month_gap > 2:
+                continue
+
+            baseline_val, actual_val, paired_ids = self._paired_sum(account_months, prev_key, cur_key)
+            if baseline_val < 10000:
+                continue
+
+            yr, mo = cur_yr, cur_mo
+            period_start = date(yr, mo, 1)
+            period_end = date(yr, mo + 1, 1) - timedelta(days=1) if mo < 12 else date(yr, 12, 31)
+            completeness = 'partial' if (yr == today.year and mo == today.month) else 'complete'
+
+            flows = self._get_external_cash_flows_for_period(period_start, period_end)
+            flows = [f for f in flows if f['account_id'] in paired_ids]
+
+            income = monthly_options.get(cur_key, 0)
+            if income > 0:
+                flows.append({'account_id': '_options', 'date': date(yr, mo, 15), 'amount': income})
+
+            actual_pct = self._modified_dietz_return(baseline_val, actual_val, flows, period_start, period_end)
+            expected_val = baseline_val * (1 + monthly_rate / 100)
+
+            self._upsert_metric(
+                period_type='month', period_start=period_start, period_end=period_end,
+                metric_type='pure_growth',
+                actual_value=actual_val, actual_percent=actual_pct,
+                expected_value=expected_val, expected_percent=monthly_rate,
+                baseline_value=baseline_val,
+                data_completeness=completeness, force=force,
+            )
+            count += 1
+        return count
+
     # ── Options Yield ─────────────────────────────────────────────
 
     def _compute_options_yield(self, period_type: str, force: bool) -> int:
         """Compute options yield metrics using same-store portfolio baselines."""
-        account_months = self._get_account_month_values()
+        account_months = {
+            k: v for k, v in self._get_account_month_values().items()
+            if any(k.startswith(acct) for acct in self.BROKERAGE_ACCOUNTS)
+        }
         all_months = set()
         for acct_data in account_months.values():
             all_months.update(acct_data.keys())
@@ -509,9 +720,12 @@ class BbdPerformanceService:
         count = 0
         sorted_months_set = set(sorted_months)
 
-        # Generate complete month range from first to last month with portfolio data
+        # Generate complete month range from first month with portfolio data through current month
         first_yr, first_mo = int(sorted_months[0][:4]), int(sorted_months[0][5:7])
         last_yr, last_mo = int(sorted_months[-1][:4]), int(sorted_months[-1][5:7])
+        # Extend range to include current month so carry-forward logic can fill gaps
+        if (today.year, today.month) > (last_yr, last_mo):
+            last_yr, last_mo = today.year, today.month
         all_months = []
         yr, mo = first_yr, first_mo
         while (yr, mo) <= (last_yr, last_mo):
@@ -651,31 +865,30 @@ class BbdPerformanceService:
         return 0
 
     def _compute_borrowing_monthly(self, force: bool) -> int:
-        """Monthly margin borrowing: cumulative spending as simulated margin balance with 5% interest.
-        Margin available = 70% of brokerage portfolio value.
-        Utilization = margin_balance / margin_available."""
+        """Monthly margin borrowing.
+        actual_value: real margin from statements when available, else simulated cumulative spending.
+        expected_value: max sustainable BBD withdrawal — portfolio × (growth_rate − margin_rate) / 12
+                        compounded at 5%/yr. Borrowing at this rate keeps debt/portfolio ratio stable forever.
+        Margin available = 70% of brokerage portfolio value."""
         monthly_spending = self._get_monthly_spending()
         if not monthly_spending:
             return 0
 
         account_months = self._get_account_month_values()
-        # Get brokerage-only portfolio values per month
         brokerage_months = self._get_brokerage_month_values(account_months)
         if not brokerage_months:
             return 0
 
-        # Use union of spending months and portfolio months
-        all_months = set(monthly_spending.keys()) | set(brokerage_months.keys())
+        real_margin = self._get_real_margin_data()
+
+        all_months = set(monthly_spending.keys()) | set(brokerage_months.keys()) | set(real_margin.keys())
         sorted_months = sorted(all_months)
         if not sorted_months:
             return 0
 
-        # Auto benchmark: average monthly spending
-        spend_values = list(monthly_spending.values())
-        avg_monthly_spend = sum(spend_values) / len(spend_values) if spend_values else 0.0
-
         monthly_rate = (1 + float(self.ASSUMED_ANNUAL_MARGIN_RATE)) ** (1/12) - 1
-        cumulative_margin = 0.0
+        net_annual_spread = float(self.ASSUMED_COMBINED_RETURN - self.ASSUMED_ANNUAL_MARGIN_RATE)
+        simulated_margin = 0.0
         expected_cumulative = 0.0
         today = date.today()
         count = 0
@@ -683,22 +896,28 @@ class BbdPerformanceService:
         for month_key in sorted_months:
             spending = monthly_spending.get(month_key, 0.0)
 
-            # Interest on existing balance (only if positive)
-            if cumulative_margin > 0:
-                cumulative_margin *= (1 + monthly_rate)
-            cumulative_margin += spending  # spending is positive = adds to margin debt
+            # Keep simulated running total as fallback for months without real data
+            if simulated_margin > 0:
+                simulated_margin *= (1 + monthly_rate)
+            simulated_margin += spending
 
+            portfolio_value = brokerage_months.get(month_key, 0)
+
+            # Expected = max sustainable BBD borrow this month: portfolio × (growth − rate) / 12
+            # Borrowing this amount keeps debt/portfolio ratio permanently stable
+            sustainable_monthly = portfolio_value * net_annual_spread / 12 if portfolio_value > 0 else 0.0
             if expected_cumulative > 0:
                 expected_cumulative *= (1 + monthly_rate)
-            expected_cumulative += avg_monthly_spend
+            expected_cumulative += sustainable_monthly
 
-            # Brokerage portfolio value for margin available
-            portfolio_value = brokerage_months.get(month_key, 0)
             if portfolio_value <= 0:
                 continue
             margin_available = portfolio_value * self.MARGIN_LTV
 
-            actual_pct = (cumulative_margin / margin_available * 100) if margin_available > 0 else 0
+            # Use real statement data when available; fall back to simulation
+            actual_margin = real_margin[month_key] if month_key in real_margin else max(0.0, simulated_margin)
+
+            actual_pct = (actual_margin / margin_available * 100) if margin_available > 0 else 0
             expected_pct = (expected_cumulative / margin_available * 100) if margin_available > 0 else 0
 
             yr, mo = int(month_key[:4]), int(month_key[5:7])
@@ -713,7 +932,7 @@ class BbdPerformanceService:
             self._upsert_metric(
                 period_type='month', period_start=period_start, period_end=period_end,
                 metric_type='margin_borrowing',
-                actual_value=cumulative_margin, actual_percent=actual_pct,
+                actual_value=actual_margin, actual_percent=actual_pct,
                 expected_value=expected_cumulative, expected_percent=expected_pct,
                 baseline_value=margin_available,
                 data_completeness=completeness, force=force,
@@ -722,7 +941,7 @@ class BbdPerformanceService:
         return count
 
     def _compute_borrowing_yearly(self, force: bool) -> int:
-        """Yearly margin borrowing: run monthly accumulation, snapshot at year-end."""
+        """Yearly margin borrowing: snapshot the December (or latest) month's actual margin per year."""
         monthly_spending = self._get_monthly_spending()
         if not monthly_spending:
             return 0
@@ -732,38 +951,40 @@ class BbdPerformanceService:
         if not brokerage_months:
             return 0
 
-        # Run monthly accumulation to get year-end snapshots
-        all_months = sorted(set(monthly_spending.keys()) | set(brokerage_months.keys()))
+        real_margin = self._get_real_margin_data()
+
+        all_months = sorted(set(monthly_spending.keys()) | set(brokerage_months.keys()) | set(real_margin.keys()))
         if not all_months:
             return 0
 
-        spend_values = list(monthly_spending.values())
-        avg_monthly_spend = sum(spend_values) / len(spend_values) if spend_values else 0.0
-
         monthly_rate = (1 + float(self.ASSUMED_ANNUAL_MARGIN_RATE)) ** (1/12) - 1
-        cumulative_margin = 0.0
+        net_annual_spread = float(self.ASSUMED_COMBINED_RETURN - self.ASSUMED_ANNUAL_MARGIN_RATE)
+        simulated_margin = 0.0
         expected_cumulative = 0.0
         today = date.today()
 
-        # Track year-end snapshots
         year_snapshots: Dict[int, Dict[str, float]] = {}
 
         for month_key in all_months:
             spending = monthly_spending.get(month_key, 0.0)
 
-            if cumulative_margin > 0:
-                cumulative_margin *= (1 + monthly_rate)
-            cumulative_margin += spending
-
-            if expected_cumulative > 0:
-                expected_cumulative *= (1 + monthly_rate)
-            expected_cumulative += avg_monthly_spend
+            if simulated_margin > 0:
+                simulated_margin *= (1 + monthly_rate)
+            simulated_margin += spending
 
             yr = int(month_key[:4])
             portfolio_value = brokerage_months.get(month_key, 0)
+
+            # Expected = max sustainable BBD borrow this month: portfolio × (growth − rate) / 12
+            sustainable_monthly = portfolio_value * net_annual_spread / 12 if portfolio_value > 0 else 0.0
+            if expected_cumulative > 0:
+                expected_cumulative *= (1 + monthly_rate)
+            expected_cumulative += sustainable_monthly
+
             if portfolio_value > 0:
+                actual_margin = real_margin[month_key] if month_key in real_margin else max(0.0, simulated_margin)
                 year_snapshots[yr] = {
-                    'cumulative_margin': cumulative_margin,
+                    'actual_margin': actual_margin,
                     'expected_cumulative': expected_cumulative,
                     'margin_available': portfolio_value * self.MARGIN_LTV,
                 }
@@ -771,7 +992,7 @@ class BbdPerformanceService:
         count = 0
         for yr, snap in sorted(year_snapshots.items()):
             margin_available = snap['margin_available']
-            actual_pct = (snap['cumulative_margin'] / margin_available * 100) if margin_available > 0 else 0
+            actual_pct = (snap['actual_margin'] / margin_available * 100) if margin_available > 0 else 0
             expected_pct = (snap['expected_cumulative'] / margin_available * 100) if margin_available > 0 else 0
 
             period_start = date(yr, 1, 1)
@@ -781,7 +1002,7 @@ class BbdPerformanceService:
             self._upsert_metric(
                 period_type='year', period_start=period_start, period_end=period_end,
                 metric_type='margin_borrowing',
-                actual_value=snap['cumulative_margin'], actual_percent=actual_pct,
+                actual_value=snap['actual_margin'], actual_percent=actual_pct,
                 expected_value=snap['expected_cumulative'], expected_percent=expected_pct,
                 baseline_value=margin_available,
                 data_completeness=completeness, force=force,
@@ -790,6 +1011,42 @@ class BbdPerformanceService:
         return count
 
     # ── Data sources ──────────────────────────────────────────────
+
+    def _get_real_margin_data(self) -> Dict[str, float]:
+        """Return total margin borrowed per month from real Robinhood statements.
+        Returns {YYYY-MM: margin_borrowed} where margin_borrowed >= 0.
+        Nets across all brokerage accounts: if Neel borrows $130K but Jaya has
+        $10K cash, the true combined margin is $120K, not $130K."""
+        rows = self.db.query(MarginMonthlyBalance).filter(
+            MarginMonthlyBalance.account_name.in_(self.BROKERAGE_ACCOUNTS)
+        ).all()
+
+        # Sum ALL balances (positive and negative) per month, then clamp to 0
+        net_by_month: Dict[str, float] = {}
+        for row in rows:
+            month_key = f"{row.year}-{row.month:02d}"
+            net_by_month[month_key] = net_by_month.get(month_key, 0.0) + float(row.closing_balance or 0)
+
+        result: Dict[str, float] = {k: max(0.0, -v) for k, v in net_by_month.items()}
+
+        # Forward-fill gaps up to the current month using the last known balance
+        if result:
+            today = date.today()
+            last_key = max(result.keys())
+            last_val = result[last_key]
+            yr, mo = int(last_key[:4]), int(last_key[5:7])
+            while True:
+                mo += 1
+                if mo > 12:
+                    mo = 1
+                    yr += 1
+                fill_key = f"{yr}-{mo:02d}"
+                if fill_key > f"{today.year}-{today.month:02d}":
+                    break
+                if fill_key not in result:
+                    result[fill_key] = last_val
+
+        return result
 
     def _get_brokerage_month_values(self, account_months: Dict[str, Dict[str, float]]) -> Dict[str, float]:
         """Get total brokerage portfolio value per month (neel + jaya brokerage only).
@@ -883,23 +1140,25 @@ class BbdPerformanceService:
         return {row.month: float(row.total) for row in rows}
 
     def _get_options_income_monthly(self) -> Dict[str, float]:
-        """Get monthly options income (YYYY-MM → net income). Filtered to cutoff."""
+        """Get monthly options income (YYYY-MM → net income). Brokerage accounts only."""
         rows = self.db.query(
             func.to_char(InvestmentTransaction.transaction_date, 'YYYY-MM').label('month'),
             func.sum(InvestmentTransaction.amount).label('total')
         ).filter(
             InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
+            InvestmentTransaction.account_id.in_(self.BROKERAGE_ACCOUNTS),
             InvestmentTransaction.transaction_date >= self.DATA_CUTOFF_DATE,
         ).group_by('month').order_by('month').all()
         return {row.month: float(row.total or 0) for row in rows}
 
     def _get_options_income_for_range(self, start: date, end: date) -> float:
-        """Get total options income for a date range."""
+        """Get total options income for a date range. Brokerage accounts only."""
         effective_start = max(start, self.DATA_CUTOFF_DATE)
         result = self.db.query(
             func.sum(InvestmentTransaction.amount)
         ).filter(
             InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
+            InvestmentTransaction.account_id.in_(self.BROKERAGE_ACCOUNTS),
             InvestmentTransaction.transaction_date >= effective_start,
             InvestmentTransaction.transaction_date <= end,
         ).scalar()

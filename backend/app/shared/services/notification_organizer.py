@@ -539,3 +539,237 @@ def organize_and_format(recommendations: List[Dict[str, Any]], group_threshold: 
     else:
         return format_ungrouped_message(recommendations)
 
+
+# ---------------------------------------------------------------------------
+# Rich HTML email formatter
+# ---------------------------------------------------------------------------
+
+# Inline style constants
+_TH = (
+    "background:#f1f5f9; color:#374151; font-size:11px; font-weight:600; "
+    "text-transform:uppercase; padding:5px 10px; text-align:left; "
+    "border-bottom:1px solid #e2e8f0;"
+)
+_TD = "padding:6px 10px; border-bottom:1px solid #f8fafc; color:#111827; font-size:13px;"
+_TD_MONO = "padding:6px 10px; border-bottom:1px solid #f8fafc; font-family:monospace; font-size:13px; color:#111827;"
+
+_ACTION_COLORS = {
+    "SELL":   ("#2563eb", "#dbeafe"),
+    "ROLL":   ("#d97706", "#fef3c7"),
+    "CLOSE":  ("#16a34a", "#dcfce7"),
+    "SPREAD": ("#7c3aed", "#ede9fe"),
+    "ALERT":  ("#dc2626", "#fee2e2"),
+    "OTHER":  ("#6b7280", "#f3f4f6"),
+}
+
+_PRIORITY_COLORS = {
+    "urgent": "#dc2626",
+    "high":   "#d97706",
+    "medium": "#2563eb",
+    "low":    "#6b7280",
+}
+
+
+def _action_badge(action: str) -> str:
+    fg, bg = _ACTION_COLORS.get(action, _ACTION_COLORS["OTHER"])
+    return (
+        f'<span style="display:inline-block; padding:2px 7px; border-radius:4px; '
+        f'font-size:10px; font-weight:700; background:{bg}; color:{fg}; '
+        f'letter-spacing:.5px;">{action}</span>'
+    )
+
+
+def _priority_dot(priority: str) -> str:
+    color = _PRIORITY_COLORS.get(priority, "#6b7280")
+    return f'<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:{color}; margin-right:5px;"></span>'
+
+
+def _rec_to_row(rec: Dict[str, Any]) -> str:
+    """Convert one recommendation dict to an HTML table row."""
+    rec_type = rec.get("type", "")
+    ctx = rec.get("context", {})
+    priority = rec.get("priority", "medium")
+
+    symbol = ctx.get("symbol", "—")
+    opt_type = (ctx.get("option_type", "call") or "call").upper()
+    contracts = ctx.get("contracts", 1) or ctx.get("uncovered_contracts", 1) or 1
+    current_price = ctx.get("current_price", 0) or 0
+    profit_pct = ctx.get("profit_percent", 0) or 0
+    title = rec.get("title", "")
+
+    # Determine action label
+    if rec_type in ("new_covered_call", "sell_unsold_contracts"):
+        action = "SELL"
+    elif rec_type in ("early_roll_opportunity", "roll_options"):
+        action = "ROLL"
+    elif rec_type == "close_early_opportunity":
+        action = "CLOSE"
+    elif rec_type in ("bull_put_spread", "mega_cap_bull_put"):
+        action = "SPREAD"
+    elif "alert" in rec_type.lower() or "warn" in rec_type.lower() or "urgent" in rec_type.lower():
+        action = "ALERT"
+    else:
+        action = "OTHER"
+
+    # Build detail string
+    details_parts = []
+
+    if action == "ROLL":
+        old_strike = ctx.get("old_strike") or ctx.get("current_strike") or ctx.get("strike_price", 0)
+        new_strike = ctx.get("new_strike") or ctx.get("strike_price", 0)
+        old_exp = _format_date_mmdd(ctx.get("current_expiration") or ctx.get("expiration_date", ""))
+        new_exp = _format_date_mmdd(ctx.get("new_expiration", ""))
+        net_cost = ctx.get("net_cost", 0) or 0
+
+        strike_str = ""
+        if old_strike and new_strike:
+            os = f"${float(old_strike):,.0f}" if float(old_strike) >= 100 else f"${float(old_strike):,.2f}"
+            ns = f"${float(new_strike):,.0f}" if float(new_strike) >= 100 else f"${float(new_strike):,.2f}"
+            strike_str = f"{os} {old_exp} → {ns} {new_exp}"
+        details_parts.append(f"{int(contracts)}x {opt_type}  {strike_str}".strip())
+
+        if net_cost:
+            cost_color = "#16a34a" if net_cost < 0 else "#dc2626"
+            cost_label = f"${abs(net_cost):.2f} {'credit' if net_cost < 0 else 'debit'}"
+            details_parts.append(f'<span style="color:{cost_color}; font-weight:600;">{cost_label}</span>')
+        if profit_pct >= 50:
+            details_parts.append(f"{profit_pct:.0f}% captured")
+
+    elif action == "CLOSE":
+        strike = ctx.get("strike_price", 0)
+        exp = _format_date_short(ctx.get("expiration_date", ""))
+        current_prem = ctx.get("current_premium", 0)
+        s = f"${float(strike):,.0f}" if float(strike or 0) >= 100 else f"${float(strike or 0):,.2f}"
+        details_parts.append(f"{int(contracts)}x {opt_type}  {s} {exp}".strip())
+        if current_prem:
+            details_parts.append(f"@ ${current_prem:.2f}")
+        if profit_pct:
+            p_color = "#16a34a" if profit_pct > 0 else "#dc2626"
+            details_parts.append(f'<span style="color:{p_color}; font-weight:600;">{profit_pct:.0f}% captured</span>')
+
+    elif action == "SELL":
+        strike = ctx.get("strike_price") or ctx.get("recommended_strike", 0)
+        exp = _format_date_short(ctx.get("expiration_date", ""))
+        unsold = ctx.get("unsold_contracts", contracts)
+        ppc = ctx.get("premium_per_contract", 0) or 0
+        total_prem = ctx.get("total_premium", 0) or 0
+
+        s = f"${float(strike or 0):,.0f}" if float(strike or 0) >= 100 else f"${float(strike or 0):,.2f}"
+        details_parts.append(f"{int(unsold)}x {opt_type}  {s}  {exp}".strip())
+        if current_price:
+            details_parts.append(f"Stock ${float(current_price):,.0f}")
+        if total_prem > 0:
+            details_parts.append(f'<span style="color:#16a34a; font-weight:600;">Earn ${total_prem:,.0f}</span>')
+        elif ppc > 0:
+            earn = ppc * 100 * int(unsold)
+            details_parts.append(f'<span style="color:#16a34a; font-weight:600;">Earn ~${earn:,.0f}</span>')
+
+    elif action == "SPREAD":
+        sell_s = ctx.get("sell_strike", "")
+        buy_s = ctx.get("buy_strike", "")
+        credit = ctx.get("net_credit", 0) or 0
+        if sell_s and buy_s:
+            details_parts.append(f"${float(sell_s):,.0f} / ${float(buy_s):,.0f}")
+        if credit:
+            details_parts.append(f'<span style="color:#16a34a; font-weight:600;">${credit:.2f} credit</span>')
+
+    else:
+        details_parts.append(title[:80] if title else rec_type.replace("_", " ").title())
+
+    detail_html = " &nbsp;·&nbsp; ".join(details_parts)
+
+    return f"""<tr>
+      <td style="{_TD} width:70px;">{_action_badge(action)}</td>
+      <td style="{_TD_MONO} width:60px; font-weight:700;">{symbol}</td>
+      <td style="{_TD}">{detail_html}</td>
+      <td style="{_TD} width:60px; text-align:right;">{_priority_dot(priority)}</td>
+    </tr>"""
+
+
+def _account_card(account_name: str, recs: List[Dict[str, Any]]) -> str:
+    """Build one account section card."""
+    sorted_recs = sort_by_profit(recs)
+    count = len(sorted_recs)
+    rows = "\n".join(_rec_to_row(r) for r in sorted_recs)
+
+    return f"""
+<div style="border:1px solid #e2e8f0; border-radius:8px; margin-bottom:16px; overflow:hidden;">
+  <div style="background:#1e3a5f; color:#ffffff; padding:9px 14px; font-size:13px; font-weight:700;">
+    {account_name}
+    <span style="font-weight:400; font-size:12px; opacity:.8; float:right;">{count} recommendation{'s' if count != 1 else ''}</span>
+  </div>
+  <table style="width:100%; border-collapse:collapse;">
+    <tr>
+      <th style="{_TH}">Action</th>
+      <th style="{_TH}">Symbol</th>
+      <th style="{_TH}">Details</th>
+      <th style="{_TH} text-align:right;">Priority</th>
+    </tr>
+    {rows}
+  </table>
+</div>"""
+
+
+def format_html_email(
+    recommendations: List[Dict[str, Any]],
+    scan_label: str = "",
+    notification_mode: str = "",
+) -> str:
+    """
+    Format recommendations as rich HTML for email.
+    Returns the inner HTML body (to be wrapped by _wrap_html in notifications.py).
+    """
+    if not recommendations:
+        return "<p style='color:#6b7280;'>No recommendations at this time.</p>"
+
+    grouped = group_by_account(recommendations)
+
+    def _sort_key(name: str) -> tuple:
+        n = name.lower()
+        owner = 0 if "neel" in n else 1 if "jaya" in n else 2 if "alicia" in n else 99
+        acct = 0 if ("brokerage" in n or "investment" in n) else 1 if "ira" in n and "roth" not in n else 2 if "retirement" in n else 3 if "roth" in n else 99
+        return (owner, acct, name)
+
+    sorted_accounts = sorted(grouped.keys(), key=_sort_key)
+
+    # Count urgents/highs for summary
+    urgent_count = sum(1 for r in recommendations if r.get("priority") == "urgent")
+    high_count = sum(1 for r in recommendations if r.get("priority") == "high")
+    total = len(recommendations)
+
+    # Summary badge line
+    badges = []
+    if urgent_count:
+        badges.append(f'<span style="background:#fee2e2; color:#dc2626; padding:2px 8px; border-radius:12px; font-size:12px; font-weight:700;">{urgent_count} URGENT</span>')
+    if high_count:
+        badges.append(f'<span style="background:#fef3c7; color:#d97706; padding:2px 8px; border-radius:12px; font-size:12px; font-weight:700; margin-left:6px;">{high_count} HIGH</span>')
+    badge_html = " ".join(badges) if badges else ""
+
+    mode_label = ""
+    if notification_mode == "verbose":
+        mode_label = '<span style="color:#6b7280; font-size:12px; margin-left:8px;">All positions</span>'
+    elif notification_mode == "smart":
+        mode_label = '<span style="color:#6b7280; font-size:12px; margin-left:8px;">Changes only</span>'
+
+    summary_html = f"""
+<div style="margin-bottom:18px; padding:12px 14px; background:#f8fafc; border-radius:8px;
+            border-left:3px solid #2563eb; font-size:13px;">
+  <strong>{total} recommendation{'s' if total != 1 else ''}</strong>
+  {f'across {len(sorted_accounts)} account{"s" if len(sorted_accounts) != 1 else ""}' if sorted_accounts else ''}
+  &nbsp; {badge_html} {mode_label}
+  {f'<div style="color:#6b7280; margin-top:4px; font-size:12px;">{scan_label}</div>' if scan_label else ''}
+</div>"""
+
+    account_cards = "\n".join(_account_card(acc, grouped[acc]) for acc in sorted_accounts)
+
+    legend = """
+<div style="margin-top:12px; font-size:11px; color:#9ca3af; padding-top:10px; border-top:1px solid #f1f5f9;">
+  Priority: <span style="color:#dc2626;">●</span> Urgent &nbsp;
+  <span style="color:#d97706;">●</span> High &nbsp;
+  <span style="color:#2563eb;">●</span> Medium &nbsp;
+  <span style="color:#6b7280;">●</span> Low
+  &nbsp;&nbsp;—&nbsp;&nbsp;
+  Reply to this email to ask questions about any position.
+</div>"""
+
+    return summary_html + account_cards + legend

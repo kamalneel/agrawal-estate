@@ -1005,6 +1005,222 @@ class V5Orchestrator:
 
         return "\n".join(lines)
 
+    def format_html_email(
+        self,
+        notifications: List[Dict[str, Any]],
+        scan_label: str = "",
+    ) -> str:
+        """Format V5 notifications as rich HTML email body (for Resend)."""
+        if not notifications:
+            return "<p style='color:#6b7280;'>No recommendations at this time.</p>"
+
+        # Shared style constants (inline for email client compat)
+        _TH = ("background:#f1f5f9; color:#374151; font-size:11px; font-weight:600; "
+               "text-transform:uppercase; padding:5px 10px; text-align:left; "
+               "border-bottom:1px solid #e2e8f0;")
+        _TD = "padding:6px 10px; border-bottom:1px solid #f8fafc; color:#111827; font-size:13px;"
+        _TD_MONO = "padding:6px 10px; border-bottom:1px solid #f8fafc; font-family:monospace; font-size:13px; color:#111827;"
+
+        _ACTION_STYLES = {
+            "SELL":         ("#2563eb", "#dbeafe"),
+            "ROLL":         ("#d97706", "#fef3c7"),
+            "ROLL_BIWEEKLY":("#d97706", "#fef3c7"),
+            "ROLL_MONTHLY": ("#b45309", "#fef3c7"),
+            "CLOSE":        ("#16a34a", "#dcfce7"),
+            "WAIT":         ("#6b7280", "#f3f4f6"),
+            "MODIFY":       ("#7c3aed", "#ede9fe"),
+            "CANCEL":       ("#dc2626", "#fee2e2"),
+            "ALERT":        ("#dc2626", "#fee2e2"),
+        }
+
+        def _badge(action: str, label: str = "") -> str:
+            disp = label or action
+            fg, bg = _ACTION_STYLES.get(action, ("#6b7280", "#f3f4f6"))
+            return (
+                f'<span style="display:inline-block; padding:2px 7px; border-radius:4px; '
+                f'font-size:10px; font-weight:700; background:{bg}; color:{fg}; '
+                f'letter-spacing:.4px;">{disp}</span>'
+            )
+
+        def _stuck_badge(cat: str) -> str:
+            cats = {
+                "LIFE_SUPPORT": ("🏥", "#d97706", "#fef3c7"),
+                "DROWNING":     ("🆘", "#dc2626", "#fee2e2"),
+                "STUCK":        ("⚠️", "#6b7280", "#f3f4f6"),
+            }
+            if cat in cats:
+                icon, fg, bg = cats[cat]
+                return (
+                    f'<span style="display:inline-block; padding:2px 6px; border-radius:4px; '
+                    f'font-size:10px; font-weight:600; background:{bg}; color:{fg}; margin-left:5px;">'
+                    f'{icon} {cat}</span>'
+                )
+            return ""
+
+        def _notif_to_row(item: Dict[str, Any]) -> str:
+            action = item.get("action", "")
+            symbol = item.get("symbol", "—")
+            source_strike = item.get("source_strike")
+            target_strike = item.get("target_strike")
+            opt_type = (item.get("option_type", "call") or "call").upper()
+            reason_short = item.get("reason_short", "")
+            contracts = item.get("contracts", 1) or 1
+            total_premium = item.get("total_premium") or 0
+            stock_price = item.get("stock_price") or 0
+            stuck_cat = item.get("stuck_category", "")
+            is_uncovered = item.get("is_uncovered", False)
+
+            # Choose badge
+            if item.get("is_pending_order"):
+                pending_action_map = {
+                    "PENDING_ORDER_KEEP":        ("✓ KEEP",   "WAIT"),
+                    "PENDING_ORDER_MODIFY_UP":   ("↑ MODIFY", "MODIFY"),
+                    "PENDING_ORDER_MODIFY_DOWN": ("↓ MODIFY", "MODIFY"),
+                    "PENDING_ORDER_CANCEL":      ("✗ CANCEL", "CANCEL"),
+                    "PENDING_ORDER_REPLACE":     ("↻ REPLACE","MODIFY"),
+                }
+                label, style_key = pending_action_map.get(action, ("PENDING", "WAIT"))
+                badge_html = _badge(style_key, label)
+            elif action in ("ROLL_BIWEEKLY", "ROLL_MONTHLY"):
+                period = "2wk" if action == "ROLL_BIWEEKLY" else "4wk"
+                badge_html = _badge(action, f"ROLL ({period})")
+            else:
+                badge_html = _badge(action)
+
+            # Build detail cell
+            detail_parts = []
+            if is_uncovered and action == "SELL" and target_strike:
+                ss = f"${float(target_strike):,.0f}" if float(target_strike) >= 100 else f"${float(target_strike):,.2f}"
+                detail_parts.append(f"{int(contracts)}x {opt_type} {ss}")
+                if total_premium:
+                    detail_parts.append(
+                        f'<span style="color:#16a34a; font-weight:600;">Earn ${total_premium:,.0f}</span>'
+                    )
+            elif action in ("ROLL", "ROLL_BIWEEKLY", "ROLL_MONTHLY") and source_strike and target_strike:
+                ss = f"${float(source_strike):,.0f}" if float(source_strike) >= 100 else f"${float(source_strike):,.2f}"
+                ts = f"${float(target_strike):,.0f}" if float(target_strike) >= 100 else f"${float(target_strike):,.2f}"
+                detail_parts.append(f"{int(contracts)}x {opt_type}  {ss} → {ts}")
+                credit_key = "biweekly_credit" if action == "ROLL_BIWEEKLY" else "monthly_credit" if action == "ROLL_MONTHLY" else "net_cost"
+                credit = item.get(credit_key) or item.get("net_cost") or 0
+                if credit:
+                    c_color = "#16a34a" if credit > 0 else "#dc2626"
+                    c_label = f"${abs(credit):.2f} {'credit' if credit > 0 else 'debit'}"
+                    detail_parts.append(f'<span style="color:{c_color}; font-weight:600;">{c_label}</span>')
+            elif source_strike:
+                ss = f"${float(source_strike):,.0f}" if float(source_strike) >= 100 else f"${float(source_strike):,.2f}"
+                detail_parts.append(f"{int(contracts)}x {opt_type}  {ss}")
+
+            if stock_price and not is_uncovered:
+                detail_parts.append(f"Stock ${float(stock_price):,.0f}")
+
+            profit_pct = item.get("profit_percent") or 0
+            if profit_pct >= 50:
+                p_color = "#16a34a" if profit_pct > 0 else "#dc2626"
+                detail_parts.append(f'<span style="color:{p_color};">{profit_pct:.0f}% captured</span>')
+
+            if reason_short:
+                detail_parts.append(f'<span style="color:#6b7280; font-size:12px;">{reason_short[:80]}</span>')
+
+            detail_html = " &nbsp;·&nbsp; ".join(detail_parts) if detail_parts else "—"
+
+            urgency = item.get("urgency_level", "normal")
+            dot_color = "#dc2626" if urgency == "critical" else "#d97706" if urgency == "high" else "#6b7280"
+            urgency_dot = f'<span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:{dot_color};"></span>'
+
+            stuck_html = _stuck_badge(stuck_cat) if stuck_cat not in ("HEALTHY", "") else ""
+
+            return (
+                f"<tr>"
+                f"<td style='{_TD} width:90px;'>{badge_html}</td>"
+                f"<td style='{_TD_MONO} width:60px; font-weight:700;'>{symbol}{stuck_html}</td>"
+                f"<td style='{_TD}'>{detail_html}</td>"
+                f"<td style='{_TD} width:30px; text-align:right;'>{urgency_dot}</td>"
+                f"</tr>"
+            )
+
+        ACCOUNT_ORDER = {
+            "Neel's Brokerage": 1, "Neel's Retirement": 2, "Neel's Roth IRA": 3,
+            "Jaya's Brokerage": 4, "Jaya's IRA": 5, "Jaya's Roth IRA": 6,
+            "Alisha's Brokerage": 7, "Agrawal Family HSA": 8,
+        }
+        by_account: Dict[str, List] = {}
+        for notif in notifications:
+            account = (
+                notif.get("context", {}).get("account_name")
+                or notif.get("account_name")
+                or "Portfolio"
+            )
+            by_account.setdefault(account, []).append(notif)
+
+        sorted_accounts = sorted(by_account.keys(), key=lambda x: ACCOUNT_ORDER.get(x, 50))
+
+        # Summary
+        urgent_count = sum(
+            1 for n in notifications
+            if n.get("urgency_level") == "critical" or n.get("stuck_category") == "DROWNING"
+        )
+        life_support = sum(1 for n in notifications if n.get("stuck_category") == "LIFE_SUPPORT")
+        total = len(notifications)
+
+        badges_html = ""
+        if urgent_count:
+            badges_html += (
+                f'<span style="background:#fee2e2; color:#dc2626; padding:2px 8px; '
+                f'border-radius:12px; font-size:12px; font-weight:700;">{urgent_count} URGENT</span> '
+            )
+        if life_support:
+            badges_html += (
+                f'<span style="background:#fef3c7; color:#d97706; padding:2px 8px; '
+                f'border-radius:12px; font-size:12px; font-weight:700; margin-left:4px;">'
+                f'🏥 {life_support} LIFE SUPPORT</span>'
+            )
+
+        summary = (
+            f'<div style="margin-bottom:18px; padding:12px 14px; background:#f8fafc; '
+            f'border-radius:8px; border-left:3px solid #2563eb; font-size:13px;">'
+            f'<strong>{total} recommendation{"s" if total != 1 else ""}</strong> '
+            f'across {len(sorted_accounts)} account{"s" if len(sorted_accounts) != 1 else ""}'
+            f'&nbsp; {badges_html}'
+            f'{f"<div style=\'color:#6b7280; margin-top:4px; font-size:12px;\'>{scan_label}</div>" if scan_label else ""}'
+            f'</div>'
+        )
+
+        cards = ""
+        for account in sorted_accounts:
+            rows = "\n".join(_notif_to_row(n) for n in by_account[account])
+            count = len(by_account[account])
+            cards += (
+                f'<div style="border:1px solid #e2e8f0; border-radius:8px; '
+                f'margin-bottom:16px; overflow:hidden;">'
+                f'<div style="background:#1e3a5f; color:#ffffff; padding:9px 14px; '
+                f'font-size:13px; font-weight:700;">'
+                f'{account}'
+                f'<span style="font-weight:400; font-size:12px; opacity:.8; float:right;">'
+                f'{count} rec{"s" if count != 1 else ""}</span></div>'
+                f'<table style="width:100%; border-collapse:collapse;">'
+                f'<tr>'
+                f'<th style="{_TH}">Action</th>'
+                f'<th style="{_TH}">Symbol</th>'
+                f'<th style="{_TH}">Details</th>'
+                f'<th style="{_TH}"></th>'
+                f'</tr>'
+                f'{rows}'
+                f'</table></div>'
+            )
+
+        legend = (
+            '<div style="margin-top:12px; font-size:11px; color:#9ca3af; '
+            'padding-top:10px; border-top:1px solid #f1f5f9;">'
+            'Priority: <span style="color:#dc2626;">●</span> Critical &nbsp;'
+            '<span style="color:#d97706;">●</span> High &nbsp;'
+            '<span style="color:#6b7280;">●</span> Normal'
+            '&nbsp;&nbsp;—&nbsp;&nbsp;'
+            'Reply to this email to ask questions about any position.'
+            '</div>'
+        )
+
+        return summary + cards + legend
+
     # =========================================================================
     # SAVE TO HISTORY
     # =========================================================================

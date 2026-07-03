@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, CheckCircle, AlertCircle, FolderOpen, FileText, Clock, Clipboard, Send, ChevronDown, ChevronUp, TrendingUp, BarChart3, Eye, X } from 'lucide-react'
+import { RefreshCw, CheckCircle, AlertCircle, FolderOpen, FileText, Clock, Clipboard, Send, ChevronDown, ChevronUp, TrendingUp, BarChart3, Eye, X, DollarSign } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import styles from './DataIngestion.module.css'
 import clsx from 'clsx'
@@ -26,11 +26,19 @@ interface RefreshResult {
 }
 
 interface ImportedTransaction {
+  ingestion_id: number | null
   symbol: string
   transaction_date: string | null
   amount: number
   transaction_type: string
   description: string | null
+}
+
+interface FileSummary {
+  ingestion_id: number
+  file_name: string
+  count: number
+  total: number
 }
 
 type SortKey = 'symbol' | 'transaction_date' | 'amount' | 'transaction_type'
@@ -135,6 +143,19 @@ interface AccountOption {
   last_updated: string | null
 }
 
+interface CashBreakdownResult {
+  success: boolean
+  format: 'brokerage' | 'ira'
+  account_name: string
+  cash: number | null
+  margin_total: number | null
+  margin_used: number | null
+  options_collateral: number | null
+  pending_orders: number | null
+  net_total: number | null
+  true_cash: number
+}
+
 // Account order matching Income and Investments pages
 // Order: Neel's Brokerage → Neel's Retirement → Neel's Roth IRA → Jaya's Brokerage → Jaya's IRA → Jaya's Roth IRA → Alisha's Brokerage → Agrawal Family HSA
 const ACCOUNT_ORDER: Record<string, number> = {
@@ -163,6 +184,61 @@ const ALL_ROBINHOOD_ACCOUNTS: AccountOption[] = [
 
 const HIDDEN_ACCOUNTS = ['robinhood_default']
 
+function CashBreakdownTable({ result }: { result: CashBreakdownResult }) {
+  const fmtAmt = (v: number | null) =>
+    v == null ? '—' : `$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  const isIra = result.format === 'ira'
+
+  const rows: { label: string; value: number | null; note?: string }[] = isIra
+    ? [
+        { label: 'Total IRA cash',     value: result.margin_total,      note: 'all your money in this account' },
+        { label: 'Options collateral', value: result.options_collateral, note: 'locked for puts — included above' },
+        { label: 'Buying power',       value: result.net_total,          note: 'free to deploy' },
+      ]
+    : [
+        { label: 'Free cash',          value: result.cash },
+        { label: 'Margin credit line', value: result.margin_total },
+        { label: 'Margin used',        value: result.margin_used,        note: 'borrowed — subtracted from true cash' },
+        { label: 'Options collateral', value: result.options_collateral, note: 'your money, locked for puts' },
+        { label: 'Pending orders',     value: result.pending_orders,     note: 'reserved for open orders' },
+        { label: 'Net buying power',   value: result.net_total },
+      ]
+
+  const trueFormula = isIra ? 'buying power + collateral' : 'free + collateral + pending − margin'
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        {isIra ? 'IRA account' : 'Brokerage / margin account'}
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+        <tbody>
+          {rows.map(({ label, value, note }) => (
+            <tr key={label} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              <td style={{ padding: '6px 0', color: 'var(--color-text-secondary)' }}>{label}</td>
+              <td style={{ padding: '6px 0', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtAmt(value)}</td>
+              {note && <td style={{ padding: '6px 0 6px 12px', color: 'var(--color-text-tertiary)', fontSize: '0.8rem' }}>{note}</td>}
+              {!note && <td />}
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td style={{ padding: '10px 0 4px', fontWeight: 600, color: 'var(--color-accent, #00D632)' }}>True cash</td>
+            <td style={{ padding: '10px 0 4px', textAlign: 'right', fontWeight: 700, color: 'var(--color-accent, #00D632)', fontVariantNumeric: 'tabular-nums' }}>
+              ${result.true_cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </td>
+            <td style={{ padding: '10px 0 4px', fontSize: '0.8rem', color: 'var(--color-text-tertiary)', paddingLeft: 12 }}>
+              {trueFormula}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  )
+}
+
 export function DataIngestion() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [inboxStatus, setInboxStatus] = useState<InboxFolder[] | null>(null)
@@ -181,8 +257,18 @@ export function DataIngestion() {
   const [pasteError, setPasteError] = useState<string | null>(null)
   const [showPreviewDetails, setShowPreviewDetails] = useState(false)
 
+  // Cash breakdown paste state
+  const [cashPasteText, setCashPasteText] = useState('')
+  const [cashSelectedAccount, setCashSelectedAccount] = useState<string>('')
+  const [isCashPreviewing, setIsCashPreviewing] = useState(false)
+  const [isCashSaving, setIsCashSaving] = useState(false)
+  const [cashPreview, setCashPreview] = useState<CashBreakdownResult | null>(null)
+  const [cashSaveResult, setCashSaveResult] = useState<CashBreakdownResult | null>(null)
+  const [cashError, setCashError] = useState<string | null>(null)
+
   // Imported transactions table state
   const [importedTransactions, setImportedTransactions] = useState<ImportedTransaction[]>([])
+  const [fileSummaries, setFileSummaries] = useState<FileSummary[]>([])
   const [showImportedTable, setShowImportedTable] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>('transaction_date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -243,9 +329,28 @@ export function DataIngestion() {
         const data = await response.json()
         if (data.transactions && data.transactions.length > 0) {
           setImportedTransactions(data.transactions)
-          setShowImportedTable(true)
           setSortKey('transaction_date')
           setSortDir('desc')
+
+          // Compute per-file summaries
+          // Exclude pure balance transfers — they aren't income and skew the total
+          const TRANSFER_TYPES = new Set(['INTERNAL_TRANSFER', 'TRANSFER', 'ACH', 'ACATI', 'ACATO', 'ABIP'])
+          const files: Record<string, string> = data.files ?? {}
+          const byFile = new Map<number, { count: number; total: number }>()
+          for (const tx of data.transactions as ImportedTransaction[]) {
+            const id = tx.ingestion_id ?? 0
+            const existing = byFile.get(id) ?? { count: 0, total: 0 }
+            const incomeAmount = TRANSFER_TYPES.has(tx.transaction_type) ? 0 : tx.amount
+            byFile.set(id, { count: existing.count + 1, total: existing.total + incomeAmount })
+          }
+          const summaries: FileSummary[] = Array.from(byFile.entries()).map(([id, stats]) => ({
+            ingestion_id: id,
+            file_name: files[String(id)] ?? `File ${id}`,
+            count: stats.count,
+            total: stats.total,
+          }))
+          setFileSummaries(summaries)
+          setShowImportedTable(true)
         }
       }
     } catch (err) {
@@ -371,6 +476,62 @@ export function DataIngestion() {
     }
   }
 
+  const handleCashPreview = async () => {
+    if (!cashPasteText.trim()) {
+      setCashError('Please paste the cash section from Robinhood')
+      return
+    }
+    setIsCashPreviewing(true)
+    setCashError(null)
+    setCashPreview(null)
+    setCashSaveResult(null)
+    try {
+      const accountName = robinhoodAccounts.find(a => a.account_id === cashSelectedAccount)?.name || cashSelectedAccount
+      const res = await fetch('/api/v1/ingestion/robinhood-cash/preview', {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: cashPasteText, account_name: accountName }),
+      })
+      if (res.ok) {
+        setCashPreview(await res.json())
+      } else {
+        const err = await res.json()
+        setCashError(err.detail || 'Failed to parse cash data')
+      }
+    } catch {
+      setCashError('Unable to connect to server')
+    } finally {
+      setIsCashPreviewing(false)
+    }
+  }
+
+  const handleCashSave = async () => {
+    if (!cashPasteText.trim()) return
+    setIsCashSaving(true)
+    setCashError(null)
+    try {
+      const accountName = robinhoodAccounts.find(a => a.account_id === cashSelectedAccount)?.name || cashSelectedAccount
+      const res = await fetch('/api/v1/ingestion/robinhood-cash/save', {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: cashPasteText, account_name: accountName }),
+      })
+      if (res.ok) {
+        const result = await res.json()
+        setCashSaveResult(result)
+        setCashPasteText('')
+        setCashPreview(null)
+      } else {
+        const err = await res.json()
+        setCashError(err.detail || 'Failed to save cash data')
+      }
+    } catch {
+      setCashError('Unable to connect to server')
+    } finally {
+      setIsCashSaving(false)
+    }
+  }
+
   const fetchInboxStatus = async () => {
     try {
       const response = await fetch('/api/v1/ingestion/inbox-status', {
@@ -391,6 +552,7 @@ export function DataIngestion() {
     setLastRefresh(null)
     setShowImportedTable(false)
     setImportedTransactions([])
+    setFileSummaries([])
 
     try {
       const response = await fetch('/api/v1/ingestion/process-all', {
@@ -476,6 +638,9 @@ export function DataIngestion() {
       if (robinhood.length > 0 && !selectedAccount) {
         setSelectedAccount(robinhood[0].account_id)
       }
+      if (robinhood.length > 0 && !cashSelectedAccount) {
+        setCashSelectedAccount(robinhood[0].account_id)
+      }
     } catch (err) {
       console.error('Error fetching accounts:', err)
       // Even on error, show predefined accounts
@@ -487,6 +652,9 @@ export function DataIngestion() {
       setRobinhoodAccounts(robinhood)
       if (robinhood.length > 0 && !selectedAccount) {
         setSelectedAccount(robinhood[0].account_id)
+      }
+      if (robinhood.length > 0 && !cashSelectedAccount) {
+        setCashSelectedAccount(robinhood[0].account_id)
       }
     }
   }
@@ -866,6 +1034,122 @@ $2.84
         </div>
       </div>
 
+      {/* Cash Breakdown Paste Section */}
+      <div className={styles.pasteSection}>
+        <div className={styles.pasteSectionHeader}>
+          <div className={styles.pasteIcon}>
+            <DollarSign size={28} />
+          </div>
+          <div>
+            <h2>Paste Cash Breakdown</h2>
+            <p>
+              In Robinhood, tap <strong>Investing → Account</strong>, then copy the "Cash" section
+              (Cash, Margin total, Margin used, Options collateral, Pending orders, Total) and paste below.
+              This enables the <strong>True Portfolio</strong> view on the Investments page.
+            </p>
+          </div>
+        </div>
+
+        <div className={styles.pasteContent}>
+          <div className={styles.pasteControls}>
+            <label className={styles.accountLabel}>
+              Account:
+              <select
+                value={cashSelectedAccount}
+                onChange={(e) => setCashSelectedAccount(e.target.value)}
+                className={styles.accountSelect}
+                disabled={robinhoodAccounts.length === 0}
+              >
+                {robinhoodAccounts.map((account) => (
+                  <option key={account.account_id} value={account.account_id}>
+                    {account.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <textarea
+            className={styles.pasteTextarea}
+            value={cashPasteText}
+            onChange={(e) => setCashPasteText(e.target.value)}
+            placeholder={`Paste the Cash section from Robinhood here...
+
+Expected format:
+Cash
+$0.00
+
+Margin total
+$200,000.00
+
+Margin used
+-$5,594.67
+
+Options collateral
+-$188,500.00
+
+Pending orders
+-$2,106.00
+
+Total
+$3,799.33`}
+            rows={10}
+          />
+
+          <div className={styles.pasteActions}>
+            <button
+              className={styles.previewButton}
+              onClick={handleCashPreview}
+              disabled={isCashPreviewing || !cashPasteText.trim()}
+            >
+              {isCashPreviewing ? (
+                <><RefreshCw size={16} className={styles.spinning} />Parsing...</>
+              ) : (
+                <><Eye size={16} />Preview</>
+              )}
+            </button>
+            <button
+              className={styles.saveButton}
+              onClick={handleCashSave}
+              disabled={isCashSaving || !cashPasteText.trim()}
+            >
+              {isCashSaving ? (
+                <><RefreshCw size={16} className={styles.spinning} />Saving...</>
+              ) : (
+                <><Send size={16} />Save to Database</>
+              )}
+            </button>
+          </div>
+
+          {cashError && (
+            <div className={styles.pasteError}>
+              <AlertCircle size={16} />
+              {cashError}
+            </div>
+          )}
+
+          {cashPreview && (
+            <div className={styles.previewResult}>
+              <div className={styles.previewSummary}>
+                <CheckCircle size={18} className={styles.successIcon} />
+                <span>Parsed — <strong>{cashPreview.account_name}</strong></span>
+              </div>
+              <CashBreakdownTable result={cashPreview} />
+            </div>
+          )}
+
+          {cashSaveResult && (
+            <div className={styles.saveResult}>
+              <CheckCircle size={20} className={styles.successIcon} />
+              <div>
+                <strong>Saved successfully!</strong>
+                <p>True cash for {cashSaveResult.account_name}: ${cashSaveResult.true_cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* File-based Import Section */}
       <div className={styles.actionCard}>
         <div className={styles.actionContent}>
@@ -949,59 +1233,103 @@ $2.84
       )}
 
       {/* Imported Transactions Table */}
-      {showImportedTable && sortedTransactions.length > 0 && (
-        <div className={styles.importedCard}>
-          <div className={styles.importedHeader}>
-            <h3>Newly Imported Transactions ({sortedTransactions.length})</h3>
-            <button
-              className={styles.dismissButton}
-              onClick={() => setShowImportedTable(false)}
-              aria-label="Dismiss"
-            >
-              <X size={18} />
-            </button>
-          </div>
-          <div className={styles.importedTableWrap}>
-            <table className={styles.importedTable}>
-              <thead>
-                <tr>
-                  {([
-                    ['symbol', 'Stock'],
-                    ['transaction_date', 'Date'],
-                    ['amount', 'Amount'],
-                    ['transaction_type', 'Type'],
-                  ] as [SortKey, string][]).map(([key, label]) => (
-                    <th
-                      key={key}
-                      className={styles.sortableHeader}
-                      onClick={() => handleSort(key)}
-                    >
-                      {label}
-                      {sortKey === key && (
-                        <span className={styles.sortArrow}>
-                          {sortDir === 'asc' ? ' \u25B2' : ' \u25BC'}
-                        </span>
-                      )}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedTransactions.map((tx, i) => (
-                  <tr key={i}>
-                    <td><strong>{tx.symbol}</strong></td>
-                    <td>{tx.transaction_date ?? '-'}</td>
-                    <td className={tx.amount >= 0 ? styles.positive : styles.negative}>
-                      ${Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
-                    <td>{friendlyType(tx.transaction_type, tx.description)}</td>
+      {showImportedTable && sortedTransactions.length > 0 && (() => {
+        const overallTotal = fileSummaries.reduce((s, f) => s + f.total, 0)
+        const overallCount = fileSummaries.reduce((s, f) => s + f.count, 0)
+        const fmt = (n: number) =>
+          `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        return (
+          <div className={styles.importedCard}>
+            <div className={styles.importedHeader}>
+              <h3>Newly Imported Transactions ({sortedTransactions.length})</h3>
+              <button
+                className={styles.dismissButton}
+                onClick={() => setShowImportedTable(false)}
+                aria-label="Dismiss"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Per-file summary */}
+            {fileSummaries.length > 0 && (
+              <div className={styles.fileSummary}>
+                <table className={styles.fileSummaryTable}>
+                  <thead>
+                    <tr>
+                      <th>File</th>
+                      <th>Transactions</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fileSummaries.map((f) => (
+                      <tr key={f.ingestion_id}>
+                        <td className={styles.fileSummaryName}>{f.file_name}</td>
+                        <td>{f.count}</td>
+                        <td className={f.total >= 0 ? styles.positive : styles.negative}>
+                          {fmt(f.total)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  {fileSummaries.length > 1 && (
+                    <tfoot>
+                      <tr className={styles.fileSummaryTotalRow}>
+                        <td>Overall Total</td>
+                        <td>{overallCount}</td>
+                        <td className={overallTotal >= 0 ? styles.positive : styles.negative}>
+                          {fmt(overallTotal)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            )}
+
+            <div className={styles.importedTableWrap}>
+              <table className={styles.importedTable}>
+                <thead>
+                  <tr>
+                    {([
+                      ['symbol', 'Stock'],
+                      ['transaction_date', 'Date'],
+                      ['amount', 'Amount'],
+                      ['transaction_type', 'Type'],
+                    ] as [SortKey, string][]).map(([key, label]) => (
+                      <th
+                        key={key}
+                        className={styles.sortableHeader}
+                        onClick={() => handleSort(key)}
+                      >
+                        {label}
+                        {sortKey === key && (
+                          <span className={styles.sortArrow}>
+                            {sortDir === 'asc' ? ' \u25B2' : ' \u25BC'}
+                          </span>
+                        )}
+                      </th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {sortedTransactions.map((tx, i) => (
+                    <tr key={i}>
+                      <td><strong>{tx.symbol}</strong></td>
+                      <td>{tx.transaction_date ?? '-'}</td>
+                      <td className={tx.amount >= 0 ? styles.positive : styles.negative}>
+                        ${Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td>{friendlyType(tx.transaction_type, tx.description)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Inbox Folders Status */}
       <div className={styles.foldersSection}>
@@ -1104,11 +1432,12 @@ $2.84
                   <h4>Stocks Created</h4>
                   <table className={styles.saveModalTable}>
                     <thead>
-                      <tr><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th></tr>
+                      <tr><th>#</th><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th></tr>
                     </thead>
                     <tbody>
                       {saveResult.stocks_created_details.map((s, i) => (
                         <tr key={i}>
+                          <td>{i + 1}</td>
                           <td className={styles.symbolCell}>{s.symbol}</td>
                           <td>{s.shares}</td>
                           <td>${s.price.toFixed(2)}</td>
@@ -1125,11 +1454,12 @@ $2.84
                   <h4>Stocks Updated</h4>
                   <table className={styles.saveModalTable}>
                     <thead>
-                      <tr><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th></tr>
+                      <tr><th>#</th><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th></tr>
                     </thead>
                     <tbody>
                       {saveResult.stocks_updated_details.map((s, i) => (
                         <tr key={i}>
+                          <td>{i + 1}</td>
                           <td className={styles.symbolCell}>{s.symbol}</td>
                           <td>
                             {s.old_shares !== s.shares ? (
@@ -1158,16 +1488,17 @@ $2.84
                   <h4>Stocks Removed</h4>
                   <table className={styles.saveModalTable}>
                     <thead>
-                      <tr><th>Symbol</th><th>Shares</th><th>Last Price</th><th>Last Value</th></tr>
+                      <tr><th>#</th><th>Symbol</th><th>Shares</th><th>Last Price</th><th>Last Value</th></tr>
                     </thead>
                     <tbody>
                       {saveResult.stocks_removed_details.map((s, i) =>
                         s.warning ? (
                           <tr key={i}>
-                            <td colSpan={4} style={{ color: 'var(--color-warning, #fbbf24)', fontStyle: 'italic' }}>{s.warning}</td>
+                            <td colSpan={5} style={{ color: 'var(--color-warning, #fbbf24)', fontStyle: 'italic' }}>{s.warning}</td>
                           </tr>
                         ) : (
                           <tr key={i}>
+                            <td>{i + 1}</td>
                             <td className={styles.symbolCell}>{s.symbol}</td>
                             <td>{s.shares}</td>
                             <td>${(s.last_price ?? 0).toFixed(2)}</td>
@@ -1185,11 +1516,12 @@ $2.84
                   <h4>Options Saved</h4>
                   <table className={styles.saveModalTable}>
                     <thead>
-                      <tr><th>Symbol</th><th>Type</th><th>Strike</th><th>Expiration</th><th>Contracts</th></tr>
+                      <tr><th>#</th><th>Symbol</th><th>Type</th><th>Strike</th><th>Expiration</th><th>Contracts</th></tr>
                     </thead>
                     <tbody>
                       {saveResult.options_saved_details.map((o, i) => (
                         <tr key={i}>
+                          <td>{i + 1}</td>
                           <td className={styles.symbolCell}>{o.symbol}</td>
                           <td>{o.option_type}</td>
                           <td>${o.strike_price.toFixed(2)}</td>
@@ -1207,11 +1539,12 @@ $2.84
                   <h4>Pending Orders</h4>
                   <table className={styles.saveModalTable}>
                     <thead>
-                      <tr><th>Symbol</th><th>Order</th><th>Type</th><th>Strike</th><th>Contracts</th></tr>
+                      <tr><th>#</th><th>Symbol</th><th>Order</th><th>Type</th><th>Strike</th><th>Contracts</th></tr>
                     </thead>
                     <tbody>
                       {saveResult.pending_orders_details.map((p, i) => (
                         <tr key={i}>
+                          <td>{i + 1}</td>
                           <td className={styles.symbolCell}>{p.symbol}</td>
                           <td>{p.order_type}</td>
                           <td>{p.option_type || '—'}</td>

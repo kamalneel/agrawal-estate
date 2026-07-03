@@ -1588,56 +1588,62 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
 def _estimate_rental_depreciation(db: Session, year: int) -> float:
     """
     Estimate rental property depreciation for tax purposes.
-    
+
     Depreciation is a major tax deduction for rental properties.
     Residential rental properties depreciate over 27.5 years (straight-line).
-    
+
     Formula: (Building Value) / 27.5 years
-    
+
+    For the current (in-progress) year, prorates to the number of months elapsed
+    so the forecast matches the rental income that has actually been received.
+
     We estimate based on:
     1. Prior year tax return depreciation (if available)
     2. Property cost basis (purchase price minus land value, typically 80% of price)
     """
     from app.modules.income.models import RentalProperty, RentalAnnualSummary
-    
+
     # Try to get depreciation from prior year tax return
     prior_year = year - 1
     prior_return = db.query(IncomeTaxReturn).filter(
         IncomeTaxReturn.tax_year == prior_year
     ).first()
-    
+
+    annual_depreciation = 0.0
+
     if prior_return and prior_return.details_json:
         try:
             details = json.loads(prior_return.details_json)
             rental_props = details.get("rental_properties", [])
             if rental_props:
-                # Use prior year depreciation as estimate
-                total_depreciation = sum(
-                    float(prop.get("depreciation", 0)) for prop in rental_props
-                )
-                if total_depreciation > 0:
-                    return total_depreciation
+                total = sum(float(prop.get("depreciation", 0)) for prop in rental_props)
+                if total > 0:
+                    annual_depreciation = total
         except:
             pass
-    
-    # Fallback: Estimate depreciation from property cost basis
-    # Residential property depreciates over 27.5 years
-    # Typically, land is ~20% and building is ~80% of purchase price
-    properties = db.query(RentalProperty).filter(
-        RentalProperty.is_active == 'Y'
-    ).all()
-    
-    total_depreciation = 0
-    for prop in properties:
-        purchase_price = float(prop.purchase_price or 0)
-        if purchase_price > 0:
-            # Assume 80% is building value (depreciable)
-            building_value = purchase_price * 0.80
-            # Annual depreciation over 27.5 years
-            annual_depreciation = building_value / 27.5
-            total_depreciation += annual_depreciation
-    
-    return total_depreciation
+
+    if not annual_depreciation:
+        # Fallback: estimate from property cost basis
+        # Residential property depreciates over 27.5 years
+        # Typically, land is ~20% and building is ~80% of purchase price
+        properties = db.query(RentalProperty).filter(
+            RentalProperty.is_active == 'Y'
+        ).all()
+
+        for prop in properties:
+            purchase_price = float(prop.purchase_price or 0)
+            if purchase_price > 0:
+                building_value = purchase_price * 0.80
+                annual_depreciation += building_value / 27.5
+
+    # For an in-progress year, prorate to months elapsed so it matches
+    # the prorated rental income (only months actually received count)
+    current_year = date.today().year
+    if year == current_year:
+        months_elapsed = date.today().month
+        annual_depreciation = annual_depreciation * (months_elapsed / 12)
+
+    return annual_depreciation
 
 
 def _get_monthly_income_breakdown(

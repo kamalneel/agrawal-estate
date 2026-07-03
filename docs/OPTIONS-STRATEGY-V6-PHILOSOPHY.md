@@ -1,8 +1,9 @@
 # Options Strategy — V6 Philosophy
 
-**Version:** 6.0  
+**Version:** 6.1  
 **Status:** ✅ ACTIVE  
 **Created:** 2026-05-23  
+**Updated:** 2026-05-29 (V6.1 — Two-Tier Classification)  
 **Supersedes:** V4 (V5 was implemented in code but never documented)  
 **Author:** Neel Kamal (dictated); compiled by Claude
 
@@ -165,6 +166,115 @@ If unclear: default to oscillating behavior (more conservative).
 
 ---
 
+### 8. Two-Tier Stock Classification (V6.1)
+
+This is the most important structural addition in V6.1. It came from recognizing that mega-cap stocks ($1T+ market cap) and sub-$1T stocks have fundamentally different risk profiles, and treating them identically leads to bad outcomes.
+
+**The core problem with mixing tiers:**
+
+If I hold Palantir (sub-$1T) the same way I hold Apple (mega-cap), I get burned. PLTR can drop 12% in a single day on no meaningful news — just sentiment. When that happens on a covered call position, the covered call becomes worthless and I'm holding shares at a high cost basis waiting for a recovery that may take weeks. Meanwhile I missed income. The wheel works on PLTR only if I don't care about holding it long-term.
+
+But AAPL dropping 12% in a day is a once-a-decade event and always recovers. That's a different proposition.
+
+**The two tiers:**
+
+#### Tier 1: Mega-Cap Hold Tier ($1T+ Market Cap)
+
+*Who belongs here:* AAPL, MSFT, NVDA, AVGO, GOOGL, AMZN, META
+
+*Named inclusions despite sub-$1T:* LLY (~$750B but treated as mega-cap — conviction hold, want to own for decades, behaves like a mega-cap from a volatility and recovery standpoint)
+
+*Named carve-out despite $1T+:* TSLA (special rules — see below)
+
+*Strategy:*
+- Hold for long-term appreciation. These are forever stocks.
+- Sell calls as income supplement — but conservatively. The goal is NOT to get called away.
+- Delta 10–15 for calls: earn premium, preserve the position.
+- If assigned on a call: the shares are gone, and I've lost the long-term compounding. This is the bad outcome. Don't let it happen by being greedy on delta.
+- Never sell puts on these in taxable accounts if sitting on large embedded gains — the assignment would dramatically raise cost basis.
+- Income from options is welcome but secondary. Appreciation is the real return.
+
+*Income-generating reality (from live data, June 2026 expiry):*
+
+Not all mega-cap stocks generate meaningful call income. At delta 10 (90% probability OTM):
+
+| Ticker | Weekly Yield (delta 10) | Verdict |
+|---|---|---|
+| AVGO | ~0.65%/week | Active income — sell calls consistently |
+| META | ~0.28%/week | Moderate — sell calls when RSI > 60 |
+| TSLA | ~0.28%/week | Special rules only (see TSLA carve-out) |
+| NVDA | ~0.26%/week | Moderate — sell calls when RSI > 60 |
+| AMZN | ~0.26%/week | Moderate — sell calls when RSI > 60 |
+| MSFT | ~0.24%/week | Low — sell calls on extended rallies |
+| GOOGL | ~0.24%/week | Low — sell calls on extended rallies |
+| LLY | ~0.23%/week | Low — sell calls on extended rallies only |
+| AAPL | ~0.16%/week | Hold for appreciation only. Skip calls most weeks. |
+
+*TSLA carve-out:*
+
+TSLA is $1T+ but must be handled differently from the other mega-cap stocks. The TSLA $70K lesson (May 2026) established this.
+
+**Why TSLA is different:** It has the volatility of a sub-$1T stock but the market cap of a mega-cap. A single week can see $50–100 moves. Selling even "conservative" delta 20–30 calls means a 5% TSLA move will burn you. The shares also carry large embedded gains in taxable accounts — getting called away is a taxable event at a much higher effective price than the original cost basis.
+
+**TSLA carve-out rules:**
+1. Sell calls at delta 10–12 only (90–88% probability OTM)
+2. Only when RSI > 75 (stock already significantly overbought)
+3. Expected yield: ~$100–125/contract/week — accept this; don't stretch for more
+4. Never sell puts on TSLA in taxable accounts if sitting on large gains
+5. If the call goes ITM anyway: roll at zero cost, never panic-close (learned the hard way)
+
+#### Tier 2: Sub-$1T Aggressive Wheel Tier
+
+*Who belongs here:* PLTR, HOOD, COIN, AMD, SHOP, INTC, RKLB, NFLX, CRCL, FIG, MSTR, and any new name under $1T market cap
+
+*Strategy:*
+- Do NOT hold these long-term. They're inventory for the wheel, not forever stocks.
+- The goal IS assignment — aggressive delta 80 on both put and call legs.
+- When a put gets assigned, immediately sell delta 80 covered calls on those shares.
+- When the call gets assigned (shares called away), immediately sell delta 80 puts again.
+- The high assignment frequency is the feature, not a bug — it generates premium on every cycle.
+- No emotional attachment to these positions. Getting called away or assigned is the plan.
+
+*Why aggressive delta on both legs:*
+
+At delta 80, the premium is meaningful. At delta 20 (conservative), the sub-$1T stocks generate ~0.40–0.91%/week but carry the same underlying volatility risk. Going to delta 80 generates 3–5× more premium and the assignment acceptance is already built into the strategy. You're choosing to own or not own based on price levels, not trying to avoid assignment.
+
+*From live data, June 2026 expiry (delta ≈ 20 puts):*
+
+| Ticker | Weekly Yield (delta 20) | Pattern |
+|---|---|---|
+| RKLB | ~1.85%/week | Very small cap — aggressive only in IRA |
+| INTC | ~1.54%/week | Turnaround story — moderate conviction |
+| CRCL | ~1.40%/week | New entrant, elevated IV |
+| AMD | ~1.29%/week | Solid semi with chips tailwind |
+| FIG | ~1.15%/week | Small cap — IRA only |
+| MSTR | ~1.12%/week | BTC proxy — treat like crypto exposure |
+| COIN | ~1.05%/week | Crypto-correlated — elevated IV |
+| SHOP | ~0.99%/week | Commerce platform — consistent |
+| PLTR | ~0.91%/week | Government AI — durable thesis |
+| HOOD | ~0.91%/week | Retail brokerage — consistent |
+| NFLX | ~0.40%/week | Lower IV, more like mega-cap behavior |
+
+Note: MU data was unavailable at time of compilation (transient API errors). Add when accessible.
+
+At delta 80, expect 3–5× these yield numbers — sub-$1T aggressive wheel is the income engine.
+
+#### The 80/20 Portfolio Allocation Rule
+
+Every account — IRA and taxable alike — should maintain approximately:
+- **80% in Tier 1** (mega-cap hold): long-term value growth
+- **20% in Tier 2** (sub-$1T wheel): active income generation
+
+This applies to each account independently, not the portfolio as a whole. The IRA cannot borrow against Tier 1 holdings, so aggressive sub-$1T wheeling in IRA must be funded by 20% cash/positions, not leverage.
+
+**Why maintain Tier 1 in IRA even though it's "tax-free":**
+IRA accounts benefit from compounding on appreciation — NVDA going 10× in the IRA is enormous tax-free gain. Using 100% of IRA cash for sub-$1T wheeling trades that away. The 80/20 rule preserves long-term compounding while still running active income.
+
+**Why maintain Tier 2 in taxable even though it triggers tax events:**
+The sub-$1T wheel in taxable generates short-term gains (expected, planned). The premium income from aggressive puts/calls is the return. The tax is a cost of that income, not a surprise. Size the position so after-tax income is still meaningful.
+
+---
+
 ## What Has Not Changed
 
 - **Sell on strength, buy on weakness.** Sell calls when the stock is up. Buy back calls when the stock is down. Sell puts when the stock is down. Buy back puts when the stock is up. Never fight momentum by doing the opposite.
@@ -185,6 +295,14 @@ If unclear: default to oscillating behavior (more conservative).
 **Use iBit or crypto-correlated assets for puts.** These are sentiment-driven, correlated with macro risk-on/off, and the fundamentals don't support "I want to own more of this." Avoid.
 
 **Sell puts during earnings week.** IV crush risk is asymmetric. The premium might look good, but the overnight move can erase weeks of income.
+
+**Apply the same delta to mega-cap and sub-$1T stocks.** Selling delta 80 calls on AAPL to earn more premium will get you called away on a stock you want to hold forever. Selling delta 10 calls on RKLB leaves most of the available premium on the table when the goal is aggressive wheeling.
+
+**Treat LLY like a sub-$1T wheel target.** LLY is ~$750B but conviction and intended hold period put it in Tier 1. Aggressive wheeling LLY would mean regularly getting called away from a forever position. The $1T threshold is a heuristic; conviction level is the actual filter.
+
+**Let TSLA drift into standard delta 20–30 calls.** "Just a little more aggressive this week" is how the $70K loss happened. TSLA carve-out rules exist exactly because the one exception always seems tempting. Delta 10–12, RSI > 75, always.
+
+**Run sub-$1T stocks to 100% of any account.** The 80/20 allocation is a ceiling on Tier 2, not a suggestion. Concentrating an entire account in PLTR, RKLB, and COIN is speculative exposure with no long-term anchor. Keep Tier 1 as the foundation.
 
 ---
 

@@ -49,12 +49,16 @@ def get_all_parsers():
     """Get all available parsers."""
     from app.ingestion.parsers.robinhood import RobinhoodParser
     from app.ingestion.parsers.robinhood_pdf import RobinhoodPDFParser
+    from app.ingestion.parsers.robinhood_1099 import Robinhood1099Parser
     from app.ingestion.parsers.fidelity_csv import FidelityCSVParser
     from app.ingestion.parsers.schwab_pdf import SchwabPDFParser
     from app.ingestion.parsers.chase import ChaseParser
     from app.ingestion.parsers.monarch import MonarchParser
 
     return [
+        # 1099 parser must come before RobinhoodParser — both handle .csv but
+        # 1099 files start with "1099-" which is a distinctive signal checked first.
+        Robinhood1099Parser(),
         RobinhoodPDFParser(),
         RobinhoodParser(),
         FidelityCSVParser(),
@@ -608,6 +612,29 @@ def process_all_inbox_files(db: Session = Depends(get_db)):
                             )
                             parsed = True
                             break
+                        elif result.success and not result.records:
+                            # Successfully parsed but no records (e.g. Robinhood "no activity" file)
+                            complete_ingestion_log(
+                                db=db,
+                                log=ingestion_log,
+                                status="success",
+                                records_created=0,
+                                records_updated=0,
+                                records_skipped=0,
+                            )
+                            db.commit()
+                            # Move file to processed so it doesn't re-appear
+                            processed_dir = settings.PROCESSED_DIR / folder_path.relative_to(settings.INBOX_DIR)
+                            processed_dir.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(file_path), str(processed_dir / file_path.name))
+                            files_processed += 1
+                            folder_files.append(file_path.name)
+                            ingestion_ids.append(ingestion_log.id)
+                            if result.warnings:
+                                errors.extend([f"{file_path.name}: {w}" for w in result.warnings])
+                            logger.info(f"Processed {file_path.name} with 0 records (no activity)")
+                            parsed = True
+                            break
                         elif result.errors:
                             # Log parsing errors
                             error_msg = "; ".join(result.errors[:5])
@@ -742,8 +769,10 @@ def get_imported_transactions(
     """
     Fetch newly imported transactions by ingestion IDs.
     Returns only records created during those ingestions (not skipped duplicates).
+    Also returns a files mapping (ingestion_id → file_name) for per-file summaries.
     """
     from app.modules.investments.models import InvestmentTransaction
+    from app.shared.models.ingestion import IngestionLog
 
     try:
         id_list = [int(x.strip()) for x in ingestion_ids.split(",") if x.strip()]
@@ -751,7 +780,10 @@ def get_imported_transactions(
         raise HTTPException(status_code=400, detail="ingestion_ids must be comma-separated integers")
 
     if not id_list:
-        return {"transactions": []}
+        return {"transactions": [], "files": {}}
+
+    logs = db.query(IngestionLog).filter(IngestionLog.id.in_(id_list)).all()
+    files = {str(log.id): log.file_name for log in logs}
 
     rows = (
         db.query(InvestmentTransaction)
@@ -763,6 +795,7 @@ def get_imported_transactions(
     transactions = []
     for r in rows:
         transactions.append({
+            "ingestion_id": r.ingestion_id,
             "symbol": r.symbol,
             "transaction_date": r.transaction_date.isoformat() if r.transaction_date else None,
             "amount": float(r.amount) if r.amount is not None else 0,
@@ -770,7 +803,7 @@ def get_imported_transactions(
             "description": r.description,
         })
 
-    return {"transactions": transactions}
+    return {"transactions": transactions, "files": files}
 
 
 @router.get("/inbox-status")
@@ -1060,9 +1093,9 @@ async def save_robinhood_paste(
         
         # Remove holdings that are no longer in the account
         # (User sold the stock entirely)
-        # Safety: if paste would remove > 2 holdings, it's likely an incomplete
-        # paste (user didn't scroll far enough). In that case, skip deletion
-        # and return a warning. Normal sales are 1-2 stocks at a time.
+        # Trust the paste as authoritative when a stocks section was detected:
+        # if has_stocks_section is True, the paste contains the complete holdings list.
+        # The has_stocks_section flag is the correct guard against incomplete pastes.
         if result.has_stocks_section:
             current_holdings = db.query(InvestmentHolding).filter(
                 InvestmentHolding.account_id == account_id,
@@ -1071,31 +1104,15 @@ async def save_robinhood_paste(
 
             holdings_to_remove = [h for h in current_holdings if h.symbol not in new_symbols]
 
-            if len(holdings_to_remove) <= 2:
-                # Small removal (1-2 stocks) — likely actual sales
-                for holding in holdings_to_remove:
-                    stocks_removed_details.append({
-                        "symbol": holding.symbol,
-                        "shares": float(holding.quantity) if holding.quantity else 0,
-                        "last_price": float(holding.current_price) if holding.current_price else 0,
-                        "market_value": float(holding.market_value) if holding.market_value else 0,
-                    })
-                    logger.info(f"Removing {holding.symbol} from {account_name} - no longer in holdings")
-                    db.delete(holding)
-            elif holdings_to_remove:
-                # Large removal (3+ stocks) — likely incomplete paste
-                skipped_symbols = [h.symbol for h in holdings_to_remove]
-                logger.warning(
-                    f"Skipping deletion of {len(holdings_to_remove)} holdings from {account_name} - "
-                    f"paste has {len(new_symbols)} stocks but would remove {len(holdings_to_remove)} "
-                    f"(likely incomplete paste). Skipped: {skipped_symbols}"
-                )
+            for holding in holdings_to_remove:
                 stocks_removed_details.append({
-                    "symbol": "_SKIPPED",
-                    "warning": f"Paste would remove {len(holdings_to_remove)} stocks "
-                               f"({', '.join(skipped_symbols)}). This looks like an incomplete paste. "
-                               f"If you actually sold these, paste the complete holdings list.",
+                    "symbol": holding.symbol,
+                    "shares": float(holding.quantity) if holding.quantity else 0,
+                    "last_price": float(holding.current_price) if holding.current_price else 0,
+                    "market_value": float(holding.market_value) if holding.market_value else 0,
                 })
+                logger.info(f"Removing {holding.symbol} from {account_name} - no longer in holdings")
+                db.delete(holding)
     elif save_stocks and result.has_stocks_section and not result.stocks:
         # Stocks section header detected but empty - user has cleared all stocks
         account_id = _normalize_account_id(account_name)
@@ -1433,15 +1450,529 @@ async def merge_accounts(
     transactions_moved = db.query(InvestmentTransaction).filter(
         InvestmentTransaction.account_id == source_account_id
     ).update({InvestmentTransaction.account_id: target_account_id})
-    
+
     # Delete source account
     db.delete(source_account)
     db.commit()
-    
+
     return {
         "success": True,
         "message": f"Merged '{source_account_id}' into '{target_account_id}'",
         "holdings_merged": holdings_merged,
         "transactions_moved": transactions_moved
+    }
+
+
+# ============================================================================
+# ROBINHOOD CASH SECTION PASTE
+# ============================================================================
+
+def _calc_true_cash(cash: float, options_collateral: float, pending_orders: float,
+                    margin_used: float, account_format: str) -> float:
+    """Compute true net cash contribution to True Portfolio.
+
+    Brokerage: options collateral is a margin reservation — neutral to True Portfolio.
+               Only actual margin debt (margin_used) reduces the portfolio.
+               true_cash = cash_balance - margin_used
+
+    IRA/Retirement: no borrowing. Options collateral is the owner's own cash, locked.
+               true_cash = cash_balance + options_collateral + pending_orders
+    """
+    if account_format == 'brokerage':
+        return cash - margin_used
+    else:
+        return cash + options_collateral + pending_orders
+
+
+def _parse_robinhood_cash_text(text: str) -> dict:
+    """
+    Parse the Robinhood cash section copy-paste.  Handles two formats:
+
+    BROKERAGE format (margin accounts):
+        Cash                  $0.00
+        Margin total          $200,000.00
+        Margin used           -$5,594.67
+        Options collateral    -$188,500.00
+        Pending orders        -$2,106.00
+        Total                 $3,799.33
+
+    IRA format (no margin — all cash is owner's money):
+        Traditional IRA cash  $295,605.89   (or "Roth IRA cash")
+        Options collateral    -$274,000.00
+        Buying power          $21,605.89
+
+    Brokerage:
+        cash_balance       = Cash line ($0)          ← free cash only
+        options_collateral = abs(Options collateral)  ← margin-funded reservation, NOT owner's cash
+        pending_orders     = abs(Pending orders)      ← margin-funded reservation
+        margin_used        = abs(Margin used)         ← borrowed for stock purchases, a real debt
+        net_total          = Total line (buying power remaining)
+        true_cash          = cash_balance - margin_used
+            Options collateral is excluded: it is a reservation on the margin facility.
+            When options expire worthless the reservation lifts (no cash gain).
+            When options are assigned the reservation converts to stock purchased on margin
+            (asset +X, liability +X → net zero). Either way it is neutral to True Portfolio.
+
+    IRA:
+        cash_balance       = Buying power ($21,605.89)   ← free/deployable cash
+        options_collateral = abs(Options collateral)      ← owner's real money, locked
+        margin_used        = 0                            ← IRAs can't borrow
+        net_total          = Buying power (same as cash_balance)
+        ira_cash_total     = Traditional/Roth IRA cash    ← stored in margin_total field for reference
+        true_cash          = cash_balance + options_collateral  (= ira_cash_total)
+    """
+    import re
+
+    def _extract(label: str):
+        """Extract dollar value for a standalone label (inline or newline-separated)."""
+        # Inline: "Label        $X.XX"  (tabs or spaces between label and value)
+        inline = rf'(?:^|\n)\s*{re.escape(label)}\s+(-?\$[\d,]+\.?\d*)'
+        m = re.search(inline, text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            return m.group(1)
+        # Newline-separated: "Label\n$X.XX"
+        newline = rf'(?:^|\n)\s*{re.escape(label)}\s*\n\s*(-?\$[\d,]+\.?\d*)'
+        m = re.search(newline, text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            return m.group(1)
+        return None
+
+    def amt(label: str):
+        """Return absolute float value for label, or None."""
+        raw = _extract(label)
+        if raw is None:
+            return None
+        return abs(float(raw.replace('$', '').replace(',', '')))
+
+    def signed(label: str):
+        """Return signed float value for label, or None."""
+        raw = _extract(label)
+        if raw is None:
+            return None
+        return float(raw.replace('$', '').replace(',', ''))
+
+    # --- Detect IRA format first ---
+    ira_cash_total = amt('Traditional IRA cash') or amt('Roth IRA cash') or amt('IRA cash')
+
+    if ira_cash_total is not None:
+        # IRA format
+        options_collateral = amt('Options collateral') or 0.0
+        buying_power       = amt('Buying power') or amt('Buying Power') or 0.0
+
+        return {
+            'format':            'ira',
+            'cash':              buying_power,        # free/deployable cash
+            'margin_total':      ira_cash_total,      # total IRA cash (for display/reference)
+            'margin_used':       0.0,                 # IRAs can't borrow
+            'options_collateral': options_collateral,
+            'pending_orders':    0.0,
+            'net_total':         buying_power,
+            'found_any':         True,
+        }
+
+    # --- Brokerage format ---
+    cash               = amt('Cash')
+    margin_total       = amt('Margin total')
+    margin_used        = amt('Margin used')
+    options_collateral = amt('Options collateral')
+    pending_orders     = amt('Pending orders')
+    net_total          = signed('Total')
+
+    found_any = any(v is not None for v in [cash, margin_total, margin_used, options_collateral, pending_orders, net_total])
+
+    return {
+        'format':            'brokerage',
+        'cash':              cash,
+        'margin_total':      margin_total,
+        'margin_used':       margin_used,
+        'options_collateral': options_collateral,
+        'pending_orders':    pending_orders,
+        'net_total':         net_total,
+        'found_any':         found_any,
+    }
+
+
+@router.post("/robinhood-cash/preview")
+async def preview_robinhood_cash(data: dict, db: Session = Depends(get_db)):
+    """
+    Preview parsed Robinhood cash section before saving.
+    Returns the extracted fields and computed true-cash value.
+    """
+    text = data.get("text", "")
+    account_name = data.get("account_name", "")
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No text provided")
+
+    parsed = _parse_robinhood_cash_text(text)
+
+    if not parsed['found_any']:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not detect Robinhood cash section. Expected labels like 'Cash', 'Margin total', 'Options collateral', 'Total' (brokerage) or 'Traditional IRA cash', 'Buying power' (IRA)."
+        )
+
+    cash               = parsed['cash'] or 0.0
+    options_collateral = parsed['options_collateral'] or 0.0
+    pending_orders     = parsed['pending_orders'] or 0.0
+    margin_used        = parsed['margin_used'] or 0.0
+    true_cash = _calc_true_cash(cash, options_collateral, pending_orders, margin_used, parsed['format'])
+
+    return {
+        "success":            True,
+        "format":             parsed['format'],
+        "account_name":       account_name,
+        "cash":               parsed['cash'],
+        "margin_total":       parsed['margin_total'],
+        "margin_used":        parsed['margin_used'],
+        "options_collateral": parsed['options_collateral'],
+        "pending_orders":     parsed['pending_orders'],
+        "net_total":          parsed['net_total'],
+        "true_cash":          round(true_cash, 2),
+    }
+
+
+@router.post("/robinhood-cash/save")
+async def save_robinhood_cash(data: dict, db: Session = Depends(get_db)):
+    """
+    Save Robinhood cash section to account_cash_balances.
+    Updates the existing row for this account (or creates one).
+    """
+    from app.modules.strategies.models import AccountCashBalance
+    from decimal import Decimal
+    from datetime import datetime
+
+    text         = data.get("text", "")
+    account_name = data.get("account_name", "")
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No text provided")
+    if not account_name:
+        raise HTTPException(status_code=400, detail="account_name is required")
+
+    parsed = _parse_robinhood_cash_text(text)
+
+    if not parsed['found_any']:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not detect Robinhood cash section."
+        )
+
+    from app.modules.strategies.models import AccountCashBalanceHistory
+    from datetime import date as date_type
+
+    def _dec(v):
+        return Decimal(str(v)) if v is not None else None
+
+    # cash_balance = free/deployable cash (buying power for IRA, free cash for brokerage)
+    cash_balance_val = parsed['cash'] if parsed['cash'] is not None else 0.0
+
+    cash               = parsed['cash'] or 0.0
+    options_collateral = parsed['options_collateral'] or 0.0
+    pending_orders     = parsed['pending_orders'] or 0.0
+    margin_used        = parsed['margin_used'] or 0.0
+    true_cash          = _calc_true_cash(cash, options_collateral, pending_orders, margin_used, parsed['format'])
+
+    # --- Update current record (account_cash_balances) ---
+    record = db.query(AccountCashBalance).filter(
+        AccountCashBalance.account_name == account_name
+    ).first()
+
+    if record:
+        record.cash_balance        = _dec(cash_balance_val)
+        record.margin_total        = _dec(parsed['margin_total'])
+        record.margin_used         = _dec(parsed['margin_used'])
+        record.options_collateral  = _dec(parsed['options_collateral'])
+        record.pending_orders      = _dec(parsed['pending_orders'])
+        record.net_total           = _dec(parsed['net_total'])
+        record.updated_at          = datetime.utcnow()
+    else:
+        fmt = parsed['format']
+        record = AccountCashBalance(
+            account_name       = account_name,
+            cash_balance       = _dec(cash_balance_val),
+            margin_total       = _dec(parsed['margin_total']),
+            margin_used        = _dec(parsed['margin_used']),
+            options_collateral = _dec(parsed['options_collateral']),
+            pending_orders     = _dec(parsed['pending_orders']),
+            net_total          = _dec(parsed['net_total']),
+            notes              = f"Saved from Robinhood {parsed['format']} cash section paste",
+        )
+        db.add(record)
+
+    # --- Upsert history row (account_cash_balance_history) ---
+    today = date_type.today()
+    hist = db.query(AccountCashBalanceHistory).filter(
+        AccountCashBalanceHistory.account_name  == account_name,
+        AccountCashBalanceHistory.snapshot_date == today,
+    ).first()
+
+    if hist:
+        hist.account_format      = parsed['format']
+        hist.cash_balance        = _dec(cash_balance_val)
+        hist.margin_total        = _dec(parsed['margin_total'])
+        hist.margin_used         = _dec(parsed['margin_used'])
+        hist.options_collateral  = _dec(parsed['options_collateral'])
+        hist.pending_orders      = _dec(parsed['pending_orders'])
+        hist.net_total           = _dec(parsed['net_total'])
+        hist.true_cash           = _dec(true_cash)
+    else:
+        hist = AccountCashBalanceHistory(
+            account_name       = account_name,
+            snapshot_date      = today,
+            account_format     = parsed['format'],
+            cash_balance       = _dec(cash_balance_val),
+            margin_total       = _dec(parsed['margin_total']),
+            margin_used        = _dec(parsed['margin_used']),
+            options_collateral = _dec(parsed['options_collateral']),
+            pending_orders     = _dec(parsed['pending_orders']),
+            net_total          = _dec(parsed['net_total']),
+            true_cash          = _dec(true_cash),
+        )
+        db.add(hist)
+
+    db.commit()
+
+    return {
+        "success":            True,
+        "format":             parsed['format'],
+        "account_name":       account_name,
+        "cash":               parsed['cash'],
+        "margin_total":       parsed['margin_total'],
+        "margin_used":        parsed['margin_used'],
+        "options_collateral": parsed['options_collateral'],
+        "pending_orders":     parsed['pending_orders'],
+        "net_total":          parsed['net_total'],
+        "true_cash":          round(true_cash, 2),
+    }
+
+
+@router.get("/robinhood-cash/balances")
+async def get_cash_balances(db: Session = Depends(get_db)):
+    """
+    Return all accounts with their cash breakdown and computed true-cash.
+    Used by the Investments page to show True Portfolio value.
+    """
+    from app.modules.strategies.models import AccountCashBalance
+
+    rows = db.query(AccountCashBalance).all()
+
+    accounts = []
+    total_true_cash = 0.0
+    total_margin_used = 0.0
+    total_options_collateral = 0.0
+
+    _BROKERAGE_ACCOUNTS = {"Neel's Brokerage", "Jaya's Brokerage", "Alisha's Brokerage"}
+
+    for row in rows:
+        cash               = float(row.cash_balance or 0)
+        margin_used        = float(row.margin_used or 0)
+        options_collateral = float(row.options_collateral or 0)
+        pending_orders     = float(row.pending_orders or 0)
+        fmt = 'brokerage' if row.account_name in _BROKERAGE_ACCOUNTS else 'ira'
+        true_cash          = _calc_true_cash(cash, options_collateral, pending_orders, margin_used, fmt)
+
+        total_true_cash          += true_cash
+        total_margin_used        += margin_used
+        total_options_collateral += options_collateral
+
+        accounts.append({
+            "account_name":       row.account_name,
+            "cash":               cash,
+            "margin_total":       float(row.margin_total or 0),
+            "margin_used":        margin_used,
+            "options_collateral": options_collateral,
+            "pending_orders":     pending_orders,
+            "net_total":          float(row.net_total or 0),
+            "true_cash":          round(true_cash, 2),
+            "has_breakdown":      row.margin_used is not None or row.options_collateral is not None,
+            "updated_at":         row.updated_at.isoformat() if row.updated_at else None,
+        })
+
+    return {
+        "accounts":                accounts,
+        "total_true_cash":         round(total_true_cash, 2),
+        "total_margin_used":       round(total_margin_used, 2),
+        "total_options_collateral": round(total_options_collateral, 2),
+    }
+
+
+@router.get("/robinhood-cash/portfolio-history")
+async def get_portfolio_history(db: Session = Depends(get_db)):
+    """
+    Return a time-series of True Portfolio value: stock equity + true cash (carry-forward).
+
+    Each row is flagged is_real=True when the cash comes from an actual per-account statement
+    snapshot (account_format != 'synthetic'). Rows before that first real date use synthetic
+    estimated cash and are flagged is_real=False.
+    """
+    from sqlalchemy import text
+
+    # Find the first date we have real (non-synthetic) per-account cash data
+    real_start_row = db.execute(text("""
+        SELECT MIN(snapshot_date)
+        FROM account_cash_balance_history
+        WHERE account_format != 'synthetic'
+    """)).scalar()
+    real_data_start = str(real_start_row) if real_start_row else None
+
+    sql = text("""
+        WITH stock_dates AS (
+            SELECT snapshot_date, SUM(market_value) AS stock_value
+            FROM investment_holdings_history
+            GROUP BY snapshot_date
+        ),
+        cash_snapshots AS (
+            SELECT snapshot_date, SUM(true_cash) AS total_true_cash
+            FROM account_cash_balance_history
+            GROUP BY snapshot_date
+        ),
+        real_cash_snapshots AS (
+            -- Per-account carry-forward: for each date, sum the most recent real snapshot per account
+            SELECT snapshot_date, SUM(true_cash) AS total_true_cash
+            FROM account_cash_balance_history
+            WHERE account_format != 'synthetic'
+            GROUP BY snapshot_date
+        ),
+        earliest_cash AS (
+            SELECT total_true_cash FROM cash_snapshots ORDER BY snapshot_date ASC LIMIT 1
+        ),
+        cash_carried AS (
+            SELECT
+                s.snapshot_date,
+                s.stock_value,
+                COALESCE(
+                    -- For dates with real data: use per-account carry-forward (sum of each account's latest snapshot)
+                    CASE WHEN :real_start IS NOT NULL AND s.snapshot_date >= :real_start THEN (
+                        SELECT SUM(latest.true_cash) FROM (
+                            SELECT DISTINCT ON (account_name) true_cash
+                            FROM account_cash_balance_history
+                            WHERE account_format != 'synthetic'
+                              AND snapshot_date <= s.snapshot_date
+                            ORDER BY account_name, snapshot_date DESC
+                        ) latest
+                    ) END,
+                    -- Fallback: most recent synthetic snapshot on or before this date
+                    (SELECT c.total_true_cash FROM cash_snapshots c
+                     WHERE c.snapshot_date <= s.snapshot_date
+                     ORDER BY c.snapshot_date DESC LIMIT 1),
+                    (SELECT total_true_cash FROM earliest_cash),
+                    0
+                ) AS true_cash
+            FROM stock_dates s
+        )
+        SELECT
+            snapshot_date,
+            stock_value,
+            true_cash,
+            stock_value + true_cash AS true_portfolio
+        FROM cash_carried
+        ORDER BY snapshot_date ASC
+    """)
+
+    rows = db.execute(sql, {"real_start": real_data_start}).fetchall()
+
+    return {
+        "real_data_start": real_data_start,
+        "history": [
+            {
+                "date":           str(row.snapshot_date),
+                "stock_value":    float(row.stock_value or 0),
+                "true_cash":      float(row.true_cash or 0),
+                "true_portfolio": float(row.true_portfolio or 0),
+                "is_real":        real_data_start is not None and str(row.snapshot_date) >= real_data_start,
+            }
+            for row in rows
+        ]
+    }
+
+
+# Map investment_holdings_history account_id → account_cash_balance_history account_name
+_ACCOUNT_CASH_NAME: dict[str, str | None] = {
+    "neel_brokerage":  "Neel's Brokerage",
+    "jaya_brokerage":  "Jaya's Brokerage",
+    "neel_retirement": "Neel's Retirement",
+    "jaya_ira":        "Jaya's IRA",
+    "neel_roth_ira":   "Neel's Roth IRA",
+    "jaya_roth_ira":   "Jaya's Roth IRA",
+    "alisha_brokerage": None,
+    "family_hsa":       None,
+}
+
+
+@router.get("/robinhood-cash/portfolio-history/by-account/{account_id}")
+async def get_account_portfolio_history(account_id: str, db: Session = Depends(get_db)):
+    """
+    Per-account True Portfolio history: equity from investment_holdings_history
+    filtered to one account, plus per-account cash carry-forward from real snapshots.
+    """
+    from sqlalchemy import text
+
+    cash_account_name = _ACCOUNT_CASH_NAME.get(account_id)
+
+    # First real cash date for this specific account (None if no cash data)
+    if cash_account_name:
+        real_start_row = db.execute(text("""
+            SELECT MIN(snapshot_date)
+            FROM account_cash_balance_history
+            WHERE account_name = :name AND account_format != 'synthetic'
+        """), {"name": cash_account_name}).scalar()
+        real_data_start = str(real_start_row) if real_start_row else None
+    else:
+        real_data_start = None
+
+    sql = text("""
+        WITH stock_dates AS (
+            SELECT snapshot_date, SUM(market_value) AS stock_value
+            FROM investment_holdings_history
+            WHERE account_id = :account_id
+            GROUP BY snapshot_date
+        ),
+        cash_carried AS (
+            SELECT
+                s.snapshot_date,
+                s.stock_value,
+                CASE
+                    WHEN :cash_name IS NOT NULL AND :real_start IS NOT NULL
+                         AND s.snapshot_date >= :real_start THEN (
+                        SELECT true_cash
+                        FROM account_cash_balance_history
+                        WHERE account_name = :cash_name
+                          AND account_format != 'synthetic'
+                          AND snapshot_date <= s.snapshot_date
+                        ORDER BY snapshot_date DESC LIMIT 1
+                    )
+                    ELSE NULL
+                END AS true_cash
+            FROM stock_dates s
+        )
+        SELECT
+            snapshot_date,
+            stock_value,
+            COALESCE(true_cash, 0) AS true_cash,
+            stock_value + COALESCE(true_cash, 0) AS true_portfolio
+        FROM cash_carried
+        ORDER BY snapshot_date ASC
+    """)
+
+    rows = db.execute(sql, {
+        "account_id": account_id,
+        "cash_name": cash_account_name,
+        "real_start": real_data_start,
+    }).fetchall()
+
+    return {
+        "account_id": account_id,
+        "real_data_start": real_data_start,
+        "history": [
+            {
+                "date":           str(row.snapshot_date),
+                "stock_value":    float(row.stock_value or 0),
+                "true_cash":      float(row.true_cash or 0),
+                "true_portfolio": float(row.true_portfolio or 0),
+                "is_real":        real_data_start is not None and str(row.snapshot_date) >= real_data_start,
+            }
+            for row in rows
+        ]
     }
 

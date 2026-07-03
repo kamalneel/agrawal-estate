@@ -112,30 +112,52 @@ class RobinhoodParser(BaseParser):
         
         return "robinhood_default"
     
+    def _is_no_activity_file(self, file_path: Path) -> bool:
+        """Return True if the file is Robinhood's 'no activity' placeholder."""
+        try:
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
+                first_line = f.readline()
+            return "no activity" in first_line.lower() or "selected account has no" in first_line.lower()
+        except Exception:
+            return False
+
     def can_parse(self, file_path: Path) -> bool:
         """Check if file matches Robinhood format."""
         if file_path.suffix.lower() not in self.supported_extensions:
             return False
-            
+
+        if self._is_no_activity_file(file_path):
+            return True
+
         headers = self._read_csv_headers(file_path)
-        
+
         # Check for transaction format
         if self.TRANSACTION_COLUMNS.issubset(headers):
             return True
-            
+
         # Check for holdings format
         if self.HOLDINGS_COLUMNS.issubset(headers):
             return True
-            
+
         return False
-    
+
     def parse(self, file_path: Path) -> ParseResult:
         """Parse Robinhood CSV file."""
-        headers = self._read_csv_headers(file_path)
-        
-        # Infer account from filename
         account_id = self._infer_account_from_filename(file_path)
-        
+
+        if self._is_no_activity_file(file_path):
+            return ParseResult(
+                success=True,
+                source_name=self.source_name,
+                file_path=file_path,
+                records=[],
+                warnings=["No activity in selected date range — file imported with 0 records"],
+                errors=[],
+                metadata={"file_type": "no_activity", "record_count": 0, "account_id": account_id}
+            )
+
+        headers = self._read_csv_headers(file_path)
+
         if self.TRANSACTION_COLUMNS.issubset(headers):
             return self._parse_transactions(file_path, account_id)
         elif self.HOLDINGS_COLUMNS.issubset(headers):

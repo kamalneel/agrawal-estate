@@ -43,6 +43,7 @@ from app.modules.spending.router import router as spending_router
 from app.modules.airbnb.router import router as airbnb_router
 from app.ingestion.router import router as ingestion_router
 from app.core.auth_router import router as auth_router
+from app.shared.routers.email_router import router as email_router
 
 
 def create_app() -> FastAPI:
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     app.include_router(spending_router, prefix="/api/v1/spending", tags=["Spending"])
     app.include_router(airbnb_router, prefix="/api/v1/airbnb", tags=["Airbnb"])
     app.include_router(ingestion_router, prefix="/api/v1/ingestion", tags=["Data Ingestion"])
+    app.include_router(email_router, prefix="/api/v1/email", tags=["Email Assistant"])
     
     @app.get("/", tags=["Health"])
     async def root():

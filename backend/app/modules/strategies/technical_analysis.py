@@ -788,6 +788,103 @@ class TechnicalAnalysisService:
         target_friday = next_friday + timedelta(weeks=weeks_out - 1)
         return target_friday.strftime("%Y-%m-%d")
     
+    def scout_put_strikes(
+        self,
+        symbol: str,
+        probability_targets: list = None,
+        weeks: int = 1
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return current price + strike/premium at multiple probability targets in one chain fetch.
+        Used by the Put Scouting panel to compare delta 80 vs delta 90 for new put candidates.
+
+        Returns dict with keys: symbol, current_price, expiration_date, targets (list of per-prob results).
+        Each target: {probability, strike, actual_delta, pct_otm, bid, ask, mid}
+        Returns None if we can't get a current price.
+        """
+        if probability_targets is None:
+            probability_targets = [0.80, 0.90]
+
+        indicators = self.get_technical_indicators(symbol)
+        if not indicators:
+            return None
+
+        current_price = indicators.current_price
+        expiration_date = self._get_next_friday(weeks)
+
+        # Fetch chain once
+        chain_puts = None
+        try:
+            from app.modules.strategies.option_monitor import OptionChainFetcher
+            from datetime import datetime as _dt
+            fetcher = OptionChainFetcher()
+            exp = _dt.strptime(expiration_date, "%Y-%m-%d").date()
+            chain = fetcher.get_option_chain(symbol, exp)
+            if chain and chain.get('puts') is not None and len(chain['puts']) > 0:
+                df = chain['puts']
+                # Keep only OTM puts (strike < current_price)
+                chain_puts = df[df['strike'] < current_price] if current_price else df
+        except Exception:
+            pass
+
+        results = []
+        for prob in probability_targets:
+            target_delta = 1.0 - prob  # e.g. prob=0.90 → delta target 0.10
+
+            best_strike = None
+            best_delta = None
+            best_bid = 0.0
+            best_ask = 0.0
+
+            if chain_puts is not None and len(chain_puts) > 0:
+                best_diff = float('inf')
+                for _, row in chain_puts.iterrows():
+                    d = row.get('delta')
+                    if d is None or (isinstance(d, float) and np.isnan(d)):
+                        continue
+                    abs_d = abs(d)
+                    diff = abs(abs_d - target_delta)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_strike = row['strike']
+                        best_delta = abs_d
+                        best_bid = float(row.get('bid', 0) or 0)
+                        best_ask = float(row.get('ask', 0) or 0)
+
+            # Fallback: volatility-based estimate if chain gave nothing
+            if best_strike is None:
+                very_high = {"TSLA", "COIN", "MSTR", "PLTR", "RKLB", "HOOD", "GME", "BABA", "SMCI"}
+                high = {"NVDA", "AMD", "MU", "AVGO", "MRVL", "NFLX", "SHOP"}
+                medium = {"META", "GOOGL", "GOOG", "AMZN", "MSFT", "AAPL"}
+                base_otm = 0.10 if symbol.upper() in very_high else (0.065 if symbol.upper() in high else (0.050 if symbol.upper() in medium else 0.040))
+                # Scale base_otm for the given probability target (delta 10 ≈ base; scale proportionally)
+                scale = (1.0 - prob) / 0.10
+                otm_pct = base_otm * scale * np.sqrt(weeks)
+                best_strike = round(current_price * (1 - otm_pct))
+                best_delta = target_delta
+                best_bid = 0.0
+                best_ask = 0.0
+
+            mid = round((best_bid + best_ask) / 2, 2) if (best_bid or best_ask) else None
+            pct_otm = round((current_price - best_strike) / current_price * 100, 1) if best_strike else None
+
+            results.append({
+                "probability": prob,
+                "strike": best_strike,
+                "actual_delta": round(best_delta, 3) if best_delta else None,
+                "pct_otm": pct_otm,
+                "bid": round(best_bid, 2),
+                "ask": round(best_ask, 2),
+                "mid": mid,
+            })
+
+        return {
+            "symbol": symbol.upper(),
+            "current_price": round(current_price, 2),
+            "expiration_date": expiration_date,
+            "targets": results,
+        }
+
     def recommend_strike_price(
         self,
         symbol: str,

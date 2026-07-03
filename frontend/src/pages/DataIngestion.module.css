@@ -884,6 +884,53 @@
   text-decoration: line-through;
 }
 
+/* Per-file import summary */
+.fileSummary {
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+}
+
+.fileSummaryTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.fileSummaryTable th {
+  padding: var(--space-1) var(--space-3);
+  text-align: left;
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-medium);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.fileSummaryTable td {
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.fileSummaryTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.fileSummaryName {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary) !important;
+  font-size: var(--text-xs) !important;
+}
+
+.fileSummaryTotalRow td {
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary) !important;
+  border-top: 1px solid var(--color-border);
+  border-bottom: none !important;
+}
+
 /* Imported Transactions Table */
 .importedCard {
   background: var(--color-bg-secondary);

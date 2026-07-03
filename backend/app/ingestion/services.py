@@ -14,6 +14,8 @@ from sqlalchemy import func
 from datetime import datetime, date
 import hashlib
 
+from decimal import Decimal
+
 from app.ingestion.parsers.base import ParsedRecord, RecordType
 from app.shared.models.ingestion import IngestionLog
 
@@ -74,6 +76,84 @@ def _make_transaction_key(record_data: dict) -> str:
     )
 
 
+def _normalize_description(desc) -> str:
+    """Normalize a transaction description for comparison: trim whitespace
+    and render every dollar figure with two decimals ("$215" == "$215.00")."""
+    import re
+    if not desc:
+        return ""
+    return re.sub(r"\$(\d+(?:\.\d+)?)",
+                  lambda m: f"${float(m.group(1)):.2f}",
+                  desc.strip())
+
+
+def _reconcile_fee_variant(db: Session, account_id: str, source: str,
+                           data: dict, consumed_ids: set) -> Optional[str]:
+    """Fee-tolerant dedup: find a DB row that is the same fill as `data` but
+    recorded with a gross vs net-of-fees amount (MCP bridge vs official
+    activity CSV). Keeps the SMALLER signed amount — fees only ever reduce
+    cash, so the smaller value is the fee-inclusive official figure.
+
+    Returns "updated" (existing row corrected to the new, net amount),
+    "skipped" (existing row already has the better amount), or None (no
+    fee-variant match; caller proceeds normally). consumed_ids guards
+    one-to-one matching when a batch has identical rows.
+    """
+    from app.modules.investments.models import InvestmentTransaction
+
+    txn_type = data.get("transaction_type", "")
+    amount = data.get("amount")
+    quantity = data.get("quantity")
+    tolerance = _fee_tolerance(txn_type, quantity, amount)
+    if not tolerance or amount is None:
+        return None
+
+    symbol = data.get("symbol", "")
+    symbol_variants = ["", "UNKNOWN"] if symbol in ("", "UNKNOWN", None) else [symbol]
+    candidates = db.query(InvestmentTransaction).filter(
+        InvestmentTransaction.account_id == account_id,
+        InvestmentTransaction.source == source,
+        InvestmentTransaction.transaction_date == data.get("transaction_date"),
+        InvestmentTransaction.transaction_type.in_(_get_equivalent_types(txn_type)),
+        InvestmentTransaction.symbol.in_(symbol_variants),
+        InvestmentTransaction.quantity == quantity,
+    ).all()
+
+    # Prefer the closest amount so an exact twin wins over a fee variant
+    candidates.sort(key=lambda c: abs(float(c.amount) - float(amount)))
+
+    desc = _normalize_description(data.get("description"))
+    for candidate in candidates:
+        if candidate.id in consumed_ids:
+            continue
+        # Same-day/same-premium option fills on different strikes exist; the
+        # description carries the strike, so require it to match when both
+        # sides have one. Normalized because sources format dollar values
+        # differently ("$215" vs "$215.00").
+        cand_desc = _normalize_description(candidate.description)
+        if txn_type in _OPTION_TRADE_TYPES and desc and cand_desc and cand_desc != desc:
+            continue
+        diff = abs(float(candidate.amount) - float(amount))
+        if diff < 0.005:
+            # Equal amounts: the exact-dup counting upstream compares raw
+            # descriptions, so it already accounts for rows whose raw
+            # description matches too (identical fills must still import
+            # as separate rows). Only claim the row when the descriptions
+            # differ merely in format ("$215" vs "$215.00").
+            if ((candidate.description or "").strip()
+                    == (data.get("description") or "").strip()):
+                continue
+            consumed_ids.add(candidate.id)
+            return "skipped"
+        if diff <= tolerance:
+            consumed_ids.add(candidate.id)
+            if float(amount) < float(candidate.amount):
+                candidate.amount = amount
+                return "updated"
+            return "skipped"
+    return None
+
+
 def save_investment_transactions_hybrid(
     db: Session,
     records: List[ParsedRecord],
@@ -99,9 +179,11 @@ def save_investment_transactions_hybrid(
     from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
 
     created = 0
+    updated = 0
     skipped = 0
     has_sto_transactions = False
     accounts_with_buys: set = set()
+    consumed_ids: set = set()  # DB rows already matched by fee-tolerant dedup
 
     if not records:
         return {"created": 0, "updated": 0, "skipped": 0, "has_sto": False}
@@ -149,7 +231,13 @@ def save_investment_transactions_hybrid(
             else:
                 at_or_after_crossover.append(record)
 
-        # Skip everything before crossover
+        # Skip everything before crossover — but still reconcile amounts:
+        # a skipped row may be the official (net-of-fees) version of a fill
+        # already stored gross by the MCP bridge.
+        for record in before_crossover:
+            if _reconcile_fee_variant(db, account_id, source, record.data,
+                                      consumed_ids) == "updated":
+                updated += 1
         skipped += len(before_crossover)
 
         if not at_or_after_crossover:
@@ -209,6 +297,17 @@ def save_investment_transactions_hybrid(
             for idx, record in enumerate(records_to_import):
                 data = record.data
 
+                # Fee-tolerant dedup: same fill already stored with a gross
+                # (MCP) vs net (official CSV) amount is NOT a new transaction.
+                outcome = _reconcile_fee_variant(db, account_id, source, data,
+                                                 consumed_ids)
+                if outcome == "updated":
+                    updated += 1
+                    continue
+                if outcome == "skipped":
+                    skipped += 1
+                    continue
+
                 # Ensure account exists
                 _ensure_account_exists(db, account_id, source, data)
 
@@ -253,7 +352,7 @@ def save_investment_transactions_hybrid(
 
     return {
         "created": created,
-        "updated": 0,
+        "updated": updated,
         "skipped": skipped,
         "has_sto": has_sto_transactions,
         "accounts_with_buys": accounts_with_buys,
@@ -289,6 +388,119 @@ def _ensure_account_exists(db: Session, account_id: str, source: str, data: dict
         db.flush()
 
 
+def save_1099_b_records(
+    db: Session,
+    records: List[ParsedRecord],
+    ingestion_id: Optional[int] = None,
+) -> Dict[str, int]:
+    """
+    Save 1099-B equity capital gain records as StockLot + StockLotSale pairs.
+
+    Each record represents a fully realized sale: we create a synthetic StockLot
+    for the purchase (using DATE ACQUIRED and COST BASIS from the 1099) and a
+    StockLotSale for the disposition. Options rows are already excluded by the
+    parser, so every record here is a stock or ETF sale.
+
+    Deduplication: match on (symbol, account_id, source, purchase_date,
+    cost_basis, quantity). If the lot exists, also check the sale before
+    creating a duplicate.
+    """
+    from app.modules.tax.models import StockLot, StockLotSale
+
+    created = 0
+    skipped = 0
+
+    for record in records:
+        d = record.data
+        symbol: str = d["symbol"]
+        account_id: str = d["account_id"]
+        purchase_date: Optional[date] = d["purchase_date"]
+        sale_date: date = d["sale_date"]
+        shares: Decimal = d["shares"]
+        cost_basis: Decimal = d["cost_basis"]
+        proceeds: Decimal = d["proceeds"]
+        is_long_term: bool = d["is_long_term"]
+        tax_year: int = d["tax_year"]
+        wash_disallowed: Decimal = d["wash_sale_disallowed"]
+        description: str = d.get("description", "")
+
+        if shares <= 0:
+            skipped += 1
+            continue
+
+        # ── Find or create StockLot ────────────────────────────────────────
+        lot_query = db.query(StockLot).filter(
+            StockLot.symbol == symbol,
+            StockLot.account_id == account_id,
+            StockLot.source == "robinhood_1099",
+            StockLot.cost_basis == cost_basis,
+            StockLot.quantity == shares,
+        )
+        if purchase_date:
+            lot_query = lot_query.filter(StockLot.purchase_date == purchase_date)
+
+        lot = lot_query.first()
+
+        if lot is None:
+            effective_purchase_date = purchase_date or sale_date
+            cost_per_share = (cost_basis / shares).quantize(Decimal("0.0001"))
+            lot = StockLot(
+                symbol=symbol,
+                purchase_date=effective_purchase_date,
+                quantity=shares,
+                cost_basis=cost_basis,
+                cost_per_share=cost_per_share,
+                quantity_remaining=Decimal("0"),
+                status="closed",
+                account_id=account_id,
+                source="robinhood_1099",
+                notes=description,
+            )
+            db.add(lot)
+            db.flush()  # get lot_id
+
+        # ── Find or create StockLotSale ────────────────────────────────────
+        existing_sale = db.query(StockLotSale).filter(
+            StockLotSale.lot_id == lot.lot_id,
+            StockLotSale.sale_date == sale_date,
+            StockLotSale.quantity_sold == shares,
+            StockLotSale.proceeds == proceeds,
+        ).first()
+
+        if existing_sale:
+            skipped += 1
+            continue
+
+        holding_days = (
+            (sale_date - lot.purchase_date).days
+            if purchase_date
+            else (366 if is_long_term else 100)
+        )
+        proceeds_per_share = (proceeds / shares).quantize(Decimal("0.0001"))
+        gain_loss = proceeds - cost_basis
+
+        sale = StockLotSale(
+            lot_id=lot.lot_id,
+            sale_date=sale_date,
+            quantity_sold=shares,
+            proceeds=proceeds,
+            proceeds_per_share=proceeds_per_share,
+            cost_basis=cost_basis,
+            gain_loss=gain_loss,
+            holding_period_days=holding_days,
+            is_long_term=is_long_term,
+            tax_year=tax_year,
+            wash_sale=wash_disallowed > 0,
+            wash_sale_disallowed=wash_disallowed if wash_disallowed > 0 else None,
+            notes=description,
+        )
+        db.add(sale)
+        created += 1
+
+    db.flush()
+    return {"created": created, "updated": 0, "skipped": skipped}
+
+
 def save_records(db: Session, records: list, ingestion_id: Optional[int] = None) -> dict:
     """
     Save parsed records to the database.
@@ -309,6 +521,7 @@ def save_records(db: Session, records: list, ingestion_id: Optional[int] = None)
     # Separate transaction records from other types
     transaction_records = []
     spending_records = []
+    capital_gain_records = []
     other_records = []
 
     for record in records:
@@ -316,6 +529,8 @@ def save_records(db: Session, records: list, ingestion_id: Optional[int] = None)
             transaction_records.append(record)
         elif record.record_type == RecordType.SPENDING:
             spending_records.append(record)
+        elif record.record_type == RecordType.CAPITAL_GAIN:
+            capital_gain_records.append(record)
         else:
             other_records.append(record)
 
@@ -323,6 +538,7 @@ def save_records(db: Session, records: list, ingestion_id: Optional[int] = None)
     if transaction_records:
         txn_result = save_investment_transactions_hybrid(db, transaction_records, ingestion_id)
         created += txn_result["created"]
+        updated += txn_result.get("updated", 0)
         skipped += txn_result["skipped"]
         has_sto_transactions = txn_result.get("has_sto", False)
 
@@ -331,6 +547,12 @@ def save_records(db: Session, records: list, ingestion_id: Optional[int] = None)
         spend_result = save_spending_transactions(db, spending_records, ingestion_id)
         created += spend_result["created"]
         skipped += spend_result["skipped"]
+
+    # Process 1099-B capital gain records
+    if capital_gain_records:
+        gain_result = save_1099_b_records(db, capital_gain_records, ingestion_id)
+        created += gain_result["created"]
+        skipped += gain_result["skipped"]
 
     # Process other record types as before
     for record in other_records:
@@ -677,6 +899,32 @@ def _get_equivalent_types(transaction_type: str) -> list:
     return EQUIVALENT_TRANSACTION_TYPES.get(transaction_type, [transaction_type])
 
 
+# Trade rows can arrive from two feeds: the MCP bridge (gross amounts — the
+# order API exposes no fee data) and the official activity CSV (net of
+# regulatory fees). Same fill, amounts differ by cents, so the exact-amount
+# dedup key misses them. These codes get a fee-sized amount tolerance.
+_OPTION_TRADE_TYPES = ("STO", "BTC", "STC", "BTO")
+_EQUITY_TRADE_TYPES = ("BUY", "SELL")
+
+
+def _fee_tolerance(transaction_type: str, quantity, amount) -> float:
+    """Max plausible regulatory-fee gap between gross and net for one row."""
+    try:
+        qty = abs(float(quantity)) if quantity is not None else 0.0
+        amt = abs(float(amount)) if amount is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    if not qty:
+        return 0.0
+    if transaction_type in _OPTION_TRADE_TYPES:
+        # ORF/OCC/SEC/TAF run well under $0.25 per contract
+        return 0.25 * qty + 0.10
+    if transaction_type in _EQUITY_TRADE_TYPES:
+        # SEC fee scales with notional (sells), TAF with shares
+        return 0.10 + 0.02 * qty + 0.0001 * amt
+    return 0.0
+
+
 def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id: Optional[int] = None) -> str:
     """Save an investment transaction record and update holdings."""
     from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
@@ -771,6 +1019,40 @@ def save_investment_transaction(db: Session, record: ParsedRecord, ingestion_id:
 
     if existing:
         return "skipped"
+
+    # FEE-TOLERANT DEDUPLICATION: catch the same fill arriving once with a
+    # gross amount (MCP bridge) and once net of regulatory fees (official
+    # activity CSV). Match on every key field except amount, within a
+    # fee-sized tolerance, and keep the SMALLER signed amount — fees only
+    # ever reduce cash, so the smaller value is the fee-inclusive official
+    # figure. Order-independent: official-after-MCP updates the stored row,
+    # MCP-after-official is skipped.
+    tolerance = _fee_tolerance(transaction_type, quantity, amount)
+    if tolerance and amount is not None:
+        near_candidates = db.query(InvestmentTransaction).filter(
+            InvestmentTransaction.source == source,
+            InvestmentTransaction.account_id == account_id_str,
+            InvestmentTransaction.transaction_date == transaction_date,
+            InvestmentTransaction.symbol.in_(symbol_variants),
+            InvestmentTransaction.transaction_type.in_(equivalent_types),
+            InvestmentTransaction.quantity == quantity,
+            InvestmentTransaction.amount != amount,
+        ).all()
+        for candidate in near_candidates:
+            # For options, same-day/same-premium fills on different strikes
+            # exist; the description carries the strike, so require it to
+            # match when both sides have one (bridge and official CSV use
+            # the identical description format).
+            if (transaction_type in _OPTION_TRADE_TYPES
+                    and candidate.description and data.get("description")
+                    and candidate.description.strip() != data.get("description", "").strip()):
+                continue
+            if abs(float(candidate.amount) - float(amount)) <= tolerance:
+                if float(amount) < float(candidate.amount):
+                    candidate.amount = amount
+                    db.flush()
+                    return "updated"
+                return "skipped"
 
     # CROSS-ACCOUNT DEDUPLICATION: For sources like Robinhood where exports don't
     # include account info, also check if this transaction exists in ANY account

@@ -190,6 +190,24 @@ class RecommendationScheduler:
         logger.info("Expense notifications configured: daily check at 6:00 AM PT (7 days/week)")
 
         # =================================================================
+        # PRICE ALERT CHECKER: Every 5 minutes during market hours
+        # =================================================================
+        # Purpose: Check user-created price alerts and send email when triggered
+        # Runs Mon-Fri 6:30 AM to 1:15 PM PT (market hours + buffer)
+        self.scheduler.add_job(
+            self.check_price_alerts,
+            trigger=IntervalTrigger(
+                minutes=5,
+                timezone=PT,
+            ),
+            id='price_alert_checker',
+            name='Price Alert Checker (every 5 min)',
+            replace_existing=True
+        )
+
+        logger.info("Price alert checker configured: every 5 minutes")
+
+        # =================================================================
         # RLHF LEARNING JOBS
         # =================================================================
         
@@ -957,21 +975,41 @@ class RecommendationScheduler:
                 logger.info("[V5] Notifications disabled, skipping send")
                 return
 
-            # Step 5: Send notifications via Telegram
+            # Step 5: Send email notification
             if notifications:
                 notification_service = get_notification_service()
+                if notification_service.email_enabled:
+                    _scan_labels = {
+                        "6am_main":        "Scan 1 — Main Daily Scan (6:00 AM PT)",
+                        "8am_post_open":   "Scan 2 — Post-Opening (8:00 AM PT)",
+                        "12pm_midday":     "Scan 3 — Midday (12:00 PM PT)",
+                        "1245pm_pre_close":"Scan 4 — Pre-Close (12:45 PM PT)",
+                        "8pm_evening":     "Scan 5 — Evening Planning (8:00 PM PT)",
+                    }
+                    scan_label = _scan_labels.get(scan_type or "", scan_type or "")
 
-                message = v5_service.format_telegram_message(notifications)
-                if message and notification_service.telegram_enabled:
-                    success, message_id = notification_service._send_telegram(message)
+                    html_body = v5_service.format_html_email(notifications, scan_label=scan_label)
+                    plain_text = v5_service.format_telegram_message(notifications)
+
+                    urgent = sum(
+                        1 for n in notifications
+                        if n.get("urgency_level") == "critical" or n.get("stuck_category") == "DROWNING"
+                    )
+                    subject = (
+                        f"🚨 {urgent} Urgent — V5 Options Scan"
+                        if urgent else
+                        f"📊 {len(notifications)} V5 Recommendations — {scan_label.split('—')[0].strip()}"
+                    )
+
+                    success, _ = notification_service._send_email(
+                        subject=subject, html_body=html_body, plain_text=plain_text
+                    )
                     if success:
-                        logger.info(f"[V5] Sent Telegram notification ({len(notifications)} items)")
+                        logger.info(f"[V5] Sent email notification ({len(notifications)} items)")
                     else:
-                        logger.error("[V5] Failed to send Telegram notification")
-                elif not message:
-                    logger.info("[V5] No message to send (empty after formatting)")
-                elif not notification_service.telegram_enabled:
-                    logger.info("[V5] Telegram not enabled, skipping send")
+                        logger.error("[V5] Failed to send email notification")
+                else:
+                    logger.info("[V5] Email not enabled, skipping send")
             else:
                 logger.info("[V5] No notifications to send")
 
@@ -1073,21 +1111,34 @@ class RecommendationScheduler:
                 logger.info("[V4] Notifications disabled, skipping send")
                 return
 
-            # Step 5: Send notifications via Telegram
+            # Step 5: Send email notification
             if notifications:
                 notification_service = get_notification_service()
+                if notification_service.email_enabled:
+                    _scan_labels = {
+                        "6am_main":        "Scan 1 — Main Daily Scan (6:00 AM PT)",
+                        "8am_post_open":   "Scan 2 — Post-Opening (8:00 AM PT)",
+                        "12pm_midday":     "Scan 3 — Midday (12:00 PM PT)",
+                        "1245pm_pre_close":"Scan 4 — Pre-Close (12:45 PM PT)",
+                        "8pm_evening":     "Scan 5 — Evening Planning (8:00 PM PT)",
+                    }
+                    scan_label = _scan_labels.get(scan_type or "", scan_type or "")
 
-                message = v4_service.format_telegram_message(notifications)
-                if message and notification_service.telegram_enabled:
-                    success, message_id = notification_service._send_telegram(message)
+                    from app.modules.strategies.v5.orchestrator import get_v5_notification_service as _get_v5
+                    _v5 = _get_v5(db)
+                    html_body = _v5.format_html_email(notifications, scan_label=scan_label)
+                    plain_text = v4_service.format_telegram_message(notifications)
+
+                    subject = f"📊 {len(notifications)} V4 Recommendations — {scan_label.split('—')[0].strip()}"
+                    success, _ = notification_service._send_email(
+                        subject=subject, html_body=html_body, plain_text=plain_text
+                    )
                     if success:
-                        logger.info(f"[V4] Sent Telegram notification ({len(notifications)} items)")
+                        logger.info(f"[V4] Sent email notification ({len(notifications)} items)")
                     else:
-                        logger.error("[V4] Failed to send Telegram notification")
-                elif not message:
-                    logger.info("[V4] No message to send (empty after formatting)")
-                elif not notification_service.telegram_enabled:
-                    logger.info("[V4] Telegram not enabled, skipping send")
+                        logger.error("[V4] Failed to send email notification")
+                else:
+                    logger.info("[V4] Email not enabled, skipping send")
             else:
                 logger.info("[V4] No notifications to send")
 
@@ -1253,6 +1304,62 @@ class RecommendationScheduler:
             logger.error(f"Error in outcome tracking: {e}", exc_info=True)
         finally:
             db.close()
+
+    def check_price_alerts(self):
+        """
+        Check all active price alerts and send email notifications for any that trigger.
+        Runs every 5 minutes via interval trigger.
+        """
+        try:
+            from app.shared.services.price_alerts import get_price_alert_manager, build_price_alert_email_html
+            import os
+
+            mgr = get_price_alert_manager()
+            active = mgr.list_alerts()
+            if not active:
+                return
+
+            triggered = mgr.check_all()
+            if not triggered:
+                return
+
+            import resend as _resend
+            api_key = os.getenv("RESEND_API_KEY", "").strip()
+            if not api_key:
+                logger.warning("RESEND_API_KEY not set — cannot send price alert emails")
+                return
+
+            _resend.api_key = api_key
+            from_addr = os.getenv("AGENT_FROM", "Neel's Estate Planner <assistant@neellab.info>").strip()
+            to_addr = os.getenv("AGENT_USER_EMAIL", "neelkamal@gmail.com").strip()
+            reply_to = os.getenv("AGENT_INBOX_ADDRESS", "assistant@neellab.info").strip()
+
+            for item in triggered:
+                alert = item["alert"]
+                price = item["current_price"]
+                cond = "dropped below" if alert.condition == "below" else "risen above"
+                subject = f"Price Alert: {alert.symbol} has {cond} ${alert.target_price:,.2f}"
+                html = build_price_alert_email_html(alert, price)
+                plain = (
+                    f"{alert.symbol} is now ${price:,.2f} — "
+                    f"{cond} your target of ${alert.target_price:,.2f}.\n\n"
+                    "— Your Estate Planner Assistant"
+                )
+                try:
+                    _resend.Emails.send({
+                        "from": from_addr,
+                        "to": [to_addr],
+                        "reply_to": reply_to,
+                        "subject": subject,
+                        "html": html,
+                        "text": plain,
+                    })
+                    logger.info(f"Price alert email sent: {alert.symbol} @ ${price:.2f}")
+                except Exception as e:
+                    logger.error(f"Failed to send price alert email: {e}")
+
+        except Exception as e:
+            logger.error(f"Error in check_price_alerts: {e}", exc_info=True)
 
     def send_expense_notifications(self):
         """

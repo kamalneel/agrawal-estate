@@ -2447,6 +2447,17 @@ export function Income() {
   const [rentalData, setRentalData] = useState<RentalData | null>(null)
   const [rentalChartData, setRentalChartData] = useState<MonthlyData[]>([])
   const [salaryData, setSalaryData] = useState<SalaryData | null>(null)
+  const [optionsByTypeAll, setOptionsByTypeAll] = useState<Record<string, { calls: number; puts: number }>>({})
+  const [optionsByTypeTaxable, setOptionsByTypeTaxable] = useState<Record<string, { calls: number; puts: number }>>({})
+  const [portfolioEquity, setPortfolioEquity] = useState<number | null>(null)
+  const [cashPosition, setCashPosition] = useState<number | null>(null)
+  const [monthlyPositions, setMonthlyPositions] = useState<{ equity: Record<string, number>; cash: Record<string, number> }>({ equity: {}, cash: {} })
+
+  // Projected net salary starting June 2026:
+  //   Neel $120k gross → ~$6,986/month net after federal+FICA+CA taxes
+  //   Jaya $150k gross → ~$8,435/month net after federal+FICA+CA taxes
+  const SALARY_START_MONTH = '2026-06'
+  const PROJECTED_SALARY_MONTHLY = 6986 + 8435  // $15,421/month combined
   const [mainSelectedYear, setMainSelectedYear] = useState<number | 'all'>(yearParam ? parseInt(yearParam) : new Date().getFullYear())
   const [mainSelectedMonth, setMainSelectedMonth] = useState<number | null>(yearParam ? null : new Date().getMonth() + 1) // null = Full Year when coming from Tax page
 
@@ -2473,17 +2484,22 @@ export function Income() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes] = await Promise.all([
+      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes] = await Promise.all([
         fetch(`${API_BASE}/income/summary`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/options`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/dividends`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/interest`, { headers: getAuthHeaders() }),
-        fetch(`${API_BASE}/income/options/chart`, { headers: getAuthHeaders() }),  // No start_year - get ALL data
-        fetch(`${API_BASE}/income/dividends/chart`, { headers: getAuthHeaders() }),  // No start_year - get ALL data
-        fetch(`${API_BASE}/income/interest/chart`, { headers: getAuthHeaders() }),  // No start_year - get ALL data
+        fetch(`${API_BASE}/income/options/chart`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/dividends/chart`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/interest/chart`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/rental`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/rental/chart`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/salary`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/options/by-type`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/options/by-type?taxable_only=true`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/investments/holdings/live`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/ingestion/robinhood-cash/balances`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/monthly-positions`, { headers: getAuthHeaders() }),
       ])
 
       if (summaryRes.ok) {
@@ -2525,6 +2541,27 @@ export function Income() {
       if (salaryRes.ok) {
         const data = await salaryRes.json()
         setSalaryData(data)
+      }
+      if (byTypeRes.ok) {
+        const data = await byTypeRes.json()
+        setOptionsByTypeAll(data)
+      }
+      if (byTypeTaxableRes.ok) {
+        const data = await byTypeTaxableRes.json()
+        setOptionsByTypeTaxable(data)
+      }
+      if (holdingsRes.ok) {
+        const data = await holdingsRes.json()
+        const equity = (data.accounts || []).reduce((s: number, a: any) => s + (a.value || 0), 0)
+        setPortfolioEquity(equity)
+      }
+      if (cashRes.ok) {
+        const data = await cashRes.json()
+        setCashPosition(data.total_true_cash || 0)
+      }
+      if (monthlyPosRes.ok) {
+        const data = await monthlyPosRes.json()
+        setMonthlyPositions({ equity: data.equity || {}, cash: data.cash || {} })
       }
     } catch (err) {
       console.error('Error fetching income data:', err)
@@ -2641,42 +2678,31 @@ export function Income() {
       ? rentalData.properties
       : rentalData.properties.filter(p => p.year === mainSelectedYear)
 
-    // If filtering by a specific month, use actual monthly_income data
+    const expenseRatioFor = (p: typeof filteredProperties[0]) =>
+      p.gross_income > 0 ? p.total_expenses / p.gross_income : 0
+
     if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
+      // Single month selected
       const monthStr = `${mainSelectedYear}-${String(mainSelectedMonth).padStart(2, '0')}`
       return filteredProperties.reduce((sum, p) => {
         const monthData = p.monthly_income?.find(m => m.month === monthStr)
         if (!monthData) return sum
-        // Convert gross to net using the property's expense ratio
-        const expenseRatio = p.gross_income > 0 ? p.total_expenses / p.gross_income : 0
-        const netAmount = monthData.amount * (1 - expenseRatio)
-        return sum + netAmount
+        return sum + monthData.amount * (1 - expenseRatioFor(p))
+      }, 0)
+    }
+
+    // Full-year view: if current year, only sum months up to and including today
+    if (typeof mainSelectedYear === 'number' && mainSelectedYear === currentYear) {
+      const todayMonthStr = `${currentYear}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
+      return filteredProperties.reduce((sum, p) => {
+        const pastMonths = (p.monthly_income ?? []).filter(m => m.month <= todayMonthStr)
+        if (pastMonths.length === 0) return sum + p.net_income // fallback if no monthly detail
+        return sum + pastMonths.reduce((s, m) => s + m.amount * (1 - expenseRatioFor(p)), 0)
       }, 0)
     }
 
     return filteredProperties.reduce((sum, p) => sum + p.net_income, 0)
   })()
-
-  // Compute salary total separately as well
-  // Use GROSS income to match what the salary source cards display
-  // Salary data doesn't have monthly breakdown - prorate by dividing by 12 for single month
-  const computedSalaryTotal = (() => {
-    if (!salaryData?.employees) return 0
-    const yearlyTotal = salaryData.employees.reduce((total, emp) => {
-      if (mainSelectedYear === 'all') {
-        return total + emp.total_gross
-      }
-      const yearData = emp.yearly_data.find(y => y.year === mainSelectedYear)
-      return total + (yearData?.gross || 0)
-    }, 0)
-    // If filtering by a specific month, prorate by dividing by 12
-    if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
-      return yearlyTotal / 12
-    }
-    return yearlyTotal
-  })()
-
-  const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal
 
   // Convert rental chart data from gross to net using per-year expense ratios
   const rentalNetChartData: MonthlyData[] = (() => {
@@ -2723,6 +2749,9 @@ export function Income() {
   const effectiveInterestChart = taxableOnly ? buildTaxableChart(interestData?.by_account) : interestChartData
   // Rental and salary are always taxable — no filtering needed
 
+  // Calls/puts split: switch between all-accounts and taxable-only
+  const optionsByType = taxableOnly ? optionsByTypeTaxable : optionsByTypeAll
+
   // Year-only filtered chart data (for the earnings chart — always shows full year)
   const filterChartDataYearOnly = (data: MonthlyData[]) => {
     if (mainSelectedYear === 'all') return data
@@ -2751,12 +2780,13 @@ export function Income() {
 
   // Combined income data (year-only filter for chart)
   const combinedIncomeData = (() => {
-    const monthMap: Record<string, { month: string; formatted: string; year: number; options: number; dividends: number; interest: number; rental: number; salary: number }> = {}
+    type Row = { month: string; formatted: string; year: number; options: number; calls: number; puts: number; dividends: number; interest: number; rental: number; salary: number }
+    const monthMap: Record<string, Row> = {}
 
-    const addData = (data: MonthlyData[], key: string) => {
+    const addData = (data: MonthlyData[], key: keyof Row) => {
       for (const d of data) {
         if (!monthMap[d.month]) {
-          monthMap[d.month] = { month: d.month, formatted: d.formatted, year: d.year, options: 0, dividends: 0, interest: 0, rental: 0, salary: 0 }
+          monthMap[d.month] = { month: d.month, formatted: d.formatted, year: d.year, options: 0, calls: 0, puts: 0, dividends: 0, interest: 0, rental: 0, salary: 0 }
         }
         ;(monthMap[d.month] as any)[key] += d.value
       }
@@ -2767,12 +2797,22 @@ export function Income() {
     addData(yearFilteredInterestChart, 'interest')
     addData(yearFilteredRentalChart, 'rental')
 
-    // Add prorated monthly salary
+    // Merge calls/puts split from optionsByType
+    for (const [month, byType] of Object.entries(optionsByType)) {
+      if (monthMap[month]) {
+        monthMap[month].calls = byType.calls
+        monthMap[month].puts = byType.puts
+      }
+    }
+
+    // Salary: projected net for months >= SALARY_START_MONTH, historical otherwise
     for (const entry of Object.values(monthMap)) {
-      if (salaryData?.employees) {
+      if (entry.month >= SALARY_START_MONTH) {
+        entry.salary = PROJECTED_SALARY_MONTHLY
+      } else if (salaryData?.employees) {
         entry.salary = salaryData.employees.reduce((total: number, emp: any) => {
           const yearData = emp.yearly_data.find((y: any) => y.year === entry.year)
-          return total + ((yearData?.gross || 0) / 12)
+          return total + ((yearData?.net || 0) / 12)
         }, 0)
       }
     }
@@ -2804,27 +2844,20 @@ export function Income() {
           const cap = taxableOnly
             ? (taxableCapitalByMonth[d.month] || 0)
             : (capitalByMonth[d.month] || 0)
-          const expOpt = taxableOnly
-            ? cap * 0.01  // 1% of taxable capital
-            : getExpectedOptions(d.month)
-          const expectedAll = expOpt + expectedMonthlyDividends + expectedMonthlyInterest + expectedMonthlyRental
+          const byType = optionsByType[d.month] || { calls: 0, puts: 0 }
           return addHighlight({
             ...d,
-            actual: d.options + d.dividends + d.interest + d.rental + d.salary,
-            expected: expectedAll + d.salary,
+            calls:   byType.calls,
+            puts:    byType.puts,
+            actual:  d.calls + d.puts + d.dividends + d.interest + d.rental + d.salary,
             capital: cap,
-            expOptions: expOpt,
-            expDividends: expectedMonthlyDividends,
-            expInterest: expectedMonthlyInterest,
-            expRental: expectedMonthlyRental,
-            expSalary: d.salary,
           })
         })
       }
     }
   })().filter(d => {
     // For current year, only show months up through the current month
-    if (mainSelectedYear === currentYear && mainSelectedYear !== 'all') {
+    if (mainSelectedYear !== 'all' && mainSelectedYear === currentYear) {
       const now = new Date()
       const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
       return d.month <= currentMonthKey
@@ -2943,55 +2976,106 @@ export function Income() {
   const getJayaSalary = () => {
     const jaya = salaryData?.employees.find(e => e.name.toLowerCase().includes('jaya'))
     if (!jaya) return null
-    
-    let net: number, gross: number
+
+    let net: number, gross: number, isProjected = false
     if (mainSelectedYear === 'all') {
       net = jaya.total_net
       gross = jaya.total_gross
     } else {
       const yearData = jaya.yearly_data.find(y => y.year === mainSelectedYear)
-      if (!yearData) return null
-      net = yearData.net
-      gross = yearData.gross
+      if (!yearData) {
+        // Fall back to projection for current/future year when no W-2 uploaded yet
+        if (typeof mainSelectedYear === 'number' && mainSelectedYear >= currentYear) {
+          gross = 150000
+          net = 101220
+          isProjected = true
+        } else {
+          return null
+        }
+      } else {
+        net = yearData.net
+        gross = yearData.gross
+      }
     }
-    
-    // Prorate by month if a specific month is selected (for any year, not just current)
+
     if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
+      // Single month selected
+      if (isProjected && mainSelectedYear === 2026 && mainSelectedMonth < 6) {
+        return { net: 0, gross: 0, employer: jaya.employer, isProjected, startsAt: 'June 2026' }
+      }
       net = net / 12
       gross = gross / 12
+    } else if (isProjected && mainSelectedYear !== 'all' && mainSelectedMonth === null) {
+      // Full-year view: only count months that have already started, up to today
+      const todayMonth = new Date().getMonth() + 1 // 1-based
+      const salaryStartMonth = 6 // June 2026
+      const elapsedMonths = typeof mainSelectedYear === 'number' && mainSelectedYear === currentYear
+        ? Math.max(0, todayMonth - salaryStartMonth + 1)
+        : 12
+      net = (net / 12) * elapsedMonths
+      gross = (gross / 12) * elapsedMonths
     }
-    
-    return { net, gross, employer: jaya.employer }
+
+    return { net, gross, employer: jaya.employer, isProjected, startsAt: undefined as string | undefined }
   }
-  
+
   const jayaSalary = getJayaSalary()
 
   // Get Neel's salary data for specific year (prorated if month selected)
   const getNeelSalary = () => {
     const neel = salaryData?.employees.find(e => e.name.toLowerCase().includes('neel'))
     if (!neel) return null
-    
-    let net: number, gross: number
+
+    let net: number, gross: number, isProjected = false
     if (mainSelectedYear === 'all') {
       net = neel.total_net
       gross = neel.total_gross
     } else {
       const yearData = neel.yearly_data.find(y => y.year === mainSelectedYear)
-      if (!yearData) return null
-      net = yearData.net
-      gross = yearData.gross
+      if (!yearData) {
+        // Fall back to projection for current/future year when no W-2 uploaded yet
+        if (typeof mainSelectedYear === 'number' && mainSelectedYear >= currentYear) {
+          gross = 120000
+          net = 83832
+          isProjected = true
+        } else {
+          return null
+        }
+      } else {
+        net = yearData.net
+        gross = yearData.gross
+      }
     }
-    
-    // Prorate by month if a specific month is selected (for any year, not just current)
+
     if (mainSelectedMonth !== null && mainSelectedYear !== 'all') {
+      // Single month selected
+      if (isProjected && mainSelectedYear === 2026 && mainSelectedMonth < 6) {
+        return { net: 0, gross: 0, employer: neel.employer, isProjected, startsAt: 'June 2026' }
+      }
       net = net / 12
       gross = gross / 12
+    } else if (isProjected && mainSelectedYear !== 'all' && mainSelectedMonth === null) {
+      // Full-year view: only count months that have already started, up to today
+      const todayMonth = new Date().getMonth() + 1
+      const salaryStartMonth = 6
+      const elapsedMonths = typeof mainSelectedYear === 'number' && mainSelectedYear === currentYear
+        ? Math.max(0, todayMonth - salaryStartMonth + 1)
+        : 12
+      net = (net / 12) * elapsedMonths
+      gross = (gross / 12) * elapsedMonths
     }
-    
-    return { net, gross, employer: neel.employer }
+
+    return { net, gross, employer: neel.employer, isProjected, startsAt: undefined as string | undefined }
   }
-  
+
   const neelSalary = getNeelSalary()
+
+  // Derive salary total from card values so chart total always matches the sum of source cards
+  const computedSalaryTotal =
+    (jayaSalary?.isProjected ? (jayaSalary.net || 0) : (jayaSalary?.gross || 0)) +
+    (neelSalary?.isProjected ? (neelSalary.net || 0) : (neelSalary?.gross || 0))
+
+  const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal
 
   // Build income sources list
   const incomeSources: IncomeSource[] = [
@@ -2999,10 +3083,14 @@ export function Income() {
       id: 'salary_jaya',
       name: "Jaya's Salary",
       type: 'salary',
-      status: jayaSalary && jayaSalary.gross > 0 ? 'active' : 'pending_upload',
-      value: jayaSalary?.gross || 0,
-      description: jayaSalary 
-        ? `${jayaSalary.employer} • Gross W-2 wages`
+      status: jayaSalary && (jayaSalary.gross > 0 || jayaSalary.startsAt) ? 'active' : 'pending_upload',
+      value: jayaSalary?.isProjected ? (jayaSalary.net || 0) : (jayaSalary?.gross || 0),
+      description: jayaSalary
+        ? (jayaSalary.startsAt
+          ? `Projected • Starts ${jayaSalary.startsAt}`
+          : jayaSalary.isProjected
+          ? 'Projected • $150K gross annual • Net take-home'
+          : `${jayaSalary.employer} • Gross W-2 wages`)
         : 'W2 income - awaiting file upload',
       icon: Briefcase,
       color: '#A855F7',
@@ -3011,10 +3099,14 @@ export function Income() {
       id: 'salary_neel',
       name: "Neel's Salary",
       type: 'salary',
-      status: neelSalary && neelSalary.gross > 0 ? 'active' : 'pending_upload',
-      value: neelSalary?.gross || 0,
-      description: neelSalary 
-        ? `${neelSalary.employer} • Gross W-2 wages`
+      status: neelSalary && (neelSalary.gross > 0 || neelSalary.startsAt) ? 'active' : 'pending_upload',
+      value: neelSalary?.isProjected ? (neelSalary.net || 0) : (neelSalary?.gross || 0),
+      description: neelSalary
+        ? (neelSalary.startsAt
+          ? `Projected • Starts ${neelSalary.startsAt}`
+          : neelSalary.isProjected
+          ? 'Projected • $120K gross annual • Net take-home'
+          : `${neelSalary.employer} • Gross W-2 wages`)
         : 'W2 income - awaiting file upload',
       icon: Briefcase,
       color: '#00A3FF',
@@ -3272,8 +3364,56 @@ export function Income() {
         </div>
       </section>
 
-      {/* Earnings — Actual vs Expected */}
+      {/* Income Breakdown */}
       <section className={styles.earningsSection}>
+
+        {/* Position summary: equity vs calls/divs, cash vs puts */}
+        {(portfolioEquity !== null || cashPosition !== null) && (() => {
+          const now = new Date()
+          const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+          const currentByType = optionsByType[currentMonthKey] || { calls: 0, puts: 0 }
+          const currentDivs = dividendChartData.find(d => d.month === currentMonthKey)?.value || 0
+          const equityIncome = currentByType.calls + currentDivs
+          const callYield = portfolioEquity && portfolioEquity > 0 ? (equityIncome / portfolioEquity) * 100 : null
+          const putYield = cashPosition && cashPosition > 0 ? (currentByType.puts / cashPosition) * 100 : null
+          return (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
+              <div style={{ background: 'var(--color-surface-2)', borderRadius: 12, padding: 'var(--space-5)', border: '1px solid rgba(0,214,50,0.15)' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Equity Position</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: 10 }}>{portfolioEquity !== null ? formatFullCurrency(portfolioEquity) : '—'}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.82rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--color-text-tertiary)' }}>Calls this month</span>
+                    <span style={{ color: '#00D632' }}>{formatFullCurrency(currentByType.calls)}{callYield !== null ? ` (${callYield.toFixed(2)}%)` : ''}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--color-text-tertiary)' }}>Dividends this month</span>
+                    <span>{formatFullCurrency(currentDivs)}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 4, marginTop: 2 }}>
+                    <span style={{ color: 'var(--color-text-secondary)' }}>Total equity income</span>
+                    <strong style={{ color: '#00D632' }}>{formatFullCurrency(equityIncome)}</strong>
+                  </div>
+                </div>
+              </div>
+              <div style={{ background: 'var(--color-surface-2)', borderRadius: 12, padding: 'var(--space-5)', border: '1px solid rgba(0,163,255,0.15)' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Cash &amp; Collateral</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: 10 }}>{cashPosition !== null ? formatFullCurrency(cashPosition) : '—'}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.82rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--color-text-tertiary)' }}>Puts this month</span>
+                    <span style={{ color: '#00A3FF' }}>{formatFullCurrency(currentByType.puts)}{putYield !== null ? ` (${putYield.toFixed(2)}%)` : ''}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 4, marginTop: 2 }}>
+                    <span style={{ color: 'var(--color-text-secondary)' }}>Total cash income</span>
+                    <strong style={{ color: '#00A3FF' }}>{formatFullCurrency(currentByType.puts)}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
         <div className={styles.earningsChartCard}>
           {/* Header with toggle */}
           <div className={styles.earningsHeader}>
@@ -3284,12 +3424,11 @@ export function Income() {
                  earningsView === 'options' ? 'Options Income' :
                  earningsView === 'dividends' ? 'Dividend Income' :
                  earningsView === 'interest' ? 'Interest Income' : 'Rental Income'}
-                {' '}— Actual vs Expected
               </h3>
               <p className={styles.earningsChartSubtitle}>
                 {earningsView === 'all'
-                  ? `Combined monthly ${taxableOnly ? 'taxable ' : ''}income vs trailing average baseline`
-                  : `Monthly ${earningsView} ${taxableOnly ? 'taxable ' : ''}income vs trailing average baseline`}
+                  ? `Monthly ${taxableOnly ? 'taxable ' : ''}income by source`
+                  : `Monthly ${earningsView} ${taxableOnly ? 'taxable ' : ''}income`}
               </p>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
@@ -3327,7 +3466,7 @@ export function Income() {
             </div>
           </div>
 
-          {/* Unified line chart — Actual vs Expected */}
+          {/* Chart — actual income line only */}
           <div className={styles.earningsChartContainer}>
             {earningsChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={350}>
@@ -3340,7 +3479,6 @@ export function Income() {
                     contentStyle={{ background: '#1A1A1A', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px' }}
                   />
                   <Legend />
-                  {/* Highlight the selected month with a vertical band */}
                   {highlightedMonthKey && (() => {
                     const idx = earningsChartData.findIndex((d: any) => d.month === highlightedMonthKey)
                     if (idx >= 0) {
@@ -3349,7 +3487,7 @@ export function Income() {
                     }
                     return null
                   })()}
-                  <Area type="monotone" dataKey="actual" name="Actual" fill="rgba(0, 214, 50, 0.15)" stroke="#00D632" strokeWidth={2}
+                  <Area type="monotone" dataKey="actual" name="Income" fill="rgba(0, 214, 50, 0.15)" stroke="#00D632" strokeWidth={2}
                     dot={(props: any) => {
                       const { cx, cy, payload } = props
                       if (payload?.highlighted) {
@@ -3358,7 +3496,6 @@ export function Income() {
                       return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={3} fill="#00D632" fillOpacity={0.6} />
                     }}
                   />
-                  <Line type="monotone" dataKey="expected" name="Expected" stroke="#FFB800" strokeWidth={2} strokeDasharray="8 4" dot={false} />
                 </ComposedChart>
               </ResponsiveContainer>
             ) : (
@@ -3371,125 +3508,83 @@ export function Income() {
             <div className={styles.earningsTableContainer} style={{ marginTop: 'var(--space-4)' }}>
               <table className={styles.earningsTable}>
                 <thead>
-                  {earningsView === 'all' && earningsVisibleCols ? (
-                    <>
-                      <tr className={styles.earningsGroupHeader}>
-                        <th rowSpan={2}>Period</th>
-                        <th rowSpan={2}>Total Capital</th>
-                        <th colSpan={earningsGroupColSpan}>Expected</th>
-                        <th colSpan={earningsGroupColSpan}>Actual</th>
-                        <th rowSpan={2}>Variance</th>
-                      </tr>
-                      <tr>
-                        {earningsVisibleCols.options && <th className={styles.earningsHighlightCol}>Options</th>}
-                        {earningsVisibleCols.dividends && <th>Dividends</th>}
-                        {earningsVisibleCols.interest && <th>Interest</th>}
-                        {earningsVisibleCols.rental && <th>Rental</th>}
-                        {earningsVisibleCols.salary && <th>Salary</th>}
-                        <th>Total</th>
-                        {earningsVisibleCols.options && <th className={styles.earningsHighlightCol}>Options</th>}
-                        {earningsVisibleCols.dividends && <th>Dividends</th>}
-                        {earningsVisibleCols.interest && <th>Interest</th>}
-                        {earningsVisibleCols.rental && <th>Rental</th>}
-                        {earningsVisibleCols.salary && <th>Salary</th>}
-                        <th>Total</th>
-                      </tr>
-                    </>
+                  {earningsView === 'all' ? (
+                    <tr>
+                      <th>Period</th>
+                      <th>Equity</th>
+                      <th className={styles.earningsHighlightCol}>Calls</th>
+                      <th>Cash</th>
+                      <th className={styles.earningsHighlightCol}>Puts</th>
+                      <th>Dividends</th>
+                      <th>Interest</th>
+                      <th>Rental</th>
+                      <th>Salary (Net)</th>
+                      <th>Total</th>
+                    </tr>
                   ) : (
                     <tr>
                       <th>Period</th>
-                      <th>Expected</th>
-                      <th>Actual</th>
-                      <th>Variance</th>
+                      <th>Income</th>
                     </tr>
                   )}
                 </thead>
                 <tbody>
                   {earningsChartData.map((d: any, idx: number) => {
-                    const variance = d.actual - d.expected
+                    const rowTotal = earningsView === 'all'
+                      ? (d.calls || 0) + (d.puts || 0) + (d.dividends || 0) + (d.interest || 0) + (d.rental || 0) + (d.salary || 0)
+                      : d.actual
                     return (
                       <tr
                         key={idx}
                         className={clsx(
-                          variance >= 0 ? styles.earningsPositiveRow : styles.earningsNegativeRow,
+                          styles.earningsPositiveRow,
                           d.highlighted && styles.earningsHighlightedRow
                         )}
                       >
                         <td><strong>{d.formatted}</strong></td>
-                        {earningsView === 'all' && earningsVisibleCols ? (
+                        {earningsView === 'all' ? (
                           <>
-                            <td>{d.capital > 0 ? formatFullCurrency(d.capital) : '-'}</td>
-                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}>{formatFullCurrency(d.expOptions)}</td>}
-                            {earningsVisibleCols.dividends && <td>{formatFullCurrency(d.expDividends)}</td>}
-                            {earningsVisibleCols.interest && <td>{formatFullCurrency(d.expInterest)}</td>}
-                            {earningsVisibleCols.rental && <td>{formatFullCurrency(d.expRental)}</td>}
-                            {earningsVisibleCols.salary && <td>{formatFullCurrency(d.expSalary)}</td>}
-                            <td><strong>{formatFullCurrency(d.expected)}</strong></td>
-                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}>{formatFullCurrency(d.options)}</td>}
-                            {earningsVisibleCols.dividends && <td>{formatFullCurrency(d.dividends)}</td>}
-                            {earningsVisibleCols.interest && <td>{formatFullCurrency(d.interest)}</td>}
-                            {earningsVisibleCols.rental && <td>{formatFullCurrency(d.rental)}</td>}
-                            {earningsVisibleCols.salary && <td>{formatFullCurrency(d.salary)}</td>}
-                            <td><strong>{formatFullCurrency(d.actual)}</strong></td>
+                            <td style={{ color: 'var(--color-text-secondary)' }}>{monthlyPositions.equity[d.month] ? formatFullCurrency(monthlyPositions.equity[d.month]) : '—'}</td>
+                            <td className={styles.earningsHighlightCol} style={{ color: d.calls < 0 ? '#FF5A5A' : '#00D632' }}>{d.calls !== 0 ? formatFullCurrency(d.calls) : '—'}</td>
+                            <td style={{ color: 'var(--color-text-secondary)' }}>{monthlyPositions.cash[d.month] ? formatFullCurrency(monthlyPositions.cash[d.month]) : '—'}</td>
+                            <td className={styles.earningsHighlightCol} style={{ color: d.puts < 0 ? '#FF5A5A' : '#00A3FF' }}>{d.puts !== 0 ? formatFullCurrency(d.puts) : '—'}</td>
+                            <td>{d.dividends > 0 ? formatFullCurrency(d.dividends) : '—'}</td>
+                            <td>{d.interest > 0 ? formatFullCurrency(d.interest) : '—'}</td>
+                            <td>{d.rental > 0 ? formatFullCurrency(d.rental) : '—'}</td>
+                            <td>{d.salary > 0 ? formatFullCurrency(d.salary) : '—'}</td>
+                            <td><strong>{formatFullCurrency(rowTotal)}</strong></td>
                           </>
                         ) : (
-                          <>
-                            <td>{formatFullCurrency(d.expected)}</td>
-                            <td>{formatFullCurrency(d.actual)}</td>
-                          </>
+                          <td>{formatFullCurrency(d.actual)}</td>
                         )}
-                        <td className={variance >= 0 ? styles.positive : styles.negative}>
-                          {variance >= 0 ? '+' : ''}{formatFullCurrency(variance)}
-                        </td>
                       </tr>
                     )
                   })}
-                  {/* Smart totals row */}
-                  {earningsChartData.length > 1 && (() => {
+                  {earningsChartData.length > 1 && earningsView === 'all' && (() => {
                     const totals = earningsChartData.reduce((acc: any, d: any) => ({
-                      expOptions: acc.expOptions + (d.expOptions || 0),
-                      expDividends: acc.expDividends + (d.expDividends || 0),
-                      expInterest: acc.expInterest + (d.expInterest || 0),
-                      expRental: acc.expRental + (d.expRental || 0),
-                      expSalary: acc.expSalary + (d.expSalary || 0),
-                      expected: acc.expected + (d.expected || 0),
-                      options: acc.options + (d.options || 0),
+                      calls:     acc.calls     + (d.calls     || 0),
+                      puts:      acc.puts      + (d.puts      || 0),
                       dividends: acc.dividends + (d.dividends || 0),
-                      interest: acc.interest + (d.interest || 0),
-                      rental: acc.rental + (d.rental || 0),
-                      salary: acc.salary + (d.salary || 0),
-                      actual: acc.actual + (d.actual || 0),
-                    }), { expOptions: 0, expDividends: 0, expInterest: 0, expRental: 0, expSalary: 0, expected: 0, options: 0, dividends: 0, interest: 0, rental: 0, salary: 0, actual: 0 })
-                    const lastCapital = earningsChartData[earningsChartData.length - 1]?.capital || 0
-                    const totalVariance = totals.actual - totals.expected
+                      interest:  acc.interest  + (d.interest  || 0),
+                      rental:    acc.rental    + (d.rental    || 0),
+                      salary:    acc.salary    + (d.salary    || 0),
+                    }), { calls: 0, puts: 0, dividends: 0, interest: 0, rental: 0, salary: 0 })
+                    const grandTotal = totals.calls + totals.puts + totals.dividends + totals.interest + totals.rental + totals.salary
+                    const lastMonth = earningsChartData[earningsChartData.length - 1]?.month
+                    const currentEquity = lastMonth ? (monthlyPositions.equity[lastMonth] || portfolioEquity || 0) : (portfolioEquity || 0)
+                    const currentCash   = lastMonth ? (monthlyPositions.cash[lastMonth]   || cashPosition   || 0) : (cashPosition   || 0)
                     return (
                       <tr className={styles.earningsTotalRow}>
                         <td><strong>Total</strong></td>
-                        {earningsView === 'all' && earningsVisibleCols ? (
-                          <>
-                            <td>{lastCapital > 0 ? formatFullCurrency(lastCapital) : '-'}</td>
-                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}><strong>{formatFullCurrency(totals.expOptions)}</strong></td>}
-                            {earningsVisibleCols.dividends && <td><strong>{formatFullCurrency(totals.expDividends)}</strong></td>}
-                            {earningsVisibleCols.interest && <td><strong>{formatFullCurrency(totals.expInterest)}</strong></td>}
-                            {earningsVisibleCols.rental && <td><strong>{formatFullCurrency(totals.expRental)}</strong></td>}
-                            {earningsVisibleCols.salary && <td><strong>{formatFullCurrency(totals.expSalary)}</strong></td>}
-                            <td><strong>{formatFullCurrency(totals.expected)}</strong></td>
-                            {earningsVisibleCols.options && <td className={styles.earningsHighlightCol}><strong>{formatFullCurrency(totals.options)}</strong></td>}
-                            {earningsVisibleCols.dividends && <td><strong>{formatFullCurrency(totals.dividends)}</strong></td>}
-                            {earningsVisibleCols.interest && <td><strong>{formatFullCurrency(totals.interest)}</strong></td>}
-                            {earningsVisibleCols.rental && <td><strong>{formatFullCurrency(totals.rental)}</strong></td>}
-                            {earningsVisibleCols.salary && <td><strong>{formatFullCurrency(totals.salary)}</strong></td>}
-                            <td><strong>{formatFullCurrency(totals.actual)}</strong></td>
-                          </>
-                        ) : (
-                          <>
-                            <td><strong>{formatFullCurrency(totals.expected)}</strong></td>
-                            <td><strong>{formatFullCurrency(totals.actual)}</strong></td>
-                          </>
-                        )}
-                        <td className={totalVariance >= 0 ? styles.positive : styles.negative}>
-                          <strong>{totalVariance >= 0 ? '+' : ''}{formatFullCurrency(totalVariance)}</strong>
-                        </td>
+                        <td style={{ color: 'var(--color-text-secondary)' }}>{currentEquity > 0 ? formatFullCurrency(currentEquity) : '—'}</td>
+                        <td className={styles.earningsHighlightCol} style={{ color: totals.calls < 0 ? '#FF5A5A' : '#00D632' }}><strong>{formatFullCurrency(totals.calls)}</strong></td>
+                        <td style={{ color: 'var(--color-text-secondary)' }}>{currentCash > 0 ? formatFullCurrency(currentCash) : '—'}</td>
+                        <td className={styles.earningsHighlightCol} style={{ color: totals.puts < 0 ? '#FF5A5A' : '#00A3FF' }}><strong>{formatFullCurrency(totals.puts)}</strong></td>
+                        <td><strong>{formatFullCurrency(totals.dividends)}</strong></td>
+                        <td><strong>{formatFullCurrency(totals.interest)}</strong></td>
+                        <td><strong>{formatFullCurrency(totals.rental)}</strong></td>
+                        <td><strong>{formatFullCurrency(totals.salary)}</strong></td>
+                        <td><strong>{formatFullCurrency(grandTotal)}</strong></td>
                       </tr>
                     )
                   })()}
