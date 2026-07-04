@@ -1,0 +1,264 @@
+.band {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-6, 24px);
+  margin-bottom: var(--space-6, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+}
+
+.topRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4, 16px);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-size: var(--font-size-sm, 13px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-secondary);
+}
+
+.granularityToggle {
+  display: flex;
+  gap: 2px;
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md, 8px);
+  padding: 2px;
+}
+
+.granButton {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm, 13px);
+  padding: 4px 12px;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+}
+
+.granButton.active {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.periodNav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-left: auto;
+}
+
+.navButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.navButton:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.navButton:not(:disabled):hover {
+  border-color: var(--color-border-hover);
+}
+
+.periodLabel {
+  min-width: 220px;
+  text-align: center;
+  font-size: var(--font-size-sm, 13px);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.loading {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm, 13px);
+  padding: var(--space-4, 16px) 0;
+}
+
+.totalsRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6, 24px);
+  flex-wrap: wrap;
+}
+
+.total {
+  display: flex;
+  flex-direction: column;
+}
+
+.totalLabel {
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-tertiary);
+}
+
+.totalValue {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-positive);
+  font-variant-numeric: tabular-nums;
+}
+
+.split {
+  display: flex;
+  gap: var(--space-5, 20px);
+}
+
+.splitItem {
+  display: flex;
+  flex-direction: column;
+}
+
+.splitLabel {
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-tertiary);
+}
+
+.splitValue {
+  font-size: var(--font-size-lg, 18px);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.negative {
+  color: var(--color-negative) !important;
+}
+
+.positive {
+  color: var(--color-positive);
+}
+
+.unresolvedBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-warning);
+  background: var(--color-warning-muted);
+  border-radius: var(--radius-sm, 6px);
+  padding: 3px 8px;
+  margin-left: auto;
+}
+
+.chipsRow {
+  display: flex;
+  gap: var(--space-3, 12px);
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 8px);
+  min-width: 110px;
+}
+
+.chip.clickable {
+  cursor: pointer;
+}
+
+.chip.clickable:hover {
+  border-color: var(--color-border-hover);
+  background: var(--color-bg-hover);
+}
+
+.chipLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-secondary);
+}
+
+.chipKind {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.chipValue {
+  font-size: var(--font-size-md, 15px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.accountsSection {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3, 12px);
+}
+
+.accountsToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm, 13px);
+  cursor: pointer;
+  padding: 0;
+}
+
+.accountsToggle:hover {
+  color: var(--color-text-primary);
+}
+
+.accountsGrid {
+  margin-top: var(--space-3, 12px);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-2, 8px);
+}
+
+.accountRow {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm, 6px);
+  font-size: var(--font-size-sm, 13px);
+}
+
+.accountName {
+  color: var(--color-text-secondary);
+}
+
+.accountValue {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .periodNav {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .periodLabel {
+    min-width: 0;
+  }
+}

@@ -1440,3 +1440,39 @@ async def get_realized_pnl(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"granularity": granularity, "account_id": account_id, "periods": rows}
+
+
+@router.get("/realized-pnl/sales")
+async def list_realized_sales(
+    year: Optional[int] = Query(default=None),
+    account_id: Optional[str] = Query(default=None),
+    symbol: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Per-sale realized P/L rows (drill-down for the unified income view)."""
+    from sqlalchemy import text
+    where, params = [], {}
+    if year:
+        where.append("s.tax_year = :year"); params["year"] = year
+    if account_id:
+        where.append("l.account_id = :acct"); params["acct"] = account_id
+    if symbol:
+        where.append("l.symbol = :sym"); params["sym"] = symbol.upper()
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = db.execute(text(f"""
+        SELECT s.sale_date, a.account_name, l.symbol, s.quantity_sold,
+               s.proceeds, s.cost_basis, s.gain_loss, s.is_long_term, s.notes
+        FROM stock_lot_sale s
+        JOIN stock_lot l ON l.lot_id = s.lot_id
+        LEFT JOIN investment_accounts a ON a.account_id = l.account_id
+        {where_sql}
+        ORDER BY s.sale_date DESC, l.symbol
+    """), params).fetchall()
+    return {"sales": [{
+        "sale_date": str(r.sale_date), "account": r.account_name or "—",
+        "symbol": r.symbol, "quantity": float(r.quantity_sold),
+        "proceeds": float(r.proceeds), "cost_basis": float(r.cost_basis),
+        "gain_loss": float(r.gain_loss), "is_long_term": r.is_long_term,
+        "basis_source": (r.notes or "").replace("BASIS_RESOLVED:", "") or "purchase records",
+        "unresolved": r.notes == "BASIS_UNKNOWN",
+    } for r in rows]}

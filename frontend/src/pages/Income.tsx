@@ -34,6 +34,8 @@ import {
 } from 'recharts'
 import styles from './Income.module.css'
 import clsx from 'clsx'
+import { UnifiedIncomeBand } from '../components/UnifiedIncomeBand/UnifiedIncomeBand'
+import { EquitySalesDetail } from '../components/EquitySalesDetail/EquitySalesDetail'
 import {
   formatCurrency as sharedFormatCurrency,
   formatCurrencyShort,
@@ -2426,7 +2428,7 @@ export function Income() {
 
   const initialView = (sectionParam === 'options' || sectionParam === 'dividends' || sectionParam === 'interest' || sectionParam === 'rental')
     ? sectionParam : 'main'
-  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail'>(initialView)
+  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail' | 'equity_sales'>(initialView)
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -2452,6 +2454,8 @@ export function Income() {
   const [portfolioEquity, setPortfolioEquity] = useState<number | null>(null)
   const [cashPosition, setCashPosition] = useState<number | null>(null)
   const [monthlyPositions, setMonthlyPositions] = useState<{ equity: Record<string, number>; cash: Record<string, number> }>({ equity: {}, cash: {} })
+  // Unified income (monthly) — source for equity-sales/lending in the hero total
+  const [unifiedMonthly, setUnifiedMonthly] = useState<Array<{ period: string; by_source: Record<string, number> }>>([])
 
   // Projected net salary starting June 2026:
   //   Neel $120k gross → ~$6,986/month net after federal+FICA+CA taxes
@@ -2484,7 +2488,7 @@ export function Income() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes] = await Promise.all([
+      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes] = await Promise.all([
         fetch(`${API_BASE}/income/summary`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/options`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/dividends`, { headers: getAuthHeaders() }),
@@ -2500,6 +2504,7 @@ export function Income() {
         fetch(`${API_BASE}/investments/holdings/live`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/ingestion/robinhood-cash/balances`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/monthly-positions`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/unified?granularity=month`, { headers: getAuthHeaders() }),
       ])
 
       if (summaryRes.ok) {
@@ -2562,6 +2567,10 @@ export function Income() {
       if (monthlyPosRes.ok) {
         const data = await monthlyPosRes.json()
         setMonthlyPositions({ equity: data.equity || {}, cash: data.cash || {} })
+      }
+      if (unifiedRes.ok) {
+        const data = await unifiedRes.json()
+        setUnifiedMonthly(data.periods || [])
       }
     } catch (err) {
       console.error('Error fetching income data:', err)
@@ -3075,7 +3084,18 @@ export function Income() {
     (jayaSalary?.isProjected ? (jayaSalary.net || 0) : (jayaSalary?.gross || 0)) +
     (neelSalary?.isProjected ? (neelSalary.net || 0) : (neelSalary?.gross || 0))
 
-  const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal
+  // Equity-sale realized P/L + stock lending for the selected period (from the
+  // unified income service) — completes the definition-of-income total.
+  const filteredEquityLendingTotal = unifiedMonthly.reduce((sum, p) => {
+    const [py, pm] = p.period.split('-').map(Number)
+    if (mainSelectedYear !== 'all') {
+      if (py !== mainSelectedYear) return sum
+      if (mainSelectedMonth !== null && pm !== mainSelectedMonth) return sum
+    }
+    return sum + (p.by_source.equity_sales || 0) + (p.by_source.lending || 0)
+  }, 0)
+
+  const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal + filteredEquityLendingTotal
 
   // Build income sources list
   const incomeSources: IncomeSource[] = [
@@ -3242,6 +3262,15 @@ export function Income() {
     )
   }
 
+  // Equity sales detail view (realized P/L drill-down)
+  if (view === 'equity_sales') {
+    return (
+      <div className={styles.page}>
+        <EquitySalesDetail onBack={() => setView('main')} />
+      </div>
+    )
+  }
+
   // Salary detail view
   if (view === 'salary_detail' && selectedEmployee) {
     return (
@@ -3260,6 +3289,14 @@ export function Income() {
   // Main view
   return (
     <div className={styles.page}>
+      {/* Unified income band — all sources, week/month/year, drill-down */}
+      <UnifiedIncomeBand
+        onDrill={(src) => {
+          if (src === 'equity_sales') setView('equity_sales')
+          else setView(src as 'options' | 'dividends' | 'interest' | 'rental')
+        }}
+      />
+
       {/* Hero Section */}
       <section className={styles.hero}>
         <div className={styles.heroContent}>

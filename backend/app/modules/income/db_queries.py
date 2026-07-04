@@ -656,13 +656,56 @@ def get_income_summary(
     # Sort by total descending
     account_summaries.sort(key=lambda x: x['total'], reverse=True)
 
-    total_income = options['total_income'] + dividends['total_income'] + interest['total_income'] + rental_income
+    # Complete the definition-of-income total (see playbook rule): add
+    # stock lending (SLIP), realized equity-sale P/L (shared lot engine,
+    # unresolved-basis rows excluded), and salary (gross, W-2/payslips).
+    from sqlalchemy import text as _text
+
+    lending_q = """
+        SELECT COALESCE(SUM(t.amount), 0) FROM investment_transactions t
+        JOIN investment_accounts a
+          ON a.account_id = t.account_id AND a.source = t.source
+        WHERE a.is_active = 'Y' AND t.transaction_type = 'SLIP'
+    """
+    equity_q = """
+        SELECT COALESCE(SUM(s.gain_loss) FILTER (
+            WHERE s.notes IS DISTINCT FROM 'BASIS_UNKNOWN'), 0)
+        FROM stock_lot_sale s
+    """
+    params: Dict[str, Any] = {}
+    if year:
+        lending_q += " AND EXTRACT(YEAR FROM t.transaction_date) = :year"
+        equity_q += " WHERE s.tax_year = :year"
+        params['year'] = year
+    stock_lending_income = float(db.execute(_text(lending_q), params).scalar() or 0)
+    equity_sales_pnl = float(db.execute(_text(equity_q), params).scalar() or 0)
+
+    salary_income = 0.0
+    try:
+        from app.modules.income.salary_service import get_salary_service
+        for inc in get_salary_service(db).load_all_payslips().values():
+            for yr, gross in (inc.yearly_gross or {}).items():
+                if (year is None or int(yr) == year) and gross:
+                    salary_income += float(gross)
+    except Exception as e:
+        print(f"Error loading salary income for summary: {e}")
+
+    investment_rental_income = (options['total_income'] + dividends['total_income']
+                                + interest['total_income'] + rental_income)
+    total_income = (investment_rental_income + stock_lending_income
+                    + equity_sales_pnl + salary_income)
 
     return {
         'options_income': options['total_income'],
         'dividend_income': dividends['total_income'],
         'interest_income': interest['total_income'],
         'rental_income': rental_income,
+        'stock_lending_income': stock_lending_income,
+        'equity_sales_pnl': equity_sales_pnl,
+        'salary_income': salary_income,
+        # options + dividends + interest + rental (the pre-unification total)
+        'investment_rental_income': investment_rental_income,
+        # complete income per the definition-of-income rule
         'total_income': total_income,
         'accounts': account_summaries
     }
