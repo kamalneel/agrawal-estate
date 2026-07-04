@@ -20,7 +20,7 @@ interface UnifiedPeriod {
 
 // Display order + labels; drillable sources navigate to a detail view.
 const SOURCES: Array<{ key: string; label: string; kind: 'fixed' | 'dynamic'; drill?: string }> = [
-  { key: 'salary', label: 'Salary', kind: 'fixed' },
+  { key: 'salary', label: 'Salary', kind: 'fixed', drill: 'salary' },
   { key: 'rental', label: 'Rent', kind: 'fixed', drill: 'rental' },
   { key: 'options', label: 'Options', kind: 'dynamic', drill: 'options' },
   { key: 'equity_sales', label: 'Equity Sales', kind: 'dynamic', drill: 'equity_sales' },
@@ -47,9 +47,13 @@ function periodLabel(iso: string, g: Granularity): string {
 
 interface UnifiedIncomeBandProps {
   onDrill?: (source: string) => void
+  /** Reports the selected period so the rest of the page can follow. */
+  onPeriodChange?: (granularity: Granularity, periodIso: string) => void
+  /** Salary projection (labeled, never mixed into actual totals). */
+  projectedSalary?: { monthly: number; startMonth: string }  // startMonth: 'YYYY-MM'
 }
 
-export function UnifiedIncomeBand({ onDrill }: UnifiedIncomeBandProps) {
+export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary }: UnifiedIncomeBandProps) {
   const [granularity, setGranularity] = useState<Granularity>('month')
   const [periods, setPeriods] = useState<UnifiedPeriod[]>([])
   const [cursor, setCursor] = useState<number>(-1)
@@ -88,6 +92,30 @@ export function UnifiedIncomeBand({ onDrill }: UnifiedIncomeBandProps) {
     () => Object.entries(p?.by_account || {}).sort((a, b) => b[1] - a[1]),
     [p]
   )
+
+  useEffect(() => {
+    if (p && onPeriodChange) onPeriodChange(granularity, p.period)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [granularity, p?.period])
+
+  // Projected salary for this period (labeled line, excluded from totals).
+  const projected = useMemo(() => {
+    if (!projectedSalary || !p) return 0
+    if ((p.by_source.salary || 0) > 0) return 0  // actuals win
+    const [sy, sm] = projectedSalary.startMonth.split('-').map(Number)
+    const d = new Date(p.period + 'T00:00:00')
+    if (granularity === 'month') {
+      return (d.getFullYear() > sy || (d.getFullYear() === sy && d.getMonth() + 1 >= sm))
+        ? projectedSalary.monthly : 0
+    }
+    if (granularity === 'year') {
+      const y = d.getFullYear()
+      if (y < sy) return 0
+      const startM = y === sy ? sm : 1
+      return (12 - startM + 1) * projectedSalary.monthly
+    }
+    return 0  // weekly projection would be noise
+  }, [projectedSalary, p, granularity])
 
   return (
     <section className={styles.band}>
@@ -155,10 +183,16 @@ export function UnifiedIncomeBand({ onDrill }: UnifiedIncomeBandProps) {
             )}
           </div>
 
+          {projected > 0 && (
+            <div className={styles.projectedLine}>
+              + {fmt(projected)} projected salary
+              {granularity === 'year' ? ' this year' : '/mo'} (starts {projectedSalary!.startMonth} — not in actuals)
+            </div>
+          )}
+
           <div className={styles.chipsRow}>
             {SOURCES.map(s => {
-              const v = p.by_source[s.key]
-              if (v === undefined || v === 0) return null
+              const v = p.by_source[s.key] ?? 0
               const clickable = !!(s.drill && onDrill)
               return (
                 <button
@@ -172,7 +206,7 @@ export function UnifiedIncomeBand({ onDrill }: UnifiedIncomeBandProps) {
                     {s.label}
                     <span className={styles.chipKind}>{s.kind === 'fixed' ? 'F' : 'D'}</span>
                   </span>
-                  <span className={clsx(styles.chipValue, v < 0 ? styles.negative : styles.positive)}>
+                  <span className={clsx(styles.chipValue, v < 0 ? styles.negative : v > 0 ? styles.positive : styles.zero)}>
                     {fmt(v)}
                   </span>
                 </button>

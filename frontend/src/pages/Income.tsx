@@ -2428,7 +2428,7 @@ export function Income() {
 
   const initialView = (sectionParam === 'options' || sectionParam === 'dividends' || sectionParam === 'interest' || sectionParam === 'rental')
     ? sectionParam : 'main'
-  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail' | 'equity_sales'>(initialView)
+  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail' | 'equity_sales' | 'salary_pick'>(initialView)
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -2455,7 +2455,7 @@ export function Income() {
   const [cashPosition, setCashPosition] = useState<number | null>(null)
   const [monthlyPositions, setMonthlyPositions] = useState<{ equity: Record<string, number>; cash: Record<string, number> }>({ equity: {}, cash: {} })
   // Unified income (monthly) — source for equity-sales/lending in the hero total
-  const [unifiedMonthly, setUnifiedMonthly] = useState<Array<{ period: string; by_source: Record<string, number> }>>([])
+  const [unifiedMonthly, setUnifiedMonthly] = useState<Array<{ period: string; total: number; by_source: Record<string, number> }>>([])
 
   // Projected net salary starting June 2026:
   //   Neel $120k gross → ~$6,986/month net after federal+FICA+CA taxes
@@ -2849,19 +2849,19 @@ export function Income() {
         return yearFilteredRentalChart.map(d => addHighlight({ ...d, actual: d.value, expected: expectedMonthlyRental }))
       case 'all':
       default: {
-        return combinedIncomeData.map(d => {
-          const cap = taxableOnly
-            ? (taxableCapitalByMonth[d.month] || 0)
-            : (capitalByMonth[d.month] || 0)
-          const byType = optionsByType[d.month] || { calls: 0, puts: 0 }
-          return addHighlight({
-            ...d,
-            calls:   byType.calls,
-            puts:    byType.puts,
-            actual:  d.calls + d.puts + d.dividends + d.interest + d.rental + d.salary,
-            capital: cap,
+        // Unified income actuals (same definition as the band and the table)
+        return unifiedMonthly
+          .filter(p => mainSelectedYear === 'all' || p.period.startsWith(`${mainSelectedYear}-`))
+          .map(p => {
+            const monthKey = p.period.slice(0, 7)
+            const d = new Date(p.period + 'T00:00:00')
+            return addHighlight({
+              month: monthKey,
+              formatted: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+              year: d.getFullYear(),
+              actual: p.total,
+            })
           })
-        })
       }
     }
   })().filter(d => {
@@ -3097,6 +3097,30 @@ export function Income() {
 
   const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal + filteredEquityLendingTotal
 
+  // Level-3 table rows: straight from the unified income service (actuals);
+  // projected salary shown as its own labeled column, never in totals.
+  const unifiedTableRows = unifiedMonthly
+    .filter(p => mainSelectedYear === 'all' || p.period.startsWith(`${mainSelectedYear}-`))
+    .map(p => {
+      const s = p.by_source
+      const monthKey = p.period.slice(0, 7)
+      const salary = s.salary || 0
+      const salaryProj = salary === 0 && monthKey >= SALARY_START_MONTH ? PROJECTED_SALARY_MONTHLY : 0
+      const total = (s.options || 0) + (s.equity_sales || 0) + (s.dividends || 0)
+        + (s.interest || 0) + (s.lending || 0) + (s.rental || 0) + salary
+      const d = new Date(p.period + 'T00:00:00')
+      return {
+        monthKey,
+        label: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+        options: s.options || 0, equity_sales: s.equity_sales || 0,
+        dividends: s.dividends || 0, interest: s.interest || 0,
+        lending: s.lending || 0, rental: s.rental || 0,
+        salary, salaryProj, total,
+        highlighted: mainSelectedYear !== 'all' && mainSelectedMonth !== null
+          && monthKey === `${mainSelectedYear}-${String(mainSelectedMonth).padStart(2, '0')}`,
+      }
+    })
+
   // Build income sources list
   const incomeSources: IncomeSource[] = [
     {
@@ -3262,6 +3286,40 @@ export function Income() {
     )
   }
 
+  // Salary drill-down: pick the person first
+  if (view === 'salary_pick') {
+    const employees = [
+      ...(jayaSalary ? ['Jaya'] : []),
+      ...(neelSalary ? ['Neel'] : []),
+    ]
+    const names = employees.length > 0 ? employees : ['Jaya', 'Neel']
+    return (
+      <div className={styles.page}>
+        <div className={styles.detailView}>
+          <button className={styles.backButton} onClick={() => setView('main')}>
+            <ArrowLeft size={16} /> Back to Income
+          </button>
+          <h1 style={{ margin: 'var(--space-4) 0' }}>Salary</h1>
+          <div className={styles.sourcesGrid}>
+            {names.map(name => (
+              <button
+                key={name}
+                className={styles.sourceCard}
+                onClick={() => {
+                  setSelectedEmployee(name)
+                  setView('salary_detail')
+                }}
+              >
+                <h3 className={styles.sourceName}>{name}'s Salary</h3>
+                <p className={styles.sourceDescription}>Payslips, W-2 history, projections</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // Equity sales detail view (realized P/L drill-down)
   if (view === 'equity_sales') {
     return (
@@ -3289,71 +3347,23 @@ export function Income() {
   // Main view
   return (
     <div className={styles.page}>
-      {/* Unified income band — all sources, week/month/year, drill-down */}
+      {/* Level 1: unified income band — the page's single period control */}
       <UnifiedIncomeBand
+        projectedSalary={{ monthly: PROJECTED_SALARY_MONTHLY, startMonth: SALARY_START_MONTH }}
+        onPeriodChange={(g, periodIso) => {
+          const d = new Date(periodIso + 'T00:00:00')
+          setMainSelectedYear(d.getFullYear())
+          setMainSelectedMonth(g === 'year' ? null : d.getMonth() + 1)
+        }}
         onDrill={(src) => {
           if (src === 'equity_sales') setView('equity_sales')
+          else if (src === 'salary') setView('salary_pick')
           else setView(src as 'options' | 'dividends' | 'interest' | 'rental')
         }}
       />
 
-      {/* Hero Section */}
+      {/* Yield tiles + refresh (period follows the band above) */}
       <section className={styles.hero}>
-        <div className={styles.heroContent}>
-          <div className={styles.heroLabel}>
-            Total Income {mainSelectedYear === 'all' 
-              ? '(All Time)' 
-              : mainSelectedMonth !== null
-                ? `(${new Date(mainSelectedYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
-                : `(${mainSelectedYear})`}
-          </div>
-          <div className={styles.heroValue}>
-            {formatCurrency(filteredTotalIncome)}
-          </div>
-          <div className={styles.heroSubtext}>
-            Across {summary?.accounts.length || 0} investment accounts
-          </div>
-
-          {/* Year Selector */}
-          <div className={styles.yearSelector} style={{ marginTop: 'var(--space-6)' }}>
-            <button
-              className={clsx(styles.yearButton, mainSelectedYear === 'all' && styles.active)}
-              onClick={() => handleYearChange('all')}
-            >
-              All Time
-            </button>
-            {availableYears.map(year => (
-              <button
-                key={year}
-                className={clsx(styles.yearButton, mainSelectedYear === year && styles.active)}
-                onClick={() => handleYearChange(year)}
-              >
-                {year}
-              </button>
-            ))}
-          </div>
-
-          {/* Month Selector - show for any selected year (not 'all') */}
-          {mainSelectedYear !== 'all' && (
-            <div className={styles.monthSelectorRow}>
-              <button
-                className={clsx(styles.monthPill, mainSelectedMonth === null && styles.active)}
-                onClick={() => setMainSelectedMonth(null)}
-              >
-                Full Year
-              </button>
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(month => (
-                <button
-                  key={month}
-                  className={clsx(styles.monthPill, mainSelectedMonth === month && styles.active)}
-                  onClick={() => setMainSelectedMonth(month)}
-                >
-                  {new Date(mainSelectedYear, month - 1).toLocaleString('default', { month: 'short' })}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
         <div className={styles.heroRight}>
           <button onClick={fetchData} className={styles.heroRefresh} title="Refresh data">
             <RefreshCw size={20} />
@@ -3401,56 +3411,8 @@ export function Income() {
         </div>
       </section>
 
-      {/* Income Breakdown */}
+      {/* Level 3: trend — chart + table on the unified definition */}
       <section className={styles.earningsSection}>
-
-        {/* Position summary: equity vs calls/divs, cash vs puts */}
-        {(portfolioEquity !== null || cashPosition !== null) && (() => {
-          const now = new Date()
-          const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-          const currentByType = optionsByType[currentMonthKey] || { calls: 0, puts: 0 }
-          const currentDivs = dividendChartData.find(d => d.month === currentMonthKey)?.value || 0
-          const equityIncome = currentByType.calls + currentDivs
-          const callYield = portfolioEquity && portfolioEquity > 0 ? (equityIncome / portfolioEquity) * 100 : null
-          const putYield = cashPosition && cashPosition > 0 ? (currentByType.puts / cashPosition) * 100 : null
-          return (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
-              <div style={{ background: 'var(--color-surface-2)', borderRadius: 12, padding: 'var(--space-5)', border: '1px solid rgba(0,214,50,0.15)' }}>
-                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Equity Position</div>
-                <div style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: 10 }}>{portfolioEquity !== null ? formatFullCurrency(portfolioEquity) : '—'}</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.82rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--color-text-tertiary)' }}>Calls this month</span>
-                    <span style={{ color: '#00D632' }}>{formatFullCurrency(currentByType.calls)}{callYield !== null ? ` (${callYield.toFixed(2)}%)` : ''}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--color-text-tertiary)' }}>Dividends this month</span>
-                    <span>{formatFullCurrency(currentDivs)}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 4, marginTop: 2 }}>
-                    <span style={{ color: 'var(--color-text-secondary)' }}>Total equity income</span>
-                    <strong style={{ color: '#00D632' }}>{formatFullCurrency(equityIncome)}</strong>
-                  </div>
-                </div>
-              </div>
-              <div style={{ background: 'var(--color-surface-2)', borderRadius: 12, padding: 'var(--space-5)', border: '1px solid rgba(0,163,255,0.15)' }}>
-                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Cash &amp; Collateral</div>
-                <div style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: 10 }}>{cashPosition !== null ? formatFullCurrency(cashPosition) : '—'}</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.82rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--color-text-tertiary)' }}>Puts this month</span>
-                    <span style={{ color: '#00A3FF' }}>{formatFullCurrency(currentByType.puts)}{putYield !== null ? ` (${putYield.toFixed(2)}%)` : ''}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 4, marginTop: 2 }}>
-                    <span style={{ color: 'var(--color-text-secondary)' }}>Total cash income</span>
-                    <strong style={{ color: '#00A3FF' }}>{formatFullCurrency(currentByType.puts)}</strong>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        })()}
-
         <div className={styles.earningsChartCard}>
           {/* Header with toggle */}
           <div className={styles.earningsHeader}>
@@ -3540,37 +3502,90 @@ export function Income() {
             )}
           </div>
 
-          {/* Data Table */}
-          {earningsChartData.length > 0 && (
-            <div className={styles.earningsTableContainer} style={{ marginTop: 'var(--space-4)' }}>
-              <table className={styles.earningsTable}>
-                <thead>
-                  {earningsView === 'all' ? (
+          {/* Data Table — 'all' view is driven by /income/unified (actuals);
+              projected salary is a labeled column outside the total */}
+          {earningsView === 'all' ? (
+            unifiedTableRows.length > 0 && (
+              <div className={styles.earningsTableContainer} style={{ marginTop: 'var(--space-4)' }}>
+                <table className={styles.earningsTable}>
+                  <thead>
                     <tr>
                       <th>Period</th>
-                      <th>Equity</th>
-                      <th className={styles.earningsHighlightCol}>Calls</th>
-                      <th>Cash</th>
-                      <th className={styles.earningsHighlightCol}>Puts</th>
+                      <th className={styles.earningsHighlightCol}>Options</th>
+                      <th className={styles.earningsHighlightCol}>Equity Sales</th>
                       <th>Dividends</th>
                       <th>Interest</th>
-                      <th>Rental</th>
-                      <th>Salary (Net)</th>
+                      <th>Lending</th>
+                      <th>Rent</th>
+                      <th>Salary</th>
+                      <th style={{ color: 'var(--color-text-tertiary)' }}>Salary (proj.)</th>
                       <th>Total</th>
                     </tr>
-                  ) : (
+                  </thead>
+                  <tbody>
+                    {unifiedTableRows.map((d) => (
+                      <tr
+                        key={d.monthKey}
+                        className={clsx(
+                          styles.earningsPositiveRow,
+                          d.highlighted && styles.earningsHighlightedRow
+                        )}
+                      >
+                        <td><strong>{d.label}</strong></td>
+                        <td className={styles.earningsHighlightCol} style={{ color: d.options < 0 ? '#FF5A5A' : '#00D632' }}>{d.options !== 0 ? formatFullCurrency(d.options) : '—'}</td>
+                        <td className={styles.earningsHighlightCol} style={{ color: d.equity_sales < 0 ? '#FF5A5A' : '#00D632' }}>{d.equity_sales !== 0 ? formatFullCurrency(d.equity_sales) : '—'}</td>
+                        <td>{d.dividends !== 0 ? formatFullCurrency(d.dividends) : '—'}</td>
+                        <td>{d.interest !== 0 ? formatFullCurrency(d.interest) : '—'}</td>
+                        <td>{d.lending !== 0 ? formatFullCurrency(d.lending) : '—'}</td>
+                        <td>{d.rental !== 0 ? formatFullCurrency(d.rental) : '—'}</td>
+                        <td>{d.salary !== 0 ? formatFullCurrency(d.salary) : '—'}</td>
+                        <td style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{d.salaryProj > 0 ? formatFullCurrency(d.salaryProj) : '—'}</td>
+                        <td><strong style={{ color: d.total < 0 ? '#FF5A5A' : undefined }}>{formatFullCurrency(d.total)}</strong></td>
+                      </tr>
+                    ))}
+                    {unifiedTableRows.length > 1 && (() => {
+                      const t = unifiedTableRows.reduce((acc, d) => ({
+                        options: acc.options + d.options,
+                        equity_sales: acc.equity_sales + d.equity_sales,
+                        dividends: acc.dividends + d.dividends,
+                        interest: acc.interest + d.interest,
+                        lending: acc.lending + d.lending,
+                        rental: acc.rental + d.rental,
+                        salary: acc.salary + d.salary,
+                        salaryProj: acc.salaryProj + d.salaryProj,
+                        total: acc.total + d.total,
+                      }), { options: 0, equity_sales: 0, dividends: 0, interest: 0, lending: 0, rental: 0, salary: 0, salaryProj: 0, total: 0 })
+                      return (
+                        <tr className={styles.earningsTotalRow}>
+                          <td><strong>Total</strong></td>
+                          <td className={styles.earningsHighlightCol} style={{ color: t.options < 0 ? '#FF5A5A' : '#00D632' }}><strong>{formatFullCurrency(t.options)}</strong></td>
+                          <td className={styles.earningsHighlightCol} style={{ color: t.equity_sales < 0 ? '#FF5A5A' : '#00D632' }}><strong>{formatFullCurrency(t.equity_sales)}</strong></td>
+                          <td><strong>{formatFullCurrency(t.dividends)}</strong></td>
+                          <td><strong>{formatFullCurrency(t.interest)}</strong></td>
+                          <td><strong>{formatFullCurrency(t.lending)}</strong></td>
+                          <td><strong>{formatFullCurrency(t.rental)}</strong></td>
+                          <td><strong>{formatFullCurrency(t.salary)}</strong></td>
+                          <td style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{formatFullCurrency(t.salaryProj)}</td>
+                          <td><strong>{formatFullCurrency(t.total)}</strong></td>
+                        </tr>
+                      )
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            )
+          ) : (
+            earningsChartData.length > 0 && (
+              <div className={styles.earningsTableContainer} style={{ marginTop: 'var(--space-4)' }}>
+                <table className={styles.earningsTable}>
+                  <thead>
                     <tr>
                       <th>Period</th>
                       <th>Income</th>
                     </tr>
-                  )}
-                </thead>
-                <tbody>
-                  {earningsChartData.map((d: any, idx: number) => {
-                    const rowTotal = earningsView === 'all'
-                      ? (d.calls || 0) + (d.puts || 0) + (d.dividends || 0) + (d.interest || 0) + (d.rental || 0) + (d.salary || 0)
-                      : d.actual
-                    return (
+                  </thead>
+                  <tbody>
+                    {earningsChartData.map((d: any, idx: number) => (
                       <tr
                         key={idx}
                         className={clsx(
@@ -3579,86 +3594,14 @@ export function Income() {
                         )}
                       >
                         <td><strong>{d.formatted}</strong></td>
-                        {earningsView === 'all' ? (
-                          <>
-                            <td style={{ color: 'var(--color-text-secondary)' }}>{monthlyPositions.equity[d.month] ? formatFullCurrency(monthlyPositions.equity[d.month]) : '—'}</td>
-                            <td className={styles.earningsHighlightCol} style={{ color: d.calls < 0 ? '#FF5A5A' : '#00D632' }}>{d.calls !== 0 ? formatFullCurrency(d.calls) : '—'}</td>
-                            <td style={{ color: 'var(--color-text-secondary)' }}>{monthlyPositions.cash[d.month] ? formatFullCurrency(monthlyPositions.cash[d.month]) : '—'}</td>
-                            <td className={styles.earningsHighlightCol} style={{ color: d.puts < 0 ? '#FF5A5A' : '#00A3FF' }}>{d.puts !== 0 ? formatFullCurrency(d.puts) : '—'}</td>
-                            <td>{d.dividends > 0 ? formatFullCurrency(d.dividends) : '—'}</td>
-                            <td>{d.interest > 0 ? formatFullCurrency(d.interest) : '—'}</td>
-                            <td>{d.rental > 0 ? formatFullCurrency(d.rental) : '—'}</td>
-                            <td>{d.salary > 0 ? formatFullCurrency(d.salary) : '—'}</td>
-                            <td><strong>{formatFullCurrency(rowTotal)}</strong></td>
-                          </>
-                        ) : (
-                          <td>{formatFullCurrency(d.actual)}</td>
-                        )}
+                        <td>{formatFullCurrency(d.actual)}</td>
                       </tr>
-                    )
-                  })}
-                  {earningsChartData.length > 1 && earningsView === 'all' && (() => {
-                    const totals = earningsChartData.reduce((acc: any, d: any) => ({
-                      calls:     acc.calls     + (d.calls     || 0),
-                      puts:      acc.puts      + (d.puts      || 0),
-                      dividends: acc.dividends + (d.dividends || 0),
-                      interest:  acc.interest  + (d.interest  || 0),
-                      rental:    acc.rental    + (d.rental    || 0),
-                      salary:    acc.salary    + (d.salary    || 0),
-                    }), { calls: 0, puts: 0, dividends: 0, interest: 0, rental: 0, salary: 0 })
-                    const grandTotal = totals.calls + totals.puts + totals.dividends + totals.interest + totals.rental + totals.salary
-                    const lastMonth = earningsChartData[earningsChartData.length - 1]?.month
-                    const currentEquity = lastMonth ? (monthlyPositions.equity[lastMonth] || portfolioEquity || 0) : (portfolioEquity || 0)
-                    const currentCash   = lastMonth ? (monthlyPositions.cash[lastMonth]   || cashPosition   || 0) : (cashPosition   || 0)
-                    return (
-                      <tr className={styles.earningsTotalRow}>
-                        <td><strong>Total</strong></td>
-                        <td style={{ color: 'var(--color-text-secondary)' }}>{currentEquity > 0 ? formatFullCurrency(currentEquity) : '—'}</td>
-                        <td className={styles.earningsHighlightCol} style={{ color: totals.calls < 0 ? '#FF5A5A' : '#00D632' }}><strong>{formatFullCurrency(totals.calls)}</strong></td>
-                        <td style={{ color: 'var(--color-text-secondary)' }}>{currentCash > 0 ? formatFullCurrency(currentCash) : '—'}</td>
-                        <td className={styles.earningsHighlightCol} style={{ color: totals.puts < 0 ? '#FF5A5A' : '#00A3FF' }}><strong>{formatFullCurrency(totals.puts)}</strong></td>
-                        <td><strong>{formatFullCurrency(totals.dividends)}</strong></td>
-                        <td><strong>{formatFullCurrency(totals.interest)}</strong></td>
-                        <td><strong>{formatFullCurrency(totals.rental)}</strong></td>
-                        <td><strong>{formatFullCurrency(totals.salary)}</strong></td>
-                        <td><strong>{formatFullCurrency(grandTotal)}</strong></td>
-                      </tr>
-                    )
-                  })()}
-                </tbody>
-              </table>
-            </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
           )}
-        </div>
-      </section>
-
-      {/* Income Sources */}
-      <section className={styles.sourcesSection}>
-        <h2>Income Sources</h2>
-        <div className={styles.sourcesGrid}>
-          {incomeSources.map((source) => (
-            <SourceCard
-              key={source.id}
-              source={source}
-              onClick={() => {
-                if (source.id === 'options_income') {
-                  setView('options')
-                } else if (source.id === 'dividend_income') {
-                  setView('dividends')
-                } else if (source.id === 'interest_income') {
-                  setView('interest')
-                } else if (source.id === 'rental_income' && filteredRentalData) {
-                  setView('rental')
-                } else if (source.id === 'salary_jaya') {
-                  setSelectedEmployee('Jaya')
-                  setView('salary_detail')
-                } else if (source.id === 'salary_neel') {
-                  setSelectedEmployee('Neel')
-                  setView('salary_detail')
-                }
-              }}
-            />
-          ))}
         </div>
       </section>
 

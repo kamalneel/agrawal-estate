@@ -262,3 +262,13 @@
     min-width: 0;
   }
 }
+
+.projectedLine {
+  font-size: var(--font-size-sm, 13px);
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.zero {
+  color: var(--color-text-tertiary);
+}
