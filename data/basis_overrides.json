@@ -1,0 +1,745 @@
+{
+ "description": "Basis resolutions from 1099-B/F8949/RH-avg/transfer-date pricing (2026-07-03/04). rebuild_stock_lots.py reapplies these after each rebuild; source docs in data/tax-documents/ and the 2024 return.",
+ "lots": [
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "TSLA",
+   "purchase_date": "2024-03-28",
+   "quantity": "885.000000",
+   "cost_per_share": "85.8100",
+   "note": "BASIS_RESOLVED:RH_AVG_COST (was BASIS_UNKNOWN:ACAT); per-share derived from RH avg cost 2026-07-03"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "AAPL",
+   "purchase_date": "2024-04-05",
+   "quantity": "130.000000",
+   "cost_per_share": "8.2600",
+   "note": "BASIS_RESOLVED:RH_AVG_COST (was BASIS_UNKNOWN:ACAT); per-share derived from RH avg cost 2026-07-03"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "TSLA",
+   "purchase_date": "2024-04-05",
+   "quantity": "630.000000",
+   "cost_per_share": "85.3900",
+   "note": "BASIS_RESOLVED:RH_AVG_COST (was BASIS_UNKNOWN:ACAT); per-share derived from RH avg cost 2026-07-03"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "NVDA",
+   "purchase_date": "2024-04-05",
+   "quantity": "800.000000",
+   "cost_per_share": "18.9300",
+   "note": "BASIS_RESOLVED:RH_AVG_COST (was BASIS_UNKNOWN:ACAT); per-share derived from RH avg cost 2026-07-03"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "purchase_date": "2024-03-28",
+   "quantity": "2352.000000",
+   "cost_per_share": "107.6200",
+   "note": "BASIS_RESOLVED:RH_AVG_COST (was BASIS_UNKNOWN:ACAT); per-share derived from RH avg cost 2026-07-03"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "MSFT",
+   "purchase_date": "2024-03-28",
+   "quantity": "40.000000",
+   "cost_per_share": "330.5400",
+   "note": "BASIS_RESOLVED:RH_AVG_COST (was BASIS_UNKNOWN:ACAT); per-share derived from RH avg cost 2026-07-03"
+  }
+ ],
+ "sales": [
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2025-09-23",
+   "quantity_sold": "24.000000",
+   "proceeds": "6138.10",
+   "cost_basis": "2047.23",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:1099B_2025"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "TSLA",
+   "sale_date": "2025-05-16",
+   "quantity_sold": "6.000000",
+   "proceeds": "2100.00",
+   "cost_basis": "351.59",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:1099B_2025"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "VOO",
+   "sale_date": "2025-11-07",
+   "quantity_sold": "0.206498",
+   "proceeds": "126.80",
+   "cost_basis": "101.07",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:1099B_2025"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "VOO",
+   "sale_date": "2025-11-07",
+   "quantity_sold": "2.793502",
+   "proceeds": "1715.38",
+   "cost_basis": "1367.33",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:1099B_2025"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-09-30",
+   "quantity_sold": "50.000000",
+   "proceeds": "11499.68",
+   "cost_basis": "5152.62",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-10-15",
+   "quantity_sold": "50.000000",
+   "proceeds": "11724.67",
+   "cost_basis": "5253.43",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-11-26",
+   "quantity_sold": "100.000000",
+   "proceeds": "23499.32",
+   "cost_basis": "10529.26",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-12-02",
+   "quantity_sold": "100.000000",
+   "proceeds": "23999.31",
+   "cost_basis": "10753.29",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-12-02",
+   "quantity_sold": "50.000000",
+   "proceeds": "11974.66",
+   "cost_basis": "5365.45",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-12-09",
+   "quantity_sold": "100.000000",
+   "proceeds": "24499.29",
+   "cost_basis": "10977.32",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-12-11",
+   "quantity_sold": "68.000000",
+   "proceeds": "16965.51",
+   "cost_basis": "7601.68",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-12-11",
+   "quantity_sold": "100.000000",
+   "proceeds": "24949.28",
+   "cost_basis": "11178.94",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-12-11",
+   "quantity_sold": "32.000000",
+   "proceeds": "7983.77",
+   "cost_basis": "3577.26",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "APPS",
+   "sale_date": "2024-03-28",
+   "quantity_sold": "150.000000",
+   "proceeds": "396.19",
+   "cost_basis": "177.52",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "GOOG",
+   "sale_date": "2024-09-20",
+   "quantity_sold": "20.000000",
+   "proceeds": "3279.20",
+   "cost_basis": "1469.30",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "SHOP",
+   "sale_date": "2024-03-28",
+   "quantity_sold": "100.000000",
+   "proceeds": "7780.91",
+   "cost_basis": "3486.37",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "TEAM",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "9.000000",
+   "proceeds": "1792.32",
+   "cost_basis": "803.08",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "TQQQ",
+   "sale_date": "2024-03-28",
+   "quantity_sold": "100.000000",
+   "proceeds": "6199.93",
+   "cost_basis": "2777.98",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "TQQQ",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "100.000000",
+   "proceeds": "5807.43",
+   "cost_basis": "2602.12",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "TQQQ",
+   "sale_date": "2024-09-19",
+   "quantity_sold": "4.000000",
+   "proceeds": "281.03",
+   "cost_basis": "125.92",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "TQQQ",
+   "sale_date": "2024-09-19",
+   "quantity_sold": "1.000000",
+   "proceeds": "70.26",
+   "cost_basis": "31.48",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "U",
+   "sale_date": "2024-03-28",
+   "quantity_sold": "10.000000",
+   "proceeds": "270.00",
+   "cost_basis": "120.98",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "AVGO",
+   "sale_date": "2026-05-22",
+   "quantity_sold": "10.000000",
+   "proceeds": "3249.93",
+   "cost_basis": "4219.50",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:RH_AVG_COST"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "IBIT",
+   "sale_date": "2026-06-18",
+   "quantity_sold": "200.000000",
+   "proceeds": "7254.19",
+   "cost_basis": "7254.19",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "APPS",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "100.000000",
+   "proceeds": "241.98",
+   "cost_basis": "241.98",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "AVGO",
+   "sale_date": "2026-05-22",
+   "quantity_sold": "21.000000",
+   "proceeds": "6824.86",
+   "cost_basis": "6824.86",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "DOCU",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "10.000000",
+   "proceeds": "596.54",
+   "cost_basis": "596.54",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "IBIT",
+   "sale_date": "2026-05-22",
+   "quantity_sold": "186.000000",
+   "proceeds": "8085.77",
+   "cost_basis": "8085.77",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "NFLX",
+   "sale_date": "2026-05-22",
+   "quantity_sold": "1.000000",
+   "proceeds": "87.00",
+   "cost_basis": "87.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "NIO",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "210.000000",
+   "proceeds": "953.36",
+   "cost_basis": "953.36",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "NOW",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "10.000000",
+   "proceeds": "7683.93",
+   "cost_basis": "7683.93",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "PTON",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "524.000000",
+   "proceeds": "2148.29",
+   "cost_basis": "2148.29",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "SHOP",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "50.000000",
+   "proceeds": "3780.46",
+   "cost_basis": "3780.46",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "SNAP",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "27.000000",
+   "proceeds": "302.94",
+   "cost_basis": "302.94",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "SNAP",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "12.000000",
+   "proceeds": "134.64",
+   "cost_basis": "134.64",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "SNAP",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "198.000000",
+   "proceeds": "2221.51",
+   "cost_basis": "2221.51",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "SNAP",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "5.000000",
+   "proceeds": "56.10",
+   "cost_basis": "56.10",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "SNAP",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "258.000000",
+   "proceeds": "2894.69",
+   "cost_basis": "2894.69",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "TEAM",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "9.000000",
+   "proceeds": "1777.66",
+   "cost_basis": "1777.66",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "TQQQ",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "254.000000",
+   "proceeds": "15784.66",
+   "cost_basis": "15784.66",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "TQQQ",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "200.000000",
+   "proceeds": "12428.87",
+   "cost_basis": "12428.87",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "TQQQ",
+   "sale_date": "2024-05-10",
+   "quantity_sold": "3.000000",
+   "proceeds": "178.50",
+   "cost_basis": "178.50",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "TQQQ",
+   "sale_date": "2024-05-22",
+   "quantity_sold": "200.000000",
+   "proceeds": "12989.60",
+   "cost_basis": "12989.60",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "TSLA",
+   "sale_date": "2024-10-21",
+   "quantity_sold": "12.000000",
+   "proceeds": "2615.14",
+   "cost_basis": "2615.14",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "UPST",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "50.000000",
+   "proceeds": "1315.48",
+   "cost_basis": "1315.48",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "UPWK",
+   "sale_date": "2024-04-04",
+   "quantity_sold": "200.000000",
+   "proceeds": "2477.95",
+   "cost_basis": "2477.95",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "VOO",
+   "sale_date": "2025-10-24",
+   "quantity_sold": "14.790092",
+   "proceeds": "9211.49",
+   "cost_basis": "9211.49",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:SALE_DATE_PROXY (no acquisition record; P/L=0)"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "NVDA",
+   "sale_date": "2026-05-15",
+   "quantity_sold": "800.000000",
+   "proceeds": "143996.87",
+   "cost_basis": "63614.40",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "PYPL",
+   "sale_date": "2024-07-15",
+   "quantity_sold": "1.000000",
+   "proceeds": "60.66",
+   "cost_basis": "63.19",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "SNAP",
+   "sale_date": "2024-06-17",
+   "quantity_sold": "300.000000",
+   "proceeds": "4784.81",
+   "cost_basis": "3342.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "SNAP",
+   "sale_date": "2024-06-17",
+   "quantity_sold": "203.000000",
+   "proceeds": "3099.89",
+   "cost_basis": "2261.42",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "SNAP",
+   "sale_date": "2024-06-25",
+   "quantity_sold": "300.000000",
+   "proceeds": "4934.81",
+   "cost_basis": "3342.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2025-09-23",
+   "quantity_sold": "30.000000",
+   "proceeds": "7678.01",
+   "cost_basis": "6615.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:1099B_2025"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "AAPL",
+   "sale_date": "2024-10-14",
+   "quantity_sold": "50.000000",
+   "proceeds": "11499.68",
+   "cost_basis": "7511.24",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "GTM",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "44.000000",
+   "proceeds": "689.25",
+   "cost_basis": "450.20",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "NOW",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "1.000000",
+   "proceeds": "751.47",
+   "cost_basis": "490.84",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "NVDA",
+   "sale_date": "2024-10-07",
+   "quantity_sold": "100.000000",
+   "proceeds": "12937.71",
+   "cost_basis": "8450.52",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "NVDA",
+   "sale_date": "2024-10-08",
+   "quantity_sold": "100.000000",
+   "proceeds": "13212.70",
+   "cost_basis": "8630.13",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "PINS",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "30.000000",
+   "proceeds": "996.02",
+   "cost_basis": "650.57",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "SNAP",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "500.000000",
+   "proceeds": "5316.32",
+   "cost_basis": "3472.46",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "TEAM",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "1.000000",
+   "proceeds": "199.89",
+   "cost_basis": "130.56",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "UPWK",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "60.000000",
+   "proceeds": "695.68",
+   "cost_basis": "454.40",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_brokerage",
+   "symbol": "XYZ",
+   "sale_date": "2024-04-15",
+   "quantity_sold": "20.000000",
+   "proceeds": "1525.00",
+   "cost_basis": "996.08",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:F8949_2024_PRORATA"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "AAPL",
+   "sale_date": "2024-12-16",
+   "quantity_sold": "50.000000",
+   "proceeds": "12474.65",
+   "cost_basis": "8292.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "APPS",
+   "sale_date": "2024-07-15",
+   "quantity_sold": "100.000000",
+   "proceeds": "206.09",
+   "cost_basis": "186.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "jaya_ira",
+   "symbol": "UPWK",
+   "sale_date": "2024-07-15",
+   "quantity_sold": "200.000000",
+   "proceeds": "2300.00",
+   "cost_basis": "2246.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "XYZ",
+   "sale_date": "2020-04-09",
+   "quantity_sold": "10.000000",
+   "proceeds": "599.99",
+   "cost_basis": "698.30",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "ASML",
+   "sale_date": "2025-12-03",
+   "quantity_sold": "1.000000",
+   "proceeds": "1115.71",
+   "cost_basis": "1060.00",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "neel_retirement",
+   "symbol": "TSM",
+   "sale_date": "2025-12-19",
+   "quantity_sold": "4.000000",
+   "proceeds": "1150.00",
+   "cost_basis": "1166.04",
+   "is_long_term": false,
+   "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  }
+ ]
+}

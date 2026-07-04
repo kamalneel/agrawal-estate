@@ -23,8 +23,14 @@ Unknown-basis lots carry cost_basis=0 and a BASIS_UNKNOWN:* note; sale rows
 that consumed them are flagged BASIS_UNKNOWN in notes. Income code must
 exclude/flag those P/L figures until basis is resolved (resolution hierarchy:
 1099-B, Robinhood avg cost via MCP, market price at transfer date).
+
+After each rebuild, resolutions recorded in data/basis_overrides.json are
+reapplied (lots matched on account+symbol+purchase_date; sale rows on
+account+symbol+sale_date+quantity+proceeds), so a rebuild never regresses
+previously-resolved basis. New resolutions must be added to that file.
 """
 import argparse
+import json
 import sys
 from collections import defaultdict
 from decimal import Decimal
@@ -198,6 +204,50 @@ def rebuild(db, dry_run: bool):
         ))
     db.commit()
     print("written")
+    apply_basis_overrides(db)
+
+
+def apply_basis_overrides(db):
+    """Reapply persisted basis resolutions (data/basis_overrides.json)."""
+    path = Path(__file__).resolve().parent.parent.parent / "data" / "basis_overrides.json"
+    if not path.exists():
+        print("no basis_overrides.json — skipping override pass")
+        return
+    ov = json.loads(path.read_text())
+    n_lots = 0
+    for o in ov.get("lots", []):
+        res = db.execute(text("""
+            UPDATE stock_lot
+            SET cost_per_share=:cps, cost_basis=ROUND(:cps*quantity, 2),
+                notes=:note, updated_at=NOW()
+            WHERE account_id=:acct AND symbol=:sym AND purchase_date=:pd
+              AND notes LIKE 'BASIS_UNKNOWN%'
+        """), {"cps": Decimal(o["cost_per_share"]), "note": o["note"],
+               "acct": o["account_id"], "sym": o["symbol"],
+               "pd": o["purchase_date"]})
+        n_lots += res.rowcount
+    n_sales = 0
+    for o in ov.get("sales", []):
+        res = db.execute(text("""
+            UPDATE stock_lot_sale s
+            SET cost_basis=:cb, gain_loss=s.proceeds-:cb,
+                is_long_term=:lt, notes=:note, updated_at=NOW()
+            FROM stock_lot l
+            WHERE l.lot_id=s.lot_id AND s.notes='BASIS_UNKNOWN'
+              AND l.account_id=:acct AND l.symbol=:sym AND s.sale_date=:sd
+              AND ABS(s.quantity_sold-:qty) < 0.001
+              AND ABS(s.proceeds-:pr) < 0.02
+        """), {"cb": Decimal(o["cost_basis"]), "lt": o["is_long_term"],
+               "note": o["note"], "acct": o["account_id"], "sym": o["symbol"],
+               "sd": o["sale_date"], "qty": Decimal(o["quantity_sold"]),
+               "pr": Decimal(o["proceeds"])})
+        n_sales += res.rowcount
+    db.commit()
+    unresolved = db.execute(text(
+        "SELECT COUNT(*) FROM stock_lot_sale WHERE notes='BASIS_UNKNOWN'"
+    )).scalar()
+    print(f"overrides applied: {n_lots} lots, {n_sales} sale rows; "
+          f"still unresolved: {unresolved}")
 
 
 if __name__ == "__main__":
