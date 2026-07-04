@@ -109,7 +109,17 @@ def get_unified_income(
         salaries = get_salary_service(db).load_all_payslips()
     except Exception:
         salaries = {}
+    # months (YYYY-MM) covered by payslips / years covered by W-2s, per person
+    payslip_months: dict = {}
+    w2_years: dict = {}
     for name, inc in salaries.items():
+        key = name.split()[0].lower()
+        w2_years.setdefault(key, set()).update(
+            int(y) for y, g in (inc.yearly_gross or {}).items() if g)
+        for slip in inc.payslips or []:
+            d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
+            if slip.gross_pay_period:
+                payslip_months.setdefault(key, set()).add(f"{d.year}-{d.month:02d}")
         if granularity == "year":
             for yr, gross in (inc.yearly_gross or {}).items():
                 p = date(int(yr), 1, 1)
@@ -120,6 +130,35 @@ def get_unified_income(
                 d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
                 if in_range(d) and slip.gross_pay_period:
                     by_source[_bucket(d, granularity)]["salary"] += float(slip.gross_pay_period)
+
+    # --- recurring salary (salary_projections): counted as ACTUAL take-home
+    # for ELAPSED months a person has no payslip/W-2 coverage (user-confirmed;
+    # amounts are net until payslips are ingested). Not applied to weekly
+    # granularity — recurring rows carry no pay dates.
+    if granularity in ("month", "year"):
+        today = date.today()
+        for r in db.execute(text(
+            "SELECT person, monthly_net, effective_from, effective_to FROM salary_projections"
+        )).fetchall():
+            key = (r.person or "").split()[0].lower()
+            fy, fm = map(int, r.effective_from.split("-"))
+            if r.effective_to:
+                ty, tm = map(int, r.effective_to.split("-"))
+            else:
+                ty, tm = today.year, today.month
+            ty, tm = min((ty, tm), (today.year, today.month))
+            y, m = fy, fm
+            while (y, m) <= (ty, tm):
+                month_key = f"{y}-{m:02d}"
+                covered = (month_key in payslip_months.get(key, set())
+                           or (granularity == "year" and y in w2_years.get(key, set())))
+                if not covered:
+                    p = date(y, m, 1)
+                    if in_range(p) and r.monthly_net:
+                        by_source[_bucket(p, granularity)]["salary"] += float(r.monthly_net)
+                m += 1
+                if m > 12:
+                    y, m = y + 1, 1
 
     # --- rental (fixed): monthly table, dated the 1st of the month
     for r in db.execute(text("""

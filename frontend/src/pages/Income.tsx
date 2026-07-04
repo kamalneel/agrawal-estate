@@ -3105,7 +3105,6 @@ export function Income() {
       const s = p.by_source
       const monthKey = p.period.slice(0, 7)
       const salary = s.salary || 0
-      const salaryProj = salary === 0 && monthKey >= SALARY_START_MONTH ? PROJECTED_SALARY_MONTHLY : 0
       const total = (s.options || 0) + (s.equity_sales || 0) + (s.dividends || 0)
         + (s.interest || 0) + (s.lending || 0) + (s.rental || 0) + salary
       const d = new Date(p.period + 'T00:00:00')
@@ -3115,7 +3114,7 @@ export function Income() {
         options: s.options || 0, equity_sales: s.equity_sales || 0,
         dividends: s.dividends || 0, interest: s.interest || 0,
         lending: s.lending || 0, rental: s.rental || 0,
-        salary, salaryProj, total,
+        salary, total,
         highlighted: mainSelectedYear !== 'all' && mainSelectedMonth !== null
           && monthKey === `${mainSelectedYear}-${String(mainSelectedMonth).padStart(2, '0')}`,
       }
@@ -3347,9 +3346,10 @@ export function Income() {
   // Main view
   return (
     <div className={styles.page}>
-      {/* Level 1: unified income band — the page's single period control */}
+      {/* Level 1: unified income band — the page's single period control.
+          Salary since 2026-06 is recurring ACTUAL income (salary_projections
+          table) served by /income/unified; no client-side projection. */}
       <UnifiedIncomeBand
-        projectedSalary={{ monthly: PROJECTED_SALARY_MONTHLY, startMonth: SALARY_START_MONTH }}
         onPeriodChange={(g, periodIso) => {
           const d = new Date(periodIso + 'T00:00:00')
           setMainSelectedYear(d.getFullYear())
@@ -3363,11 +3363,8 @@ export function Income() {
       />
 
       {/* Yield tiles + refresh (period follows the band above) */}
-      <section className={styles.hero}>
-        <div className={styles.heroRight}>
-          <button onClick={fetchData} className={styles.heroRefresh} title="Refresh data">
-            <RefreshCw size={20} />
-          </button>
+      <section style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap', marginBottom: 'var(--space-6)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap', flex: 1 }}>
           {earningsSummary && (() => {
             const s = earningsSummary
             const allEarningsYears = s ? Object.keys(s.annual_earnings || {}).sort() : []
@@ -3378,7 +3375,7 @@ export function Income() {
               pct !== null && pct !== undefined ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : 'N/A'
 
             return (
-              <div className={styles.heroEarningsCards}>
+              <div className={styles.heroEarningsCards} style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
                 <div className={`${styles.heroEarningsCard} ${s.avg_monthly_earnings_pct !== null && s.avg_monthly_earnings_pct >= s.expected_monthly_earnings_pct ? styles.earningsSuccess : styles.earningsDanger}`}>
                   <span className={styles.heroEarningsLabel}>Avg Monthly</span>
                   <div className={styles.heroEarningsRight}>
@@ -3518,7 +3515,6 @@ export function Income() {
                       <th>Lending</th>
                       <th>Rent</th>
                       <th>Salary</th>
-                      <th style={{ color: 'var(--color-text-tertiary)' }}>Salary (proj.)</th>
                       <th>Total</th>
                     </tr>
                   </thead>
@@ -3539,7 +3535,6 @@ export function Income() {
                         <td>{d.lending !== 0 ? formatFullCurrency(d.lending) : '—'}</td>
                         <td>{d.rental !== 0 ? formatFullCurrency(d.rental) : '—'}</td>
                         <td>{d.salary !== 0 ? formatFullCurrency(d.salary) : '—'}</td>
-                        <td style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{d.salaryProj > 0 ? formatFullCurrency(d.salaryProj) : '—'}</td>
                         <td><strong style={{ color: d.total < 0 ? '#FF5A5A' : undefined }}>{formatFullCurrency(d.total)}</strong></td>
                       </tr>
                     ))}
@@ -3552,9 +3547,8 @@ export function Income() {
                         lending: acc.lending + d.lending,
                         rental: acc.rental + d.rental,
                         salary: acc.salary + d.salary,
-                        salaryProj: acc.salaryProj + d.salaryProj,
                         total: acc.total + d.total,
-                      }), { options: 0, equity_sales: 0, dividends: 0, interest: 0, lending: 0, rental: 0, salary: 0, salaryProj: 0, total: 0 })
+                      }), { options: 0, equity_sales: 0, dividends: 0, interest: 0, lending: 0, rental: 0, salary: 0, total: 0 })
                       return (
                         <tr className={styles.earningsTotalRow}>
                           <td><strong>Total</strong></td>
@@ -3565,7 +3559,6 @@ export function Income() {
                           <td><strong>{formatFullCurrency(t.lending)}</strong></td>
                           <td><strong>{formatFullCurrency(t.rental)}</strong></td>
                           <td><strong>{formatFullCurrency(t.salary)}</strong></td>
-                          <td style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{formatFullCurrency(t.salaryProj)}</td>
                           <td><strong>{formatFullCurrency(t.total)}</strong></td>
                         </tr>
                       )
