@@ -1414,3 +1414,29 @@ async def get_cost_basis_calculation(
         result["holding_exists"] = False
     
     return result
+
+
+# ===== Realized P/L (shared lot engine; income unification Phase 2) =====
+
+@router.get("/realized-pnl")
+async def get_realized_pnl(
+    granularity: str = Query(default="month", description="week (Friday-ending) | month | year"),
+    account_id: Optional[str] = Query(default=None),
+    start: Optional[date] = Query(default=None),
+    end: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Realized stock-sale P/L by period, all accounts (retirement included).
+
+    Backed by the shared lot engine (stock_lot_sale). Weeks end on Friday
+    per docs/INCOME-UNIFICATION-SPEC.md. Unresolved-basis rows are excluded
+    from P/L and surfaced via unresolved_count/unresolved_proceeds.
+    """
+    from app.shared.services.cost_basis_service import get_realized_pnl_by_period
+    try:
+        rows = get_realized_pnl_by_period(
+            db, granularity=granularity, account_id=account_id,
+            start=start, end=end)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"granularity": granularity, "account_id": account_id, "periods": rows}
