@@ -927,3 +927,27 @@ async def get_monthly_positions(db: Session = Depends(get_db)):
             cash[m] = last_cash
 
     return {"equity": equity, "cash": cash}
+
+
+# ===== Unified income (Phase 3 — docs/INCOME-UNIFICATION-SPEC.md) =====
+
+@router.get("/unified")
+async def get_unified_income_endpoint(
+    granularity: str = Query(default="month", description="week (Friday-ending) | month | year"),
+    start: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    end: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    db: Session = Depends(get_db)
+):
+    """ALL income in one view — fixed (salary, rent) + dynamic (options,
+    dividends, interest, lending, realized equity-sale P/L) — per period,
+    all accounts, actual-receipt basis, Friday-ending weeks.
+    """
+    from datetime import date as _date
+    from app.modules.income.unified_service import get_unified_income
+    try:
+        return get_unified_income(
+            db, granularity=granularity,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
