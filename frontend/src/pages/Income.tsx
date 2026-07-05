@@ -37,6 +37,7 @@ import clsx from 'clsx'
 import { UnifiedIncomeBand } from '../components/UnifiedIncomeBand/UnifiedIncomeBand'
 import { EquitySalesDetail, DrillRange } from '../components/EquitySalesDetail/EquitySalesDetail'
 import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
+import { accountRank } from '../lib/accountOrder'
 import {
   formatCurrency as sharedFormatCurrency,
   formatCurrencyShort,
@@ -3090,7 +3091,7 @@ export function Income() {
       const acctType = typeByName[name] || (optionsData?.by_account?.[name] as any)?.account_type || ''
       return { name, options, equity, divInt, total: options + equity + divInt, taxable: !NONTAX.has(acctType) }
     }).filter(r => r.options !== 0 || r.equity !== 0 || r.divInt !== 0)
-    rows.sort((a, b) => b.total - a.total)
+    rows.sort((a, b) => accountRank(a.name) - accountRank(b.name))
     return rows
   })()
 

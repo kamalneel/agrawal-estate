@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../../contexts/AuthContext'
+import { accountRank } from '../../lib/accountOrder'
 import styles from './EquitySalesDetail.module.css'
 
 const API_BASE = '/api/v1'
@@ -84,7 +85,7 @@ export function EquitySalesDetail({ onBack, initialRange }: EquitySalesDetailPro
       e.count += 1
       byAccount.set(r.account, e)
     }
-    const entries = [...byAccount.entries()].sort((a, b) => a[1].gain - b[1].gain)
+    const entries = [...byAccount.entries()].sort((a, b) => accountRank(a[0]) - accountRank(b[0]))
     return {
       taxable: entries.filter(([, v]) => v.taxable),
       nonTaxable: entries.filter(([, v]) => !v.taxable),

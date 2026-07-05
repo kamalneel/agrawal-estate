@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../../contexts/AuthContext'
+import { accountRank } from '../../lib/accountOrder'
 import styles from './UnifiedIncomeBand.module.css'
 
 const API_BASE = '/api/v1'
@@ -90,7 +91,7 @@ export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary }: 
 
   const p = cursor >= 0 ? periods[cursor] : undefined
   const accounts = useMemo(
-    () => Object.entries(p?.by_account || {}).sort((a, b) => b[1] - a[1]),
+    () => Object.entries(p?.by_account || {}).sort((a, b) => accountRank(a[0]) - accountRank(b[0])),
     [p]
   )
 
