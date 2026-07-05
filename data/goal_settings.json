@@ -1,14 +1,19 @@
 {
-  "description": "Income goal settings for the yield tracker (Objective 2 in docs/OBJECTIVES.md). Confirmed by Neel 2026-07-05. Margin limits are not exposed by Robinhood's API — update here when the lines change (Robinhood app > Margin Investing). Remaining/available margin IS pulled live via MCP (portfolio buying_power) for utilization display.",
+  "description": "Income goal settings for the yield tracker (Objective 2 in docs/OBJECTIVES.md). Confirmed by Neel 2026-07-05. Margin limits are not exposed by Robinhood's API \u2014 update here when the lines change (Robinhood app > Margin Investing). Remaining/available margin IS pulled live via MCP (portfolio buying_power) for utilization display.",
   "holdings_goal": {
     "monthly_target_pct": 1.0,
-    "income_counted": ["covered_call_premium", "dividends"],
+    "income_counted": [
+      "covered_call_premium",
+      "dividends"
+    ],
     "base": "market value of stock positions, all accounts"
   },
   "cash_goal": {
     "monthly_target_pct": 2.0,
-    "income_counted": ["put_premium"],
-    "base": "sum of margin_limits below (deployable put capacity, per Neel's definition 2026-07-05)"
+    "income_counted": [
+      "put_premium"
+    ],
+    "base": "dynamic put capacity via /income/put-capacity: margin lines + cash balance in margin accounts, plus cash incl. put collateral in all other accounts (IRAs/Roths/401k). Refined by Neel 2026-07-05."
   },
   "margin_limits": {
     "neel_brokerage": 250000,

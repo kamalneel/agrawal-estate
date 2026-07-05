@@ -2403,6 +2403,7 @@ export function Income() {
   const [realizedMonthly, setRealizedMonthly] = useState<Array<{ period: string; account_id: string; realized_pnl: number }>>([])
   // Yield-tracker goal settings (targets + margin limits)
   const [goalSettings, setGoalSettings] = useState<any>(null)
+  const [putCapacity, setPutCapacity] = useState<Record<string, { capacity: number; partial: boolean }>>({})
   // Period the user was viewing when they drilled into a source
   const [drillRange, setDrillRange] = useState<DrillRange | null>(null)
 
@@ -2437,7 +2438,7 @@ export function Income() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes, realizedRes, goalRes] = await Promise.all([
+      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes, realizedRes, goalRes, capacityRes] = await Promise.all([
         fetch(`${API_BASE}/income/summary`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/options`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/dividends`, { headers: getAuthHeaders() }),
@@ -2457,6 +2458,7 @@ export function Income() {
         fetch(`${API_BASE}/income/unified?granularity=month&taxable_only=true`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/investments/realized-pnl?granularity=month`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/goal-settings`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/put-capacity`, { headers: getAuthHeaders() }),
       ])
 
       if (summaryRes.ok) {
@@ -2534,6 +2536,10 @@ export function Income() {
       }
       if (goalRes.ok) {
         setGoalSettings(await goalRes.json())
+      }
+      if (capacityRes.ok) {
+        const data = await capacityRes.json()
+        setPutCapacity(Object.fromEntries((data.months || []).map((m: any) => [m.month, { capacity: m.capacity, partial: m.partial }])))
       }
     } catch (err) {
       console.error('Error fetching income data:', err)
@@ -3378,6 +3384,7 @@ export function Income() {
       <GoalsStrip
         year={mainSelectedYear}
         month={mainSelectedMonth}
+        capacityByMonth={putCapacity}
         optionsByType={optionsByTypeAll}
         dividendsByMonth={dividendsByMonth}
         equityByMonth={monthlyPositions.equity}

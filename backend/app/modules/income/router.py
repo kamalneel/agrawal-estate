@@ -965,3 +965,84 @@ async def get_goal_settings():
     if not path.exists():
         raise HTTPException(status_code=404, detail="goal_settings.json not found")
     return json.loads(path.read_text())
+
+
+@router.get("/put-capacity")
+async def get_put_capacity(db: Session = Depends(get_db)):
+    """Put-selling capacity ("cash" base for the 2%/mo goal), monthly.
+
+    capacity = sum over margin accounts of (margin line + cash balance;
+    negative cash = margin consumed by assignments) + cash incl. locked put
+    collateral in all other accounts (true_cash already includes collateral).
+    Margin lines come from data/goal_settings.json (not exposed by broker);
+    margin balances from statement history; per-account cash from sync
+    snapshots (history begins 2026-06; earlier months carry margin component
+    only and are flagged partial).
+    """
+    import json
+    from pathlib import Path
+    from sqlalchemy import text
+    from datetime import date as _date
+
+    settings_path = Path(__file__).resolve().parents[4] / "data" / "goal_settings.json"
+    limits = json.loads(settings_path.read_text()).get("margin_limits", {}) if settings_path.exists() else {}
+    id_to_name = {"neel_brokerage": "Neel's Brokerage", "jaya_brokerage": "Jaya's Brokerage"}
+    margin_names = set(id_to_name.values())
+
+    # margin component: statement monthly closing balances
+    margin_rows = db.execute(text(
+        "SELECT account_name, year, month, closing_balance FROM margin_monthly_balances"
+    )).fetchall()
+    margin_by_month: dict = {}
+    last_bal: dict = {}
+    for r in sorted(margin_rows, key=lambda x: (x.year, x.month)):
+        key = f"{r.year}-{r.month:02d}"
+        margin_by_month.setdefault(key, {})[r.account_name] = float(r.closing_balance or 0)
+
+    # per-account cash snapshots (true_cash includes locked collateral)
+    cash_rows = db.execute(text(
+        """SELECT account_name, snapshot_date, true_cash FROM account_cash_balance_history
+           WHERE account_name != 'Portfolio (Synthetic)' ORDER BY snapshot_date"""
+    )).fetchall()
+
+    today = _date.today()
+    months = sorted(set(margin_by_month) | {r.snapshot_date.strftime("%Y-%m") for r in cash_rows})
+    result = []
+    for mk in months:
+        if mk > today.strftime("%Y-%m"):
+            continue
+        month_end = mk + "-31"
+        # latest cash snapshot per account on/before month end (carry-forward)
+        latest: dict = {}
+        for r in cash_rows:
+            if r.snapshot_date.strftime("%Y-%m-%d") <= month_end:
+                latest[r.account_name] = float(r.true_cash or 0)
+        # margin balances: this month's, else carry forward
+        for acct, bal in margin_by_month.get(mk, {}).items():
+            last_bal[acct] = bal
+        margin_component = 0.0
+        cash_component = 0.0
+        have_cash_history = False
+        for acct_id, line in limits.items():
+            name = id_to_name.get(acct_id, acct_id)
+            # prefer live cash snapshot over statement history for the balance
+            bal = latest.get(name)
+            if bal is None:
+                bal = last_bal.get(acct_id, last_bal.get(name))
+            if bal is not None:
+                margin_component += line + bal
+            else:
+                margin_component += line
+        for name, cash in latest.items():
+            if name in margin_names:
+                continue
+            cash_component += cash
+            have_cash_history = True
+        result.append({
+            "month": mk,
+            "capacity": round(margin_component + cash_component, 2),
+            "margin_component": round(margin_component, 2),
+            "cash_component": round(cash_component, 2),
+            "partial": not have_cash_history,
+        })
+    return {"months": result, "current": result[-1] if result else None}

@@ -11,9 +11,15 @@ interface GoalSettings {
   margin_limits: Record<string, number>
 }
 
+interface CapacityMonth {
+  capacity: number
+  partial: boolean
+}
+
 interface GoalsStripProps {
   year: number | 'all'
   month: number | null
+  capacityByMonth: Record<string, CapacityMonth>
   optionsByType: Record<string, { calls: number; puts: number }>
   dividendsByMonth: Record<string, number>
   equityByMonth: Record<string, number>
@@ -30,7 +36,7 @@ function monthKey(y: number, m: number): string {
   return `${y}-${String(m).padStart(2, '0')}`
 }
 
-export function GoalsStrip({ year, month, optionsByType, dividendsByMonth, equityByMonth, liveEquity, settings }: GoalsStripProps) {
+export function GoalsStrip({ year, month, capacityByMonth, optionsByType, dividendsByMonth, equityByMonth, liveEquity, settings }: GoalsStripProps) {
   const now = new Date()
   const curKey = monthKey(now.getFullYear(), now.getMonth() + 1)
 
@@ -59,18 +65,33 @@ export function GoalsStrip({ year, month, optionsByType, dividendsByMonth, equit
       for (let m = 1; m <= last; m++) months.push(monthKey(year, m))
     }
 
+    // put capacity per month (margin lines + cash across accounts);
+    // carry the latest earlier month forward when a month is missing
+    const capKeys = Object.keys(capacityByMonth).sort()
+    const capacityFor = (key: string): CapacityMonth | null => {
+      if (capacityByMonth[key]) return capacityByMonth[key]
+      const earlier = capKeys.filter(k => k < key)
+      return earlier.length ? capacityByMonth[earlier[earlier.length - 1]] : null
+    }
+
     let holdingsIncome = 0, cashIncome = 0, holdingsTarget = 0, cashTarget = 0
     let baseShown: number | null = null
+    let cashBaseShown: number | null = null
+    let anyPartial = false
     for (const k of months) {
       const bt = optionsByType[k] || { calls: 0, puts: 0 }
       holdingsIncome += (bt.calls || 0) + (dividendsByMonth[k] || 0)
       cashIncome += bt.puts || 0
       const base = holdingsBase(k)
       baseShown = base ?? baseShown
+      const cap = capacityFor(k)
+      const cashBase = cap ? cap.capacity : marginTotal
+      cashBaseShown = cashBase
+      if (cap?.partial) anyPartial = true
       // current month targets are paced to today
       const paceFactor = k === curKey ? now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() : 1
       if (base) holdingsTarget += base * holdingsPct * paceFactor
-      cashTarget += marginTotal * cashPct * paceFactor
+      cashTarget += cashBase * cashPct * paceFactor
     }
 
     const isPaced = months.includes(curKey)
@@ -82,13 +103,15 @@ export function GoalsStrip({ year, month, optionsByType, dividendsByMonth, equit
       },
       cash: {
         income: cashIncome, target: cashTarget,
-        base: marginTotal, pct: marginTotal ? (cashIncome / marginTotal) * 100 : null,
+        base: cashBaseShown ?? marginTotal,
+        pct: cashBaseShown ? (cashIncome / cashBaseShown) * 100 : null,
         targetPct: settings.cash_goal.monthly_target_pct * (month !== null ? 1 : months.length),
       },
       isPaced,
+      anyPartial,
       nMonths: months.length,
     }
-  }, [settings, year, month, optionsByType, dividendsByMonth, equityByMonth, liveEquity])
+  }, [settings, year, month, capacityByMonth, optionsByType, dividendsByMonth, equityByMonth, liveEquity])
 
   if (!gauges) return null
 
@@ -100,7 +123,8 @@ export function GoalsStrip({ year, month, optionsByType, dividendsByMonth, equit
     },
     {
       title: `Cash Goal — ${settings!.cash_goal.monthly_target_pct}%/mo`,
-      sub: `puts on ${fmt(gauges.cash.base!)} margin capacity`,
+      sub: `puts on ${fmt(gauges.cash.base!)} put capacity (margin lines + cash)`
+        + (gauges.anyPartial ? ' — margin-only history before Jun 2026' : ''),
       g: gauges.cash,
     },
   ]
