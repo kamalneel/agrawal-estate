@@ -99,6 +99,26 @@ export function EquitySalesDetail({ onBack, initialRange }: EquitySalesDetailPro
     return ys
   }, [currentYear])
 
+  // Month navigation within the active year — click around without leaving.
+  const activeYear = range ? parseInt(range.start.slice(0, 4)) : (year === 'all' ? null : year)
+  const activeMonth = range && range.start.slice(0, 7) === range.end.slice(0, 7)
+    ? parseInt(range.start.slice(5, 7)) : null
+  const isWeekRange = !!range && range.label.startsWith('Week')
+
+  const selectMonth = (y: number, m: number | null) => {
+    if (m === null) {
+      setRange(null)
+      setYear(y)
+      return
+    }
+    const last = new Date(y, m, 0).getDate()
+    setRange({
+      start: `${y}-${String(m).padStart(2, '0')}-01`,
+      end: `${y}-${String(m).padStart(2, '0')}-${String(last).padStart(2, '0')}`,
+      label: new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+    })
+  }
+
   return (
     <div className={styles.detail}>
       <button className={styles.backButton} onClick={onBack}>
@@ -134,13 +154,13 @@ export function EquitySalesDetail({ onBack, initialRange }: EquitySalesDetailPro
       </div>
 
       <div className={styles.yearSelector}>
-        {range && (
+        {isWeekRange && (
           <button
             className={clsx(styles.yearButton, styles.active)}
             onClick={() => setRange(null)}
             title="Clear period filter"
           >
-            {range.label} ✕
+            {range!.label} ✕
           </button>
         )}
         <button
@@ -152,13 +172,33 @@ export function EquitySalesDetail({ onBack, initialRange }: EquitySalesDetailPro
         {years.map(y => (
           <button
             key={y}
-            className={clsx(styles.yearButton, !range && year === y && styles.active)}
+            className={clsx(styles.yearButton, activeYear === y && !activeMonth && !isWeekRange ? styles.active : undefined)}
             onClick={() => { setRange(null); setYear(y) }}
           >
             {y}
           </button>
         ))}
       </div>
+
+      {activeYear !== null && (
+        <div className={styles.yearSelector}>
+          <button
+            className={clsx(styles.yearButton, !range && styles.active)}
+            onClick={() => selectMonth(activeYear, null)}
+          >
+            Full Year {activeYear}
+          </button>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => (
+            <button
+              key={m}
+              className={clsx(styles.yearButton, activeMonth === m && styles.active)}
+              onClick={() => selectMonth(activeYear, m)}
+            >
+              {new Date(activeYear, m - 1, 1).toLocaleDateString('en-US', { month: 'short' })}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Where did the P/L land — taxable vs non-taxable, by account */}
       {!loading && sales.length > 0 && (
