@@ -1285,7 +1285,7 @@
 
 .earningsHighlightCol {
   background: rgba(0, 214, 50, 0.06);
-  color: var(--color-accent) !important;
+  color: var(--color-accent); /* sign-based inline colors must win */
 }
 
 .taxableToggle {
