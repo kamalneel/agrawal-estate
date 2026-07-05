@@ -1574,6 +1574,17 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
     return makeIncomeColumns(`${monthName} ${now.getFullYear()}`)
   })
   
+  // Realized equity sales for this account (per-sale, from the lot engine)
+  const [acctSales, setAcctSales] = useState<any[]>([])
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE}/investments/realized-pnl/sales?year=${selectedYear}`, { headers: getAuthHeaders() })
+      .then(r => (r.ok ? r.json() : { sales: [] }))
+      .then(d => { if (!cancelled) setAcctSales((d.sales || []).filter((s: any) => s.account === accountName)) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [selectedYear, accountName])
+
   // Handle year change - month selection is preserved across year changes
   const handleYearChange = (year: number) => {
     setSelectedYear(year)
@@ -1733,7 +1744,16 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
   const yearOptionsTotal = filteredOptions.reduce((sum, d) => sum + d.value, 0)
   const yearDividendsTotal = filteredDividends.reduce((sum, d) => sum + d.value, 0)
   const yearInterestTotal = filteredInterest.reduce((sum, d) => sum + d.value, 0)
-  const yearTotalIncome = yearOptionsTotal + yearDividendsTotal + yearInterestTotal
+  const periodSales = selectedMonth === null
+    ? acctSales
+    : acctSales.filter((s: any) => parseInt(s.sale_date.slice(5, 7), 10) === selectedMonth)
+  const yearEquityTotal = periodSales.reduce((s: number, r: any) => s + r.gain_loss, 0)
+  const equityByMonth: Record<string, number> = {}
+  for (const r of acctSales) {
+    const k = r.sale_date.slice(0, 7)
+    equityByMonth[k] = (equityByMonth[k] || 0) + r.gain_loss
+  }
+  const yearTotalIncome = yearOptionsTotal + yearDividendsTotal + yearInterestTotal + yearEquityTotal
   
   // Count months with income for selected period
   const yearOptionsMonths = filteredOptions.filter(d => d.value !== 0).length
@@ -1813,181 +1833,71 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
         </div>
       )}
 
-      {/* Three Charts Grid */}
-      <div className={styles.chartsGrid}>
-        {/* Options Chart */}
-        <section className={styles.chartSection}>
-          <div className={styles.chartHeader}>
-            <h2>Options Income</h2>
-            <div className={styles.chartTotal}>
-              {formatCurrency(yearOptionsTotal)}
-            </div>
-          </div>
-
-          {filteredOptions.length > 0 ? (
-            <div className={styles.chartContainer}>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={filteredOptions} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <CartesianGrid {...GRID_PROPS} />
-                  <XAxis
-                    dataKey="formatted"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    dy={10}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    tickFormatter={(v) => `$${(v / 1000).toFixed(0)}K`}
-                    width={50}
-                  />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="value" fill="#00D632" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className={styles.chartEmpty}>No options data for {periodLabel}</div>
-          )}
-        </section>
-
-        {/* Dividends Chart */}
-        <section className={styles.chartSection}>
-          <div className={styles.chartHeader}>
-            <h2>Dividend Income</h2>
-            <div className={styles.chartTotal} style={{ color: '#00A3FF' }}>
-              {formatCurrency(yearDividendsTotal)}
-            </div>
-          </div>
-
-          {filteredDividends.length > 0 ? (
-            <div className={styles.chartContainer}>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={filteredDividends} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <CartesianGrid {...GRID_PROPS} />
-                  <XAxis
-                    dataKey="formatted"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    dy={10}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    tickFormatter={(v) => `$${v.toFixed(0)}`}
-                    width={50}
-                  />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="value" fill="#00A3FF" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className={styles.chartEmpty}>No dividend data for {periodLabel}</div>
-          )}
-        </section>
-
-        {/* Interest Chart */}
-        <section className={styles.chartSection}>
-          <div className={styles.chartHeader}>
-            <h2>Interest Income</h2>
-            <div className={styles.chartTotal} style={{ color: '#FFB800' }}>
-              {formatCurrency(yearInterestTotal)}
-            </div>
-          </div>
-
-          {filteredInterest.length > 0 ? (
-            <div className={styles.chartContainer}>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={filteredInterest} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                  <CartesianGrid {...GRID_PROPS} />
-                  <XAxis
-                    dataKey="formatted"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    dy={10}
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: '#737373', fontSize: 10 }}
-                    tickFormatter={(v) => `$${v.toFixed(0)}`}
-                    width={50}
-                  />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="value" fill="#FFB800" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className={styles.chartEmpty}>No interest data for {periodLabel}</div>
-          )}
-        </section>
-      </div>
-
-      {/* Income Summary Cards */}
+      {/* Source chips — hierarchy first, zeros dimmed */}
       <section className={styles.accountsSection}>
         <h2>{periodLabel} Income Breakdown</h2>
-        <div className={styles.accountsGrid} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-          <div className={styles.accountCard} style={{ cursor: 'default' }}>
-            <div className={styles.accountHeader}>
-              <div className={styles.accountIcon} style={{ background: 'rgba(0, 214, 50, 0.15)', color: '#00D632' }}>
-                <TrendingUp size={20} />
-              </div>
-              <div>
-                <h3 className={styles.accountName}>Options</h3>
-                <span className={styles.accountType}>{yearOptionsMonths} months with income</span>
-              </div>
-            </div>
-            <div className={styles.accountStats}>
-              <div className={styles.accountStat}>
-                <span className={styles.accountStatLabel}>{periodLabel} Total</span>
-                <span className={styles.accountStatValue}>{formatCurrency(yearOptionsTotal)}</span>
+        <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+          {([
+            ['Options', yearOptionsTotal, '#00D632'],
+            ['Equity Sales', yearEquityTotal, '#00A3FF'],
+            ['Dividends', yearDividendsTotal, '#A855F7'],
+            ['Interest', yearInterestTotal, '#FFB800'],
+          ] as Array<[string, number, string]>).map(([label, v, c]) => (
+            <div key={label} style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 16px', minWidth: 140 }}>
+              <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{label}</div>
+              <div style={{ fontWeight: 700, fontSize: 17, fontVariantNumeric: 'tabular-nums', color: v === 0 ? 'var(--color-text-tertiary)' : v < 0 ? '#FF5A5A' : c }}>
+                {v === 0 ? '—' : formatFullCurrency(v)}
               </div>
             </div>
-          </div>
-
-          <div className={styles.accountCard} style={{ cursor: 'default' }}>
-            <div className={styles.accountHeader}>
-              <div className={styles.accountIcon} style={{ background: 'rgba(0, 163, 255, 0.15)', color: '#00A3FF' }}>
-                <DollarSign size={20} />
-              </div>
-              <div>
-                <h3 className={styles.accountName}>Dividends</h3>
-                <span className={styles.accountType}>{yearDividendsMonths} months with income</span>
-              </div>
-            </div>
-            <div className={styles.accountStats}>
-              <div className={styles.accountStat}>
-                <span className={styles.accountStatLabel}>{periodLabel} Total</span>
-                <span className={styles.accountStatValue} style={{ color: '#00A3FF' }}>{formatCurrency(yearDividendsTotal)}</span>
-              </div>
-            </div>
-          </div>
-
-          <div className={styles.accountCard} style={{ cursor: 'default' }}>
-            <div className={styles.accountHeader}>
-              <div className={styles.accountIcon} style={{ background: 'rgba(255, 184, 0, 0.15)', color: '#FFB800' }}>
-                <PiggyBank size={20} />
-              </div>
-              <div>
-                <h3 className={styles.accountName}>Interest</h3>
-                <span className={styles.accountType}>{yearInterestMonths} months with income</span>
-              </div>
-            </div>
-            <div className={styles.accountStats}>
-              <div className={styles.accountStat}>
-                <span className={styles.accountStatLabel}>{periodLabel} Total</span>
-                <span className={styles.accountStatValue} style={{ color: '#FFB800' }}>{formatCurrency(yearInterestTotal)}</span>
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
+      </section>
+
+      {/* One combined monthly chart, sign-colored */}
+      <section className={styles.chartSection}>
+        <div className={styles.chartHeader}>
+          <h2>Monthly Income</h2>
+          <div className={styles.chartTotal}>{formatCurrency(yearTotalIncome)}</div>
+        </div>
+        {(() => {
+          const map: Record<string, number> = {}
+          for (const d of filteredOptions) map[d.month] = (map[d.month] || 0) + d.value
+          for (const d of filteredDividends) map[d.month] = (map[d.month] || 0) + d.value
+          for (const d of filteredInterest) map[d.month] = (map[d.month] || 0) + d.value
+          for (const [k, v] of Object.entries(equityByMonth)) {
+            if (!k.startsWith(`${selectedYear}-`)) continue
+            if (selectedMonth !== null && parseInt(k.slice(5, 7), 10) !== selectedMonth) continue
+            map[k] = (map[k] || 0) + v
+          }
+          const data = Object.entries(map)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([month, value]) => ({ month, formatted: formatMonthKey(month), value }))
+          if (data.length === 0) return <div className={styles.chartEmpty}>No income for {periodLabel}</div>
+          return (
+            <div className={styles.chartContainer}>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={data} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
+                  <CartesianGrid {...GRID_PROPS} />
+                  <XAxis dataKey="formatted" stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} tickFormatter={formatYAxis} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    formatter={(value: number) => [
+                      <span key="v" style={{ color: value < 0 ? '#FF5A5A' : '#00D632', fontWeight: 600 }}>{formatFullCurrency(value)}</span>,
+                      'Income',
+                    ]}
+                    contentStyle={{ background: '#1A1A1A', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px' }}
+                  />
+                  <ReferenceLine y={0} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
+                  <Bar dataKey="value" name="Income" radius={[4, 4, 0, 0]}>
+                    {data.map((d, i) => (
+                      <Cell key={i} fill={d.value < 0 ? '#FF5A5A' : '#00D632'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )
+        })()}
       </section>
 
       {/* Income by Holding Table */}
@@ -1999,6 +1909,33 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             columns={incomeColumns}
             defaultSortKey="totalIncome"
           />
+        </section>
+      )}
+
+      {/* Equity sales for the period */}
+      {periodSales.length > 0 && (
+        <section className={styles.transactionsSection}>
+          <h2>Equity Sales — {periodLabel}</h2>
+          <div className={styles.earningsTableContainer}>
+            <table className={styles.earningsTable}>
+              <thead>
+                <tr><th>Date</th><th>Symbol</th><th>Qty</th><th>Proceeds</th><th>Basis</th><th>Gain / Loss</th><th>Term</th></tr>
+              </thead>
+              <tbody>
+                {periodSales.map((r: any, i: number) => (
+                  <tr key={i}>
+                    <td>{r.sale_date}</td>
+                    <td><strong>{r.symbol}</strong></td>
+                    <td>{r.quantity.toLocaleString('en-US', { maximumFractionDigits: 2 })}</td>
+                    <td>{formatFullCurrency(r.proceeds)}</td>
+                    <td>{formatFullCurrency(r.cost_basis)}</td>
+                    <td style={{ color: r.gain_loss < 0 ? '#FF5A5A' : '#00D632', fontWeight: 600 }}>{formatFullCurrency(r.gain_loss)}</td>
+                    <td>{r.is_long_term ? 'LT' : 'ST'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
@@ -3706,49 +3643,51 @@ export function Income() {
             : mainSelectedMonth !== null
               ? `(${new Date(typeof mainSelectedYear === 'number' ? mainSelectedYear : currentYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
               : `(${mainSelectedYear})`}</h2>
-          <div className={styles.earningsTableContainer}>
-            <table className={styles.earningsTable}>
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th className={styles.earningsHighlightCol}>Options</th>
-                  <th className={styles.earningsHighlightCol}>Equity</th>
-                  <th>Div + Int</th>
-                  <th>Total</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {accountRows.map(r => (
-                  <tr
-                    key={r.name}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => { setSelectedAccount(r.name); setView('account') }}
-                    title={`Open ${r.name}`}
-                  >
-                    <td>
-                      <strong>{r.name}</strong>{' '}
-                      <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: r.taxable ? '#FFB800' : '#737373' }}>
-                        {r.taxable ? 'taxable' : 'sheltered'}
-                      </span>
-                    </td>
-                    <td className={styles.earningsHighlightCol} style={{ color: r.options === 0 ? 'var(--color-text-tertiary)' : r.options < 0 ? '#FF5A5A' : '#00D632' }}>
+          <div className={styles.accountsGrid}>
+            {accountRows.map(r => (
+              <button
+                key={r.name}
+                className={styles.accountCard}
+                style={{ textAlign: 'left', cursor: 'pointer' }}
+                onClick={() => { setSelectedAccount(r.name); setView('account') }}
+                title={`Open ${r.name}`}
+              >
+                <div className={styles.accountHeader}>
+                  <div>
+                    <h3 className={styles.accountName}>{r.name}</h3>
+                    <span className={styles.accountType} style={{ color: r.taxable ? '#FFB800' : '#737373' }}>
+                      {r.taxable ? 'Taxable' : 'Sheltered'}
+                    </span>
+                  </div>
+                  <div style={{ marginLeft: 'auto', fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: r.total < 0 ? '#FF5A5A' : '#00D632' }}>
+                    {formatFullCurrency(r.total)}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--space-5)', marginTop: 'var(--space-3)' }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Options</div>
+                    <div style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: r.options === 0 ? 'var(--color-text-tertiary)' : r.options < 0 ? '#FF5A5A' : '#00D632' }}>
                       {r.options !== 0 ? formatFullCurrency(r.options) : '—'}
-                    </td>
-                    <td className={styles.earningsHighlightCol} style={{ color: r.equity === 0 ? 'var(--color-text-tertiary)' : r.equity < 0 ? '#FF5A5A' : '#00A3FF' }}>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Equity</div>
+                    <div style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: r.equity === 0 ? 'var(--color-text-tertiary)' : r.equity < 0 ? '#FF5A5A' : '#00A3FF' }}>
                       {r.equity !== 0 ? formatFullCurrency(r.equity) : '—'}
-                    </td>
-                    <td style={{ color: r.divInt === 0 ? 'var(--color-text-tertiary)' : undefined }}>
-                      {r.divInt !== 0 ? formatFullCurrency(r.divInt) : '—'}
-                    </td>
-                    <td>
-                      <strong style={{ color: r.total < 0 ? '#FF5A5A' : '#00D632' }}>{formatFullCurrency(r.total)}</strong>
-                    </td>
-                    <td style={{ color: 'var(--color-text-tertiary)', fontSize: 12 }}>charts →</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </div>
+                  </div>
+                  {r.divInt !== 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Div + Int</div>
+                      <div style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: 'var(--color-text-secondary)' }}>
+                        {formatFullCurrency(r.divInt)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div style={{ marginTop: 'var(--space-3)', fontSize: 12, color: 'var(--color-text-tertiary)' }}>View details →</div>
+              </button>
+            ))}
           </div>
         </section>
       )}
