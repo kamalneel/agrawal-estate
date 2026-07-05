@@ -1466,7 +1466,7 @@ async def list_realized_sales(
         where.append("l.symbol = :sym"); params["sym"] = symbol.upper()
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     rows = db.execute(text(f"""
-        SELECT s.sale_date, a.account_name, l.symbol, s.quantity_sold,
+        SELECT s.sale_date, a.account_name, a.account_type, l.symbol, s.quantity_sold,
                s.proceeds, s.cost_basis, s.gain_loss, s.is_long_term, s.notes
         FROM stock_lot_sale s
         JOIN stock_lot l ON l.lot_id = s.lot_id
@@ -1474,8 +1474,10 @@ async def list_realized_sales(
         {where_sql}
         ORDER BY s.sale_date DESC, l.symbol
     """), params).fetchall()
+    non_taxable = ('ira', 'roth_ira', 'traditional_ira', '401k', 'hsa', 'retirement')
     return {"sales": [{
         "sale_date": str(r.sale_date), "account": r.account_name or "—",
+        "taxable": (r.account_type or '') not in non_taxable,
         "symbol": r.symbol, "quantity": float(r.quantity_sold),
         "proceeds": float(r.proceeds), "cost_basis": float(r.cost_basis),
         "gain_loss": float(r.gain_loss), "is_long_term": r.is_long_term,

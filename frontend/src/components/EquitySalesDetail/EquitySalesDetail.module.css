@@ -160,3 +160,97 @@
   color: var(--color-text-tertiary);
   padding: var(--space-6, 24px) !important;
 }
+
+.groupsRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4, 16px);
+}
+
+@media (max-width: 720px) {
+  .groupsRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.groupCard {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-4, 16px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+.groupHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--space-2, 8px);
+}
+
+.groupTitle {
+  font-size: var(--font-size-xs, 12px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+}
+
+.groupAccount {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid transparent;
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm, 6px);
+  padding: 6px 10px;
+  font-size: var(--font-size-sm, 13px);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.groupAccount:hover {
+  border-color: var(--color-border-hover);
+}
+
+.groupAccountActive {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.groupCount {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs, 12px);
+}
+
+.groupEmpty {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm, 13px);
+}
+
+.filterNote {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-size: var(--font-size-sm, 13px);
+  color: var(--color-text-secondary);
+}
+
+.clearFilter {
+  border: none;
+  background: transparent;
+  color: var(--color-accent);
+  cursor: pointer;
+  font-size: var(--font-size-sm, 13px);
+  padding: 0;
+}
+
+.taxBadge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
