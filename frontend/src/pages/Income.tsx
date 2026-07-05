@@ -3536,7 +3536,10 @@ export function Income() {
                   <XAxis dataKey="formatted" stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} tickFormatter={formatYAxis} axisLine={false} tickLine={false} />
                   <Tooltip
-                    formatter={(value: number, name: string) => [formatFullCurrency(value), name]}
+                    formatter={(value: number, name: string) => [
+                      <span key="v" style={{ color: value < 0 ? '#FF5A5A' : '#00D632', fontWeight: 600 }}>{formatFullCurrency(value)}</span>,
+                      name,
+                    ]}
                     contentStyle={{ background: '#1A1A1A', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px' }}
                   />
                   <Legend />
@@ -3557,17 +3560,38 @@ export function Income() {
                       <Bar dataKey="rental" name="Rent" stackId="src" fill="#FFB800" />
                       <Bar dataKey="div_int" name="Div + Int" stackId="src" fill="#06B6D4" />
                     </>
-                  ) : (
-                    <Area type="monotone" dataKey="actual" name="Income" fill="rgba(0, 214, 50, 0.15)" stroke="#00D632" strokeWidth={2}
-                      dot={(props: any) => {
-                        const { cx, cy, payload } = props
-                        if (payload?.highlighted) {
-                          return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={6} fill="#00D632" stroke="#0D0D0D" strokeWidth={2} />
-                        }
-                        return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={3} fill="#00D632" fillOpacity={0.6} />
-                      }}
-                    />
-                  )}
+                  ) : (() => {
+                    // split green/red at the zero crossing so losses read as losses
+                    const vals = earningsChartData.map((d: any) => d.actual || 0)
+                    const mx = Math.max(...vals, 0)
+                    const mn = Math.min(...vals, 0)
+                    const zero = mx <= 0 ? 0 : mn >= 0 ? 1 : mx / (mx - mn)
+                    return (
+                      <>
+                        <defs>
+                          <linearGradient id="splitFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset={zero} stopColor="#00D632" stopOpacity={0.22} />
+                            <stop offset={zero} stopColor="#FF5A5A" stopOpacity={0.28} />
+                          </linearGradient>
+                          <linearGradient id="splitStroke" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset={zero} stopColor="#00D632" />
+                            <stop offset={zero} stopColor="#FF5A5A" />
+                          </linearGradient>
+                        </defs>
+                        <ReferenceLine y={0} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
+                        <Area type="monotone" dataKey="actual" name="Income" fill="url(#splitFill)" stroke="url(#splitStroke)" strokeWidth={2}
+                          dot={(props: any) => {
+                            const { cx, cy, payload } = props
+                            const c = (payload?.actual ?? 0) < 0 ? '#FF5A5A' : '#00D632'
+                            if (payload?.highlighted) {
+                              return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={6} fill={c} stroke="#0D0D0D" strokeWidth={2} />
+                            }
+                            return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={3.5} fill={c} fillOpacity={0.9} />
+                          }}
+                        />
+                      </>
+                    )
+                  })()}
                 </ComposedChart>
               </ResponsiveContainer>
             ) : (
@@ -3658,12 +3682,12 @@ export function Income() {
                       <tr
                         key={idx}
                         className={clsx(
-                          styles.earningsPositiveRow,
+                          d.actual >= 0 ? styles.earningsPositiveRow : styles.earningsNegativeRow,
                           d.highlighted && styles.earningsHighlightedRow
                         )}
                       >
                         <td><strong>{d.formatted}</strong></td>
-                        <td>{formatFullCurrency(d.actual)}</td>
+                        <td style={{ color: d.actual < 0 ? '#FF5A5A' : '#00D632', fontWeight: 600 }}>{formatFullCurrency(d.actual)}</td>
                       </tr>
                     ))}
                   </tbody>
