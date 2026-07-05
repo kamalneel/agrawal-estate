@@ -936,6 +936,7 @@ async def get_unified_income_endpoint(
     granularity: str = Query(default="month", description="week (Friday-ending) | month | year"),
     start: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
     end: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    taxable_only: bool = Query(default=False, description="Only taxable-account investment income (salary/rental always included)"),
     db: Session = Depends(get_db)
 ):
     """ALL income in one view — fixed (salary, rent) + dynamic (options,
@@ -948,6 +949,7 @@ async def get_unified_income_endpoint(
         return get_unified_income(
             db, granularity=granularity,
             start=_date.fromisoformat(start) if start else None,
-            end=_date.fromisoformat(end) if end else None)
+            end=_date.fromisoformat(end) if end else None,
+            taxable_only=taxable_only)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

@@ -480,6 +480,7 @@ def get_realized_pnl_by_period(
     account_id: Optional[str] = None,
     start: Optional[date] = None,
     end: Optional[date] = None,
+    taxable_only: bool = False,
 ) -> List[Dict]:
     """Realized stock-sale P/L aggregated by period across ALL accounts
     (retirement included — income is tax-independent; see the
@@ -500,6 +501,11 @@ def get_realized_pnl_by_period(
     if end:
         where.append("s.sale_date <= :end")
         params["end"] = end
+    if taxable_only:
+        where.append("""l.account_id IN (
+            SELECT account_id FROM investment_accounts
+            WHERE account_type NOT IN ('ira', 'roth_ira', 'traditional_ira',
+                                       '401k', 'hsa', 'retirement'))""")
     where_sql = ("AND " + " AND ".join(where)) if where else ""
 
     rows = db.execute(_text(f"""

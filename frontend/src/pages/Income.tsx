@@ -2459,6 +2459,7 @@ export function Income() {
   const [monthlyPositions, setMonthlyPositions] = useState<{ equity: Record<string, number>; cash: Record<string, number> }>({ equity: {}, cash: {} })
   // Unified income (monthly) — source for equity-sales/lending in the hero total
   const [unifiedMonthly, setUnifiedMonthly] = useState<Array<{ period: string; total: number; by_source: Record<string, number> }>>([])
+  const [unifiedMonthlyTaxable, setUnifiedMonthlyTaxable] = useState<Array<{ period: string; total: number; by_source: Record<string, number> }>>([])
   // Period the user was viewing when they drilled into a source
   const [drillRange, setDrillRange] = useState<DrillRange | null>(null)
 
@@ -2493,7 +2494,7 @@ export function Income() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes] = await Promise.all([
+      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes] = await Promise.all([
         fetch(`${API_BASE}/income/summary`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/options`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/dividends`, { headers: getAuthHeaders() }),
@@ -2510,6 +2511,7 @@ export function Income() {
         fetch(`${API_BASE}/ingestion/robinhood-cash/balances`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/monthly-positions`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/unified?granularity=month`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/unified?granularity=month&taxable_only=true`, { headers: getAuthHeaders() }),
       ])
 
       if (summaryRes.ok) {
@@ -2576,6 +2578,10 @@ export function Income() {
       if (unifiedRes.ok) {
         const data = await unifiedRes.json()
         setUnifiedMonthly(data.periods || [])
+      }
+      if (unifiedTaxRes.ok) {
+        const data = await unifiedTaxRes.json()
+        setUnifiedMonthlyTaxable(data.periods || [])
       }
     } catch (err) {
       console.error('Error fetching income data:', err)
@@ -2855,7 +2861,7 @@ export function Income() {
       case 'all':
       default: {
         // Unified income actuals (same definition as the band and the table)
-        return unifiedMonthly
+        return (taxableOnly ? unifiedMonthlyTaxable : unifiedMonthly)
           .filter(p => mainSelectedYear === 'all' || p.period.startsWith(`${mainSelectedYear}-`))
           .map(p => {
             const monthKey = p.period.slice(0, 7)
@@ -3104,7 +3110,7 @@ export function Income() {
 
   // Level-3 table rows: straight from the unified income service (actuals);
   // projected salary shown as its own labeled column, never in totals.
-  const unifiedTableRows = unifiedMonthly
+  const unifiedTableRows = (taxableOnly ? unifiedMonthlyTaxable : unifiedMonthly)
     .filter(p => mainSelectedYear === 'all' || p.period.startsWith(`${mainSelectedYear}-`))
     .map(p => {
       const s = p.by_source
@@ -3542,19 +3548,19 @@ export function Income() {
                       <tr
                         key={d.monthKey}
                         className={clsx(
-                          styles.earningsPositiveRow,
+                          d.total >= 0 ? styles.earningsPositiveRow : styles.earningsNegativeRow,
                           d.highlighted && styles.earningsHighlightedRow
                         )}
                       >
                         <td><strong>{d.label}</strong></td>
                         <td className={styles.earningsHighlightCol} style={{ color: d.options < 0 ? '#FF5A5A' : '#00D632' }}>{d.options !== 0 ? formatFullCurrency(d.options) : '—'}</td>
                         <td className={styles.earningsHighlightCol} style={{ color: d.equity_sales < 0 ? '#FF5A5A' : '#00D632' }}>{d.equity_sales !== 0 ? formatFullCurrency(d.equity_sales) : '—'}</td>
-                        <td>{d.dividends !== 0 ? formatFullCurrency(d.dividends) : '—'}</td>
-                        <td>{d.interest !== 0 ? formatFullCurrency(d.interest) : '—'}</td>
-                        <td>{d.lending !== 0 ? formatFullCurrency(d.lending) : '—'}</td>
-                        <td>{d.rental !== 0 ? formatFullCurrency(d.rental) : '—'}</td>
-                        <td>{d.salary !== 0 ? formatFullCurrency(d.salary) : '—'}</td>
-                        <td><strong style={{ color: d.total < 0 ? '#FF5A5A' : undefined }}>{formatFullCurrency(d.total)}</strong></td>
+                        <td style={{ color: d.dividends < 0 ? '#FF5A5A' : undefined }}>{d.dividends !== 0 ? formatFullCurrency(d.dividends) : '—'}</td>
+                        <td style={{ color: d.interest < 0 ? '#FF5A5A' : undefined }}>{d.interest !== 0 ? formatFullCurrency(d.interest) : '—'}</td>
+                        <td style={{ color: d.lending < 0 ? '#FF5A5A' : undefined }}>{d.lending !== 0 ? formatFullCurrency(d.lending) : '—'}</td>
+                        <td style={{ color: d.rental < 0 ? '#FF5A5A' : undefined }}>{d.rental !== 0 ? formatFullCurrency(d.rental) : '—'}</td>
+                        <td style={{ color: d.salary < 0 ? '#FF5A5A' : undefined }}>{d.salary !== 0 ? formatFullCurrency(d.salary) : '—'}</td>
+                        <td><strong style={{ color: d.total < 0 ? '#FF5A5A' : '#00D632' }}>{formatFullCurrency(d.total)}</strong></td>
                       </tr>
                     ))}
                     {unifiedTableRows.length > 1 && (() => {

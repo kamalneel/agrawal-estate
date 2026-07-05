@@ -51,12 +51,19 @@ def _bucket(d: date, granularity: str) -> date:
     return date(d.year, 1, 1)
 
 
+NON_TAXABLE_ACCOUNT_TYPES = ('ira', 'roth_ira', 'traditional_ira', '401k',
+                             'hsa', 'retirement')
+
+
 def get_unified_income(
     db: Session,
     granularity: str = "month",
     start: Optional[date] = None,
     end: Optional[date] = None,
+    taxable_only: bool = False,
 ) -> Dict:
+    """taxable_only limits brokerage-sourced income to taxable accounts;
+    salary and rental are always taxable and stay included."""
     if granularity not in _PERIOD_EXPR:
         raise ValueError(f"granularity must be one of {list(_PERIOD_EXPR)}")
 
@@ -76,6 +83,9 @@ def get_unified_income(
     if end:
         where.append("t.transaction_date <= :end")
         params["end"] = end
+    if taxable_only:
+        ntt = ", ".join(f"'{t}'" for t in NON_TAXABLE_ACCOUNT_TYPES)
+        where.append(f"a.account_type NOT IN ({ntt})")
     where_sql = ("AND " + " AND ".join(where)) if where else ""
     rows = db.execute(text(f"""
         SELECT {_PERIOD_EXPR[granularity]} AS period,
@@ -94,7 +104,8 @@ def get_unified_income(
 
     # --- realized equity-sale P/L (shared lot engine)
     for r in get_realized_pnl_by_period(db, granularity=granularity,
-                                        start=start, end=end):
+                                        start=start, end=end,
+                                        taxable_only=taxable_only):
         p = date.fromisoformat(r["period"])
         by_source[p]["equity_sales"] += r["realized_pnl"]
         acct = db.execute(text(
