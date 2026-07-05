@@ -2460,6 +2460,8 @@ export function Income() {
   // Unified income (monthly) — source for equity-sales/lending in the hero total
   const [unifiedMonthly, setUnifiedMonthly] = useState<Array<{ period: string; total: number; by_source: Record<string, number> }>>([])
   const [unifiedMonthlyTaxable, setUnifiedMonthlyTaxable] = useState<Array<{ period: string; total: number; by_source: Record<string, number> }>>([])
+  // Per-account realized equity P/L by month (for the By Account table)
+  const [realizedMonthly, setRealizedMonthly] = useState<Array<{ period: string; account_id: string; realized_pnl: number }>>([])
   // Period the user was viewing when they drilled into a source
   const [drillRange, setDrillRange] = useState<DrillRange | null>(null)
 
@@ -2473,7 +2475,7 @@ export function Income() {
 
   // Earnings chart state
   const [earningsSummary, setEarningsSummary] = useState<any>(null)
-  const [earningsView, setEarningsView] = useState<'all' | 'options' | 'dividends' | 'interest' | 'rental'>('all')
+  const [earningsView, setEarningsView] = useState<'all' | 'options' | 'equity_sales' | 'salary' | 'rental' | 'div_int'>('all')
   const [taxableOnly, setTaxableOnly] = useState(false)
   // BBD metrics for options expected values (1% of portfolio/month)
   const [optionsExpectedByMonth, setOptionsExpectedByMonth] = useState<Record<string, number>>({})
@@ -2494,7 +2496,7 @@ export function Income() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes] = await Promise.all([
+      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes, realizedRes] = await Promise.all([
         fetch(`${API_BASE}/income/summary`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/options`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/dividends`, { headers: getAuthHeaders() }),
@@ -2512,6 +2514,7 @@ export function Income() {
         fetch(`${API_BASE}/income/monthly-positions`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/unified?granularity=month`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/unified?granularity=month&taxable_only=true`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/investments/realized-pnl?granularity=month`, { headers: getAuthHeaders() }),
       ])
 
       if (summaryRes.ok) {
@@ -2582,6 +2585,10 @@ export function Income() {
       if (unifiedTaxRes.ok) {
         const data = await unifiedTaxRes.json()
         setUnifiedMonthlyTaxable(data.periods || [])
+      }
+      if (realizedRes.ok) {
+        const data = await realizedRes.json()
+        setRealizedMonthly(data.periods || [])
       }
     } catch (err) {
       console.error('Error fetching income data:', err)
@@ -2844,37 +2851,29 @@ export function Income() {
   const earningsChartData = (() => {
     const addHighlight = (d: any) => ({ ...d, highlighted: d.month === highlightedMonthKey })
 
-    switch (earningsView) {
-      case 'options':
-        return yearFilteredOptionsChart.map(d => {
-          const expOpt = taxableOnly
-            ? (taxableCapitalByMonth[d.month] || 0) * 0.01
-            : getExpectedOptions(d.month)
-          return addHighlight({ ...d, actual: d.value, expected: expOpt })
+    // Every view is driven by the unified income dataset (actuals; the
+    // Taxable Only toggle swaps datasets), in the user's source hierarchy.
+    const rows = (taxableOnly ? unifiedMonthlyTaxable : unifiedMonthly)
+      .filter(p => mainSelectedYear === 'all' || p.period.startsWith(`${mainSelectedYear}-`))
+      .map(p => {
+        const s = p.by_source
+        const monthKey = p.period.slice(0, 7)
+        const d = new Date(p.period + 'T00:00:00')
+        const div_int = (s.dividends || 0) + (s.interest || 0) + (s.lending || 0)
+        return addHighlight({
+          month: monthKey,
+          formatted: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+          year: d.getFullYear(),
+          options: s.options || 0,
+          equity_sales: s.equity_sales || 0,
+          salary: s.salary || 0,
+          rental: s.rental || 0,
+          div_int,
+          actual: p.total,
         })
-      case 'dividends':
-        return yearFilteredDividendChart.map(d => addHighlight({ ...d, actual: d.value, expected: expectedMonthlyDividends }))
-      case 'interest':
-        return yearFilteredInterestChart.map(d => addHighlight({ ...d, actual: d.value, expected: expectedMonthlyInterest }))
-      case 'rental':
-        return yearFilteredRentalChart.map(d => addHighlight({ ...d, actual: d.value, expected: expectedMonthlyRental }))
-      case 'all':
-      default: {
-        // Unified income actuals (same definition as the band and the table)
-        return (taxableOnly ? unifiedMonthlyTaxable : unifiedMonthly)
-          .filter(p => mainSelectedYear === 'all' || p.period.startsWith(`${mainSelectedYear}-`))
-          .map(p => {
-            const monthKey = p.period.slice(0, 7)
-            const d = new Date(p.period + 'T00:00:00')
-            return addHighlight({
-              month: monthKey,
-              formatted: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-              year: d.getFullYear(),
-              actual: p.total,
-            })
-          })
-      }
-    }
+      })
+    if (earningsView === 'all') return rows
+    return rows.map(r => ({ ...r, actual: (r as any)[earningsView] || 0 }))
   })().filter(d => {
     // For current year, only show months up through the current month
     if (mainSelectedYear !== 'all' && mainSelectedYear === currentYear) {
@@ -3107,6 +3106,47 @@ export function Income() {
   }, 0)
 
   const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal + filteredEquityLendingTotal
+
+  // By-Account rows: ranked by total for the selected period, columns in
+  // the income-importance hierarchy (Options, Equity, Div+Int).
+  const accountRows = (() => {
+    const inPeriod = (mk: string) => {
+      if (mainSelectedYear === 'all') return true
+      if (!mk.startsWith(`${mainSelectedYear}-`)) return false
+      return mainSelectedMonth === null || mk === `${mainSelectedYear}-${String(mainSelectedMonth).padStart(2, '0')}`
+    }
+    const sumMonthly = (acct: any) => Object.entries(acct?.monthly || {})
+      .filter(([k]) => inPeriod(k as string))
+      .reduce((s, [, v]) => s + (v as number), 0)
+    const idToName: Record<string, string> = {}
+    const typeByName: Record<string, string> = {}
+    for (const a of summary?.accounts || []) {
+      idToName[a.account_id] = a.name
+      typeByName[a.name] = a.account_type
+    }
+    const names = new Set<string>([
+      ...Object.keys(optionsData?.by_account || {}),
+      ...Object.keys(dividendData?.by_account || {}),
+      ...Object.keys(interestData?.by_account || {}),
+    ])
+    const equityByName: Record<string, number> = {}
+    for (const r of realizedMonthly) {
+      if (!inPeriod(r.period.slice(0, 7))) continue
+      const nm = idToName[r.account_id] || r.account_id
+      equityByName[nm] = (equityByName[nm] || 0) + r.realized_pnl
+      names.add(nm)
+    }
+    const NONTAX = new Set(['retirement', 'ira', 'roth_ira', 'traditional_ira', '401k', 'hsa'])
+    const rows = [...names].map(name => {
+      const options = sumMonthly(optionsData?.by_account?.[name])
+      const divInt = sumMonthly(dividendData?.by_account?.[name]) + sumMonthly(interestData?.by_account?.[name])
+      const equity = equityByName[name] || 0
+      const acctType = typeByName[name] || (optionsData?.by_account?.[name] as any)?.account_type || ''
+      return { name, options, equity, divInt, total: options + equity + divInt, taxable: !NONTAX.has(acctType) }
+    }).filter(r => r.options !== 0 || r.equity !== 0 || r.divInt !== 0)
+    rows.sort((a, b) => b.total - a.total)
+    return rows
+  })()
 
   // Level-3 table rows: straight from the unified income service (actuals);
   // projected salary shown as its own labeled column, never in totals.
@@ -3443,13 +3483,12 @@ export function Income() {
                 {taxableOnly ? 'Taxable ' : ''}
                 {earningsView === 'all' ? 'All Income' :
                  earningsView === 'options' ? 'Options Income' :
-                 earningsView === 'dividends' ? 'Dividend Income' :
-                 earningsView === 'interest' ? 'Interest Income' : 'Rental Income'}
+                 earningsView === 'equity_sales' ? 'Equity Sales Income' :
+                 earningsView === 'salary' ? 'Salary Income' :
+                 earningsView === 'rental' ? 'Rental Income' : 'Dividends + Interest + Lending'}
               </h3>
               <p className={styles.earningsChartSubtitle}>
-                {earningsView === 'all'
-                  ? `Monthly ${taxableOnly ? 'taxable ' : ''}income by source`
-                  : `Monthly ${earningsView} ${taxableOnly ? 'taxable ' : ''}income`}
+                Monthly {taxableOnly ? 'taxable ' : ''}income{earningsView === 'all' ? ' by source' : ''}
               </p>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
@@ -3457,9 +3496,10 @@ export function Income() {
                 {([
                   ['all', 'All'],
                   ['options', 'Options'],
-                  ['dividends', 'Dividends'],
-                  ['interest', 'Interest'],
-                  ['rental', 'Rental'],
+                  ['equity_sales', 'Equity'],
+                  ['salary', 'Salary'],
+                  ['rental', 'Rent'],
+                  ['div_int', 'Div + Int'],
                 ] as const).map(([key, label]) => (
                   <button
                     key={key}
@@ -3508,15 +3548,26 @@ export function Income() {
                     }
                     return null
                   })()}
-                  <Area type="monotone" dataKey="actual" name="Income" fill="rgba(0, 214, 50, 0.15)" stroke="#00D632" strokeWidth={2}
-                    dot={(props: any) => {
-                      const { cx, cy, payload } = props
-                      if (payload?.highlighted) {
-                        return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={6} fill="#00D632" stroke="#0D0D0D" strokeWidth={2} />
-                      }
-                      return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={3} fill="#00D632" fillOpacity={0.6} />
-                    }}
-                  />
+                  {earningsView === 'all' ? (
+                    <>
+                      {/* stacked composition, in the income-importance hierarchy */}
+                      <Bar dataKey="options" name="Options" stackId="src" fill="#00D632" />
+                      <Bar dataKey="equity_sales" name="Equity" stackId="src" fill="#00A3FF" />
+                      <Bar dataKey="salary" name="Salary" stackId="src" fill="#A855F7" />
+                      <Bar dataKey="rental" name="Rent" stackId="src" fill="#FFB800" />
+                      <Bar dataKey="div_int" name="Div + Int" stackId="src" fill="#06B6D4" />
+                    </>
+                  ) : (
+                    <Area type="monotone" dataKey="actual" name="Income" fill="rgba(0, 214, 50, 0.15)" stroke="#00D632" strokeWidth={2}
+                      dot={(props: any) => {
+                        const { cx, cy, payload } = props
+                        if (payload?.highlighted) {
+                          return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={6} fill="#00D632" stroke="#0D0D0D" strokeWidth={2} />
+                        }
+                        return <circle key={`dot-${cx}`} cx={cx} cy={cy} r={3} fill="#00D632" fillOpacity={0.6} />
+                      }}
+                    />
+                  )}
                 </ComposedChart>
               </ResponsiveContainer>
             ) : (
@@ -3623,29 +3674,57 @@ export function Income() {
         </div>
       </section>
 
-      {/* Account Breakdown */}
-      {filteredAccounts.length > 0 && (
+      {/* Account Breakdown — ranked by income, hierarchy-first columns */}
+      {accountRows.length > 0 && (
         <section className={styles.accountsSection}>
-          <h2>By Account {mainSelectedYear === 'all' 
-            ? '(All Time)' 
-            : mainSelectedMonth !== null && mainSelectedYear === currentYear
-              ? `(${new Date(currentYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
+          <h2>By Account {mainSelectedYear === 'all'
+            ? '(All Time)'
+            : mainSelectedMonth !== null
+              ? `(${new Date(typeof mainSelectedYear === 'number' ? mainSelectedYear : currentYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
               : `(${mainSelectedYear})`}</h2>
-          <div className={styles.accountsGrid}>
-            {filteredAccounts.map((account, index) => {
-              const colors = ['#00D632', '#00A3FF', '#A855F7', '#FFB800']
-              return (
-                <AccountCard
-                  key={account.name}
-                  account={account}
-                  onClick={() => {
-                    setSelectedAccount(account.name)
-                    setView('account')
-                  }}
-                  color={colors[index % colors.length]}
-                />
-              )
-            })}
+          <div className={styles.earningsTableContainer}>
+            <table className={styles.earningsTable}>
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th className={styles.earningsHighlightCol}>Options</th>
+                  <th className={styles.earningsHighlightCol}>Equity</th>
+                  <th>Div + Int</th>
+                  <th>Total</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {accountRows.map(r => (
+                  <tr
+                    key={r.name}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => { setSelectedAccount(r.name); setView('account') }}
+                    title={`Open ${r.name}`}
+                  >
+                    <td>
+                      <strong>{r.name}</strong>{' '}
+                      <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: r.taxable ? '#FFB800' : '#737373' }}>
+                        {r.taxable ? 'taxable' : 'sheltered'}
+                      </span>
+                    </td>
+                    <td className={styles.earningsHighlightCol} style={{ color: r.options === 0 ? 'var(--color-text-tertiary)' : r.options < 0 ? '#FF5A5A' : '#00D632' }}>
+                      {r.options !== 0 ? formatFullCurrency(r.options) : '—'}
+                    </td>
+                    <td className={styles.earningsHighlightCol} style={{ color: r.equity === 0 ? 'var(--color-text-tertiary)' : r.equity < 0 ? '#FF5A5A' : '#00A3FF' }}>
+                      {r.equity !== 0 ? formatFullCurrency(r.equity) : '—'}
+                    </td>
+                    <td style={{ color: r.divInt === 0 ? 'var(--color-text-tertiary)' : undefined }}>
+                      {r.divInt !== 0 ? formatFullCurrency(r.divInt) : '—'}
+                    </td>
+                    <td>
+                      <strong style={{ color: r.total < 0 ? '#FF5A5A' : '#00D632' }}>{formatFullCurrency(r.total)}</strong>
+                    </td>
+                    <td style={{ color: 'var(--color-text-tertiary)', fontSize: 12 }}>charts →</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       )}
