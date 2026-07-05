@@ -35,7 +35,7 @@ import {
 import styles from './Income.module.css'
 import clsx from 'clsx'
 import { UnifiedIncomeBand } from '../components/UnifiedIncomeBand/UnifiedIncomeBand'
-import { EquitySalesDetail } from '../components/EquitySalesDetail/EquitySalesDetail'
+import { EquitySalesDetail, DrillRange } from '../components/EquitySalesDetail/EquitySalesDetail'
 import {
   formatCurrency as sharedFormatCurrency,
   formatCurrencyShort,
@@ -450,10 +450,11 @@ interface OptionsDetailProps {
   data: OptionsData
   chartData: MonthlyData[]
   onBack: () => void
+  initialYear?: number
 }
 
-function OptionsDetail({ data, chartData, onBack }: OptionsDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2026)
+function OptionsDetail({ data, chartData, onBack, initialYear }: OptionsDetailProps) {
+  const [selectedYear, setSelectedYear] = useState(initialYear ?? new Date().getFullYear())
   
   const filteredChartData = chartData.filter(d => d.year === selectedYear)
   const years = [...new Set(chartData.map(d => d.year))].sort((a, b) => b - a)
@@ -644,10 +645,11 @@ interface DividendsDetailProps {
   data: DividendData
   chartData: MonthlyData[]
   onBack: () => void
+  initialYear?: number
 }
 
-function DividendsDetail({ data, chartData, onBack }: DividendsDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2026)
+function DividendsDetail({ data, chartData, onBack, initialYear }: DividendsDetailProps) {
+  const [selectedYear, setSelectedYear] = useState(initialYear ?? new Date().getFullYear())
   
   const filteredChartData = chartData.filter(d => d.year === selectedYear)
   const years = [...new Set(chartData.map(d => d.year))].sort((a, b) => b - a)
@@ -804,10 +806,11 @@ interface InterestDetailProps {
   data: InterestData
   chartData: MonthlyData[]
   onBack: () => void
+  initialYear?: number
 }
 
-function InterestDetail({ data, chartData, onBack }: InterestDetailProps) {
-  const [selectedYear, setSelectedYear] = useState(2026)
+function InterestDetail({ data, chartData, onBack, initialYear }: InterestDetailProps) {
+  const [selectedYear, setSelectedYear] = useState(initialYear ?? new Date().getFullYear())
   
   const filteredChartData = chartData.filter(d => d.year === selectedYear)
   const years = [...new Set(chartData.map(d => d.year))].sort((a, b) => b - a)
@@ -2456,6 +2459,8 @@ export function Income() {
   const [monthlyPositions, setMonthlyPositions] = useState<{ equity: Record<string, number>; cash: Record<string, number> }>({ equity: {}, cash: {} })
   // Unified income (monthly) — source for equity-sales/lending in the hero total
   const [unifiedMonthly, setUnifiedMonthly] = useState<Array<{ period: string; total: number; by_source: Record<string, number> }>>([])
+  // Period the user was viewing when they drilled into a source
+  const [drillRange, setDrillRange] = useState<DrillRange | null>(null)
 
   // Projected net salary starting June 2026:
   //   Neel $120k gross → ~$6,986/month net after federal+FICA+CA taxes
@@ -3215,6 +3220,7 @@ export function Income() {
     return (
       <div className={styles.page}>
         <OptionsDetail
+          initialYear={typeof mainSelectedYear === 'number' ? mainSelectedYear : undefined}
           data={optionsData}
           chartData={optionsChartData}
           onBack={() => setView('main')}
@@ -3228,6 +3234,7 @@ export function Income() {
     return (
       <div className={styles.page}>
         <DividendsDetail
+          initialYear={typeof mainSelectedYear === 'number' ? mainSelectedYear : undefined}
           data={dividendData}
           chartData={dividendChartData}
           onBack={() => setView('main')}
@@ -3241,6 +3248,7 @@ export function Income() {
     return (
       <div className={styles.page}>
         <InterestDetail
+          initialYear={typeof mainSelectedYear === 'number' ? mainSelectedYear : undefined}
           data={interestData}
           chartData={interestChartData}
           onBack={() => setView('main')}
@@ -3323,7 +3331,7 @@ export function Income() {
   if (view === 'equity_sales') {
     return (
       <div className={styles.page}>
-        <EquitySalesDetail onBack={() => setView('main')} />
+        <EquitySalesDetail initialRange={drillRange} onBack={() => setView('main')} />
       </div>
     )
   }
@@ -3355,7 +3363,18 @@ export function Income() {
           setMainSelectedYear(d.getFullYear())
           setMainSelectedMonth(g === 'year' ? null : d.getMonth() + 1)
         }}
-        onDrill={(src) => {
+        onDrill={(src, periodIso, g) => {
+          // scope the drill-down to the period being viewed
+          const d = new Date(periodIso + 'T00:00:00')
+          const iso = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+          if (g === 'week') {
+            const s = new Date(d); s.setDate(d.getDate() - 6)
+            setDrillRange({ start: iso(s), end: periodIso, label: `Week ending ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` })
+          } else if (g === 'month') {
+            setDrillRange({ start: periodIso, end: iso(new Date(d.getFullYear(), d.getMonth() + 1, 0)), label: d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) })
+          } else {
+            setDrillRange({ start: `${d.getFullYear()}-01-01`, end: `${d.getFullYear()}-12-31`, label: String(d.getFullYear()) })
+          }
           if (src === 'equity_sales') setView('equity_sales')
           else if (src === 'salary') setView('salary_pick')
           else setView(src as 'options' | 'dividends' | 'interest' | 'rental')

@@ -24,12 +24,21 @@ function fmt(v: number): string {
   return `${sign}$${Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
 }
 
-interface EquitySalesDetailProps {
-  onBack: () => void
+export interface DrillRange {
+  start: string
+  end: string
+  label: string
 }
 
-export function EquitySalesDetail({ onBack }: EquitySalesDetailProps) {
+interface EquitySalesDetailProps {
+  onBack: () => void
+  /** When set, opens scoped to the period clicked in the income band. */
+  initialRange?: DrillRange | null
+}
+
+export function EquitySalesDetail({ onBack, initialRange }: EquitySalesDetailProps) {
   const currentYear = new Date().getFullYear()
+  const [range, setRange] = useState<DrillRange | null>(initialRange || null)
   const [year, setYear] = useState<number | 'all'>(currentYear)
   const [sales, setSales] = useState<SaleRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,7 +46,9 @@ export function EquitySalesDetail({ onBack }: EquitySalesDetailProps) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    const q = year === 'all' ? '' : `?year=${year}`
+    const q = range
+      ? `?start=${range.start}&end=${range.end}`
+      : year === 'all' ? '' : `?year=${year}`
     fetch(`${API_BASE}/investments/realized-pnl/sales${q}`, { headers: getAuthHeaders() })
       .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
       .then(d => {
@@ -48,7 +59,7 @@ export function EquitySalesDetail({ onBack }: EquitySalesDetailProps) {
       })
       .catch(() => !cancelled && setLoading(false))
     return () => { cancelled = true }
-  }, [year])
+  }, [year, range])
 
   const totals = useMemo(() => ({
     proceeds: sales.reduce((s, r) => s + r.proceeds, 0),
@@ -70,7 +81,9 @@ export function EquitySalesDetail({ onBack }: EquitySalesDetailProps) {
 
       <div className={styles.header}>
         <div>
-          <h1 className={styles.title}>Equity Sales Income</h1>
+          <h1 className={styles.title}>
+            Equity Sales Income{range ? ` — ${range.label}` : ''}
+          </h1>
           <p className={styles.subtitle}>
             Realized P/L from stock sales — call assignments included as ordinary sales.
             All accounts; holding a stock is never income.
@@ -95,17 +108,26 @@ export function EquitySalesDetail({ onBack }: EquitySalesDetailProps) {
       </div>
 
       <div className={styles.yearSelector}>
+        {range && (
+          <button
+            className={clsx(styles.yearButton, styles.active)}
+            onClick={() => setRange(null)}
+            title="Clear period filter"
+          >
+            {range.label} ✕
+          </button>
+        )}
         <button
-          className={clsx(styles.yearButton, year === 'all' && styles.active)}
-          onClick={() => setYear('all')}
+          className={clsx(styles.yearButton, !range && year === 'all' && styles.active)}
+          onClick={() => { setRange(null); setYear('all') }}
         >
           All Time
         </button>
         {years.map(y => (
           <button
             key={y}
-            className={clsx(styles.yearButton, year === y && styles.active)}
-            onClick={() => setYear(y)}
+            className={clsx(styles.yearButton, !range && year === y && styles.active)}
+            onClick={() => { setRange(null); setYear(y) }}
           >
             {y}
           </button>

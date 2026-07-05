@@ -46,7 +46,8 @@ function periodLabel(iso: string, g: Granularity): string {
 }
 
 interface UnifiedIncomeBandProps {
-  onDrill?: (source: string) => void
+  /** source, plus the period being viewed so drill-downs can scope to it */
+  onDrill?: (source: string, periodIso: string, granularity: Granularity) => void
   /** Reports the selected period so the rest of the page can follow. */
   onPeriodChange?: (granularity: Granularity, periodIso: string) => void
   /** Salary projection (labeled, never mixed into actual totals). */
@@ -198,7 +199,7 @@ export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary }: 
                 <button
                   key={s.key}
                   className={clsx(styles.chip, clickable && styles.clickable)}
-                  onClick={clickable ? () => onDrill!(s.drill!) : undefined}
+                  onClick={clickable ? () => onDrill!(s.drill!, p.period, granularity) : undefined}
                   disabled={!clickable}
                   title={clickable ? `Drill into ${s.label}` : undefined}
                 >

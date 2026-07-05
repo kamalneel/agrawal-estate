@@ -1445,6 +1445,8 @@ async def get_realized_pnl(
 @router.get("/realized-pnl/sales")
 async def list_realized_sales(
     year: Optional[int] = Query(default=None),
+    start: Optional[date] = Query(default=None),
+    end: Optional[date] = Query(default=None),
     account_id: Optional[str] = Query(default=None),
     symbol: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
@@ -1454,6 +1456,10 @@ async def list_realized_sales(
     where, params = [], {}
     if year:
         where.append("s.tax_year = :year"); params["year"] = year
+    if start:
+        where.append("s.sale_date >= :start"); params["start"] = start
+    if end:
+        where.append("s.sale_date <= :end"); params["end"] = end
     if account_id:
         where.append("l.account_id = :acct"); params["acct"] = account_id
     if symbol:
