@@ -284,7 +284,15 @@ class RentalIncomeService:
         current_month = date.today().month
 
         for prop in self.properties:
-            if prop.year != current_year:
+            if prop.year < current_year:
+                continue
+
+            # Future lease-schedule years: nothing received yet
+            if prop.year > current_year:
+                prop.monthly_income = []
+                prop.gross_income = 0.0
+                prop.total_expenses = 0.0
+                prop.net_income = 0.0
                 continue
 
             # Drop future months from the monthly breakdown

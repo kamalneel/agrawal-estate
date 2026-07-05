@@ -171,11 +171,17 @@ def get_unified_income(
                 if m > 12:
                     y, m = y + 1, 1
 
-    # --- rental (fixed): monthly table, dated the 1st of the month
+    # --- rental (fixed): monthly table, dated the 1st of the month.
+    # The table holds the LEASE SCHEDULE (pre-populated through the lease
+    # term); income counts only elapsed months — receipt basis, the same
+    # clamp recurring salary uses.
+    _today = date.today()
     for r in db.execute(text("""
         SELECT tax_year, month, SUM(gross_amount) AS amount
-        FROM rental_monthly_income GROUP BY 1, 2
-    """)).fetchall():
+        FROM rental_monthly_income
+        WHERE (tax_year, month) <= (:cy, :cm)
+        GROUP BY 1, 2
+    """), {"cy": _today.year, "cm": _today.month}).fetchall():
         d = date(r.tax_year, r.month, 1)
         if in_range(d) and r.amount:
             by_source[_bucket(d, granularity)]["rental"] += float(r.amount)

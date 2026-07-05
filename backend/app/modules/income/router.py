@@ -953,3 +953,15 @@ async def get_unified_income_endpoint(
             taxable_only=taxable_only)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/goal-settings")
+async def get_goal_settings():
+    """Yield-tracker goal settings (see data/goal_settings.json).
+    Margin limits are manual — Robinhood does not expose the total line."""
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[4] / "data" / "goal_settings.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="goal_settings.json not found")
+    return json.loads(path.read_text())

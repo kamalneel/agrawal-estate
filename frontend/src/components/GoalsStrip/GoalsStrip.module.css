@@ -1,0 +1,77 @@
+.strip {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4, 16px);
+  margin-bottom: var(--space-6, 24px);
+}
+
+@media (max-width: 720px) {
+  .strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gauge {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--space-4, 16px) var(--space-5, 20px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+.gaugeHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.gaugeTitle {
+  font-size: var(--font-size-xs, 12px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+}
+
+.gaugePct {
+  font-size: var(--font-size-lg, 18px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.gaugeAmounts {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2, 8px);
+}
+
+.earned {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.target {
+  font-size: var(--font-size-sm, 13px);
+  color: var(--color-text-tertiary);
+}
+
+.barTrack {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-bg-tertiary);
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.gaugeSub {
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-tertiary);
+}

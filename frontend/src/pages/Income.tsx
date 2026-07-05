@@ -36,6 +36,7 @@ import styles from './Income.module.css'
 import clsx from 'clsx'
 import { UnifiedIncomeBand } from '../components/UnifiedIncomeBand/UnifiedIncomeBand'
 import { EquitySalesDetail, DrillRange } from '../components/EquitySalesDetail/EquitySalesDetail'
+import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
 import {
   formatCurrency as sharedFormatCurrency,
   formatCurrencyShort,
@@ -2399,6 +2400,8 @@ export function Income() {
   const [unifiedMonthlyTaxable, setUnifiedMonthlyTaxable] = useState<Array<{ period: string; total: number; by_source: Record<string, number> }>>([])
   // Per-account realized equity P/L by month (for the By Account table)
   const [realizedMonthly, setRealizedMonthly] = useState<Array<{ period: string; account_id: string; realized_pnl: number }>>([])
+  // Yield-tracker goal settings (targets + margin limits)
+  const [goalSettings, setGoalSettings] = useState<any>(null)
   // Period the user was viewing when they drilled into a source
   const [drillRange, setDrillRange] = useState<DrillRange | null>(null)
 
@@ -2433,7 +2436,7 @@ export function Income() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes, realizedRes] = await Promise.all([
+      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes, realizedRes, goalRes] = await Promise.all([
         fetch(`${API_BASE}/income/summary`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/options`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/dividends`, { headers: getAuthHeaders() }),
@@ -2452,6 +2455,7 @@ export function Income() {
         fetch(`${API_BASE}/income/unified?granularity=month`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/unified?granularity=month&taxable_only=true`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/investments/realized-pnl?granularity=month`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/goal-settings`, { headers: getAuthHeaders() }),
       ])
 
       if (summaryRes.ok) {
@@ -2526,6 +2530,9 @@ export function Income() {
       if (realizedRes.ok) {
         const data = await realizedRes.json()
         setRealizedMonthly(data.periods || [])
+      }
+      if (goalRes.ok) {
+        setGoalSettings(await goalRes.json())
       }
     } catch (err) {
       console.error('Error fetching income data:', err)
@@ -3044,6 +3051,8 @@ export function Income() {
 
   const filteredTotalIncome = filteredOptionsTotal + filteredDividendTotal + filteredInterestTotal + filteredRentalTotal + computedSalaryTotal + filteredEquityLendingTotal
 
+  const dividendsByMonth: Record<string, number> = Object.fromEntries(dividendChartData.map(d => [d.month, d.value]))
+
   // By-Account rows: ranked by total for the selected period, columns in
   // the income-importance hierarchy (Options, Equity, Div+Int).
   const accountRows = (() => {
@@ -3364,51 +3373,16 @@ export function Income() {
         }}
       />
 
-      {/* Yield tiles + refresh (period follows the band above) */}
-      <section style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap', marginBottom: 'var(--space-6)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap', flex: 1 }}>
-          {earningsSummary && (() => {
-            const s = earningsSummary
-            const allEarningsYears = s ? Object.keys(s.annual_earnings || {}).sort() : []
-            const years = mainSelectedYear === 'all'
-              ? allEarningsYears
-              : allEarningsYears.filter(yr => yr === String(mainSelectedYear))
-            const fmtPct = (pct: number | null) =>
-              pct !== null && pct !== undefined ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : 'N/A'
-
-            return (
-              <div className={styles.heroEarningsCards} style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                <div className={`${styles.heroEarningsCard} ${s.avg_monthly_earnings_pct !== null && s.avg_monthly_earnings_pct >= s.expected_monthly_earnings_pct ? styles.earningsSuccess : styles.earningsDanger}`}>
-                  <span className={styles.heroEarningsLabel}>Avg Monthly</span>
-                  <div className={styles.heroEarningsRight}>
-                    <span className={styles.heroEarningsValue}>{fmtPct(s.avg_monthly_earnings_pct)}</span>
-                    <span className={styles.heroEarningsNote}>{s.avg_monthly_earnings_amt !== null ? formatFullCurrency(s.avg_monthly_earnings_amt) : ''}/mo</span>
-                  </div>
-                </div>
-                <div className={`${styles.heroEarningsCard} ${s.cumulative_earnings_pct !== null && s.cumulative_earnings_pct >= 0 ? styles.earningsSuccess : styles.earningsDanger}`}>
-                  <span className={styles.heroEarningsLabel}>Cumulative</span>
-                  <div className={styles.heroEarningsRight}>
-                    <span className={styles.heroEarningsValue}>{fmtPct(s.cumulative_earnings_pct)}</span>
-                    <span className={styles.heroEarningsNote}>{s.cumulative_earnings_amt !== null ? formatFullCurrency(s.cumulative_earnings_amt) : ''}</span>
-                  </div>
-                </div>
-                {years.map(yr => {
-                  const e = s.annual_earnings?.[yr]
-                  return (
-                    <div key={`earn-${yr}`} className={`${styles.heroEarningsCard} ${e?.percent !== null && e?.percent !== undefined && e?.percent >= s.expected_annual_earnings_pct ? styles.earningsSuccess : styles.earningsDanger}`}>
-                      <span className={styles.heroEarningsLabel}>{yr} Earnings</span>
-                      <div className={styles.heroEarningsRight}>
-                        <span className={styles.heroEarningsValue}>{fmtPct(e?.percent)}</span>
-                        <span className={styles.heroEarningsNote}>{e?.amount !== null && e?.amount !== undefined ? formatFullCurrency(e.amount) : ''}</span>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )
-          })()}
-        </div>
-      </section>
+      {/* Goals — actuals vs targets (yield tracker, Objective 2) */}
+      <GoalsStrip
+        year={mainSelectedYear}
+        month={mainSelectedMonth}
+        optionsByType={optionsByTypeAll}
+        dividendsByMonth={dividendsByMonth}
+        equityByMonth={monthlyPositions.equity}
+        liveEquity={portfolioEquity}
+        settings={goalSettings}
+      />
 
       {/* Level 3: trend — chart + table on the unified definition */}
       <section className={styles.earningsSection}>
