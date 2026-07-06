@@ -19,6 +19,7 @@ interface CapacityMonth {
 interface GoalsStripProps {
   year: number | 'all'
   month: number | null
+  onDrill?: (kind: 'holdings' | 'cash') => void
   capacityByMonth: Record<string, CapacityMonth>
   optionsByType: Record<string, { calls: number; puts: number }>
   dividendsByMonth: Record<string, number>
@@ -36,7 +37,7 @@ function monthKey(y: number, m: number): string {
   return `${y}-${String(m).padStart(2, '0')}`
 }
 
-export function GoalsStrip({ year, month, capacityByMonth, optionsByType, dividendsByMonth, equityByMonth, liveEquity, settings }: GoalsStripProps) {
+export function GoalsStrip({ year, month, onDrill, capacityByMonth, optionsByType, dividendsByMonth, equityByMonth, liveEquity, settings }: GoalsStripProps) {
   const now = new Date()
   const curKey = monthKey(now.getFullYear(), now.getMonth() + 1)
 
@@ -115,13 +116,15 @@ export function GoalsStrip({ year, month, capacityByMonth, optionsByType, divide
 
   if (!gauges) return null
 
-  const rows: Array<{ title: string; sub: string; g: { income: number; target: number; base: number | null; pct: number | null; targetPct: number } }> = [
+  const rows: Array<{ kind: 'holdings' | 'cash'; title: string; sub: string; g: { income: number; target: number; base: number | null; pct: number | null; targetPct: number } }> = [
     {
+      kind: 'holdings',
       title: `Holdings Goal — ${settings!.holdings_goal.monthly_target_pct}%/mo`,
       sub: `calls + dividends on ${gauges.holdings.base ? fmt(gauges.holdings.base) : '—'} holdings`,
       g: gauges.holdings,
     },
     {
+      kind: 'cash',
       title: `Cash Goal — ${settings!.cash_goal.monthly_target_pct}%/mo`,
       sub: `puts on ${fmt(gauges.cash.base!)} put capacity (margin lines + cash)`
         + (gauges.anyPartial ? ' — margin-only history before Jun 2026' : ''),
@@ -131,11 +134,17 @@ export function GoalsStrip({ year, month, capacityByMonth, optionsByType, divide
 
   return (
     <div className={styles.strip}>
-      {rows.map(({ title, sub, g }) => {
+      {rows.map(({ kind, title, sub, g }) => {
         const ratio = g.target > 0 ? g.income / g.target : 0
         const color = ratio >= 1 ? '#00D632' : ratio >= 0.7 ? '#FFB800' : '#FF5A5A'
         return (
-          <div key={title} className={styles.gauge}>
+          <div
+            key={title}
+            className={styles.gauge}
+            style={onDrill ? { cursor: 'pointer' } : undefined}
+            onClick={onDrill ? () => onDrill(kind) : undefined}
+            title={onDrill ? 'Click for the per-position / per-account breakdown' : undefined}
+          >
             <div className={styles.gaugeHeader}>
               <span className={styles.gaugeTitle}>{title}</span>
               <span className={styles.gaugePct} style={{ color }}>

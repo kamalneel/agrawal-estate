@@ -37,6 +37,7 @@ import clsx from 'clsx'
 import { UnifiedIncomeBand } from '../components/UnifiedIncomeBand/UnifiedIncomeBand'
 import { EquitySalesDetail, DrillRange } from '../components/EquitySalesDetail/EquitySalesDetail'
 import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
+import { GoalDrill } from '../components/GoalsStrip/GoalDrill'
 import { accountRank } from '../lib/accountOrder'
 import {
   formatCurrency as sharedFormatCurrency,
@@ -2370,7 +2371,7 @@ export function Income() {
 
   const initialView = (sectionParam === 'options' || sectionParam === 'dividends' || sectionParam === 'interest' || sectionParam === 'rental')
     ? sectionParam : 'main'
-  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail' | 'equity_sales' | 'salary_pick'>(initialView)
+  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail' | 'equity_sales' | 'salary_pick' | 'goal_holdings' | 'goal_cash'>(initialView)
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -3292,6 +3293,25 @@ export function Income() {
     )
   }
 
+  // Goal gauge drill-downs
+  if (view === 'goal_holdings' || view === 'goal_cash') {
+    const kind = view === 'goal_holdings' ? 'holdings' as const : 'cash' as const
+    const pct = goalSettings
+      ? (kind === 'holdings' ? goalSettings.holdings_goal.monthly_target_pct : goalSettings.cash_goal.monthly_target_pct)
+      : (kind === 'holdings' ? 1 : 2)
+    return (
+      <div className={styles.page}>
+        <GoalDrill
+          kind={kind}
+          year={typeof mainSelectedYear === 'number' ? mainSelectedYear : new Date().getFullYear()}
+          month={mainSelectedMonth}
+          targetPctPerMonth={pct}
+          onBack={() => setView('main')}
+        />
+      </div>
+    )
+  }
+
   // Salary drill-down: pick the person first
   if (view === 'salary_pick') {
     const employees = [
@@ -3384,6 +3404,7 @@ export function Income() {
       <GoalsStrip
         year={mainSelectedYear}
         month={mainSelectedMonth}
+        onDrill={(kind) => setView(kind === 'holdings' ? 'goal_holdings' : 'goal_cash')}
         capacityByMonth={putCapacity}
         optionsByType={optionsByTypeAll}
         dividendsByMonth={dividendsByMonth}
@@ -3450,7 +3471,7 @@ export function Income() {
           <div className={styles.earningsChartContainer}>
             {earningsChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={350}>
-                <ComposedChart data={earningsChartData} margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
+                <ComposedChart data={earningsChartData} stackOffset="sign" margin={{ top: 20, right: 60, left: 20, bottom: 20 }}>
                   <CartesianGrid {...GRID_PROPS} />
                   <XAxis dataKey="formatted" stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis stroke="#737373" tick={{ fill: '#737373', fontSize: 11 }} tickFormatter={formatYAxis} axisLine={false} tickLine={false} />
@@ -3478,6 +3499,9 @@ export function Income() {
                       <Bar dataKey="salary" name="Salary" stackId="src" fill="#A855F7" />
                       <Bar dataKey="rental" name="Rent" stackId="src" fill="#FFB800" />
                       <Bar dataKey="div_int" name="Div + Int" stackId="src" fill="#06B6D4" />
+                      <ReferenceLine y={0} stroke="rgba(255,255,255,0.35)" />
+                      <Line type="monotone" dataKey="actual" name="Net" stroke="#FFFFFF" strokeWidth={2}
+                        dot={{ r: 3, fill: '#FFFFFF' }} />
                     </>
                   ) : (() => {
                     // split green/red at the zero crossing so losses read as losses

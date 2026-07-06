@@ -1,0 +1,123 @@
+.drill {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5, 20px);
+}
+
+.backButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm, 13px);
+  cursor: pointer;
+  padding: 0;
+  align-self: flex-start;
+}
+
+.backButton:hover {
+  color: var(--color-text-primary);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-6, 24px);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-size: var(--font-size-2xl, 24px);
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 0 0 var(--space-2, 8px);
+}
+
+.subtitle {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm, 13px);
+  margin: 0;
+  max-width: 520px;
+}
+
+.summary {
+  display: flex;
+  gap: var(--space-6, 24px);
+}
+
+.summaryItem {
+  display: flex;
+  flex-direction: column;
+}
+
+.summaryLabel {
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-tertiary);
+}
+
+.summaryValue {
+  font-size: var(--font-size-xl, 20px);
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.loading {
+  color: var(--color-text-tertiary);
+  padding: var(--space-6, 24px) 0;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--color-bg-secondary);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm, 13px);
+}
+
+.table th {
+  text-align: left;
+  padding: var(--space-3, 12px);
+  color: var(--color-text-tertiary);
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.symbol {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.detail {
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-tertiary);
+}
+
+.idleRow td {
+  opacity: 0.65;
+}

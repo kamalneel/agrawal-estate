@@ -1046,3 +1046,131 @@ async def get_put_capacity(db: Session = Depends(get_db)):
             "partial": not have_cash_history,
         })
     return {"months": result, "current": result[-1] if result else None}
+
+
+@router.get("/goal-drill")
+async def get_goal_drill(
+    year: int = Query(...),
+    month: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Drill-down behind the Goals strip gauges for a period.
+
+    holdings: per position — value, call premium, dividends, yield vs the
+    1%/mo target (idle collateral shows as zero-income rows).
+    cash: per account — capacity share (margin line + cash for margin
+    accounts; cash incl. collateral elsewhere), puts earned, yield vs 2%/mo.
+    """
+    import json
+    from pathlib import Path
+    from sqlalchemy import text
+    from datetime import date as _date
+
+    today = _date.today()
+    is_current = year == today.year and (month is None or month == today.month)
+    n_months = 1 if month is not None else (today.month if year == today.year else 12)
+
+    def period_filter(col: str) -> str:
+        f = f"EXTRACT(YEAR FROM {col}) = :year"
+        if month is not None:
+            f += f" AND EXTRACT(MONTH FROM {col}) = :month"
+        return f
+    params = {"year": year, "month": month}
+
+    # --- per account+symbol: calls, puts, dividends for the period
+    rows = db.execute(text(f"""
+        SELECT a.account_name, t.symbol,
+               SUM(t.amount) FILTER (WHERE t.transaction_type IN ('STO','BTC','STC','BTO')
+                    AND t.description ILIKE '%call%') AS calls,
+               SUM(t.amount) FILTER (WHERE t.transaction_type IN ('STO','BTC','STC','BTO')
+                    AND t.description ILIKE '%put%') AS puts,
+               SUM(t.amount) FILTER (WHERE t.transaction_type IN ('DIVIDEND','CDIV',
+                    'QUAL DIV REINVEST','REINVEST DIVIDEND','CASH DIVIDEND','QUALIFIED DIVIDEND')) AS dividends
+        FROM investment_transactions t
+        JOIN investment_accounts a ON a.account_id = t.account_id AND a.source = t.source
+        WHERE a.is_active = 'Y' AND {period_filter('t.transaction_date')}
+        GROUP BY 1, 2
+    """), params).fetchall()
+
+    # --- position values: live holdings for the current period, else last
+    # holdings-history snapshot inside the period
+    if is_current:
+        pos_rows = db.execute(text("""
+            SELECT a.account_name, h.symbol, SUM(h.market_value) AS value
+            FROM investment_holdings h
+            JOIN investment_accounts a ON a.account_id = h.account_id AND a.source = h.source
+            WHERE a.is_active = 'Y' AND h.quantity > 0 AND h.symbol != 'CASH'
+            GROUP BY 1, 2
+        """)).fetchall()
+    else:
+        pos_rows = db.execute(text(f"""
+            SELECT a.account_name, h.symbol, SUM(h.market_value) AS value
+            FROM investment_holdings_history h
+            JOIN investment_accounts a ON a.account_id = h.account_id AND a.source = h.source
+            WHERE h.snapshot_date = (
+                SELECT MAX(h2.snapshot_date) FROM investment_holdings_history h2
+                WHERE {period_filter('h2.snapshot_date')})
+              AND h.quantity > 0 AND h.symbol != 'CASH'
+            GROUP BY 1, 2
+        """), params).fetchall()
+
+    positions = {(r.account_name, r.symbol): float(r.value or 0) for r in pos_rows}
+    income_map = {(r.account_name, r.symbol): r for r in rows}
+
+    holdings_rows = []
+    for key in sorted(set(positions) | {k for k, r in income_map.items()
+                                        if (r.calls or 0) != 0 or (r.dividends or 0) != 0}):
+        acct, sym = key
+        value = positions.get(key, 0.0)
+        r = income_map.get(key)
+        calls = float(r.calls or 0) if r else 0.0
+        dividends = float(r.dividends or 0) if r else 0.0
+        income = calls + dividends
+        if value == 0 and income == 0:
+            continue
+        holdings_rows.append({
+            "account": acct, "symbol": sym, "position_value": round(value, 2),
+            "calls": round(calls, 2), "dividends": round(dividends, 2),
+            "income": round(income, 2),
+            "yield_pct": round(income / value * 100, 2) if value else None,
+        })
+
+    # --- cash side: capacity share + puts per account
+    settings_path = Path(__file__).resolve().parents[4] / "data" / "goal_settings.json"
+    limits = json.loads(settings_path.read_text()).get("margin_limits", {}) if settings_path.exists() else {}
+    id_to_name = {"neel_brokerage": "Neel's Brokerage", "jaya_brokerage": "Jaya's Brokerage"}
+    margin_names = {v: limits.get(k, 0) for k, v in id_to_name.items()}
+
+    end_str = f"{year}-{month:02d}-31" if month else f"{year}-12-31"
+    cash_rows = db.execute(text("""
+        SELECT DISTINCT ON (account_name) account_name, true_cash
+        FROM account_cash_balance_history
+        WHERE account_name != 'Portfolio (Synthetic)' AND snapshot_date <= :end
+        ORDER BY account_name, snapshot_date DESC
+    """), {"end": end_str}).fetchall()
+    cash_latest = {r.account_name: float(r.true_cash or 0) for r in cash_rows}
+
+    puts_by_account: dict = {}
+    for r in rows:
+        if r.puts:
+            puts_by_account[r.account_name] = puts_by_account.get(r.account_name, 0) + float(r.puts)
+
+    cash_accounts = []
+    for name in set(cash_latest) | set(puts_by_account) | set(margin_names):
+        if name in margin_names:
+            capacity = margin_names[name] + cash_latest.get(name, 0)
+            detail = f"${margin_names[name]:,.0f} line {'+' if cash_latest.get(name, 0) >= 0 else '−'} ${abs(cash_latest.get(name, 0)):,.0f} cash"
+        else:
+            capacity = cash_latest.get(name, 0)
+            detail = "cash incl. put collateral"
+        puts = round(puts_by_account.get(name, 0), 2)
+        cash_accounts.append({
+            "account": name, "capacity": round(capacity, 2), "detail": detail,
+            "puts": puts,
+            "yield_pct": round(puts / capacity * 100, 2) if capacity > 0 else None,
+        })
+
+    return {
+        "year": year, "month": month, "n_months": n_months,
+        "holdings": holdings_rows, "cash_accounts": cash_accounts,
+    }
