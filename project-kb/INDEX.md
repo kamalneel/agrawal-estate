@@ -12,6 +12,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 ### Design
 - [Always Use Design Tokens](playbook/universal/design/always-use-design-tokens.md) — never hardcode colors/spacing, use CSS variables from tokens.css
 - [Canonical Account Hierarchy](playbook/universal/design/canonical-account-hierarchy.md) — fixed account order everywhere (Neel Brok/IRA/Roth, Jaya Brok/IRA/Roth, Alisha, HSA); never sort accounts by amount
+- [Page Design Playbook](../docs/PAGE-DESIGN-PLAYBOOK.md) — the method distilled from the Income page: 4-level hierarchy, one period model/one total, importance ordering, sign-coloring, gross+net, scoped drill-downs, reusable components
 
 ### Finance
 - [Definition of Income](playbook/universal/finance/definition-of-income.md) — realized-only, all accounts, tax-independent; call assignment = income at sale, put assignment = strike-basis lot
