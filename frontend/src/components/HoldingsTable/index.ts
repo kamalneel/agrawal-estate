@@ -13,6 +13,8 @@ export {
   incomeWithYieldColumn,
   dividendIncomeColumn,
   optionsIncomeColumn,
+  optionsSoldColumn,
+  optionsBoughtColumn,
   totalIncomeColumn,
   totalYieldColumn,
   costBasisColumn,

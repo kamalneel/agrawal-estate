@@ -422,6 +422,42 @@ export function dividendIncomeColumn(): ColumnDef {
   }
 }
 
+export function optionsSoldColumn(): ColumnDef {
+  return {
+    key: 'optionsSold',
+    header: 'Prem. Sold',
+    align: 'center',
+    sortValue: (row) => row.optionsSold ?? 0,
+    renderCell: (row) => (
+      <span style={{ color: row.optionsSold ? '#00D632' : undefined, opacity: row.optionsSold ? 0.85 : 1 }}>
+        {row.optionsSold ? formatCurrency(row.optionsSold) : '—'}
+      </span>
+    ),
+    renderFooter: (rows) => {
+      const total = rows.reduce((sum, r) => sum + (r.optionsSold ?? 0), 0)
+      return total !== 0 ? <strong style={{ color: '#00D632', opacity: 0.85 }}>{formatCurrency(total)}</strong> : <span>—</span>
+    },
+  }
+}
+
+export function optionsBoughtColumn(): ColumnDef {
+  return {
+    key: 'optionsBought',
+    header: 'Bought Back',
+    align: 'center',
+    sortValue: (row) => row.optionsBought ?? 0,
+    renderCell: (row) => (
+      <span style={{ color: row.optionsBought ? '#FF5A5A' : undefined, opacity: row.optionsBought ? 0.85 : 1 }}>
+        {row.optionsBought ? formatCurrency(row.optionsBought) : '—'}
+      </span>
+    ),
+    renderFooter: (rows) => {
+      const total = rows.reduce((sum, r) => sum + (r.optionsBought ?? 0), 0)
+      return total !== 0 ? <strong style={{ color: '#FF5A5A', opacity: 0.85 }}>{formatCurrency(total)}</strong> : <span>—</span>
+    },
+  }
+}
+
 export function optionsIncomeColumn(): ColumnDef {
   return {
     key: 'optionsIncome',

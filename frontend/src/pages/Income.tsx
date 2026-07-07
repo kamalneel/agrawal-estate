@@ -53,6 +53,8 @@ import {
   valueColumn,
   dividendIncomeColumn,
   optionsIncomeColumn,
+  optionsSoldColumn,
+  optionsBoughtColumn,
   totalIncomeColumn,
   totalYieldColumn,
 } from '../components/HoldingsTable'
@@ -995,7 +997,9 @@ function makeIncomeColumns(periodLabel?: string): ColumnDef[] {
     priceColumn('Price (Live)'),
     valueColumn(),
     { ...dividendIncomeColumn(), header: `Dividends${suffix}` },
-    { ...optionsIncomeColumn(), header: `Options${suffix}` },
+    { ...optionsSoldColumn(), header: `Prem. Sold${suffix}` },
+    { ...optionsBoughtColumn(), header: `Bought Back${suffix}` },
+    { ...optionsIncomeColumn(), header: `Options Net${suffix}` },
     { ...totalIncomeColumn(), header: `Total Income${suffix}` },
     totalYieldColumn(),
   ]
@@ -1077,6 +1081,8 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
         const data = await res.json()
         const optBySymbol: Record<string, number> = data.options_by_symbol || {}
         const divBySymbol: Record<string, number> = data.dividends_by_symbol || {}
+        const soldBySymbol: Record<string, number> = data.options_sold_by_symbol || {}
+        const boughtBySymbol: Record<string, number> = data.options_bought_by_symbol || {}
 
         // Build period label for column headers
         let colLabel = 'All Time'
@@ -1098,6 +1104,8 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
             .map((h: any) => {
               const div = divBySymbol[h.symbol] ?? 0
               const opt = optBySymbol[h.symbol] ?? 0
+              const optSold = soldBySymbol[h.symbol] ?? 0
+              const optBought = boughtBySymbol[h.symbol] ?? 0
               return {
                 symbol: h.symbol,
                 shares: h.shares || 0,
@@ -1106,6 +1114,8 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
                 isCash: false,
                 dividendIncome: div,
                 optionsIncome: opt,
+                optionsSold: optSold,
+                optionsBought: optBought,
                 totalIncome: div + opt,
               }
             })
@@ -1626,6 +1636,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
         const data = await res.json()
         const optBySymbol: Record<string, number> = data.options_by_symbol || {}
         const divBySymbol: Record<string, number> = data.dividends_by_symbol || {}
+        const soldBySymbol: Record<string, number> = data.options_sold_by_symbol || {}
+        const boughtBySymbol: Record<string, number> = data.options_bought_by_symbol || {}
 
         // Build period label for column headers
         let colLabel: string
@@ -1645,6 +1657,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
             .map((h: any) => {
               const div = divBySymbol[h.symbol] ?? 0
               const opt = optBySymbol[h.symbol] ?? 0
+              const optSold = soldBySymbol[h.symbol] ?? 0
+              const optBought = boughtBySymbol[h.symbol] ?? 0
               return {
                 symbol: h.symbol,
                 shares: h.shares || 0,
@@ -1653,6 +1667,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
                 isCash: false,
                 dividendIncome: div,
                 optionsIncome: opt,
+                optionsSold: optSold,
+                optionsBought: optBought,
                 totalIncome: div + opt,
               }
             })

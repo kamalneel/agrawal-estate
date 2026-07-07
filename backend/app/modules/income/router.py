@@ -262,9 +262,30 @@ async def get_account_income_by_symbol(
         db, year=year, month=month, account_id=account.account_id
     )
 
+    # Gross premium flows: sold (credits) vs bought back (debits), so a
+    # roll-heavy month doesn't read as an idle one.
+    from sqlalchemy import text as _text
+    f = "EXTRACT(YEAR FROM transaction_date) = :year" if year else "TRUE"
+    params = {'acct': account.account_id, 'year': year, 'month': month}
+    if month:
+        f += " AND EXTRACT(MONTH FROM transaction_date) = :month"
+    gross_rows = db.execute(_text(f"""
+        SELECT symbol,
+               SUM(amount) FILTER (WHERE amount > 0) AS sold,
+               SUM(amount) FILTER (WHERE amount < 0) AS bought
+        FROM investment_transactions
+        WHERE account_id = :acct
+          AND transaction_type IN ('STO','BTC','STC','BTO') AND {f}
+        GROUP BY symbol
+    """), params).fetchall()
+    options_sold_by_symbol = {r.symbol: float(r.sold or 0) for r in gross_rows}
+    options_bought_by_symbol = {r.symbol: float(r.bought or 0) for r in gross_rows}
+
     return {
         'options_by_symbol': options_by_symbol,
         'dividends_by_symbol': dividends_by_symbol,
+        'options_sold_by_symbol': options_sold_by_symbol,
+        'options_bought_by_symbol': options_bought_by_symbol,
     }
 
 

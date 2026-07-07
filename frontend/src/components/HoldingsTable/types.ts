@@ -1,6 +1,8 @@
 import { ReactNode } from 'react'
 
 export interface HoldingsRow {
+  optionsSold?: number
+  optionsBought?: number
   symbol: string
   shares: number
   currentPrice: number
