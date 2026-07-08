@@ -41,6 +41,7 @@ interface BoardRow {
   itm: boolean
   uncovered?: boolean
   uncovered_shares?: number
+  uncovered_cash?: number
 }
 
 interface Queue {
@@ -58,10 +59,45 @@ const PRIORITY_COLOR: Record<string, string> = {
 const ACTION_COLOR: Record<string, string> = {
   SELL: '#00D632', ROLL: '#00A3FF', CLOSE: '#A855F7', ALERT: '#FFB800',
 }
+const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
 
 function fmt(v: number): string {
   const sign = v < 0 ? '-' : ''
   return `${sign}$${Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}
+
+function statusOf(r: BoardRow): string {
+  if (r.uncovered) return r.uncovered_cash != null ? 'AVAILABLE' : 'NOT SOLD'
+  const near = !r.itm && r.stock_price != null && r.strike != null &&
+    Math.abs(r.stock_price - r.strike) / r.strike < 0.03
+  return r.itm ? 'ITM' : near ? 'NEAR' : 'OTM'
+}
+
+type BoardSortKey = 'account' | 'symbol' | 'type' | 'expiry' | 'strike' | 'stock' | 'mark' | 'collected' | 'capture' | 'status'
+
+function boardSortValue(r: BoardRow, key: BoardSortKey): number | string | null {
+  switch (key) {
+    case 'account': return accountRank(r.account)
+    case 'symbol': return r.symbol
+    case 'type': return r.uncovered_cash ?? r.contracts
+    case 'expiry': return r.expiration
+    case 'strike': return r.strike
+    case 'stock': return r.stock_price
+    case 'mark': return r.current_mark
+    case 'collected': return r.original_premium
+    case 'capture': return r.capture_pct
+    case 'status': return statusOf(r)
+  }
+}
+
+function compareBoardRows(a: BoardRow, b: BoardRow, key: BoardSortKey, dir: 1 | -1): number {
+  const va = boardSortValue(a, key)
+  const vb = boardSortValue(b, key)
+  if (va == null && vb == null) return 0
+  if (va == null) return 1
+  if (vb == null) return -1
+  if (typeof va === 'string' && typeof vb === 'string') return va.localeCompare(vb) * dir
+  return ((va as number) - (vb as number)) * dir
 }
 
 export function OptionsExecution() {
@@ -72,6 +108,14 @@ export function OptionsExecution() {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [showLow, setShowLow] = useState(false)
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
+  const [queueSortBy, setQueueSortBy] = useState<'priority' | 'account'>('priority')
+  const [boardSortKey, setBoardSortKey] = useState<BoardSortKey | null>(null)
+  const [boardSortDir, setBoardSortDir] = useState<1 | -1>(1)
+
+  const handleBoardSort = (key: BoardSortKey) => {
+    if (boardSortKey === key) setBoardSortDir(d => (d === 1 ? -1 : 1))
+    else { setBoardSortKey(key); setBoardSortDir(1) }
+  }
 
   // Goals strip data (same cluster the Income page uses)
   const [goalSettings, setGoalSettings] = useState<any>(null)
@@ -155,49 +199,48 @@ export function OptionsExecution() {
 
   const visibleItems = useMemo(() => {
     if (!queue) return []
-    return queue.items.filter(i =>
+    const filtered = queue.items.filter(i =>
       !dismissed.has(i.id) &&
       (showLow || i.priority !== 'low') &&
       (selectedAccount === null || i.account === selectedAccount))
-  }, [queue, dismissed, showLow, selectedAccount])
+    if (queueSortBy === 'account') {
+      return [...filtered].sort((a, b) =>
+        accountRank(a.account) - accountRank(b.account)
+        || PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
+        || a.symbol.localeCompare(b.symbol))
+    }
+    return filtered // backend already emits priority -> account -> symbol order
+  }, [queue, dismissed, showLow, selectedAccount, queueSortBy])
 
-  // All Accounts: group by expiry (triage view — what's coming due).
-  // A single account selected: group by Call/Put instead — that's how a
-  // call book vs. a put wheel actually gets managed; expiry becomes a
-  // per-row column rather than the grouping key.
+  // Calls / Puts grouping, always — this is how a call book vs. a put
+  // wheel actually gets managed, whether viewing one account or all of
+  // them. Expiry is a per-row column rather than the grouping key, so
+  // uncovered ("not sold") rows sit naturally alongside sold calls.
   const boardGroups = useMemo(() => {
     const rowsForAccount = (queue?.positions || []).filter(
       p => selectedAccount === null || p.account === selectedAccount)
 
-    if (selectedAccount === null) {
-      const g = new Map<string, BoardRow[]>()
-      for (const p of rowsForAccount) {
-        const k = p.expiration || 'no expiry'
-        if (!g.has(k)) g.set(k, [])
-        g.get(k)!.push(p)
-      }
-      return [...g.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, rows]) => ({
-          key,
-          label: key !== 'no expiry'
-            ? `Expires ${new Date(key + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
-            : 'No expiry',
-          dte: rows[0]?.dte,
-          showExpiryColumn: false,
-          rows: rows.sort((a, b) => accountRank(a.account) - accountRank(b.account) || a.symbol.localeCompare(b.symbol)),
-        }))
-    }
-
     const calls = rowsForAccount.filter(p => p.type === 'call')
     const puts = rowsForAccount.filter(p => p.type === 'put')
-    const byExpirySymbol = (a: BoardRow, b: BoardRow) =>
-      (a.expiration || '').localeCompare(b.expiration || '') || a.symbol.localeCompare(b.symbol)
+    const byAcctExpirySymbol = (a: BoardRow, b: BoardRow) =>
+      accountRank(a.account) - accountRank(b.account)
+      || (a.expiration || '').localeCompare(b.expiration || '')
+      || a.symbol.localeCompare(b.symbol)
     return [
-      { key: 'call', label: 'Calls', dte: undefined, showExpiryColumn: true, rows: calls.sort(byExpirySymbol) },
-      { key: 'put', label: 'Puts', dte: undefined, showExpiryColumn: true, rows: puts.sort(byExpirySymbol) },
+      { key: 'call', label: 'Calls', rows: calls.sort(byAcctExpirySymbol) },
+      { key: 'put', label: 'Puts', rows: puts.sort(byAcctExpirySymbol) },
     ].filter(g => g.rows.length > 0)
   }, [queue, selectedAccount])
+
+  // User-driven column sort overrides the default account/expiry/symbol
+  // order above; shared across the Calls and Puts tables (same columns).
+  const displayGroups = useMemo(() => {
+    if (!boardSortKey) return boardGroups
+    return boardGroups.map(g => ({
+      ...g,
+      rows: [...g.rows].sort((a, b) => compareBoardRows(a, b, boardSortKey, boardSortDir)),
+    }))
+  }, [boardGroups, boardSortKey, boardSortDir])
 
   if (loading && !queue) {
     return (
@@ -282,6 +325,21 @@ export function OptionsExecution() {
                 </>
               })()}
               <span className={styles.engineTag}>{queue ? 'V6.1 · engines 4+1' : ''}</span>
+              <div className={styles.sortToggle}>
+                <span className={styles.sortToggleLabel}>Sort:</span>
+                <button
+                  className={clsx(styles.sortToggleBtn, queueSortBy === 'priority' && styles.sortToggleBtnActive)}
+                  onClick={() => setQueueSortBy('priority')}
+                >
+                  Priority
+                </button>
+                <button
+                  className={clsx(styles.sortToggleBtn, queueSortBy === 'account' && styles.sortToggleBtnActive)}
+                  onClick={() => setQueueSortBy('account')}
+                >
+                  Account
+                </button>
+              </div>
               <button className={styles.lowToggle} onClick={() => setShowLow(v => !v)}>
                 {showLow ? 'hide low priority' : `show low priority (${queue.summary.low})`}
               </button>
@@ -331,36 +389,46 @@ export function OptionsExecution() {
           NOT sold alongside what is. */}
       <section className={styles.boardSection}>
         <h2>Open Positions{selectedAccount ? ` — ${selectedAccount}` : ''}</h2>
-        {boardGroups.map(({ key, label, dte, showExpiryColumn, rows }) => (
+        {displayGroups.map(({ key, label, rows }) => (
           <div key={key} className={styles.expiryGroup}>
             <div className={styles.expiryHeader}>
               {label}
-              {dte !== undefined && <span className={styles.dteTag}>{dte}d</span>}
               <span className={styles.groupCount}>{rows.reduce((s, r) => s + r.contracts, 0)} contracts</span>
             </div>
             <div className={styles.tableWrap}>
               <table className={styles.table}>
                 <thead>
                   <tr>
-                    <th>Account</th><th>Symbol</th><th>Type</th>
-                    {showExpiryColumn && <th>Expiry</th>}
-                    <th className={styles.num}>Strike</th>
-                    <th className={styles.num}>Stock</th>
-                    <th className={styles.num}>Mark</th>
-                    <th className={styles.num}>Collected</th>
-                    <th className={styles.num}>Capture</th>
-                    <th>Status</th>
+                    {([
+                      ['account', 'Account', false], ['symbol', 'Symbol', false], ['type', 'Type', false],
+                      ['expiry', 'Expiry', false], ['strike', 'Strike', true], ['stock', 'Stock', true],
+                      ['mark', 'Mark', true], ['collected', 'Collected', true], ['capture', 'Capture', true],
+                      ['status', 'Status', false],
+                    ] as Array<[BoardSortKey, string, boolean]>).map(([k, label2, numeric]) => (
+                      <th key={k} className={numeric ? styles.num : undefined}>
+                        <button className={styles.thBtn} onClick={() => handleBoardSort(k)}>
+                          {label2}
+                          {boardSortKey === k && <span className={styles.sortArrow}>{boardSortDir === 1 ? '▲' : '▼'}</span>}
+                        </button>
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r, i) => {
+                    const status = statusOf(r)
                     if (r.uncovered) {
+                      const isCash = r.uncovered_cash != null
                       return (
                         <tr key={i} className={styles.uncoveredRow}>
                           <td>{r.account}</td>
                           <td className={styles.sym}>{r.symbol}</td>
-                          <td>{(r.uncovered_shares ?? r.contracts * 100).toLocaleString()} sh · {r.contracts}x lot</td>
-                          {showExpiryColumn && <td>—</td>}
+                          <td>
+                            {isCash
+                              ? `${fmt(r.uncovered_cash!)} available`
+                              : `${(r.uncovered_shares ?? r.contracts * 100).toLocaleString()} sh · ${r.contracts}x lot`}
+                          </td>
+                          <td>—</td>
                           <td className={styles.num}>—</td>
                           <td className={styles.num}>
                             {r.stock_price != null ? `$${r.stock_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
@@ -368,22 +436,17 @@ export function OptionsExecution() {
                           <td className={styles.num}>—</td>
                           <td className={styles.num}>—</td>
                           <td className={styles.num}>—</td>
-                          <td><span className={styles.status} style={{ color: '#00D632', borderColor: '#00D632' }}>NOT SOLD</span></td>
+                          <td><span className={styles.status} style={{ color: '#00D632', borderColor: '#00D632' }}>{status}</span></td>
                         </tr>
                       )
                     }
-                    const near = !r.itm && r.stock_price != null && r.strike != null &&
-                      Math.abs(r.stock_price - r.strike) / r.strike < 0.03
-                    const status = r.itm ? 'ITM' : near ? 'NEAR' : 'OTM'
-                    const color = r.itm ? '#FF5A5A' : near ? '#FFB800' : '#00D632'
+                    const color = r.itm ? '#FF5A5A' : status === 'NEAR' ? '#FFB800' : '#00D632'
                     return (
                       <tr key={i}>
                         <td>{r.account}</td>
                         <td className={styles.sym}>{r.symbol}</td>
                         <td>{r.contracts}x {r.type.toUpperCase()}</td>
-                        {showExpiryColumn && (
-                          <td>{r.expiration ? new Date(r.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</td>
-                        )}
+                        <td>{r.expiration ? new Date(r.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</td>
                         <td className={styles.num}>{r.strike != null ? `$${r.strike.toLocaleString()}` : '—'}</td>
                         <td className={styles.num}>
                           {r.stock_price != null ? `$${r.stock_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}${r.price_estimated ? '~' : ''}` : '—'}

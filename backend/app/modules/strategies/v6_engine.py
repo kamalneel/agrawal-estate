@@ -8,7 +8,9 @@ keys match notification_organizer's schema.
 Decision tables are transcribed from docs/OPTIONS-STRATEGY-V6-ENGINES.md
 (V6.1). Runs entirely off synced data — no external calls.
 """
+import json
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from sqlalchemy import text
@@ -19,6 +21,7 @@ NON_TAXABLE_TYPES = {"ira", "roth_ira", "traditional_ira", "401k", "hsa", "retir
 CANONICAL_ORDER = ["Neel's Brokerage", "Neel's Retirement", "Neel's Roth IRA",
                    "Jaya's Brokerage", "Jaya's IRA", "Jaya's Roth IRA",
                    "Alisha's Brokerage", "Agrawal Family HSA"]
+MARGIN_ID_TO_NAME = {"neel_brokerage": "Neel's Brokerage", "jaya_brokerage": "Jaya's Brokerage"}
 
 
 def _friday(d: date) -> date:
@@ -30,6 +33,37 @@ def _acct_rank(name: str) -> int:
         return CANONICAL_ORDER.index(name)
     except ValueError:
         return 99
+
+
+def _put_capacity_by_account(db: Session) -> Dict[str, float]:
+    """Total put-selling capacity per account, as of now: margin line +
+    cash balance (margin accounts) or cash incl. locked collateral
+    (everyone else). Same definition as /income/put-capacity, but
+    per-account and using the latest snapshot rather than monthly
+    buckets. This is TOTAL capacity — still includes whatever is
+    currently locked by open puts; callers subtract that separately to
+    get the undeployed/available amount."""
+    settings_path = Path(__file__).resolve().parents[4] / "data" / "goal_settings.json"
+    limits = {}
+    if settings_path.exists():
+        limits = json.loads(settings_path.read_text()).get("margin_limits", {})
+    margin_names = {MARGIN_ID_TO_NAME.get(k, k): v for k, v in limits.items()}
+
+    cash_rows = db.execute(text("""
+        SELECT DISTINCT ON (account_name) account_name, true_cash
+        FROM account_cash_balance_history
+        WHERE account_name != 'Portfolio (Synthetic)'
+        ORDER BY account_name, snapshot_date DESC
+    """)).fetchall()
+    cash = {r.account_name: float(r.true_cash or 0) for r in cash_rows}
+
+    capacity: Dict[str, float] = {}
+    for name, line in margin_names.items():
+        capacity[name] = line + cash.get(name, 0.0)
+    for name, bal in cash.items():
+        if name not in margin_names:
+            capacity[name] = bal
+    return capacity
 
 
 def build_action_queue(db: Session) -> Dict:
@@ -234,6 +268,27 @@ def build_action_queue(db: Session) -> Dict:
                           "option_type": "call", "uncovered_contracts": n,
                           "unsold_contracts": n, "current_price": stock,
                           "expiration_date": str(exp), "total_premium": est})
+
+    # ---- available cash per account (unsold puts — symmetric to uncovered
+    # calls above, but on the cash side). Not tied to a symbol: this is
+    # capacity not yet deployed as any put, the Engine-2 entry point.
+    capacity_by_account = _put_capacity_by_account(db)
+    locked_by_account: Dict[str, float] = {}
+    for p in pos_rows:
+        if (p.option_type or "").lower() == "put":
+            locked_by_account[p.account_name] = (
+                locked_by_account.get(p.account_name, 0.0)
+                + float(p.strike_price) * int(p.contracts_sold) * 100)
+    for account, capacity in capacity_by_account.items():
+        available = capacity - locked_by_account.get(account, 0.0)
+        if available >= 1000:
+            board.append({
+                "account": account, "symbol": "CASH", "type": "put", "strike": None,
+                "expiration": None, "dte": None, "contracts": 0,
+                "stock_price": None, "price_estimated": False, "current_mark": None,
+                "original_premium": None, "capture_pct": None, "itm": False,
+                "uncovered": True, "uncovered_cash": round(available, 2),
+            })
 
     # ---- assemble ----------------------------------------------------------
     prio_rank = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
