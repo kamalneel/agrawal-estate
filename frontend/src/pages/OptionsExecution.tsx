@@ -29,16 +29,18 @@ interface BoardRow {
   account: string
   symbol: string
   type: string
-  strike: number
+  strike: number | null
   expiration: string | null
-  dte: number
+  dte: number | null
   contracts: number
   stock_price: number | null
   price_estimated: boolean
-  current_mark: number
-  original_premium: number
+  current_mark: number | null
+  original_premium: number | null
   capture_pct: number | null
   itm: boolean
+  uncovered?: boolean
+  uncovered_shares?: number
 }
 
 interface Queue {
@@ -159,18 +161,42 @@ export function OptionsExecution() {
       (selectedAccount === null || i.account === selectedAccount))
   }, [queue, dismissed, showLow, selectedAccount])
 
-  const byExpiry = useMemo(() => {
-    const g = new Map<string, BoardRow[]>()
-    for (const p of queue?.positions || []) {
-      if (selectedAccount !== null && p.account !== selectedAccount) continue
-      const k = p.expiration || 'no expiry'
-      if (!g.has(k)) g.set(k, [])
-      g.get(k)!.push(p)
+  // All Accounts: group by expiry (triage view — what's coming due).
+  // A single account selected: group by Call/Put instead — that's how a
+  // call book vs. a put wheel actually gets managed; expiry becomes a
+  // per-row column rather than the grouping key.
+  const boardGroups = useMemo(() => {
+    const rowsForAccount = (queue?.positions || []).filter(
+      p => selectedAccount === null || p.account === selectedAccount)
+
+    if (selectedAccount === null) {
+      const g = new Map<string, BoardRow[]>()
+      for (const p of rowsForAccount) {
+        const k = p.expiration || 'no expiry'
+        if (!g.has(k)) g.set(k, [])
+        g.get(k)!.push(p)
+      }
+      return [...g.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, rows]) => ({
+          key,
+          label: key !== 'no expiry'
+            ? `Expires ${new Date(key + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
+            : 'No expiry',
+          dte: rows[0]?.dte,
+          showExpiryColumn: false,
+          rows: rows.sort((a, b) => accountRank(a.account) - accountRank(b.account) || a.symbol.localeCompare(b.symbol)),
+        }))
     }
-    return [...g.entries()].map(([exp, rows]) => ({
-      exp,
-      rows: rows.sort((a, b) => accountRank(a.account) - accountRank(b.account) || a.symbol.localeCompare(b.symbol)),
-    }))
+
+    const calls = rowsForAccount.filter(p => p.type === 'call')
+    const puts = rowsForAccount.filter(p => p.type === 'put')
+    const byExpirySymbol = (a: BoardRow, b: BoardRow) =>
+      (a.expiration || '').localeCompare(b.expiration || '') || a.symbol.localeCompare(b.symbol)
+    return [
+      { key: 'call', label: 'Calls', dte: undefined, showExpiryColumn: true, rows: calls.sort(byExpirySymbol) },
+      { key: 'put', label: 'Puts', dte: undefined, showExpiryColumn: true, rows: puts.sort(byExpirySymbol) },
+    ].filter(g => g.rows.length > 0)
   }, [queue, selectedAccount])
 
   if (loading && !queue) {
@@ -299,16 +325,17 @@ export function OptionsExecution() {
         </div>
       </section>
 
-      {/* L3 — open positions board */}
+      {/* L3 — open positions board. All Accounts: grouped by expiry
+          (triage). One account selected: grouped by Calls/Puts, with
+          uncovered-holding rows included so the Calls group shows what's
+          NOT sold alongside what is. */}
       <section className={styles.boardSection}>
         <h2>Open Positions{selectedAccount ? ` — ${selectedAccount}` : ''}</h2>
-        {byExpiry.map(({ exp, rows }) => (
-          <div key={exp} className={styles.expiryGroup}>
+        {boardGroups.map(({ key, label, dte, showExpiryColumn, rows }) => (
+          <div key={key} className={styles.expiryGroup}>
             <div className={styles.expiryHeader}>
-              {exp !== 'no expiry'
-                ? <>Expires {new Date(exp + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                    <span className={styles.dteTag}>{rows[0].dte}d</span></>
-                : 'No expiry'}
+              {label}
+              {dte !== undefined && <span className={styles.dteTag}>{dte}d</span>}
               <span className={styles.groupCount}>{rows.reduce((s, r) => s + r.contracts, 0)} contracts</span>
             </div>
             <div className={styles.tableWrap}>
@@ -316,6 +343,7 @@ export function OptionsExecution() {
                 <thead>
                   <tr>
                     <th>Account</th><th>Symbol</th><th>Type</th>
+                    {showExpiryColumn && <th>Expiry</th>}
                     <th className={styles.num}>Strike</th>
                     <th className={styles.num}>Stock</th>
                     <th className={styles.num}>Mark</th>
@@ -326,7 +354,25 @@ export function OptionsExecution() {
                 </thead>
                 <tbody>
                   {rows.map((r, i) => {
-                    const near = !r.itm && r.stock_price != null &&
+                    if (r.uncovered) {
+                      return (
+                        <tr key={i} className={styles.uncoveredRow}>
+                          <td>{r.account}</td>
+                          <td className={styles.sym}>{r.symbol}</td>
+                          <td>{(r.uncovered_shares ?? r.contracts * 100).toLocaleString()} sh · {r.contracts}x lot</td>
+                          {showExpiryColumn && <td>—</td>}
+                          <td className={styles.num}>—</td>
+                          <td className={styles.num}>
+                            {r.stock_price != null ? `$${r.stock_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
+                          </td>
+                          <td className={styles.num}>—</td>
+                          <td className={styles.num}>—</td>
+                          <td className={styles.num}>—</td>
+                          <td><span className={styles.status} style={{ color: '#00D632', borderColor: '#00D632' }}>NOT SOLD</span></td>
+                        </tr>
+                      )
+                    }
+                    const near = !r.itm && r.stock_price != null && r.strike != null &&
                       Math.abs(r.stock_price - r.strike) / r.strike < 0.03
                     const status = r.itm ? 'ITM' : near ? 'NEAR' : 'OTM'
                     const color = r.itm ? '#FF5A5A' : near ? '#FFB800' : '#00D632'
@@ -335,12 +381,15 @@ export function OptionsExecution() {
                         <td>{r.account}</td>
                         <td className={styles.sym}>{r.symbol}</td>
                         <td>{r.contracts}x {r.type.toUpperCase()}</td>
-                        <td className={styles.num}>${r.strike.toLocaleString()}</td>
+                        {showExpiryColumn && (
+                          <td>{r.expiration ? new Date(r.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</td>
+                        )}
+                        <td className={styles.num}>{r.strike != null ? `$${r.strike.toLocaleString()}` : '—'}</td>
                         <td className={styles.num}>
                           {r.stock_price != null ? `$${r.stock_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}${r.price_estimated ? '~' : ''}` : '—'}
                         </td>
-                        <td className={styles.num}>${r.current_mark.toFixed(2)}</td>
-                        <td className={styles.num}>${r.original_premium.toFixed(2)}</td>
+                        <td className={styles.num}>{r.current_mark != null ? `$${r.current_mark.toFixed(2)}` : '—'}</td>
+                        <td className={styles.num}>{r.original_premium != null ? `$${r.original_premium.toFixed(2)}` : '—'}</td>
                         <td className={styles.num} style={{ color: r.capture_pct == null ? undefined : r.capture_pct < 0 ? '#FF5A5A' : '#00D632' }}>
                           {r.capture_pct != null ? `${r.capture_pct.toFixed(0)}%` : '—'}
                         </td>

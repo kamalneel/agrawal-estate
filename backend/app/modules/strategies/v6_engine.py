@@ -193,6 +193,18 @@ def build_action_queue(db: Session) -> Dict:
         if n < 1 or sym not in price:
             continue
         stock = price[sym]
+
+        # Surface uncovered-call opportunities directly on the position
+        # board (not just as Action Queue SELL items) so the Calls group
+        # on a per-account view shows what's NOT sold, not only what is.
+        board.append({
+            "account": account, "symbol": sym, "type": "call", "strike": None,
+            "expiration": None, "dte": None, "contracts": n,
+            "stock_price": stock, "price_estimated": False, "current_mark": None,
+            "original_premium": None, "capture_pct": None, "itm": False,
+            "uncovered": True, "uncovered_shares": int(uncovered),
+        })
+
         shel = is_sheltered(account)
         tier1 = sym in TIER1
         if sym == "TSLA":
