@@ -6954,3 +6954,12 @@ async def get_position_coverage(
         "by_account": rows,
     }
 
+
+
+@router.get("/v6/action-queue")
+async def get_v6_action_queue(db: Session = Depends(get_db)):
+    """V6 Stage-1 action queue (Engines 4+1) — one feed for the Options
+    Execution page and (later) the email notification. See
+    docs/OPTIONS-EXECUTION-PAGE-SPEC.md."""
+    from app.modules.strategies.v6_engine import build_action_queue
+    return build_action_queue(db)
