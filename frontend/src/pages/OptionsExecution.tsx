@@ -69,6 +69,7 @@ export function OptionsExecution() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [showLow, setShowLow] = useState(false)
+  const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
 
   // Goals strip data (same cluster the Income page uses)
   const [goalSettings, setGoalSettings] = useState<any>(null)
@@ -126,14 +127,42 @@ export function OptionsExecution() {
   useEffect(() => { fetchAll() }, [])
 
   const now = new Date()
+
+  // Per-account breakdown — union of accounts appearing in the queue and
+  // the position board, canonical order, with priority counts so the
+  // filter strip doubles as a per-account triage summary.
+  const accountSummaries = useMemo(() => {
+    if (!queue) return []
+    const names = new Set<string>()
+    queue.items.forEach(i => names.add(i.account))
+    queue.positions.forEach(p => names.add(p.account))
+    const rows = [...names].map(name => {
+      const items = queue.items.filter(i => i.account === name && !dismissed.has(i.id))
+      const positions = queue.positions.filter(p => p.account === name)
+      return {
+        name,
+        urgent: items.filter(i => i.priority === 'urgent').length,
+        high: items.filter(i => i.priority === 'high').length,
+        total: items.length,
+        positions: positions.length,
+      }
+    })
+    rows.sort((a, b) => accountRank(a.name) - accountRank(b.name))
+    return rows
+  }, [queue, dismissed])
+
   const visibleItems = useMemo(() => {
     if (!queue) return []
-    return queue.items.filter(i => !dismissed.has(i.id) && (showLow || i.priority !== 'low'))
-  }, [queue, dismissed, showLow])
+    return queue.items.filter(i =>
+      !dismissed.has(i.id) &&
+      (showLow || i.priority !== 'low') &&
+      (selectedAccount === null || i.account === selectedAccount))
+  }, [queue, dismissed, showLow, selectedAccount])
 
   const byExpiry = useMemo(() => {
     const g = new Map<string, BoardRow[]>()
     for (const p of queue?.positions || []) {
+      if (selectedAccount !== null && p.account !== selectedAccount) continue
       const k = p.expiration || 'no expiry'
       if (!g.has(k)) g.set(k, [])
       g.get(k)!.push(p)
@@ -142,7 +171,7 @@ export function OptionsExecution() {
       exp,
       rows: rows.sort((a, b) => accountRank(a.account) - accountRank(b.account) || a.symbol.localeCompare(b.symbol)),
     }))
-  }, [queue])
+  }, [queue, selectedAccount])
 
   if (loading && !queue) {
     return (
@@ -182,19 +211,59 @@ export function OptionsExecution() {
         settings={goalSettings}
       />
 
+      {/* Account filter — scopes both the Action Queue and the Open
+          Positions board below; doubles as a per-account triage summary. */}
+      {accountSummaries.length > 0 && (
+        <section className={styles.acctFilterSection}>
+          <div className={styles.acctFilterRow}>
+            <button
+              className={clsx(styles.acctPill, selectedAccount === null && styles.acctPillActive)}
+              onClick={() => setSelectedAccount(null)}
+            >
+              <span className={styles.acctPillName}>All Accounts</span>
+              <span className={styles.acctPillCount}>{queue?.summary.total ?? 0}</span>
+            </button>
+            {accountSummaries.map(a => (
+              <button
+                key={a.name}
+                className={clsx(styles.acctPill, selectedAccount === a.name && styles.acctPillActive)}
+                onClick={() => setSelectedAccount(selectedAccount === a.name ? null : a.name)}
+                title={`${a.positions} open position${a.positions === 1 ? '' : 's'}`}
+              >
+                {a.urgent > 0 && <span className={styles.acctDot} style={{ background: PRIORITY_COLOR.urgent }} />}
+                {a.urgent === 0 && a.high > 0 && <span className={styles.acctDot} style={{ background: PRIORITY_COLOR.high }} />}
+                <span className={styles.acctPillName}>{a.name}</span>
+                <span className={styles.acctPillCount}>{a.total}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* L2 — action queue */}
       <section className={styles.queueSection}>
         <div className={styles.queueHeader}>
-          <h2>Action Queue</h2>
+          <h2>Action Queue{selectedAccount ? ` — ${selectedAccount}` : ''}</h2>
           {queue && (
             <div className={styles.summaryStrip}>
-              <strong>{queue.summary.total} recommendations</strong>
-              {queue.summary.urgent > 0 && <span className={clsx(styles.badge, styles.badgeUrgent)}>{queue.summary.urgent} URGENT</span>}
-              {queue.summary.high > 0 && <span className={clsx(styles.badge, styles.badgeHigh)}>{queue.summary.high} HIGH</span>}
+              <strong>{visibleItems.length} recommendation{visibleItems.length === 1 ? '' : 's'}</strong>
+              {(() => {
+                const urgent = selectedAccount ? accountSummaries.find(a => a.name === selectedAccount)?.urgent ?? 0 : queue.summary.urgent
+                const high = selectedAccount ? accountSummaries.find(a => a.name === selectedAccount)?.high ?? 0 : queue.summary.high
+                return <>
+                  {urgent > 0 && <span className={clsx(styles.badge, styles.badgeUrgent)}>{urgent} URGENT</span>}
+                  {high > 0 && <span className={clsx(styles.badge, styles.badgeHigh)}>{high} HIGH</span>}
+                </>
+              })()}
               <span className={styles.engineTag}>{queue ? 'V6.1 · engines 4+1' : ''}</span>
               <button className={styles.lowToggle} onClick={() => setShowLow(v => !v)}>
                 {showLow ? 'hide low priority' : `show low priority (${queue.summary.low})`}
               </button>
+              {selectedAccount && (
+                <button className={styles.lowToggle} onClick={() => setSelectedAccount(null)}>
+                  clear account filter ✕
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -207,8 +276,11 @@ export function OptionsExecution() {
                 <span className={styles.actionBadge} style={{ color: ACTION_COLOR[item.action] || '#fff', borderColor: ACTION_COLOR[item.action] || '#444' }}>
                   {item.action}
                 </span>
+                <span className={styles.itemSymbol}>{item.symbol}</span>
                 <span className={styles.itemAccount}>{item.account}</span>
-                <span className={styles.itemDetail}>{item.detail}</span>
+                <span className={styles.itemDetail}>
+                  {item.detail.startsWith(item.symbol + ' ') ? item.detail.slice(item.symbol.length + 1) : item.detail}
+                </span>
                 {item.earn ? <span className={styles.earn}>Earn ~{fmt(item.earn)}</span> : null}
                 {expanded === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               </button>
@@ -229,7 +301,7 @@ export function OptionsExecution() {
 
       {/* L3 — open positions board */}
       <section className={styles.boardSection}>
-        <h2>Open Positions</h2>
+        <h2>Open Positions{selectedAccount ? ` — ${selectedAccount}` : ''}</h2>
         {byExpiry.map(({ exp, rows }) => (
           <div key={exp} className={styles.expiryGroup}>
             <div className={styles.expiryHeader}>

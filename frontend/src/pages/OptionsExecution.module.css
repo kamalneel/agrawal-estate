@@ -67,6 +67,61 @@
   cursor: pointer;
 }
 
+.acctFilterSection {
+  margin-top: calc(-1 * var(--space-2, 8px));
+}
+
+.acctFilterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+}
+
+.acctPill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm, 13px);
+  cursor: pointer;
+}
+
+.acctPill:hover {
+  border-color: var(--color-border-hover);
+  color: var(--color-text-primary);
+}
+
+.acctPillActive {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-text-primary);
+}
+
+.acctPillName {
+  white-space: nowrap;
+}
+
+.acctPillCount {
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-primary);
+  border-radius: 10px;
+  padding: 0 6px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.acctDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 .queueSection h2,
 .boardSection h2 {
   font-size: var(--font-size-lg, 18px);
@@ -168,6 +223,13 @@
   flex-shrink: 0;
   width: 52px;
   text-align: center;
+}
+
+.itemSymbol {
+  font-weight: 700;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+  width: 56px;
 }
 
 .itemAccount {

@@ -134,7 +134,7 @@ def build_action_queue(db: Session) -> Dict:
         if opt == "call" and stock > strike:
             intrinsic = stock - strike
             ipct = round(intrinsic / mark * 100, 0) if mark else 100
-            spec = f"{contracts}x CALL ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f} · {ipct:.0f}% intrinsic"
+            spec = f"{sym} {contracts}x CALL ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f} · {ipct:.0f}% intrinsic"
             if ipct > 80:
                 add_item("high", "ALERT", 4, "ITM call >80% intrinsic",
                          f"{sym} call deep ITM — wait", account, sym, spec,
@@ -162,7 +162,7 @@ def build_action_queue(db: Session) -> Dict:
         elif opt == "put" and stock < strike * 1.02:
             itm = stock < strike
             depth = round((strike - stock) / strike * 100, 1) if itm else 0
-            spec = (f"{contracts}x PUT ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f}"
+            spec = (f"{sym} {contracts}x PUT ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f}"
                     + (f" · {depth:.0f}% ITM" if itm else " · near ATM")
                     + (" (est.)" if estimated else ""))
             if dte <= 2:
@@ -214,7 +214,7 @@ def build_action_queue(db: Session) -> Dict:
         exp = week_ending if today.weekday() <= 2 else _friday(week_ending + timedelta(days=3))
         add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
                  f"{sym}: {n} call{'s' if n > 1 else ''} available", account, sym,
-                 f"{n}x CALL ~${approx:,.0f}{floor_note} (delta {delta}) {exp.strftime('%m/%d')} · stock ${stock:,.0f}",
+                 f"{sym} {n}x CALL ~${approx:,.0f}{floor_note} (delta {delta}) {exp.strftime('%m/%d')} · stock ${stock:,.0f}",
                  f"{int(uncovered):,} uncovered shares earning nothing toward the 1%/mo holdings goal. {gate} "
                  "Entry timing: sell now if RSI>60; RSI<40 wait; RSI<30 do not sell.",
                  earn=est,
