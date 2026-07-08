@@ -124,11 +124,12 @@ export function OptionsExecution() {
   const [dividendsByMonth, setDividendsByMonth] = useState<Record<string, number>>({})
   const [equityByMonth, setEquityByMonth] = useState<Record<string, number>>({})
   const [liveEquity, setLiveEquity] = useState<number | null>(null)
+  const [allAccountNames, setAllAccountNames] = useState<string[]>([])
 
   const fetchAll = async () => {
     setLoading(true)
     try {
-      const [queueRes, unifiedRes, goalRes, capRes, byTypeRes, divChartRes, posRes, holdRes] = await Promise.all([
+      const [queueRes, unifiedRes, goalRes, capRes, byTypeRes, divChartRes, posRes, holdRes, acctRes] = await Promise.all([
         fetch(`${API_BASE}/strategies/v6/action-queue`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/unified?granularity=week`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/goal-settings`, { headers: getAuthHeaders() }),
@@ -137,6 +138,7 @@ export function OptionsExecution() {
         fetch(`${API_BASE}/income/dividends/chart`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/monthly-positions`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/investments/holdings/live`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/investments/accounts`, { headers: getAuthHeaders() }),
       ])
       if (queueRes.ok) {
         const q: Queue = await queueRes.json()
@@ -165,6 +167,10 @@ export function OptionsExecution() {
         const d = await holdRes.json()
         setLiveEquity((d.accounts || []).reduce((s: number, a: any) => s + (a.value || 0), 0))
       }
+      if (acctRes.ok) {
+        const d = await acctRes.json()
+        setAllAccountNames((d.accounts || []).map((a: any) => a.name))
+      }
     } finally {
       setLoading(false)
     }
@@ -174,12 +180,14 @@ export function OptionsExecution() {
 
   const now = new Date()
 
-  // Per-account breakdown — union of accounts appearing in the queue and
-  // the position board, canonical order, with priority counts so the
-  // filter strip doubles as a per-account triage summary.
+  // Per-account breakdown — every active account (from /investments/accounts,
+  // so an account with nothing to do still gets a pill instead of silently
+  // vanishing) union'd with whatever appears in the queue/board, canonical
+  // order, with priority counts so the filter strip doubles as a
+  // per-account triage summary.
   const accountSummaries = useMemo(() => {
     if (!queue) return []
-    const names = new Set<string>()
+    const names = new Set<string>(allAccountNames)
     queue.items.forEach(i => names.add(i.account))
     queue.positions.forEach(p => names.add(p.account))
     const rows = [...names].map(name => {
@@ -195,7 +203,7 @@ export function OptionsExecution() {
     })
     rows.sort((a, b) => accountRank(a.name) - accountRank(b.name))
     return rows
-  }, [queue, dismissed])
+  }, [queue, dismissed, allAccountNames])
 
   const visibleItems = useMemo(() => {
     if (!queue) return []
