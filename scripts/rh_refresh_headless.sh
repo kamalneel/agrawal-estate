@@ -11,7 +11,7 @@
 # the CLI for this project (claude mcp list; /mcp to authorize). If
 # authorization has expired, the run fails and logs — re-run /mcp.
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="/opt/homebrew/opt/postgresql@15/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 cd /Users/neelpersonal/Coding-Projects/agrawal-estate-planner || exit 1
 
 LOG=~/Library/Logs/rh-refresh.log
