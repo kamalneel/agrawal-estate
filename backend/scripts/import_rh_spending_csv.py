@@ -68,6 +68,14 @@ SEED_CATEGORIES = {
     "air india": "Travel & Vacation",
     "expedia": "Travel & Vacation",
     "worldmark the club": "Travel & Vacation",
+    # Neel, 2026-07-09: wires to Eric Chang = monthly rent ($9K/mo from
+    # Jun 1 + one month deposit); Gifthealth = Neel's medication; cash
+    # deliveries (incl. fee/tip rows) pay the home cleaners (~$250/mo).
+    "outgoing wire transfer to eric chang": "Rent",
+    "gifthealth": "Medical",
+    "cash delivery": "Home Improvement",
+    "cash delivery fee": "Home Improvement",
+    "cash delivery tip": "Home Improvement",
 }
 
 
