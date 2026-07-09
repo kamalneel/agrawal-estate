@@ -336,6 +336,7 @@ export function Investments() {
   const [acctTruePortPeriod, setAcctTruePortPeriod] = useState<string | null>(null)
   const [purePerf, setPurePerf] = useState<PurePerformance | null>(null)
   const [showClosedBets, setShowClosedBets] = useState(false)
+  const [pureChartPeriod, setPureChartPeriod] = useState<string | null>(null)
 
   // Fetch stock growth data (with frontend cache to avoid re-fetching on page navigation)
   const fetchStockGrowth = async (force = false) => {
@@ -564,6 +565,25 @@ export function Investments() {
     const cutoffStr = cutoff.toISOString().split('T')[0]
     return truePortfolioHistory.filter(d => d.date >= cutoffStr)
   }, [truePortfolioHistory, chartPeriod])
+
+  // Same period-filter pattern, applied to the pure-performance chart
+  const filteredPureChart = useMemo(() => {
+    const chart = purePerf?.chart ?? []
+    if (!chart.length || !pureChartPeriod) return chart
+    const today = new Date()
+    let cutoff: Date
+    switch (pureChartPeriod) {
+      case '1d': cutoff = new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000); break
+      case '1w': cutoff = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000); break
+      case '30d': cutoff = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000); break
+      case '90d': cutoff = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000); break
+      case 'ytd': cutoff = new Date(today.getFullYear(), 0, 1); break
+      case '1y': cutoff = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000); break
+      default: return chart
+    }
+    const cutoffStr = cutoff.toISOString().split('T')[0]
+    return chart.filter(d => d.date >= cutoffStr)
+  }, [purePerf, pureChartPeriod])
 
   // Filter per-account True Portfolio history by period (client-side)
   const filteredAcctTruePortHistory = useMemo(() => {
@@ -847,9 +867,15 @@ export function Investments() {
       )}
 
       {purePerf && purePerf.chart.length > 1 && (
-        <ChartWrapper title="Value vs. Capital Invested" isEmpty={false}>
+        <ChartWrapper
+          title="Value vs. Capital Invested"
+          periodOptions={PERIOD_PRESETS.EXTENDED}
+          periodValue={pureChartPeriod}
+          onPeriodChange={setPureChartPeriod}
+          isEmpty={filteredPureChart.length === 0}
+        >
           <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={purePerf.chart} margin={CHART_MARGINS}>
+            <AreaChart data={filteredPureChart} margin={CHART_MARGINS}>
               <defs>
                 <linearGradient id="pureValueGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.25} />
