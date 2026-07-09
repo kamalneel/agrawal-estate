@@ -70,7 +70,7 @@ def rebuild(db, dry_run: bool):
           ON a.account_id = t.account_id AND a.source = t.source
         WHERE a.is_active = 'Y'
           AND t.transaction_type IN ('BUY','BOUGHT','SELL','SOLD','ACATI',
-                                     'ACATO','SPL','SPLIT','CONV')
+                                     'ACATO','SPL','SPLIT','CONV','LIQ')
           AND t.symbol IS NOT NULL AND t.symbol NOT IN ('', 'UNKNOWN')
         ORDER BY a.account_id, t.symbol, t.transaction_date, t.id
     """)).fetchall()
@@ -121,11 +121,15 @@ def rebuild(db, dry_run: bool):
                             "BASIS_UNKNOWN:SPLIT_NO_POSITION")
                     stats["split_orphans"] += 1
 
-            elif ttype in ("SELL", "SOLD", "ACATO"):
+            elif ttype in ("SELL", "SOLD", "ACATO", "LIQ"):
                 is_sale = ttype != "ACATO"
-                # ACATO with null quantity = entire position transferred out
+                # ACATO with null quantity = entire position transferred out.
+                # LIQ (issuer liquidation, e.g. the OIL ETN in Apr 2020) is a
+                # forced sale of the whole position; qty is usually null and
+                # proceeds are in amount.
                 remaining = qty if (qty and qty > 0) else (
-                    sum(l.qty for l in book) if not is_sale else Decimal(0))
+                    sum(l.qty for l in book)
+                    if (not is_sale or ttype == "LIQ") else Decimal(0))
                 if remaining <= 0:
                     continue
 

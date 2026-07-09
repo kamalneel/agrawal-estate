@@ -327,6 +327,8 @@ export function Investments() {
   const [acctTruePortPeriod, setAcctTruePortPeriod] = useState<string | null>(null)
   const [purePerf, setPurePerf] = useState<PurePerformance | null>(null)
   const [showClosedBets, setShowClosedBets] = useState(false)
+  const [showSmallOpen, setShowSmallOpen] = useState(false)
+  const [showSmallClosed, setShowSmallClosed] = useState(false)
   const [expandedBet, setExpandedBet] = useState<string | null>(null)
   const [betTrades, setBetTrades] = useState<CapitalEvent[] | null>(null)
   const [pureChartPeriod, setPureChartPeriod] = useState<string | null>(null)
@@ -840,8 +842,89 @@ export function Investments() {
         </ChartWrapper>
       )}
 
-      {/* L2 — winners & losers: which bets are working, ranked by return */}
-      {purePerf && purePerf.open_positions.length > 0 && (
+      {/* L2 — winners & losers: which bets are working, ranked by return.
+          Positions under $5K fold into one expandable line — space follows
+          money (playbook), and a $24 FIG row shouldn't get equal billing
+          with a $787K TSLA bet. */}
+      {purePerf && purePerf.open_positions.length > 0 && (() => {
+        const SMALL = 5000
+        const isSmallOpen = (p: PurePosition) => Math.max(p.value ?? 0, p.cost_basis) < SMALL
+        const isSmallClosed = (p: PurePosition) => Math.max(p.proceeds ?? 0, p.cost_basis) < SMALL
+        const mainOpen = purePerf.open_positions.filter(p => !isSmallOpen(p))
+        const smallOpen = purePerf.open_positions.filter(isSmallOpen)
+        const mainClosed = purePerf.closed_positions.filter(p => !isSmallClosed(p))
+        const smallClosed = purePerf.closed_positions.filter(isSmallClosed)
+        const smallOpenNet = smallOpen.reduce((s, p) => s + (p.gain ?? 0), 0)
+        const smallClosedNet = smallClosed.reduce((s, p) => s + (p.gain ?? 0), 0)
+
+        const openRow = (p: PurePosition) => (
+          <React.Fragment key={p.symbol}>
+            <tr className={styles.betRow} onClick={() => toggleBetDrill(p.symbol)}>
+              <td className={styles.betSym}>
+                {p.symbol}
+                <ChevronRight size={12} className={clsx(styles.betChevron, expandedBet === p.symbol && styles.betChevronOpen)} />
+              </td>
+              <td className={styles.num}>{p.weight_pct != null ? `${p.weight_pct.toFixed(1)}%` : '—'}</td>
+              <td className={styles.num}>{p.value != null ? formatCurrency(p.value) : '—'}</td>
+              <td className={styles.num}>{formatCurrency(p.cost_basis)}</td>
+              <td className={styles.num} style={{ color: p.gain == null ? undefined : p.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                {p.gain != null ? `${p.gain >= 0 ? '+' : '-'}${formatCurrency(Math.abs(p.gain))}` : '—'}
+              </td>
+              <td className={styles.num} style={{ color: p.gain_pct == null ? undefined : p.gain_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                {p.gain_pct != null ? `${p.gain_pct >= 0 ? '+' : ''}${p.gain_pct.toFixed(1)}%` : '—'}
+              </td>
+            </tr>
+            {expandedBet === p.symbol && (
+              <tr>
+                <td colSpan={6} className={styles.betDrillCell}>
+                  <BetTradeHistory symbol={p.symbol} trades={betTrades} />
+                </td>
+              </tr>
+            )}
+          </React.Fragment>
+        )
+
+        const closedRow = (p: PurePosition) => (
+          <React.Fragment key={p.symbol}>
+            <tr className={styles.betRow} onClick={() => toggleBetDrill(p.symbol)}>
+              <td className={styles.betSym}>
+                {p.symbol}
+                <ChevronRight size={12} className={clsx(styles.betChevron, expandedBet === p.symbol && styles.betChevronOpen)} />
+              </td>
+              <td>{p.closed_date ? new Date(p.closed_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}</td>
+              <td className={styles.num}>{formatCurrency(p.proceeds || 0)}</td>
+              <td className={styles.num}>{formatCurrency(p.cost_basis)}</td>
+              <td className={styles.num} style={{ color: p.gain == null ? undefined : p.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                {p.gain != null ? `${p.gain >= 0 ? '+' : '-'}${formatCurrency(Math.abs(p.gain))}` : '—'}
+              </td>
+              <td className={styles.num} style={{ color: p.gain_pct == null ? undefined : p.gain_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                {p.gain_pct != null ? `${p.gain_pct >= 0 ? '+' : ''}${p.gain_pct.toFixed(1)}%` : '—'}
+              </td>
+            </tr>
+            {expandedBet === p.symbol && (
+              <tr>
+                <td colSpan={6} className={styles.betDrillCell}>
+                  <BetTradeHistory symbol={p.symbol} trades={betTrades} />
+                </td>
+              </tr>
+            )}
+          </React.Fragment>
+        )
+
+        const foldRow = (count: number, net: number, open: boolean, toggle: () => void) => (
+          <tr className={styles.betRow} onClick={toggle}>
+            <td colSpan={4} className={styles.smallFoldLabel}>
+              <ChevronRight size={12} className={clsx(styles.betChevron, open && styles.betChevronOpen)} />
+              {count} small position{count === 1 ? '' : 's'} (&lt;$5K)
+            </td>
+            <td className={styles.num} style={{ color: net >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+              {net >= 0 ? '+' : '-'}{formatCurrency(Math.abs(net))}
+            </td>
+            <td className={styles.num}>—</td>
+          </tr>
+        )
+
+        return (
         <section className={styles.betsSection}>
           <h2>Winners &amp; Losers</h2>
           <div className={styles.betsTableWrap}>
@@ -854,32 +937,9 @@ export function Investments() {
                 </tr>
               </thead>
               <tbody>
-                {purePerf.open_positions.map(p => (
-                  <React.Fragment key={p.symbol}>
-                    <tr className={styles.betRow} onClick={() => toggleBetDrill(p.symbol)}>
-                      <td className={styles.betSym}>
-                        {p.symbol}
-                        <ChevronRight size={12} className={clsx(styles.betChevron, expandedBet === p.symbol && styles.betChevronOpen)} />
-                      </td>
-                      <td className={styles.num}>{p.weight_pct != null ? `${p.weight_pct.toFixed(1)}%` : '—'}</td>
-                      <td className={styles.num}>{p.value != null ? formatCurrency(p.value) : '—'}</td>
-                      <td className={styles.num}>{formatCurrency(p.cost_basis)}</td>
-                      <td className={styles.num} style={{ color: p.gain == null ? undefined : p.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-                        {p.gain != null ? `${p.gain >= 0 ? '+' : '-'}${formatCurrency(Math.abs(p.gain))}` : '—'}
-                      </td>
-                      <td className={styles.num} style={{ color: p.gain_pct == null ? undefined : p.gain_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-                        {p.gain_pct != null ? `${p.gain_pct >= 0 ? '+' : ''}${p.gain_pct.toFixed(1)}%` : '—'}
-                      </td>
-                    </tr>
-                    {expandedBet === p.symbol && (
-                      <tr>
-                        <td colSpan={6} className={styles.betDrillCell}>
-                          <BetTradeHistory symbol={p.symbol} trades={betTrades} />
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                ))}
+                {mainOpen.map(openRow)}
+                {smallOpen.length > 0 && foldRow(smallOpen.length, smallOpenNet, showSmallOpen, () => setShowSmallOpen(v => !v))}
+                {showSmallOpen && smallOpen.map(openRow)}
               </tbody>
             </table>
           </div>
@@ -900,32 +960,9 @@ export function Investments() {
                       </tr>
                     </thead>
                     <tbody>
-                      {purePerf.closed_positions.map(p => (
-                        <React.Fragment key={p.symbol}>
-                          <tr className={styles.betRow} onClick={() => toggleBetDrill(p.symbol)}>
-                            <td className={styles.betSym}>
-                              {p.symbol}
-                              <ChevronRight size={12} className={clsx(styles.betChevron, expandedBet === p.symbol && styles.betChevronOpen)} />
-                            </td>
-                            <td>{p.closed_date ? new Date(p.closed_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}</td>
-                            <td className={styles.num}>{formatCurrency(p.proceeds || 0)}</td>
-                            <td className={styles.num}>{formatCurrency(p.cost_basis)}</td>
-                            <td className={styles.num} style={{ color: p.gain == null ? undefined : p.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-                              {p.gain != null ? `${p.gain >= 0 ? '+' : '-'}${formatCurrency(Math.abs(p.gain))}` : '—'}
-                            </td>
-                            <td className={styles.num} style={{ color: p.gain_pct == null ? undefined : p.gain_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-                              {p.gain_pct != null ? `${p.gain_pct >= 0 ? '+' : ''}${p.gain_pct.toFixed(1)}%` : '—'}
-                            </td>
-                          </tr>
-                          {expandedBet === p.symbol && (
-                            <tr>
-                              <td colSpan={6} className={styles.betDrillCell}>
-                                <BetTradeHistory symbol={p.symbol} trades={betTrades} />
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      ))}
+                      {mainClosed.map(closedRow)}
+                      {smallClosed.length > 0 && foldRow(smallClosed.length, smallClosedNet, showSmallClosed, () => setShowSmallClosed(v => !v))}
+                      {showSmallClosed && smallClosed.map(closedRow)}
                     </tbody>
                   </table>
                 </div>
@@ -933,7 +970,8 @@ export function Investments() {
             </div>
           )}
         </section>
-      )}
+        )
+      })()}
 
       {/* Total-wealth context strip — cash-inclusive True Portfolio, demoted
           to one line: the page's headline is pure performance above, and two
