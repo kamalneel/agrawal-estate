@@ -94,6 +94,34 @@ interface GrowthSummary {
   }
 }
 
+// Pure investment performance — value vs. cost basis, structurally
+// independent of income. See docs/INVESTMENTS-PAGE-SPEC.md.
+interface PurePosition {
+  symbol: string
+  status: 'open' | 'closed'
+  shares?: number
+  proceeds?: number
+  cost_basis: number
+  value?: number | null
+  gain: number | null
+  gain_pct: number | null
+  weight_pct?: number | null
+  closed_date?: string | null
+}
+
+interface PurePerformance {
+  as_of: string
+  current_value: number
+  cost_basis: number
+  gain: number
+  gain_pct: number | null
+  unpriced_count: number
+  unpriced_cost_basis: number
+  chart: { date: string; value: number; invested: number }[]
+  open_positions: PurePosition[]
+  closed_positions: PurePosition[]
+}
+
 interface CapitalEvent {
   date: string
   formatted: string
@@ -306,6 +334,8 @@ export function Investments() {
   const [acctTruePortHistory, setAcctTruePortHistory] = useState<{ date: string; stock_value: number; true_cash: number; true_portfolio: number; is_real: boolean }[]>([])
   const [acctRealDataStart, setAcctRealDataStart] = useState<string | null>(null)
   const [acctTruePortPeriod, setAcctTruePortPeriod] = useState<string | null>(null)
+  const [purePerf, setPurePerf] = useState<PurePerformance | null>(null)
+  const [showClosedBets, setShowClosedBets] = useState(false)
 
   // Fetch stock growth data (with frontend cache to avoid re-fetching on page navigation)
   const fetchStockGrowth = async (force = false) => {
@@ -502,7 +532,15 @@ export function Investments() {
         if (d?.real_data_start) setRealDataStart(d.real_data_start)
       })
       .catch(() => {})
+    fetchPurePerformance()
   }, [])
+
+  const fetchPurePerformance = () => {
+    fetch(`${API_BASE}/investments/pure-performance`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setPurePerf(d))
+      .catch(() => {})
+  }
 
   const totalEquity = accounts.reduce((sum, acc) => sum + acc.value, 0)
   const totalChange = accounts.reduce((sum, acc) => sum + acc.change, 0)
@@ -779,7 +817,142 @@ export function Investments() {
   // Main View
   return (
     <div className={styles.page}>
-      {/* Hero Section */}
+      {/* L1 — pure investment performance: value vs. cost basis, structurally
+          independent of income (premium/dividends never touch cost basis).
+          See docs/INVESTMENTS-PAGE-SPEC.md. */}
+      {purePerf && (
+        <section className={styles.pureHero}>
+          <div className={styles.pureHeroContent}>
+            <div className={styles.heroLabel}>Investment Performance</div>
+            <div
+              className={styles.pureHeroValue}
+              style={{ color: purePerf.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}
+            >
+              {purePerf.gain >= 0 ? '+' : '-'}{formatCurrency(Math.abs(purePerf.gain))}
+              {purePerf.gain_pct != null && (
+                <span className={styles.pureHeroPct}>
+                  ({purePerf.gain_pct >= 0 ? '+' : ''}{purePerf.gain_pct.toFixed(1)}%)
+                </span>
+              )}
+            </div>
+            <div className={styles.pureHeroSub}>
+              {formatCurrency(purePerf.current_value)} value vs. {formatCurrency(purePerf.cost_basis)} invested
+              — the stocks themselves, no options premium or dividends counted in.
+              {purePerf.unpriced_count > 0 && (
+                <span className={styles.pureHeroFlag}> ({purePerf.unpriced_count} position{purePerf.unpriced_count === 1 ? '' : 's'} unpriced, {formatCurrency(purePerf.unpriced_cost_basis)} cost basis excluded above)</span>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {purePerf && purePerf.chart.length > 1 && (
+        <ChartWrapper title="Value vs. Capital Invested" isEmpty={false}>
+          <ResponsiveContainer width="100%" height={260}>
+            <AreaChart data={purePerf.chart} margin={CHART_MARGINS}>
+              <defs>
+                <linearGradient id="pureValueGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.25} />
+                  <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid {...GRID_PROPS} />
+              <XAxis dataKey="date" {...X_AXIS_PROPS}
+                tickFormatter={(d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
+              <YAxis {...Y_AXIS_PROPS} tickFormatter={(v) => formatCurrencyShort(v)} />
+              <Tooltip
+                labelFormatter={(d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                formatter={(v: number, name: string) => [formatCurrency(v), name === 'value' ? 'Value' : 'Invested']}
+              />
+              <Area type="monotone" dataKey="value" name="value" stroke={CHART_GREEN} strokeWidth={2} fill="url(#pureValueGradient)" />
+              <Area type="monotone" dataKey="invested" name="invested" stroke="#C49A3C" strokeWidth={1.5} strokeDasharray="5 3" fill="none" dot={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 20, marginTop: 10, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ display: 'inline-block', width: 20, borderTop: `2px solid ${CHART_GREEN}` }} />
+              Value
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ display: 'inline-block', width: 20, borderTop: '2px dashed #C49A3C' }} />
+              Capital Invested — the gap is the pure gain
+            </span>
+          </div>
+        </ChartWrapper>
+      )}
+
+      {/* L2 — winners & losers: which bets are working, ranked by return */}
+      {purePerf && purePerf.open_positions.length > 0 && (
+        <section className={styles.betsSection}>
+          <h2>Winners &amp; Losers</h2>
+          <div className={styles.betsTableWrap}>
+            <table className={styles.betsTable}>
+              <thead>
+                <tr>
+                  <th>Symbol</th><th className={styles.num}>Weight</th>
+                  <th className={styles.num}>Value</th><th className={styles.num}>Cost Basis</th>
+                  <th className={styles.num}>Gain</th><th className={styles.num}>Return</th>
+                </tr>
+              </thead>
+              <tbody>
+                {purePerf.open_positions.map(p => (
+                  <tr key={p.symbol}>
+                    <td className={styles.betSym}>{p.symbol}</td>
+                    <td className={styles.num}>{p.weight_pct != null ? `${p.weight_pct.toFixed(1)}%` : '—'}</td>
+                    <td className={styles.num}>{p.value != null ? formatCurrency(p.value) : '—'}</td>
+                    <td className={styles.num}>{formatCurrency(p.cost_basis)}</td>
+                    <td className={styles.num} style={{ color: p.gain == null ? undefined : p.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                      {p.gain != null ? `${p.gain >= 0 ? '+' : '-'}${formatCurrency(Math.abs(p.gain))}` : '—'}
+                    </td>
+                    <td className={styles.num} style={{ color: p.gain_pct == null ? undefined : p.gain_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                      {p.gain_pct != null ? `${p.gain_pct >= 0 ? '+' : ''}${p.gain_pct.toFixed(1)}%` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {purePerf.closed_positions.length > 0 && (
+            <div className={styles.closedBetsToggle}>
+              <button onClick={() => setShowClosedBets(v => !v)}>
+                {showClosedBets ? 'hide' : 'show'} closed positions ({purePerf.closed_positions.length})
+              </button>
+              {showClosedBets && (
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>
+                      <tr>
+                        <th>Symbol</th><th>Closed</th>
+                        <th className={styles.num}>Proceeds</th><th className={styles.num}>Cost Basis</th>
+                        <th className={styles.num}>Gain</th><th className={styles.num}>Return</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {purePerf.closed_positions.map(p => (
+                        <tr key={p.symbol}>
+                          <td className={styles.betSym}>{p.symbol}</td>
+                          <td>{p.closed_date ? new Date(p.closed_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}</td>
+                          <td className={styles.num}>{formatCurrency(p.proceeds || 0)}</td>
+                          <td className={styles.num}>{formatCurrency(p.cost_basis)}</td>
+                          <td className={styles.num} style={{ color: p.gain == null ? undefined : p.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                            {p.gain != null ? `${p.gain >= 0 ? '+' : '-'}${formatCurrency(Math.abs(p.gain))}` : '—'}
+                          </td>
+                          <td className={styles.num} style={{ color: p.gain_pct == null ? undefined : p.gain_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                            {p.gain_pct != null ? `${p.gain_pct >= 0 ? '+' : ''}${p.gain_pct.toFixed(1)}%` : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Hero Section — total wealth (cash-inclusive); supporting detail below */}
       <section className={styles.hero}>
         <div className={styles.heroContent}>
           {cashBreakdown && cashBreakdown.total_true_cash !== 0 ? (() => {
@@ -859,7 +1032,7 @@ export function Investments() {
             )
           })()}
         </div>
-        <button onClick={() => { fetchHoldings(); fetchGrowthSummary(); fetchStockGrowth(true); }} className={styles.heroRefresh} title="Refresh data">
+        <button onClick={() => { fetchHoldings(); fetchGrowthSummary(); fetchStockGrowth(true); fetchPurePerformance(); }} className={styles.heroRefresh} title="Refresh data">
           <RefreshCw size={20} />
         </button>
       </section>

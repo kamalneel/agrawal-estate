@@ -74,6 +74,115 @@
   margin-left: var(--space-1);
 }
 
+/* Pure investment performance — L1/L2 */
+.pureHero {
+  background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-bg-tertiary) 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-8);
+  margin-bottom: var(--space-6);
+}
+
+.pureHeroContent {
+  max-width: 700px;
+}
+
+.pureHeroValue {
+  font-family: var(--font-mono);
+  font-size: var(--text-5xl, var(--text-6xl));
+  font-weight: var(--font-bold);
+  letter-spacing: var(--tracking-tighter);
+  line-height: var(--leading-none);
+  margin-bottom: var(--space-2);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.pureHeroPct {
+  font-size: var(--text-xl);
+  opacity: 0.8;
+}
+
+.pureHeroSub {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.pureHeroFlag {
+  color: var(--color-warning, #f59e0b);
+}
+
+.betsSection {
+  margin-bottom: var(--space-8);
+}
+
+.betsSection h2 {
+  font-size: var(--text-lg);
+  color: var(--color-text-primary);
+  margin: 0 0 var(--space-3);
+}
+
+.betsTableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+}
+
+.betsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.betsTable th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-medium);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.betsTable td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.betsTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.betSym {
+  color: var(--color-text-primary);
+  font-weight: var(--font-semibold, 600);
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.closedBetsToggle {
+  margin-top: var(--space-3);
+}
+
+.closedBetsToggle > button {
+  border: none;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 0 0 var(--space-2);
+}
+
+.closedBetsToggle .betsTableWrap {
+  margin-top: var(--space-2);
+}
+
 /* Growth Periods */
 .growthPeriods {
   display: flex;

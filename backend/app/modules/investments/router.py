@@ -1484,3 +1484,12 @@ async def list_realized_sales(
         "basis_source": (r.notes or "").replace("BASIS_RESOLVED:", "") or "purchase records",
         "unresolved": r.notes == "BASIS_UNKNOWN",
     } for r in rows]}
+
+
+@router.get("/pure-performance")
+async def get_pure_performance_endpoint(db: Session = Depends(get_db)):
+    """Pure investment performance (Investments page L1/L2) — value vs. cost
+    basis, structurally independent of income. See docs/INVESTMENTS-PAGE-SPEC.md.
+    """
+    from app.shared.services.cost_basis_service import get_pure_performance
+    return get_pure_performance(db)

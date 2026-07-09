@@ -530,3 +530,120 @@ def get_realized_pnl_by_period(
         "unresolved_count": r.unresolved_count,
         "unresolved_proceeds": float(r.unresolved_proceeds),
     } for r in rows]
+
+
+# ===== Pure investment performance (Investments page) =====
+# See docs/INVESTMENTS-PAGE-SPEC.md. Value − cost basis is structurally
+# independent of income (premium/dividends never touch cost basis) — this
+# is exact, not an approximation that backs cash flows out of a series.
+# Assignment lots use strike-price basis as-is (definition-of-income rule).
+
+def get_pure_performance(db: Session) -> Dict:
+    """Current holdings vs. cost basis (open + closed, symbol-aggregated
+    across accounts), plus a value-vs-invested-capital time series."""
+    from sqlalchemy import text as _text
+
+    open_rows = db.execute(_text("""
+        SELECT l.symbol, l.quantity_remaining, l.cost_per_share, h.current_price
+        FROM stock_lot l
+        LEFT JOIN investment_holdings h
+          ON h.source = l.source AND h.account_id = l.account_id AND h.symbol = l.symbol
+        WHERE l.quantity_remaining > 0
+    """)).fetchall()
+
+    by_symbol: Dict[str, Dict] = {}
+    for r in open_rows:
+        qty = float(r.quantity_remaining)
+        d = by_symbol.setdefault(r.symbol, {"shares": 0.0, "cost_basis": 0.0, "value": 0.0, "priced": True})
+        d["shares"] += qty
+        d["cost_basis"] += qty * float(r.cost_per_share)
+        if r.current_price is None:
+            d["priced"] = False
+        else:
+            d["value"] += qty * float(r.current_price)
+
+    priced_value = sum(d["value"] for d in by_symbol.values() if d["priced"])
+    priced_cost_basis = sum(d["cost_basis"] for d in by_symbol.values() if d["priced"])
+    unpriced_cost_basis = sum(d["cost_basis"] for d in by_symbol.values() if not d["priced"])
+    unpriced_count = sum(1 for d in by_symbol.values() if not d["priced"])
+
+    open_positions = []
+    for sym, d in by_symbol.items():
+        gain = (d["value"] - d["cost_basis"]) if d["priced"] else None
+        gain_pct = round(gain / d["cost_basis"] * 100, 2) if (gain is not None and d["cost_basis"]) else None
+        open_positions.append({
+            "symbol": sym, "status": "open", "shares": round(d["shares"], 4),
+            "cost_basis": round(d["cost_basis"], 2),
+            "value": round(d["value"], 2) if d["priced"] else None,
+            "gain": round(gain, 2) if gain is not None else None,
+            "gain_pct": gain_pct,
+            "weight_pct": round(d["value"] / priced_value * 100, 2) if (d["priced"] and priced_value) else None,
+        })
+    open_positions.sort(key=lambda p: (p["gain_pct"] is None, -(p["gain_pct"] or 0)))
+
+    closed_rows = db.execute(_text("""
+        WITH totals AS (
+            SELECT symbol, SUM(quantity_remaining) AS remaining FROM stock_lot GROUP BY symbol
+        )
+        SELECT l.symbol,
+               SUM(s.proceeds) FILTER (WHERE s.notes IS DISTINCT FROM 'BASIS_UNKNOWN') AS proceeds,
+               SUM(s.cost_basis) FILTER (WHERE s.notes IS DISTINCT FROM 'BASIS_UNKNOWN') AS cost_basis,
+               SUM(s.gain_loss) FILTER (WHERE s.notes IS DISTINCT FROM 'BASIS_UNKNOWN') AS gain,
+               MAX(s.sale_date) AS last_sale_date
+        FROM stock_lot_sale s
+        JOIN stock_lot l ON l.lot_id = s.lot_id
+        JOIN totals t ON t.symbol = l.symbol AND t.remaining = 0
+        GROUP BY l.symbol
+    """)).fetchall()
+    closed_positions = []
+    for r in closed_rows:
+        cb = float(r.cost_basis or 0)
+        gain = float(r.gain or 0)
+        closed_positions.append({
+            "symbol": r.symbol, "status": "closed",
+            "proceeds": round(float(r.proceeds or 0), 2), "cost_basis": round(cb, 2),
+            "gain": round(gain, 2), "gain_pct": round(gain / cb * 100, 2) if cb else None,
+            "closed_date": str(r.last_sale_date) if r.last_sale_date else None,
+        })
+    closed_positions.sort(key=lambda p: (p["gain_pct"] is None, -(p["gain_pct"] or 0)))
+
+    # Value over time (investment_holdings_history) vs. capital invested
+    # over time, reconstructed from each lot's purchase/sale timeline —
+    # not a snapshot backed into the past, a real trajectory.
+    hist_rows = db.execute(_text("""
+        SELECT snapshot_date, SUM(market_value) AS value
+        FROM investment_holdings_history GROUP BY snapshot_date ORDER BY snapshot_date
+    """)).fetchall()
+    lot_rows = db.execute(_text(
+        "SELECT lot_id, purchase_date, quantity, cost_per_share FROM stock_lot")).fetchall()
+    sale_rows = db.execute(_text(
+        "SELECT lot_id, sale_date, quantity_sold FROM stock_lot_sale ORDER BY lot_id, sale_date")).fetchall()
+    sales_by_lot: Dict[int, List[Tuple[date, float]]] = {}
+    for r in sale_rows:
+        sales_by_lot.setdefault(r.lot_id, []).append((r.sale_date, float(r.quantity_sold)))
+
+    chart = []
+    for hr in hist_rows:
+        d = hr.snapshot_date
+        invested = 0.0
+        for lr in lot_rows:
+            if lr.purchase_date > d:
+                continue
+            sold = sum(q for sd, q in sales_by_lot.get(lr.lot_id, []) if sd <= d)
+            remaining = max(float(lr.quantity) - sold, 0.0)
+            invested += remaining * float(lr.cost_per_share)
+        chart.append({"date": str(d), "value": round(float(hr.value or 0), 2), "invested": round(invested, 2)})
+
+    overall_gain = priced_value - priced_cost_basis
+    return {
+        "as_of": str(date.today()),
+        "current_value": round(priced_value, 2),
+        "cost_basis": round(priced_cost_basis, 2),
+        "gain": round(overall_gain, 2),
+        "gain_pct": round(overall_gain / priced_cost_basis * 100, 2) if priced_cost_basis else None,
+        "unpriced_count": unpriced_count,
+        "unpriced_cost_basis": round(unpriced_cost_basis, 2),
+        "chart": chart,
+        "open_positions": open_positions,
+        "closed_positions": closed_positions,
+    }
