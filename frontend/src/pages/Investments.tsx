@@ -798,6 +798,9 @@ export function Investments() {
               )}
             </div>
           </div>
+          <button onClick={() => { fetchHoldings(); fetchStockGrowth(true); fetchPurePerformance(); }} className={styles.heroRefresh} title="Refresh data">
+            <RefreshCw size={18} />
+          </button>
         </section>
       )}
 
@@ -973,43 +976,36 @@ export function Investments() {
         )
       })()}
 
-      {/* Total-wealth context strip — cash-inclusive True Portfolio, demoted
-          to one line: the page's headline is pure performance above, and two
-          stacked hero+chart blocks read as competing answers. Chart and
-          capital flow live at the bottom as history. */}
-      <section className={styles.trueStrip}>
-        <div className={styles.trueStripBody}>
-          {(() => {
-            const trueCash = cashBreakdown?.total_true_cash ?? 0
-            const truePortfolio = totalEquity + trueCash
-            const dayPct = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : null
-            return (
-              <>
-                <span className={styles.trueStripLabel}>True Portfolio (incl. cash)</span>
-                <span className={styles.trueStripValue}>{formatCurrency(truePortfolio)}</span>
-                <span className={styles.trueStripDetail}>{formatCurrency(totalEquity)} stocks</span>
-                {trueCash !== 0 && <span className={styles.trueStripDetail}>+{formatCurrency(trueCash)} cash &amp; collateral</span>}
-                {(cashBreakdown?.total_margin_used ?? 0) > 0 && (
-                  <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }}>
-                    −{formatCurrency(cashBreakdown!.total_margin_used)} margin
-                  </span>
-                )}
-                {dayPct != null && (
-                  <span className={styles.trueStripDetail} style={{ color: dayPct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-                    {dayPct >= 0 ? '+' : ''}{dayPct.toFixed(2)}% today
-                  </span>
-                )}
-              </>
-            )
-          })()}
-        </div>
-        <button onClick={() => { fetchHoldings(); fetchStockGrowth(true); fetchPurePerformance(); }} className={styles.heroRefresh} title="Refresh data">
-          <RefreshCw size={18} />
-        </button>
-      </section>
-
       <section className={styles.accountsSection}>
-        <h2>Brokerage Accounts ({accounts.length})</h2>
+        {/* Cash-inclusive total lives here because it IS the sum of these
+            cards — not a competing page headline (that's pure performance). */}
+        <div className={styles.accountsHeader}>
+          <h2>Brokerage Accounts ({accounts.length})</h2>
+          <div className={styles.trueStripBody}>
+            {(() => {
+              const trueCash = cashBreakdown?.total_true_cash ?? 0
+              const truePortfolio = totalEquity + trueCash
+              const dayPct = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : null
+              return (
+                <>
+                  <span className={styles.trueStripValue}>{formatCurrency(truePortfolio)}</span>
+                  <span className={styles.trueStripDetail}>{formatCurrency(totalEquity)} stocks</span>
+                  {trueCash !== 0 && <span className={styles.trueStripDetail}>+{formatCurrency(trueCash)} cash &amp; collateral</span>}
+                  {(cashBreakdown?.total_margin_used ?? 0) > 0 && (
+                    <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }}>
+                      −{formatCurrency(cashBreakdown!.total_margin_used)} margin
+                    </span>
+                  )}
+                  {dayPct != null && (
+                    <span className={styles.trueStripDetail} style={{ color: dayPct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                      {dayPct >= 0 ? '+' : ''}{dayPct.toFixed(2)}% today
+                    </span>
+                  )}
+                </>
+              )
+            })()}
+          </div>
+        </div>
         <div className={styles.accountsGrid}>
           {accounts.map((account, index) => {
             const cashData = cashBreakdown?.accounts?.find(

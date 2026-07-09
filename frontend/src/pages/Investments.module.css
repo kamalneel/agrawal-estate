@@ -76,11 +76,27 @@
 
 /* Pure investment performance — L1/L2 */
 .pureHero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
   background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-bg-tertiary) 100%);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xl);
   padding: var(--space-8);
   margin-bottom: var(--space-6);
+}
+
+.accountsHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.accountsHeader h2 {
+  margin: 0;
 }
 
 .pureHeroContent {
