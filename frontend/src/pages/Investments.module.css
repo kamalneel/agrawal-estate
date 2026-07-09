@@ -220,7 +220,12 @@
   background: var(--color-bg-hover);
 }
 
+.betSym {
+  white-space: nowrap;
+}
+
 .betChevron {
+  display: inline-block;
   margin-left: 6px;
   vertical-align: middle;
   color: var(--color-text-tertiary);
