@@ -114,6 +114,39 @@ interface CapitalEvent {
   description: string
 }
 
+// Account type to icon mapping
+const getAccountIcon = (type: string) => {
+  switch (type) {
+    case 'retirement':
+    case '401k':
+      return Briefcase
+    case 'hsa':
+      return Heart
+    default:
+      return User
+  }
+}
+
+// Account type display names
+const getAccountTypeDisplay = (type: string) => {
+  switch (type) {
+    case 'brokerage':
+    case 'individual':
+      return 'Brokerage Account'
+    case 'retirement':
+    case '401k':
+      return 'Retirement Account'
+    case 'ira':
+      return 'IRA Account'
+    case 'roth_ira':
+      return 'Roth IRA Account'
+    case 'hsa':
+      return 'Health Savings Account'
+    default:
+      return 'Brokerage Account'
+  }
+}
+
 interface CashAccountData {
   true_cash: number
   cash: number
