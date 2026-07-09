@@ -52,6 +52,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Income Unification Spec](../docs/INCOME-UNIFICATION-SPEC.md) — agreed income definition (realized-only, all accounts, call-assignment = income at sale) and design for the unified weekly/monthly/annual view
 - [Options Execution Page Spec](../docs/OPTIONS-EXECUTION-PAGE-SPEC.md) — test question, one-feed/two-renderers (email = queue's urgent slice), 4-level hierarchy, staged V6 build
 - [Investments Page Spec](../docs/INVESTMENTS-PAGE-SPEC.md) — pure price performance excluding income (value − cost basis, exact not approximated), winners/losers, trillion-club policy deferred (no market-cap source exists)
+- [Spending Page Spec](../docs/SPENDING-PAGE-SPEC.md) — two sources, two jobs: brokerage outflows = how much (fresh), Monarch CSV = on what (manual, freshness-stamped); outflow definition + dedup notes
 - [Cleanup Backlog](../docs/CLEANUP-BACKLOG.md) — running list for the cleanup phase: broken tsc build, yfinance migration, dead engines (v2–v4), plaid, god files, docs archive
 
 ## Strategy Spec Docs (V6)

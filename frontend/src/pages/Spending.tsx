@@ -180,6 +180,12 @@ export default function Spending() {
   const [recurringPage, setRecurringPage] = useState(1);
   const [nonMonthlyPage, setNonMonthlyPage] = useState(1);
 
+  const [outflows, setOutflows] = useState<{
+    as_of: string | null; monarch_through: string | null;
+    months: { month: string; card_spending: number; cashback: number; bank_out: number;
+              card_net: number; total: number; monarch_total: number | null;
+              by_account: Record<string, number> }[];
+  } | null>(null);
   const [sortCol, setSortCol] = useState<'description' | 'account' | 'date' | 'amount'>('date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
@@ -260,6 +266,13 @@ export default function Spending() {
   }, [buildParams, nonMonthlyPage]);
 
   /* ── effects ── */
+
+  useEffect(() => {
+    fetch(`${API}/outflows`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setOutflows(d))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => { fetchYears(); }, [fetchYears]);
 
@@ -404,6 +417,49 @@ export default function Spending() {
             </button>
           ))}
         </div>
+
+        {/* L1 — total spend from investment-account outflows (fresh via
+            sync; Monarch below is composition only). Definition per Neel:
+            money leaving Neel's/Jaya's brokerage toward spending channels. */}
+        {outflows && (() => {
+          const inYear = outflows.months.filter(m => m.month.startsWith(String(selectedYear)));
+          const rows = selectedMonth === null
+            ? inYear
+            : inYear.filter(m => m.month === `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-01`);
+          const cardNet = rows.reduce((s, m) => s + m.card_net, 0);
+          const bankOut = rows.reduce((s, m) => s + m.bank_out, 0);
+          const total = rows.reduce((s, m) => s + m.total, 0);
+          const monarchCovered = rows.filter(m => m.monarch_total != null);
+          const monarchTotal = monarchCovered.reduce((s, m) => s + (m.monarch_total || 0), 0);
+          const periodLabel = selectedMonth === null
+            ? `${selectedYear}` : `${MONTH_NAMES_SHORT[selectedMonth - 1]} ${selectedYear}`;
+          return (
+            <div className={styles.outflowBand}>
+              <div>
+                <div className={styles.outflowLabel}>Total spend — {periodLabel}</div>
+                <div className={styles.outflowValue}>{fmt(total)}</div>
+                <div className={styles.outflowSplit}>
+                  <span>{fmt(cardNet)} card &amp; spending (net of cash back)</span>
+                  <span>{fmt(bankOut)} bank transfers out</span>
+                  {monarchCovered.length > 0 && (
+                    <span className={styles.outflowRecon}>
+                      Monarch categorized: {fmt(monarchTotal)}
+                      {monarchCovered.length === rows.length && total > 0 && (
+                        <> ({Math.abs(monarchTotal - total) / total < 0.05 ? 'reconciles' : `Δ ${fmt(Math.abs(monarchTotal - total))}`})</>
+                      )}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className={styles.outflowFreshness}>
+                <span>outflows through {outflows.as_of ? new Date(outflows.as_of + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</span>
+                <span className={outflows.monarch_through && outflows.as_of && outflows.monarch_through < outflows.as_of ? styles.staleWarn : undefined}>
+                  Monarch categorized through {outflows.monarch_through ? new Date(outflows.monarch_through + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
 
         {loading && (
           <div className={styles.loadingState}>
