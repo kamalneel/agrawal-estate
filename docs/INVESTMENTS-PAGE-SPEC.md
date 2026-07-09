@@ -55,12 +55,20 @@ Investments will agree by construction, not by coincidence.
   (a bet is "AAPL," not "AAPL in three different accounts"), ranked by
   return %, weight-in-portfolio shown alongside. Closed positions listed
   separately below, tagged, using realized $ and % vs. total cost basis.
-- **L3 — Holdings table.** Existing per-symbol table, default sort
-  switched to return (was dollar value). Trillion-club badge column
-  deliberately omitted per decision 3.
-- **L4 — History.** Existing Capital Flow log + per-account drill-down,
-  collapsed/unchanged — this is mechanical record-keeping, not the
-  page's main job.
+- **L3 — Holdings table.** Existing per-symbol table; basis/return
+  sourced from the lot engine (same as W&L — one definition), withheld
+  with a footnote when lots cover <98% of live shares. Trillion-club
+  badge column deliberately omitted per decision 3.
+- **L4 — Context, not history.** One-line True Portfolio strip
+  (cash-inclusive total, day change) + accounts grid. **Deleted from the
+  page (2026-07-08, Neel):** the Capital Flow table and the True
+  Portfolio chart — a transaction log answers "what happened," not
+  "which bets work," and a cash-inclusive wealth trajectory is exactly
+  the income-mixed-in view this page is defined against. Per-symbol
+  trade provenance instead lives behind a click on any Winners & Losers
+  row (open or closed), fed by `/investments/capital-events` (endpoints
+  retained). Forced-buy premium context (the option-chains view) is
+  Options Execution material.
 
 ## Known data gaps (2026-07-08 audit — pending fresh source files)
 
