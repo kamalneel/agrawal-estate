@@ -207,11 +207,23 @@ def build_action_queue(db: Session) -> Dict:
                          "1-2 days to expiry and still tested: roll out 1 week; if deeper ITM, roll down+out "
                          "at ~net-zero. Oscillating assumed — do not panic-close (AVGO lesson). Verify no thesis-changing news.",
                          context=base_ctx)
-            elif itm and depth >= 10:
+            elif itm and depth >= 10 and exp and exp <= week_ending:
                 add_item("high", "ROLL", 4, "Deep tested put",
                          f"{sym} put {depth:.0f}% ITM", account, sym, spec,
                          "Roll down and out at net-zero-or-credit while the cycle exhausts; acceptable for multiple "
                          "weeks. Runaway (structural news) would instead mean evaluate closing.",
+                         context=base_ctx)
+            elif itm and depth >= 10:
+                # Expires AFTER this week's Friday ⇒ already rolled into the
+                # next cycle (Neel, 2026-07-09: 'those have already been
+                # rolled'). Re-rolling mid-cycle is optional, not urgent —
+                # downgrade to a monitor until the position's week arrives.
+                add_item("medium", "ALERT", 4, "Deep tested put — rolled this cycle",
+                         f"{sym} put {depth:.0f}% ITM, rolled to {exp.strftime('%m/%d')}",
+                         account, sym, spec,
+                         "Already rolled into next week's expiry; this cycle's action is done. Monitor — an "
+                         "opportunistic further roll-down only if it nets zero-or-credit. Becomes a ROLL again "
+                         "when its expiry week arrives and it's still ITM.",
                          context=base_ctx)
             elif itm:
                 add_item("low", "ALERT", 4, "Tested put — theta working",

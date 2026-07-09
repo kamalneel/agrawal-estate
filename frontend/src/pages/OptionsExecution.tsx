@@ -274,7 +274,9 @@ export function OptionsExecution() {
             <div className={styles.dataAsOf}>data as of {new Date(queue.data_as_of).toLocaleString()}</div>
           )}
         </div>
-        <button onClick={fetchAll} className={styles.refresh} title="Refresh"><RefreshCw size={18} /></button>
+        <button onClick={fetchAll} className={styles.refresh} title="Refresh" disabled={loading}>
+          <RefreshCw size={18} className={loading ? styles.spinner : undefined} />
+        </button>
       </section>
 
       <GoalsStrip
