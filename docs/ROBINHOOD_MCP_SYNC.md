@@ -87,6 +87,24 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    .bars[] | {symbol:$s, date:(.begins_at[:10]),
    close:(.close_price|tonumber)}]}'`.
 
+## Automation (added 2026-07-09)
+
+- **`/refresh` skill** (`.claude/commands/refresh.md`): say "refresh" /
+  type `/refresh` in a Claude session and the whole recipe above runs.
+- **Scheduled**: launchd agent `com.neelpersonal.rh-refresh` runs
+  `scripts/rh_refresh_headless.sh` (headless `claude -p "/refresh"`) at
+  **5:40 / 11:40 / 19:40 PT weekdays** — ~20 min before the backend's
+  notification scans (`backend/app/core/scheduler.py`: 6:00, 12:00+12:45,
+  20:00) so emails see fresh positions. Logs:
+  `~/Library/Logs/rh-refresh.log`.
+- **Auth prerequisite**: headless runs use the CLI-registered MCP servers
+  (`claude mcp list`), NOT claude.ai connectors. Both servers are
+  registered project-local; they must be **authorized once via `/mcp` in
+  a fresh CLI session** in this directory (and re-authorized if Robinhood
+  tokens expire — failed runs say so in the log).
+- Disable: `launchctl unload ~/Library/LaunchAgents/com.neelpersonal.rh-refresh.plist`.
+- Each run consumes Claude usage (3 sessions/weekday).
+
 ## Field-mapping notes
 
 - **Options**: `average_price` from `get_option_positions` is the broker's
