@@ -585,6 +585,33 @@ export function Investments() {
     return chart.filter(d => d.date >= cutoffStr)
   }, [purePerf, pureChartPeriod])
 
+  // Headline follows the chart's period selector: ALL shows the exact
+  // since-inception figures from the API; any other window derives
+  // "gain during this period" from (value − invested) at the window's
+  // start vs. now — isolating price-driven return from any new capital
+  // added during the window, not just re-showing the all-time number.
+  const pureHeadline = useMemo(() => {
+    if (!purePerf) return null
+    if (!pureChartPeriod || filteredPureChart.length < 2) {
+      return {
+        gain: purePerf.gain, gain_pct: purePerf.gain_pct,
+        value: purePerf.current_value, cost_basis: purePerf.cost_basis,
+        scoped: false as const,
+      }
+    }
+    const start = filteredPureChart[0]
+    const end = filteredPureChart[filteredPureChart.length - 1]
+    const gainStart = start.value - start.invested
+    const gainEnd = end.value - end.invested
+    const periodGain = gainEnd - gainStart
+    return {
+      gain: periodGain,
+      gain_pct: start.invested ? (periodGain / start.invested) * 100 : null,
+      value: end.value, cost_basis: end.invested,
+      scoped: true as const, startDate: start.date, endDate: end.date,
+    }
+  }, [purePerf, pureChartPeriod, filteredPureChart])
+
   // Filter per-account True Portfolio history by period (client-side)
   const filteredAcctTruePortHistory = useMemo(() => {
     if (!acctTruePortHistory.length || !acctTruePortPeriod) return acctTruePortHistory
@@ -840,24 +867,37 @@ export function Investments() {
       {/* L1 — pure investment performance: value vs. cost basis, structurally
           independent of income (premium/dividends never touch cost basis).
           See docs/INVESTMENTS-PAGE-SPEC.md. */}
-      {purePerf && (
+      {purePerf && pureHeadline && (
         <section className={styles.pureHero}>
           <div className={styles.pureHeroContent}>
-            <div className={styles.heroLabel}>Investment Performance</div>
+            <div className={styles.heroLabel}>
+              Investment Performance
+              {pureHeadline.scoped && (
+                <span className={styles.pureHeroWindow}>
+                  {' '}— {new Date(pureHeadline.startDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  {' '}to {new Date(pureHeadline.endDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </span>
+              )}
+            </div>
             <div
               className={styles.pureHeroValue}
-              style={{ color: purePerf.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}
+              style={{ color: pureHeadline.gain >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}
             >
-              {purePerf.gain >= 0 ? '+' : '-'}{formatCurrency(Math.abs(purePerf.gain))}
-              {purePerf.gain_pct != null && (
+              {pureHeadline.gain >= 0 ? '+' : '-'}{formatCurrency(Math.abs(pureHeadline.gain))}
+              {pureHeadline.gain_pct != null && (
                 <span className={styles.pureHeroPct}>
-                  ({purePerf.gain_pct >= 0 ? '+' : ''}{purePerf.gain_pct.toFixed(1)}%)
+                  ({pureHeadline.gain_pct >= 0 ? '+' : ''}{pureHeadline.gain_pct.toFixed(1)}%)
                 </span>
               )}
             </div>
             <div className={styles.pureHeroSub}>
-              {formatCurrency(purePerf.current_value)} value vs. {formatCurrency(purePerf.cost_basis)} invested
-              — the stocks themselves, no options premium or dividends counted in.
+              {pureHeadline.scoped ? (
+                <>{formatCurrency(pureHeadline.value)} value now vs. {formatCurrency(pureHeadline.cost_basis)} invested as of the window end
+                  — price movement only during this window, no options premium or dividends counted in.</>
+              ) : (
+                <>{formatCurrency(pureHeadline.value)} value vs. {formatCurrency(pureHeadline.cost_basis)} invested
+                  — the stocks themselves, no options premium or dividends counted in.</>
+              )}
               {purePerf.unpriced_count > 0 && (
                 <span className={styles.pureHeroFlag}> ({purePerf.unpriced_count} position{purePerf.unpriced_count === 1 ? '' : 's'} unpriced, {formatCurrency(purePerf.unpriced_cost_basis)} cost basis excluded above)</span>
               )}
