@@ -55,9 +55,34 @@ deeper").
   fresh Monarch CSV lands and freshness handling can be exercised for
   real.
 
+## Robinhood-native CSV import (2026-07-08)
+
+`backend/scripts/import_rh_spending_csv.py` imports RH's own exports
+(credit card / savings / checking) into `spending_transactions`
+(`tags='rh_csv'`), covering the gap between Monarch exports:
+
+- Per-account cutoff: only rows newer than existing coverage import — no
+  cross-source fuzzy dedup needed.
+- Card purchases auto-categorized from a merchant→category map **learned
+  from Monarch history** (normalized matching: punctuation/Inc/the
+  stripped) + a small seed list. Trip tags and one-offs are
+  non-transferable (a Europe-trip cafe isn't "Europe Trip 2025" forever).
+  Payments → 'Credit Card Payment' (excluded). Declined rows skipped.
+- Unknown merchants stay NULL → render as Uncategorized (never guessed).
+  As of import: $48K uncategorized, dominated by wires to Eric Chang
+  ($28.5K), Cash Delivery, Gifthealth — need Neel's classification.
+- **Supersede rule for future Monarch imports**: Monarch is the
+  categorization authority. When a fresh Monarch export covering the
+  rh_csv period is imported, first delete `tags='rh_csv'` rows for the
+  covered accounts+dates, then import — otherwise the same purchases
+  double-count under two hash schemes (NFLX-incident class).
+
 ## Known data notes
 
-- Monarch data ends 2026-02-06 — awaiting fresh CSV export from Neel.
+- Categorization current through the last RH CSV import (2026-07-08);
+  BofA/Chase composition (the ~5%) still needs a Monarch export.
+- March 2026 shows outflows $179K vs categorized $14K — real, not a bug:
+  tax payments left via ACH, invisible to the card CSV.
 - Outflow freshness tracks the activity-CSV import (Jun 8 as of
   writing), not the MCP order sync — cash movements don't come through
   `get_equity_orders`.

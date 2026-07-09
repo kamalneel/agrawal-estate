@@ -443,7 +443,7 @@ export default function Spending() {
                   <span>{fmt(bankOut)} bank transfers out</span>
                   {monarchCovered.length > 0 && (
                     <span className={styles.outflowRecon}>
-                      Monarch categorized: {fmt(monarchTotal)}
+                      categorized: {fmt(monarchTotal)}
                       {monarchCovered.length === rows.length && total > 0 && (
                         <> ({Math.abs(monarchTotal - total) / total < 0.05 ? 'reconciles' : `Δ ${fmt(Math.abs(monarchTotal - total))}`})</>
                       )}
@@ -454,7 +454,7 @@ export default function Spending() {
               <div className={styles.outflowFreshness}>
                 <span>outflows through {outflows.as_of ? new Date(outflows.as_of + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</span>
                 <span className={outflows.monarch_through && outflows.as_of && outflows.monarch_through < outflows.as_of ? styles.staleWarn : undefined}>
-                  Monarch categorized through {outflows.monarch_through ? new Date(outflows.monarch_through + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                  categorized through {outflows.monarch_through ? new Date(outflows.monarch_through + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
                 </span>
               </div>
             </div>
