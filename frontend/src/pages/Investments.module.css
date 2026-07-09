@@ -212,6 +212,65 @@
   font-variant-numeric: tabular-nums;
 }
 
+.betRow {
+  cursor: pointer;
+}
+
+.betRow:hover td {
+  background: var(--color-bg-hover);
+}
+
+.betChevron {
+  margin-left: 6px;
+  vertical-align: middle;
+  color: var(--color-text-tertiary);
+  transition: transform var(--duration-fast, 0.15s);
+}
+
+.betChevronOpen {
+  transform: rotate(90deg);
+}
+
+.betDrillCell {
+  background: var(--color-bg-tertiary);
+  padding: var(--space-3) var(--space-5) !important;
+}
+
+.betDrillLoading {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.betDrillTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.betDrillTable th {
+  text-align: left;
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-medium);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.betDrillTable td {
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.betDrillTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.betDrillType {
+  font-weight: var(--font-semibold, 600);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
 .basisFootnote {
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
