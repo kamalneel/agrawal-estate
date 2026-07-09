@@ -1018,91 +1018,134 @@ export function Investments() {
         </section>
       )}
 
-      {/* Hero Section — total wealth (cash-inclusive); supporting detail below */}
-      <section className={styles.hero}>
-        <div className={styles.heroContent}>
-          {cashBreakdown && cashBreakdown.total_true_cash !== 0 ? (() => {
-            const truePortfolio = totalEquity + cashBreakdown.total_true_cash
-            const trueCash = cashBreakdown.total_true_cash
+      {/* Total-wealth context strip — cash-inclusive True Portfolio, demoted
+          to one line: the page's headline is pure performance above, and two
+          stacked hero+chart blocks read as competing answers. Chart and
+          capital flow live at the bottom as history. */}
+      <section className={styles.trueStrip}>
+        <div className={styles.trueStripBody}>
+          {(() => {
+            const trueCash = cashBreakdown?.total_true_cash ?? 0
+            const truePortfolio = totalEquity + trueCash
+            const dayPct = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : null
             return (
               <>
-                <div className={styles.heroLabel}>True Portfolio</div>
-                <div className={styles.heroValue}>{formatCurrency(truePortfolio)}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--color-text-tertiary)', display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 4 }}>
-                  <span>{formatCurrency(totalEquity)} stocks</span>
-                  <span>+{formatCurrency(trueCash)} cash &amp; collateral</span>
-                  {cashBreakdown.total_margin_used > 0 && (
-                    <span style={{ color: 'var(--color-negative, #FF5A5A)' }}>−{formatCurrency(cashBreakdown.total_margin_used)} margin</span>
-                  )}
-                </div>
+                <span className={styles.trueStripLabel}>True Portfolio (incl. cash)</span>
+                <span className={styles.trueStripValue}>{formatCurrency(truePortfolio)}</span>
+                <span className={styles.trueStripDetail}>{formatCurrency(totalEquity)} stocks</span>
+                {trueCash !== 0 && <span className={styles.trueStripDetail}>+{formatCurrency(trueCash)} cash &amp; collateral</span>}
+                {(cashBreakdown?.total_margin_used ?? 0) > 0 && (
+                  <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }}>
+                    −{formatCurrency(cashBreakdown!.total_margin_used)} margin
+                  </span>
+                )}
+                {dayPct != null && (
+                  <span className={styles.trueStripDetail} style={{ color: dayPct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                    {dayPct >= 0 ? '+' : ''}{dayPct.toFixed(2)}% today
+                  </span>
+                )}
               </>
-            )
-          })() : (
-            <>
-              <div className={styles.heroLabel}>Total Stock Holdings</div>
-              <div className={styles.heroValue}>{formatCurrency(totalEquity)}</div>
-            </>
-          )}
-          
-          {/* Growth Periods — portfolio-weighted average of individual stock returns */}
-          {(() => {
-            // Build weighted growth from individual stock data + daily change from live prices
-            const allHoldings = accounts.flatMap(a => a.holdings.filter(h => h.symbol !== 'CASH'))
-            const growthCards: { key: string; label: string; pct: number | null }[] = []
-
-            // 1D: use daily change from live prices (already available)
-            const dayPct = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : null
-            growthCards.push({ key: '1d', label: '1 Day', pct: dayPct })
-
-            // YTD and 1Y: portfolio-weighted average of per-stock growth
-            if (stockGrowthData) {
-              for (const [key, label, field] of [
-                ['ytd', 'YTD', 'growth_ytd'],
-                ['1y', '1 Year', 'growth_1y'],
-              ] as const) {
-                let weightedSum = 0
-                let totalVal = 0
-                for (const h of allHoldings) {
-                  const g = stockGrowthData[h.symbol]
-                  const growthVal = g?.[field]
-                  if (growthVal == null) continue
-                  const val = h.shares * h.currentPrice
-                  weightedSum += growthVal * val
-                  totalVal += val
-                }
-                growthCards.push({ key, label, pct: totalVal > 0 ? weightedSum / totalVal : null })
-              }
-            }
-
-            return (
-              <div className={styles.growthPeriods}>
-                {growthCards.map(({ key, label, pct }) => {
-                  if (pct == null) return null
-                  const isPositive = pct >= 0
-                  return (
-                    <div
-                      key={key}
-                      className={clsx(
-                        styles.growthPeriod,
-                        isPositive ? styles.positive : styles.negative
-                      )}
-                    >
-                      <span className={styles.periodLabel}>{label}</span>
-                      <span className={styles.periodValue}>
-                        {isPositive ? '+' : ''}{pct.toFixed(2)}%
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
             )
           })()}
         </div>
         <button onClick={() => { fetchHoldings(); fetchGrowthSummary(); fetchStockGrowth(true); fetchPurePerformance(); }} className={styles.heroRefresh} title="Refresh data">
-          <RefreshCw size={20} />
+          <RefreshCw size={18} />
         </button>
       </section>
 
+      <section className={styles.accountsSection}>
+        <h2>Brokerage Accounts ({accounts.length})</h2>
+        <div className={styles.accountsGrid}>
+          {accounts.map((account, index) => {
+            const cashData = cashBreakdown?.accounts?.find(
+              (a: any) => a.account_name.toLowerCase() === account.name.toLowerCase()
+            )
+            return (
+            <AccountCard
+              key={account.id}
+              account={account}
+              onClick={() => handleAccountSelect(account)}
+              delay={index * 50}
+              cashData={cashData ?? undefined}
+            />
+            )
+          })}
+        </div>
+      </section>
+
+      {/* Total Portfolio Holdings */}
+      {accounts.length > 0 && (() => {
+        // Aggregate holdings across all accounts by symbol
+        const holdingsMap = new Map<string, Holding>()
+        for (const account of accounts) {
+          for (const h of account.holdings) {
+            if (h.symbol === 'CASH') continue
+            const existing = holdingsMap.get(h.symbol)
+            if (existing) {
+              existing.shares += h.shares
+              existing.totalValue = existing.shares * existing.currentPrice
+            } else {
+              holdingsMap.set(h.symbol, {
+                ...h,
+                totalValue: h.shares * h.currentPrice,
+              })
+            }
+          }
+        }
+
+        // Cost basis + return come from the lot engine (same source as
+        // Winners & Losers above — one definition, no per-panel drift).
+        // The synced investment_holdings.cost_basis field is NULL for some
+        // accounts and silently understated returns' denominators (TSLA
+        // showed +810% from exactly this). If the lot engine covers <98%
+        // of the live shares (HSA not yet ingested, missing activity CSV
+        // rows), show no number at all and flag it below the table rather
+        // than fabricate one from partial basis.
+        const lotBySymbol = new Map((purePerf?.open_positions ?? []).map(p => [p.symbol, p]))
+        const flagged: { symbol: string; liveShares: number; lotShares: number }[] = []
+        for (const h of holdingsMap.values()) {
+          const lot = lotBySymbol.get(h.symbol)
+          const coverage = lot?.shares ? lot.shares / h.shares : 0
+          if (lot && coverage >= 0.98) {
+            h.costBasis = lot.cost_basis
+          } else {
+            h.costBasis = null
+            flagged.push({ symbol: h.symbol, liveShares: h.shares, lotShares: lot?.shares ?? 0 })
+          }
+        }
+
+        const aggregated = Array.from(holdingsMap.values())
+          .sort((a, b) => (b.shares * b.currentPrice) - (a.shares * a.currentPrice))
+
+        const totalValue = aggregated.reduce((sum, h) => sum + (h.shares * h.currentPrice), 0)
+        // Recalculate percentOfPortfolio against entire portfolio
+        for (const h of aggregated) {
+          const hValue = h.shares * h.currentPrice
+          h.percentOfPortfolio = totalValue > 0 ? (hValue / totalValue) * 100 : 0
+        }
+
+        return (
+          <section className={styles.holdingsSection}>
+            <h2>Total Portfolio Holdings ({aggregated.length})</h2>
+            {aggregated.length > 0 ? (
+              <>
+                <HoldingsTable rows={toHoldingsRows(aggregated, stockGrowthData ?? undefined)} columns={investmentColumns} />
+                {flagged.length > 0 && (
+                  <p className={styles.basisFootnote}>
+                    Cost basis / return withheld where purchase records cover &lt;98% of live shares:{' '}
+                    {flagged.map(f => `${f.symbol} (${Math.round(f.lotShares).toLocaleString()} of ${Math.round(f.liveShares).toLocaleString()} sh tracked)`).join(', ')}.
+                    {' '}Untracked shares are in the HSA (Fidelity history pending) or awaiting fresh activity CSVs — see INVESTMENTS-PAGE-SPEC.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className={styles.noHoldings}>No holdings across accounts.</p>
+            )}
+          </section>
+        )
+      })()}
+
+      {/* History — total-wealth chart + capital flow (supporting detail) */}
       {/* True Portfolio Chart */}
       <ChartWrapper
         title="True Portfolio"
@@ -1579,73 +1622,6 @@ export function Investments() {
       )}
 
       {/* Account Cards */}
-      <section className={styles.accountsSection}>
-        <h2>Brokerage Accounts ({accounts.length})</h2>
-        <div className={styles.accountsGrid}>
-          {accounts.map((account, index) => {
-            const cashData = cashBreakdown?.accounts?.find(
-              (a: any) => a.account_name.toLowerCase() === account.name.toLowerCase()
-            )
-            return (
-            <AccountCard
-              key={account.id}
-              account={account}
-              onClick={() => handleAccountSelect(account)}
-              delay={index * 50}
-              cashData={cashData ?? undefined}
-            />
-            )
-          })}
-        </div>
-      </section>
-
-      {/* Total Portfolio Holdings */}
-      {accounts.length > 0 && (() => {
-        // Aggregate holdings across all accounts by symbol
-        const holdingsMap = new Map<string, Holding>()
-        for (const account of accounts) {
-          for (const h of account.holdings) {
-            if (h.symbol === 'CASH') continue
-            const existing = holdingsMap.get(h.symbol)
-            if (existing) {
-              // Sum cost basis across accounts for weighted average
-              if (h.costBasis && existing.costBasis) {
-                existing.costBasis = existing.costBasis + h.costBasis
-              } else if (h.costBasis) {
-                existing.costBasis = h.costBasis
-              }
-              existing.shares += h.shares
-              existing.totalValue = existing.shares * existing.currentPrice
-            } else {
-              holdingsMap.set(h.symbol, {
-                ...h,
-                totalValue: h.shares * h.currentPrice,
-              })
-            }
-          }
-        }
-
-        const aggregated = Array.from(holdingsMap.values())
-          .sort((a, b) => (b.shares * b.currentPrice) - (a.shares * a.currentPrice))
-
-        const totalValue = aggregated.reduce((sum, h) => sum + (h.shares * h.currentPrice), 0)
-        // Recalculate percentOfPortfolio against entire portfolio
-        for (const h of aggregated) {
-          const hValue = h.shares * h.currentPrice
-          h.percentOfPortfolio = totalValue > 0 ? (hValue / totalValue) * 100 : 0
-        }
-
-        return (
-          <section className={styles.holdingsSection}>
-            <h2>Total Portfolio Holdings ({aggregated.length})</h2>
-            {aggregated.length > 0 ? (
-              <HoldingsTable rows={toHoldingsRows(aggregated, stockGrowthData ?? undefined)} columns={investmentColumns} />
-            ) : (
-              <p className={styles.noHoldings}>No holdings across accounts.</p>
-            )}
-          </section>
-        )
-      })()}
     </div>
   )
 }
