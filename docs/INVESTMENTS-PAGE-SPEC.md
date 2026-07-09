@@ -62,6 +62,29 @@ Investments will agree by construction, not by coincidence.
   collapsed/unchanged — this is mechanical record-keeping, not the
   page's main job.
 
+## Known data gaps (2026-07-08 audit — pending fresh source files)
+
+One cost-basis source: the lot engine feeds BOTH Winners & Losers and the
+Total Portfolio Holdings table. Where lots cover <98% of live shares the
+UI withholds basis/return with a footnote instead of fabricating a
+number (the old table summed `investment_holdings.cost_basis`, which is
+NULL for some accounts — TSLA showed +810% because Jaya's basis silently
+dropped out of the denominator while her shares stayed in the value).
+
+Verified as **data holes, not engine bugs** (lots replay the transaction
+table exactly):
+
+1. **Alisha's Brokerage** — feed dead since 2026-01-07 (6 rows ever);
+   holds 5 positions incl. 17 IBIT with only a 5-share buy recorded.
+   Fix: ingest fresh Robinhood activity CSV.
+2. **Neel's Brokerage IBIT** — holdings 1,500 vs lots 1,400; ~100 shares
+   acquired Mar 2025–Feb 2026 with no purchase row (likely an
+   un-ingested put assignment; see assignment-CSV-freshness KB rule).
+   Fix: fresh activity CSV covering that window.
+3. **Agrawal Family HSA (Fidelity)** — zero transaction history ingested
+   (161 NVDA + FDRXX). Neel has the data; will take time to pull. Until
+   then HSA-held shares are flagged, not silently dropped.
+
 ## Endpoint
 
 `GET /api/v1/investments/pure-performance` →
