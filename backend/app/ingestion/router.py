@@ -1976,3 +1976,31 @@ async def get_account_portfolio_history(account_id: str, db: Session = Depends(g
         ]
     }
 
+
+
+# ---------------------------------------------------------------------------
+# Symbol price history (Robinhood MCP historicals — market-data-source-order
+# KB rule: Robinhood first, never Yahoo on must-succeed paths). Feeds the
+# YTD/1Y/5Y growth columns on the Investments page; refresh via the MCP sync
+# routine (docs/ROBINHOOD_MCP_SYNC.md).
+# ---------------------------------------------------------------------------
+
+@router.post("/price-history")
+async def ingest_price_history(payload: dict, db: Session = Depends(get_db)):
+    """Upsert weekly/daily closes: {source, bars: [{symbol, date, close}]}."""
+    from sqlalchemy import text as _text
+    bars = payload.get("bars") or []
+    source = payload.get("source") or "robinhood_mcp"
+    if not bars:
+        raise HTTPException(status_code=400, detail="no bars")
+    upserted = 0
+    for b in bars:
+        db.execute(_text("""
+            INSERT INTO symbol_price_history (symbol, price_date, close_price, source)
+            VALUES (:sym, :d, :c, :src)
+            ON CONFLICT (symbol, price_date)
+            DO UPDATE SET close_price = EXCLUDED.close_price, source = EXCLUDED.source
+        """), {"sym": b["symbol"].upper(), "d": b["date"], "c": b["close"], "src": source})
+        upserted += 1
+    db.commit()
+    return {"success": True, "upserted": upserted}

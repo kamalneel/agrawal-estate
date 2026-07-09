@@ -76,6 +76,16 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    investment_transactions WHERE source='robinhood' GROUP BY account_id`).
 5. `python3 scripts/robinhood_mcp_bridge.py bundle.json` (preview) then
    `--save`.
+6. **Price history (monthly-ish, or when a new symbol is bought):**
+   `get_equity_historicals(symbols≤10, start_time=5y ago, interval=week)`
+   for all held symbols, then POST
+   `{source:"robinhood_mcp", bars:[{symbol,date,close}]}` to
+   `/ingestion/price-history` (upserts `symbol_price_history`). Feeds the
+   Investments page YTD/1Y/5Y growth columns (anchors = close ≤ target
+   date within 21 days + live synced price). jq transform:
+   `jq '{source:"robinhood_mcp", bars:[.data.results[] | .symbol as $s |
+   .bars[] | {symbol:$s, date:(.begins_at[:10]),
+   close:(.close_price|tonumber)}]}'`.
 
 ## Field-mapping notes
 

@@ -1305,11 +1305,16 @@ async def recalculate_cost_basis(
 
 @router.get("/stock-growth")
 def get_stock_growth(db: Session = Depends(get_db)):
+    """1Y/5Y/YTD growth + holding period for all held symbols.
+
+    Growth = synced live price vs. anchor closes from symbol_price_history
+    (Robinhood MCP historicals, ingested via /ingestion/price-history) —
+    per the market-data-source-order KB rule; the old yfinance path
+    returned null for every symbol. Anchor = latest stored close on or
+    before the target date (weekly bars ⇒ within a few days).
     """
-    Get 1Y/5Y stock growth and holding period for all held symbols.
-    """
-    from app.modules.investments.price_service import get_stock_growth_data
-    from sqlalchemy import func as sqlfunc
+    from sqlalchemy import func as sqlfunc, text as _text
+    from datetime import timedelta
 
     # Get unique symbols with quantity > 0
     symbols_query = db.query(InvestmentHolding.symbol).filter(
@@ -1322,8 +1327,33 @@ def get_stock_growth(db: Session = Depends(get_db)):
     if not symbols:
         return {}
 
-    # Get growth data from yfinance
-    growth_data = get_stock_growth_data(symbols)
+    price_rows = db.query(
+        InvestmentHolding.symbol,
+        sqlfunc.max(InvestmentHolding.current_price),
+    ).filter(InvestmentHolding.symbol.in_(symbols)).group_by(
+        InvestmentHolding.symbol).all()
+    current = {r[0]: float(r[1]) for r in price_rows if r[1]}
+
+    today = date.today()
+    anchors = {
+        "growth_ytd": date(today.year - 1, 12, 31),
+        "growth_1y": today - timedelta(days=365),
+        "growth_5y": today - timedelta(days=365 * 5),
+    }
+    growth_data = {s: {} for s in symbols}
+    for key, target in anchors.items():
+        rows = db.execute(_text("""
+            SELECT DISTINCT ON (symbol) symbol, close_price
+            FROM symbol_price_history
+            WHERE symbol = ANY(:syms) AND price_date <= :target
+              AND price_date > :target - INTERVAL '21 days'
+            ORDER BY symbol, price_date DESC
+        """), {"syms": symbols, "target": target}).fetchall()
+        for r in rows:
+            base = float(r.close_price)
+            now = current.get(r.symbol)
+            if base and now:
+                growth_data[r.symbol][key] = round((now - base) / base * 100, 2)
 
     # Get earliest purchase date per symbol from transactions
     earliest_dates = db.query(
