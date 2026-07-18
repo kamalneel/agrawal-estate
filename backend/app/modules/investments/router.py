@@ -1533,3 +1533,24 @@ async def get_policy_deviations_endpoint(db: Session = Depends(get_db)):
     """
     from app.modules.investments.policy_service import get_policy_deviations
     return get_policy_deviations(db)
+
+
+@router.get("/ghost-curve")
+async def get_ghost_curve_endpoint(db: Session = Depends(get_db)):
+    """Freeze-curve: for every anchor date, what freezing the options game
+    then would be worth today vs. actual. See docs/INVESTMENTS-PAGE-SPEC.md,
+    'vs. Buy & Hold (ghost freeze-curve)'."""
+    from app.modules.investments.ghost_service import get_ghost_curve
+    return get_ghost_curve(db)
+
+
+@router.get("/ghost-curve/detail")
+async def get_ghost_detail_endpoint(anchor: str, db: Session = Depends(get_db)):
+    """Drill-down for one anchor: actual-vs-ghost series + divergence table."""
+    from datetime import date as _date
+    from app.modules.investments.ghost_service import get_ghost_detail
+    try:
+        anchor_date = _date.fromisoformat(anchor)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="anchor must be YYYY-MM-DD")
+    return get_ghost_detail(db, anchor_date)

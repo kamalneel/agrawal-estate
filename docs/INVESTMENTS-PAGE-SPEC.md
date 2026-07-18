@@ -152,3 +152,30 @@ premium yield to premium yield — Core's return is premium + durable
 drift. So besides the per-symbol ledger, the endpoint reports an
 aggregate: total idle-exit gap vs. inventory put income earned over the
 same window ("the distraction P&L").
+
+## vs. Buy & Hold — ghost freeze-curve (added 2026-07-18, Neel)
+
+Question: "Am I playing the options game right, versus just holding what
+I own and touching nothing?" One curve, every anchor date at once:
+delta(T) = ghost_value_today(T) − actual_today, where freezing at T means
+buying back all open short options at that day's marks, then holding the
+T-date shares and cash untouched (external deposits/withdrawals flow into
+the ghost as inert cash). Above zero: freezing would have won. Assignment
+days marked; clicking any anchor opens the drill (actual-vs-ghost series
++ share-divergence table + premium collected since).
+
+Implementation: `app/modules/investments/ghost_service.py`,
+`GET /investments/ghost-curve` + `/ghost-curve/detail?anchor=`.
+Share counts reconstruct BACKWARD from current MCP-synced holdings minus
+lot events (forward replay drags in phantom pre-2024 residue). Anchors
+restricted to dates with full 6-account cash snapshots (2026-06-09+);
+extending into April/May requires an official activity-CSV backfill —
+the transaction ledger alone validated $214K short over six weeks
+(2026-07-18), so cash reconstruction without it is untrustworthy.
+Documented approximations: no dividend adjustment; buyback from nearest
+options snapshot (≤10 days); fully-exited symbols valued at last known
+price (flagged).
+
+Reading rule (on the page, not just in heads): in a bull run the curve
+drifts positive because every covered-call strategy sells upside — judge
+the gap against premium collected in the window, not by sign alone.

@@ -4,10 +4,14 @@ import { getAuthHeaders } from '../contexts/AuthContext'
 import {
   AreaChart,
   Area,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
+  ReferenceLine,
+  ReferenceDot,
   ResponsiveContainer,
 } from 'recharts'
 import styles from './Investments.module.css'
@@ -135,6 +139,26 @@ interface PolicyDeviations {
   core_exits: CoreExit[]
   idle_inventory: IdleInventory[]
   distraction: { open_exit_gap: number; inventory_put_income_since: number; since: string | null }
+}
+
+// Ghost freeze-curve — "vs. Buy & Hold" (docs/INVESTMENTS-PAGE-SPEC.md)
+interface GhostCurve {
+  as_of: string
+  actual_today: number
+  curve: { anchor: string; ghost_value_today: number; delta: number; unpriced_symbols: string[] }[]
+  anchors_from: string
+  anchors_limited_reason: string
+  assignments: { date: string; symbol: string; contracts: number }[]
+  premium_collected_window: number
+  stale_prices: Record<string, string>
+}
+
+interface GhostDetail {
+  anchor: string
+  ghost_series: { date: string; value: number }[]
+  actual_series: { date: string; value: number }[]
+  divergence: { symbol: string; ghost_shares: number; actual_shares: number; delta_shares: number; delta_value: number }[]
+  premium_since: number
 }
 
 interface PurePerformance {
@@ -385,6 +409,9 @@ export function Investments() {
   const [pureChartPeriod, setPureChartPeriod] = useState<string | null>(null)
   const [deviations, setDeviations] = useState<PolicyDeviations | null>(null)
   const [showRecoveredExits, setShowRecoveredExits] = useState(false)
+  const [ghost, setGhost] = useState<GhostCurve | null>(null)
+  const [ghostDetail, setGhostDetail] = useState<GhostDetail | null>(null)
+  const [ghostDetailLoading, setGhostDetailLoading] = useState(false)
 
   // Fetch stock growth data (with frontend cache to avoid re-fetching on page navigation)
   const fetchStockGrowth = async (force = false) => {
@@ -516,6 +543,21 @@ export function Investments() {
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setDeviations(d))
       .catch(() => {})
+  }
+
+  useEffect(() => {
+    fetch(`${API_BASE}/investments/ghost-curve`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d?.curve?.length && setGhost(d))
+      .catch(() => {})
+  }, [])
+
+  const openGhostDetail = (anchor: string) => {
+    setGhostDetailLoading(true)
+    fetch(`${API_BASE}/investments/ghost-curve/detail?anchor=${anchor}`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && !d.error) setGhostDetail(d) })
+      .finally(() => setGhostDetailLoading(false))
   }
 
   const totalEquity = accounts.reduce((sum, acc) => sum + acc.value, 0)
@@ -1022,6 +1064,105 @@ export function Investments() {
                     </table>
                   </div>
                 )}
+              </div>
+            )}
+          </section>
+        )
+      })()}
+
+      {/* vs. Buy & Hold — ghost freeze-curve (spec: "vs. Buy & Hold").
+          Each point: "if I had frozen the options game on this date
+          (bought back open options, held shares+cash), what would that be
+          worth today vs. what I actually have?" Above zero = freezing
+          would have won. Click a point to drill. */}
+      {ghost && (() => {
+        const data = ghost.curve.map(c => ({ ...c, label: new Date(c.anchor + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }))
+        const assignByDate = new Map<string, string[]>()
+        ghost.assignments.forEach(a => {
+          const cur = assignByDate.get(a.date) ?? []
+          if (!cur.includes(a.symbol)) cur.push(a.symbol)
+          assignByDate.set(a.date, cur)
+        })
+        const markers = data.filter(d => assignByDate.has(d.anchor))
+        const latest = data[data.length - 1]
+        return (
+          <section className={styles.betsSection}>
+            <h2>vs. Buy &amp; Hold</h2>
+            <p className={styles.ghostSub}>
+              Each point: freeze the options game that day (buy back open options, hold shares + cash) — what would it be worth today
+              vs. actual {formatCurrency(ghost.actual_today)}? Above zero: freezing would have won. ▲ = assignment days. Click to drill.
+            </p>
+            <div className={styles.ghostStatRow}>
+              <span>Latest anchor gap: <strong style={{ color: (latest?.delta ?? 0) > 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
+                {latest && latest.delta > 0 ? `buy & hold +${formatCurrency(latest.delta)}` : `options game +${formatCurrency(Math.abs(latest?.delta ?? 0))}`}</strong></span>
+              <span>Premium collected in window: <strong>{formatCurrency(ghost.premium_collected_window)}</strong></span>
+              <span className={styles.ghostCaveat}>{ghost.anchors_limited_reason}</span>
+            </div>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={data} margin={CHART_MARGINS}
+                onClick={(e: any) => { const a = e?.activePayload?.[0]?.payload?.anchor; if (a) openGhostDetail(a) }}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey="label" {...X_AXIS_PROPS} />
+                <YAxis {...Y_AXIS_PROPS} tickFormatter={(v: number) => formatCurrencyShort(v)} />
+                <Tooltip
+                  formatter={(v: number) => [
+                    `${v > 0 ? 'buy & hold ahead by ' : 'options game ahead by '}${formatCurrency(Math.abs(v))}`,
+                    'freeze here vs. actual']}
+                  labelFormatter={(l: string, p: any) => {
+                    const anchor = p?.[0]?.payload?.anchor
+                    const syms = anchor ? assignByDate.get(anchor) : undefined
+                    return `Freeze on ${l}${syms ? ` · assignments: ${syms.join(', ')}` : ''} — click to drill`
+                  }}
+                />
+                <ReferenceLine y={0} stroke="var(--color-border)" strokeDasharray="4 4" />
+                <Area type="monotone" dataKey="delta" stroke="#C49A3C" fill="#C49A3C22" strokeWidth={2} />
+                {markers.map(m => (
+                  <ReferenceDot key={m.anchor} x={m.label} y={m.delta} r={4} fill="#C49A3C" stroke="var(--color-bg-primary)" />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+            {ghostDetailLoading && <p className={styles.ghostSub}>Loading drill-down…</p>}
+            {ghostDetail && (
+              <div className={styles.ghostModalOverlay} onClick={() => setGhostDetail(null)}>
+                <div className={styles.ghostModal} onClick={e => e.stopPropagation()}>
+                  <div className={styles.ghostModalHead}>
+                    <h3>Frozen on {new Date(ghostDetail.anchor + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} vs. actual</h3>
+                    <button onClick={() => setGhostDetail(null)}>✕</button>
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart margin={CHART_MARGINS}>
+                      <CartesianGrid {...GRID_PROPS} />
+                      <XAxis dataKey="date" {...X_AXIS_PROPS} allowDuplicatedCategory={false} />
+                      <YAxis {...Y_AXIS_PROPS} domain={['auto', 'auto']} tickFormatter={(v: number) => formatCurrencyShort(v)} />
+                      <Tooltip formatter={(v: number) => formatCurrency(v)} />
+                      <Line data={ghostDetail.actual_series} dataKey="value" name="Actual" type="monotone" stroke={CHART_GREEN} dot={false} strokeWidth={2} />
+                      <Line data={ghostDetail.ghost_series} dataKey="value" name="Ghost (frozen)" type="monotone" stroke="#C49A3C" dot={false} strokeWidth={2} strokeDasharray="6 4" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <p className={styles.ghostSub}>Options premium collected since this date: <strong>{formatCurrency(ghostDetail.premium_since)}</strong></p>
+                  {ghostDetail.divergence.length > 0 && (
+                    <div className={styles.betsTableWrap}>
+                      <table className={styles.betsTable}>
+                        <thead>
+                          <tr><th>Symbol</th><th className={styles.num}>Ghost holds</th><th className={styles.num}>You hold</th><th className={styles.num}>Δ shares</th><th className={styles.num}>Δ value today</th></tr>
+                        </thead>
+                        <tbody>
+                          {ghostDetail.divergence.map(r => (
+                            <tr key={r.symbol} className={styles.betRow}>
+                              <td className={styles.betSym}>{r.symbol}</td>
+                              <td className={styles.num}>{r.ghost_shares.toLocaleString()}</td>
+                              <td className={styles.num}>{r.actual_shares.toLocaleString()}</td>
+                              <td className={styles.num}>{r.delta_shares > 0 ? '+' : ''}{r.delta_shares.toLocaleString()}</td>
+                              <td className={styles.num} style={{ color: r.delta_value >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                                {r.delta_value >= 0 ? '+' : '-'}{formatCurrency(Math.abs(r.delta_value))}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </section>
