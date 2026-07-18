@@ -31,6 +31,7 @@ import {
   formatPercent,
 
   ChartWrapper,
+  PeriodSelector,
   PERIOD_PRESETS,
   GRID_PROPS,
   X_AXIS_PROPS,
@@ -84,6 +85,56 @@ interface PurePosition {
   gain_pct: number | null
   weight_pct?: number | null
   closed_date?: string | null
+  /** Days since the cost-weighted average purchase date across open lots */
+  held_days?: number | null
+  /** CAGR %; null for positions held <90 days (annualizing is meaningless) */
+  annualized_pct?: number | null
+}
+
+/** "12d", "5w", "8mo", "2.3y" from a day count */
+function formatHeld(days: number): string {
+  if (days < 14) return `${days}d`
+  if (days < 70) return `${Math.round(days / 7)}w`
+  if (days < 365) return `${Math.round(days / 30.44)}mo`
+  return `${(days / 365).toFixed(1)}y`
+}
+
+// Two-book strategy deviations — see docs/INVESTMENTS-PAGE-SPEC.md,
+// "Strategy model & policy deviations"
+interface CoreExit {
+  account_id: string
+  account_name: string
+  symbol: string
+  exit_date: string
+  shares_sold: number
+  sale_px: number
+  price_now: number | null
+  shares_recovered: number
+  shares_unrecovered: number
+  open_put_contracts: number
+  put_premium_since: number
+  gap: number | null
+  days_since_exit: number
+  status: 'recovered' | 'recovering' | 'idle'
+}
+
+interface IdleInventory {
+  account_id: string
+  account_name: string
+  symbol: string
+  shares: number
+  coverable_contracts: number
+  open_call_contracts: number
+  uncovered_contracts: number
+  idle_value: number | null
+}
+
+interface PolicyDeviations {
+  as_of: string
+  policy: { core: string[]; inventory: string[]; unclassified: string[] }
+  core_exits: CoreExit[]
+  idle_inventory: IdleInventory[]
+  distraction: { open_exit_gap: number; inventory_put_income_since: number; since: string | null }
 }
 
 interface PurePerformance {
@@ -332,6 +383,8 @@ export function Investments() {
   const [expandedBet, setExpandedBet] = useState<string | null>(null)
   const [betTrades, setBetTrades] = useState<CapitalEvent[] | null>(null)
   const [pureChartPeriod, setPureChartPeriod] = useState<string | null>(null)
+  const [deviations, setDeviations] = useState<PolicyDeviations | null>(null)
+  const [showRecoveredExits, setShowRecoveredExits] = useState(false)
 
   // Fetch stock growth data (with frontend cache to avoid re-fetching on page navigation)
   const fetchStockGrowth = async (force = false) => {
@@ -448,12 +501,20 @@ export function Investments() {
       .then(d => d && setCashBreakdown(d))
       .catch(() => {})
     fetchPurePerformance()
+    fetchPolicyDeviations()
   }, [])
 
   const fetchPurePerformance = () => {
     fetch(`${API_BASE}/investments/pure-performance`, { headers: getAuthHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setPurePerf(d))
+      .catch(() => {})
+  }
+
+  const fetchPolicyDeviations = () => {
+    fetch(`${API_BASE}/investments/policy-deviations`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setDeviations(d))
       .catch(() => {})
   }
 
@@ -798,18 +859,22 @@ export function Investments() {
               )}
             </div>
           </div>
-          <button onClick={() => { fetchHoldings(); fetchStockGrowth(true); fetchPurePerformance(); }} className={styles.heroRefresh} title="Refresh data">
-            <RefreshCw size={18} />
-          </button>
+          <div className={styles.pureHeroControls}>
+            <PeriodSelector
+              options={PERIOD_PRESETS.EXTENDED}
+              value={pureChartPeriod}
+              onChange={setPureChartPeriod}
+            />
+            <button onClick={() => { fetchHoldings(); fetchStockGrowth(true); fetchPurePerformance(); }} className={styles.heroRefresh} title="Refresh data">
+              <RefreshCw size={18} />
+            </button>
+          </div>
         </section>
       )}
 
       {purePerf && purePerf.chart.length > 1 && (
         <ChartWrapper
           title="Value vs. Capital Invested"
-          periodOptions={PERIOD_PRESETS.EXTENDED}
-          periodValue={pureChartPeriod}
-          onPeriodChange={setPureChartPeriod}
           isEmpty={filteredPureChart.length === 0}
         >
           <ResponsiveContainer width="100%" height={260}>
@@ -849,6 +914,120 @@ export function Investments() {
           Positions under $5K fold into one expandable line — space follows
           money (playbook), and a $24 FIG row shouldn't get equal billing
           with a $787K TSLA bet. */}
+      {/* Strategy Deviations — two-book model (spec: "Strategy model &
+          policy deviations"). Core exits must be recovered; inventory must
+          have exit calls. Facts + gap math only; option actions stay on
+          the Options Execution page. */}
+      {deviations && (() => {
+        const openExits = deviations.core_exits.filter(e => e.status !== 'recovered')
+        const recoveredExits = deviations.core_exits.filter(e => e.status === 'recovered')
+        const statusChip = (s: CoreExit['status']) => (
+          <span className={clsx(styles.devChip,
+            s === 'idle' ? styles.devChipIdle : s === 'recovering' ? styles.devChipRecovering : styles.devChipOk)}>
+            {s === 'idle' ? 'idle — no re-entry' : s}
+          </span>
+        )
+        const exitRow = (e: CoreExit) => (
+          <tr key={`${e.account_id}-${e.symbol}-${e.exit_date}`} className={styles.betRow}>
+            <td className={styles.betSym}>{e.symbol}</td>
+            <td>{e.account_name}</td>
+            <td>{new Date(e.exit_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · {formatHeld(e.days_since_exit)} ago</td>
+            <td className={styles.num}>{e.shares_unrecovered.toLocaleString()} of {e.shares_sold.toLocaleString()}</td>
+            <td className={styles.num}>{formatCurrency(e.sale_px)}</td>
+            <td className={styles.num}>{e.price_now != null ? formatCurrency(e.price_now) : '—'}</td>
+            <td className={styles.num}>{e.open_put_contracts > 0 ? `${e.open_put_contracts} open` : '—'}</td>
+            <td className={styles.num}>{formatCurrency(e.put_premium_since)}</td>
+            <td className={styles.num} style={{ color: e.gap == null ? undefined : e.gap > 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
+              {e.gap != null ? `${e.gap > 0 ? '−' : '+'}${formatCurrency(Math.abs(e.gap))}` : '—'}
+            </td>
+            <td>{statusChip(e.status)}</td>
+          </tr>
+        )
+        return (
+          <section className={styles.betsSection}>
+            <h2>Strategy Deviations</h2>
+            {openExits.length === 0 && deviations.idle_inventory.length === 0 && (
+              <p className={styles.devAllClear}>No open deviations — every core exit is recovered or recovering, and all inventory has exit calls written.</p>
+            )}
+            {openExits.length > 0 && (
+              <>
+                <h3 className={styles.devSubhead}>Core exits awaiting re-entry ({openExits.length})</h3>
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>
+                      <tr>
+                        <th>Symbol</th><th>Account</th><th>Exited</th>
+                        <th className={styles.num}>Unrecovered</th>
+                        <th className={styles.num}>Sold @</th><th className={styles.num}>Now</th>
+                        <th className={styles.num}>Puts</th>
+                        <th className={styles.num}>Put prem. since</th>
+                        <th className={styles.num}>Gap</th><th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>{openExits.map(exitRow)}</tbody>
+                  </table>
+                </div>
+                <p className={styles.devAggregate}>
+                  Cost of waiting across open exits: <strong style={{ color: 'var(--color-negative, #FF5A5A)' }}>−{formatCurrency(deviations.distraction.open_exit_gap)}</strong>
+                  {deviations.distraction.since && (
+                    <> · inventory-book put income since {new Date(deviations.distraction.since + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}: <strong>{formatCurrency(deviations.distraction.inventory_put_income_since)}</strong></>
+                  )} — the honest version of the "puts pay 4–6x more" comparison.
+                </p>
+              </>
+            )}
+            {deviations.idle_inventory.length > 0 && (
+              <>
+                <h3 className={styles.devSubhead}>Idle inventory — no exit call written ({deviations.idle_inventory.length})</h3>
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>
+                      <tr>
+                        <th>Symbol</th><th>Account</th>
+                        <th className={styles.num}>Shares</th>
+                        <th className={styles.num}>Calls open</th>
+                        <th className={styles.num}>Uncovered</th>
+                        <th className={styles.num}>Idle value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deviations.idle_inventory.map(i => (
+                        <tr key={`${i.account_id}-${i.symbol}`} className={styles.betRow}>
+                          <td className={styles.betSym}>{i.symbol}</td>
+                          <td>{i.account_name}</td>
+                          <td className={styles.num}>{i.shares.toLocaleString()}</td>
+                          <td className={styles.num}>{i.open_call_contracts}</td>
+                          <td className={styles.num}>{i.uncovered_contracts} contract{i.uncovered_contracts === 1 ? '' : 's'}</td>
+                          <td className={styles.num}>{i.idle_value != null ? formatCurrency(i.idle_value) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            {deviations.policy.unclassified.length > 0 && (
+              <p className={styles.devUnclassified}>
+                Unclassified holdings (edit <code>data/investment_policy.json</code>): {deviations.policy.unclassified.join(', ')}
+              </p>
+            )}
+            {recoveredExits.length > 0 && (
+              <div className={styles.closedBetsToggle}>
+                <button onClick={() => setShowRecoveredExits(v => !v)}>
+                  {showRecoveredExits ? 'hide' : 'show'} recovered exits ({recoveredExits.length})
+                </button>
+                {showRecoveredExits && (
+                  <div className={styles.betsTableWrap}>
+                    <table className={styles.betsTable}>
+                      <tbody>{recoveredExits.map(exitRow)}</tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )
+      })()}
+
       {purePerf && purePerf.open_positions.length > 0 && (() => {
         const SMALL = 5000
         const isSmallOpen = (p: PurePosition) => Math.max(p.value ?? 0, p.cost_basis) < SMALL
@@ -876,10 +1055,18 @@ export function Investments() {
               <td className={styles.num} style={{ color: p.gain_pct == null ? undefined : p.gain_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
                 {p.gain_pct != null ? `${p.gain_pct >= 0 ? '+' : ''}${p.gain_pct.toFixed(1)}%` : '—'}
               </td>
+              <td className={styles.num}>{p.held_days != null ? formatHeld(p.held_days) : '—'}</td>
+              <td
+                className={styles.num}
+                style={{ color: p.annualized_pct == null ? undefined : p.annualized_pct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}
+                title={p.annualized_pct == null && p.held_days != null && p.held_days < 90 ? 'Held under 90 days — too early to annualize' : undefined}
+              >
+                {p.annualized_pct != null ? `${p.annualized_pct >= 0 ? '+' : ''}${p.annualized_pct.toFixed(1)}%` : '—'}
+              </td>
             </tr>
             {expandedBet === p.symbol && (
               <tr>
-                <td colSpan={6} className={styles.betDrillCell}>
+                <td colSpan={8} className={styles.betDrillCell}>
                   <BetTradeHistory symbol={p.symbol} trades={betTrades} />
                 </td>
               </tr>
@@ -914,7 +1101,7 @@ export function Investments() {
           </React.Fragment>
         )
 
-        const foldRow = (count: number, net: number, open: boolean, toggle: () => void) => (
+        const foldRow = (count: number, net: number, open: boolean, toggle: () => void, extraCols = 0) => (
           <tr className={styles.betRow} onClick={toggle}>
             <td colSpan={4} className={styles.smallFoldLabel}>
               <ChevronRight size={12} className={clsx(styles.betChevron, open && styles.betChevronOpen)} />
@@ -924,6 +1111,7 @@ export function Investments() {
               {net >= 0 ? '+' : '-'}{formatCurrency(Math.abs(net))}
             </td>
             <td className={styles.num}>—</td>
+            {Array.from({ length: extraCols }, (_, i) => <td key={i} className={styles.num}>—</td>)}
           </tr>
         )
 
@@ -937,11 +1125,12 @@ export function Investments() {
                   <th>Symbol</th><th className={styles.num}>Weight</th>
                   <th className={styles.num}>Value</th><th className={styles.num}>Cost Basis</th>
                   <th className={styles.num}>Gain</th><th className={styles.num}>Return</th>
+                  <th className={styles.num}>Held</th><th className={styles.num}>Ann. Return</th>
                 </tr>
               </thead>
               <tbody>
                 {mainOpen.map(openRow)}
-                {smallOpen.length > 0 && foldRow(smallOpen.length, smallOpenNet, showSmallOpen, () => setShowSmallOpen(v => !v))}
+                {smallOpen.length > 0 && foldRow(smallOpen.length, smallOpenNet, showSmallOpen, () => setShowSmallOpen(v => !v), 2)}
                 {showSmallOpen && smallOpen.map(openRow)}
               </tbody>
             </table>

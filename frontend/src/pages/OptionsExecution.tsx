@@ -23,6 +23,15 @@ interface QueueItem {
   detail: string
   why: string
   earn: number | null
+  context?: {
+    next_earnings?: { date: string; timing: string | null; days: number; verified: boolean }
+    [key: string]: unknown
+  }
+}
+
+function fmtEarningsDate(iso: string): string {
+  const d = new Date(iso + 'T00:00:00')
+  return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
 interface BoardRow {
@@ -212,12 +221,11 @@ export function OptionsExecution() {
       (showLow || i.priority !== 'low') &&
       (selectedAccount === null || i.account === selectedAccount))
     if (queueSortBy === 'account') {
-      return [...filtered].sort((a, b) =>
-        accountRank(a.account) - accountRank(b.account)
-        || PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
-        || a.symbol.localeCompare(b.symbol))
+      // stable sort: within an account, keep the backend's smart order
+      // (priority -> actionable-first -> soonest expiry)
+      return [...filtered].sort((a, b) => accountRank(a.account) - accountRank(b.account))
     }
-    return filtered // backend already emits priority -> account -> symbol order
+    return filtered // backend order: priority -> actionable-first -> expiry -> account -> symbol
   }, [queue, dismissed, showLow, selectedAccount, queueSortBy])
 
   // Calls / Puts grouping, always — this is how a call book vs. a put
@@ -375,6 +383,14 @@ export function OptionsExecution() {
                 <span className={styles.itemDetail}>
                   {item.detail.startsWith(item.symbol + ' ') ? item.detail.slice(item.symbol.length + 1) : item.detail}
                 </span>
+                {item.context?.next_earnings && (
+                  <span
+                    className={styles.earningsBadge}
+                    title={`${item.symbol} reports ${item.context.next_earnings.date}${item.context.next_earnings.timing === 'pm' ? ' after close' : item.context.next_earnings.timing === 'am' ? ' before open' : ''}${item.context.next_earnings.verified ? '' : ' (unconfirmed)'} — premium through that date is event-inflated; IV crushes after the call`}
+                  >
+                    📅 ER {fmtEarningsDate(item.context.next_earnings.date)}
+                  </span>
+                )}
                 {item.earn ? <span className={styles.earn}>Earn ~{fmt(item.earn)}</span> : null}
                 {expanded === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               </button>

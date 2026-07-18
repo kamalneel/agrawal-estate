@@ -1,0 +1,56 @@
+.pill,
+.pillStale {
+  position: fixed;
+  bottom: var(--space-3);
+  right: var(--space-4);
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  cursor: default;
+  user-select: none;
+  backdrop-filter: blur(6px);
+}
+
+.pill {
+  background: color-mix(in srgb, var(--color-positive, #00d632) 10%, var(--color-bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--color-positive, #00d632) 30%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.pillStale {
+  background: color-mix(in srgb, #c49a3c 16%, var(--color-bg-secondary));
+  border: 1px solid color-mix(in srgb, #c49a3c 45%, transparent);
+  color: #c49a3c;
+  font-weight: var(--font-semibold);
+}
+
+.pillRefreshing {
+  composes: pill;
+  cursor: wait;
+  color: var(--color-text-primary);
+}
+
+.pill:hover:not(:disabled),
+.pillStale:hover:not(:disabled) {
+  filter: brightness(1.25);
+  cursor: pointer;
+}
+
+.pill,
+.pillStale,
+.pillRefreshing {
+  font-family: inherit;
+}
+
+.spin {
+  animation: freshness-spin 1.2s linear infinite;
+}
+
+@keyframes freshness-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

@@ -57,6 +57,16 @@ discrepancy, unresolved — see the sync doc).
    (sync doc step 6 — `get_equity_historicals` 5y weekly → POST
    `/ingestion/price-history`). Skip on routine refreshes.
 
+8. **Weekly (Mondays), or when `data/earnings_calendar.json` is >7 days
+   old**: refresh the earnings calendar. Call `get_earnings_calendar`
+   (days=21, filter=high_market_cap), extract every symbol currently
+   held or classified in `data/investment_policy.json`, and rewrite the
+   `earnings` map in `data/earnings_calendar.json` (keep the file's
+   `description`; set `updated` to today). The v6 engine annotates
+   queue items and notification emails from this file — a stale
+   calendar means missing earnings warnings on new positions, so if the
+   MCP call fails, say so in the report rather than silently skipping.
+
 ## Report back
 
 Lead with what changed: new fills imported (symbol, qty, account),

@@ -1523,3 +1523,13 @@ async def get_pure_performance_endpoint(db: Session = Depends(get_db)):
     """
     from app.shared.services.cost_basis_service import get_pure_performance
     return get_pure_performance(db)
+
+
+@router.get("/policy-deviations")
+async def get_policy_deviations_endpoint(db: Session = Depends(get_db)):
+    """Two-book strategy deviations (Investments page): core exit-recovery
+    ledger and idle inventory. See docs/INVESTMENTS-PAGE-SPEC.md,
+    'Strategy model & policy deviations'.
+    """
+    from app.modules.investments.policy_service import get_policy_deviations
+    return get_policy_deviations(db)

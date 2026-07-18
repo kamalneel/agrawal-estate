@@ -901,14 +901,14 @@ async def get_monthly_positions(db: Session = Depends(get_db)):
 
     equity_rows = db.execute(text("""
         SELECT
-            TO_CHAR(snapshot_date, 'YYYY-MM') AS month,
-            SUM(market_value) AS total
-        FROM investment_holdings_history
-        WHERE snapshot_date = (
-            SELECT MAX(h2.snapshot_date)
-            FROM investment_holdings_history h2
-            WHERE TO_CHAR(h2.snapshot_date, 'YYYY-MM') = TO_CHAR(investment_holdings_history.snapshot_date, 'YYYY-MM')
-        )
+            TO_CHAR(h.snapshot_date, 'YYYY-MM') AS month,
+            SUM(h.market_value) AS total
+        FROM investment_holdings_history h
+        JOIN (
+            SELECT MAX(snapshot_date) AS snapshot_date
+            FROM investment_holdings_history
+            GROUP BY DATE_TRUNC('month', snapshot_date)
+        ) last_day USING (snapshot_date)
         GROUP BY month
         ORDER BY month
     """)).fetchall()

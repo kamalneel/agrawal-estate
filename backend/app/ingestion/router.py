@@ -285,6 +285,100 @@ async def get_ingestion_status(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/refresh-now")
+def trigger_refresh_now():
+    """Kick the scheduled MCP refresh job (com.neelpersonal.rh-refresh)
+    on demand — same full sync the 5:40/11:40/19:40 slots run, takes
+    ~5-6 minutes. launchctl start is a no-op if the job is already
+    running, so double-clicks are harmless. The freshness endpoint's
+    timestamps advancing is the completion signal."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["launchctl", "start", "com.neelpersonal.rh-refresh"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=502,
+                                detail=f"launchctl failed: {result.stderr.strip() or result.returncode}")
+        return {"started": True, "expected_duration_min": 6}
+    except FileNotFoundError:
+        raise HTTPException(status_code=502, detail="launchctl not available on this host")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="launchctl timed out")
+
+
+@router.get("/freshness")
+def get_data_freshness(db: Session = Depends(get_db)):
+    """Data-freshness summary for the header indicator.
+
+    The scheduled MCP refresh (launchd com.neelpersonal.rh-refresh) runs
+    weekdays at 5:40 / 11:40 / 19:40 PT. Freshness = did the newest data
+    land at-or-after the most recent scheduled slot (15 min grace). The
+    overall timestamp is the WEAKEST source (min), so one silently-failing
+    feed can't hide behind the others.
+    """
+    from sqlalchemy import text as _text
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    PT = ZoneInfo("America/Los_Angeles")
+
+    def _scalar(sql: str):
+        row = db.execute(_text(sql)).fetchone()
+        return row[0] if row and row[0] else None
+
+    # DB timestamps are naive UTC (Postgres now() on this box is UTC)
+    sources = {
+        "holdings": _scalar("SELECT MAX(updated_at) FROM investment_holdings"),
+        "options": _scalar("SELECT MAX(snapshot_date) FROM sold_options_snapshots"),
+        "cash": _scalar("SELECT MAX(updated_at) FROM account_cash_balances"),
+        "activity": _scalar("SELECT MAX(created_at) FROM ingestion_log WHERE status = 'success'"),
+    }
+
+    # Most recent scheduled refresh slot: weekdays 6:32/7:40/11:40/13:10 PT
+    # (Neel's decision-point schedule, 2026-07-14 — post-open, coffee,
+    # pre-close decision, post-close capture), walked back from now, then
+    # converted to naive UTC for comparison.
+    now_pt = datetime.now(PT)
+    slot_times = [(6, 32), (7, 40), (11, 40), (13, 10)]
+    day = now_pt.date()
+    last_expected_pt = None
+    for _ in range(8):  # never more than a weekend + holiday of walking back
+        if day.weekday() < 5:  # Mon-Fri
+            for hh, mm in reversed(slot_times):
+                candidate = datetime(day.year, day.month, day.day, hh, mm, tzinfo=PT)
+                if candidate <= now_pt:
+                    last_expected_pt = candidate
+                    break
+        if last_expected_pt:
+            break
+        day = day - timedelta(days=1)
+
+    last_expected_utc = (last_expected_pt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+                         if last_expected_pt else None)
+    now_utc = datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)
+
+    grace = timedelta(minutes=15)
+    # weakest core source (activity excluded: it only advances when new
+    # fills exist, so a quiet market day would false-alarm)
+    core = [v for k, v in sources.items() if k != "activity" and v is not None]
+    overall = min(core) if core else None
+    fresh = bool(overall and last_expected_utc and overall >= last_expected_utc - grace)
+
+    def _iso_utc(v):
+        return (v.isoformat() + "Z") if v else None  # mark as UTC for JS Date()
+
+    return {
+        "sources": {k: _iso_utc(v) for k, v in sources.items()},
+        "overall": _iso_utc(overall),
+        "last_expected_run": _iso_utc(last_expected_utc),
+        "status": "fresh" if fresh else "stale",
+        "hours_since": round((now_utc - overall).total_seconds() / 3600, 1) if overall else None,
+        "schedule": "weekdays 6:32 / 7:40 / 11:40 / 13:10 PT (post-close capture at 13:10 is final for the day)",
+    }
+
+
 @router.get("/history")
 async def get_ingestion_history(
     db: Session = Depends(get_db),

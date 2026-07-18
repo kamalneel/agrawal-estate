@@ -76,7 +76,11 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    investment_transactions WHERE source='robinhood' GROUP BY account_id`).
 5. `python3 scripts/robinhood_mcp_bridge.py bundle.json` (preview) then
    `--save`.
-6. **Price history (monthly-ish, or when a new symbol is bought):**
+6a. **Earnings calendar (weekly):** `get_earnings_calendar(days=21,
+   filter=high_market_cap)` → rewrite `data/earnings_calendar.json` for
+   held/classified symbols. The v6 engine stamps queue items + emails
+   with "📅 earnings X" from this file (added 2026-07-14).
+7. **Price history (monthly-ish, or when a new symbol is bought):**
    `get_equity_historicals(symbols≤10, start_time=5y ago, interval=week)`
    for all held symbols, then POST
    `{source:"robinhood_mcp", bars:[{symbol,date,close}]}` to
@@ -93,10 +97,14 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
   type `/refresh` in a Claude session and the whole recipe above runs.
 - **Scheduled**: launchd agent `com.neelpersonal.rh-refresh` runs
   `scripts/rh_refresh_headless.sh` (headless `claude -p "/refresh"`) at
-  **5:40 / 11:40 / 19:40 PT weekdays** — ~20 min before the backend's
-  notification scans (`backend/app/core/scheduler.py`: 6:00, 12:00+12:45,
-  20:00) so emails see fresh positions. Logs:
-  `~/Library/Logs/rh-refresh.log`.
+  **6:32 / 7:40 / 11:40 / 13:10 PT weekdays** (Neel's decision-point
+  schedule, 2026-07-14): post-open (options marks real only after 6:30),
+  coffee-break, final pre-close decision, and a 13:10 post-close capture
+  that is final for the day — no evening sync needed. Backend email scans
+  (`backend/app/core/scheduler.py`) follow at 6:50, 8:00, 12:00, and
+  20:00 (the evening scan runs off the post-close data). Manual trigger:
+  the freshness pill (POST `/ingestion/refresh-now` → `launchctl start`).
+  Logs: `~/Library/Logs/rh-refresh.log`.
 - **Auth prerequisite**: headless runs use the CLI-registered MCP servers
   (`claude mcp list`), NOT claude.ai connectors. Both servers are
   registered project-local; they must be **authorized once via `/mcp` in

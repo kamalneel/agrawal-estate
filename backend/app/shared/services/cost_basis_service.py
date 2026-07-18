@@ -544,7 +544,7 @@ def get_pure_performance(db: Session) -> Dict:
     from sqlalchemy import text as _text
 
     open_rows = db.execute(_text("""
-        SELECT l.symbol, l.quantity_remaining, l.cost_per_share, h.current_price
+        SELECT l.symbol, l.quantity_remaining, l.cost_per_share, l.purchase_date, h.current_price
         FROM stock_lot l
         LEFT JOIN investment_holdings h
           ON h.source = l.source AND h.account_id = l.account_id AND h.symbol = l.symbol
@@ -554,9 +554,16 @@ def get_pure_performance(db: Session) -> Dict:
     by_symbol: Dict[str, Dict] = {}
     for r in open_rows:
         qty = float(r.quantity_remaining)
-        d = by_symbol.setdefault(r.symbol, {"shares": 0.0, "cost_basis": 0.0, "value": 0.0, "priced": True})
+        cost = qty * float(r.cost_per_share)
+        d = by_symbol.setdefault(r.symbol, {"shares": 0.0, "cost_basis": 0.0, "value": 0.0, "priced": True,
+                                            "date_epoch_x_cost": 0.0, "dated_cost": 0.0})
         d["shares"] += qty
-        d["cost_basis"] += qty * float(r.cost_per_share)
+        d["cost_basis"] += cost
+        if r.purchase_date is not None:
+            # cost-weighted purchase date: each lot's date weighted by dollars
+            # invested, so many small recent lots don't mask an old core position
+            d["date_epoch_x_cost"] += datetime.combine(r.purchase_date, datetime.min.time()).timestamp() * cost
+            d["dated_cost"] += cost
         if r.current_price is None:
             d["priced"] = False
         else:
@@ -567,10 +574,20 @@ def get_pure_performance(db: Session) -> Dict:
     unpriced_cost_basis = sum(d["cost_basis"] for d in by_symbol.values() if not d["priced"])
     unpriced_count = sum(1 for d in by_symbol.values() if not d["priced"])
 
+    MIN_ANNUALIZE_DAYS = 90  # annualizing shorter holds produces absurd extrapolations
+
     open_positions = []
     for sym, d in by_symbol.items():
         gain = (d["value"] - d["cost_basis"]) if d["priced"] else None
         gain_pct = round(gain / d["cost_basis"] * 100, 2) if (gain is not None and d["cost_basis"]) else None
+        held_days = None
+        if d["dated_cost"] > 0:
+            weighted_date = datetime.fromtimestamp(d["date_epoch_x_cost"] / d["dated_cost"]).date()
+            held_days = (date.today() - weighted_date).days
+        annualized_pct = None
+        if (held_days is not None and held_days >= MIN_ANNUALIZE_DAYS
+                and d["priced"] and d["cost_basis"] > 0 and d["value"] > 0):
+            annualized_pct = round(((d["value"] / d["cost_basis"]) ** (365.0 / held_days) - 1) * 100, 1)
         open_positions.append({
             "symbol": sym, "status": "open", "shares": round(d["shares"], 4),
             "cost_basis": round(d["cost_basis"], 2),
@@ -578,6 +595,8 @@ def get_pure_performance(db: Session) -> Dict:
             "gain": round(gain, 2) if gain is not None else None,
             "gain_pct": gain_pct,
             "weight_pct": round(d["value"] / priced_value * 100, 2) if (d["priced"] and priced_value) else None,
+            "held_days": held_days,
+            "annualized_pct": annualized_pct,
         })
     open_positions.sort(key=lambda p: (p["gain_pct"] is None, -(p["gain_pct"] or 0)))
 

@@ -1,0 +1,15 @@
+{
+  "description": "Next earnings dates for held/wheel symbols, pulled from the Robinhood MCP earnings calendar during /refresh (see docs/ROBINHOOD_MCP_SYNC.md). The v6 action-queue engine annotates every item whose symbol reports within the lookahead window — earnings inflate option premium and IV crushes after the call, so entry/roll timing decisions need this in view. 'verified' = company-confirmed date vs estimate.",
+  "updated": "2026-07-14",
+  "lookahead_days": 16,
+  "earnings": {
+    "TSLA":  {"date": "2026-07-22", "timing": "pm", "verified": true},
+    "GOOGL": {"date": "2026-07-22", "timing": "pm", "verified": true},
+    "INTC":  {"date": "2026-07-23", "timing": "pm", "verified": true},
+    "MSFT":  {"date": "2026-07-29", "timing": "pm", "verified": true},
+    "HOOD":  {"date": "2026-07-29", "timing": "pm", "verified": true},
+    "META":  {"date": "2026-07-29", "timing": "pm", "verified": false},
+    "AAPL":  {"date": "2026-07-30", "timing": "pm", "verified": true},
+    "AMZN":  {"date": "2026-07-30", "timing": "pm", "verified": false}
+  }
+}

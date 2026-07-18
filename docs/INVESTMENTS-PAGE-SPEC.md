@@ -101,3 +101,54 @@ Backed by `get_pure_performance()` in
 `app/shared/services/cost_basis_service.py` (symmetric placement to
 `get_realized_pnl_by_period`, same module that already serves both Income
 and this page).
+
+## Strategy model & policy deviations (added 2026-07-12, Neel)
+
+Two books, two rule sets. Classification lives in
+`data/investment_policy.json` (user-declared, seeded from known market
+caps — revisits spec decision 3 *without* adding a market-cap API
+dependency: the $1T rule is Neel's membership heuristic, the file is his
+declaration).
+
+**Book 1 — Core (durable compounders).** $1T+ names. Buy, never sell,
+no market timing. Income engine: covered calls at **delta ~10**.
+Covered calls on core are the strategy, NOT a deviation. The deviation
+is post-assignment: stock called away and no recovery mechanism started.
+Recovery has two legal paths (Neel's rule): immediate re-buy, or selling
+puts on the name until re-assigned. Deviation states per exit event:
+
+- `recovered` — shares replaced (re-bought or put-assigned back)
+- `recovering` — open short puts on that symbol in that account
+- `idle` — neither, N days elapsed, gap $ = (price now − sale px) × unrecovered shares
+
+**Book 2 — Inventory (volatility harvest).** Volatile names one would
+not regret owning (INTC, SOXL, RKLB, …). Sell puts while they're
+volatile; on assignment, wheel out with **delta ~20** calls
+(aggressive by design — the goal is exit, not ownership). Exits are
+the harvest, never a deviation. The deviation is **idle inventory**:
+assigned shares sitting without an exit call written.
+
+**Boundary with Options Execution (no-duplication rule):** the options
+page *prevents* deviations (ITM roll alerts, what to do with a specific
+option now); this page surfaces deviations *after* they happen and
+tracks recovery. The exit-recovery ledger uses put premiums collected
+during the gap as an input to the "cost of waiting" decision metric —
+that is decision support, not income reporting, which stays on Income.
+
+**Endpoint:** `GET /api/v1/investments/policy-deviations` →
+`{policy, core_exits[], idle_inventory[]}` from
+`app/modules/investments/policy_service.py`. Exit events come from
+`stock_lot_sale` (12-month window, per account+symbol+date, FIFO
+allocation of post-event acquisitions so multi-event symbols don't
+double-count recovery); open puts/calls from the latest
+`sold_options_snapshots` per account; prices from
+`investment_holdings.current_price` (MCP-synced).
+
+**Why deviations happen (Neel, 2026-07-12):** after the big April/May
+call assignments freed a pile of cash, put-selling on volatile names
+(4–6x the percentage premium of delta-10 core calls) absorbed all
+attention; core re-entry and call-writing lapsed. The trap is comparing
+premium yield to premium yield — Core's return is premium + durable
+drift. So besides the per-symbol ledger, the endpoint reports an
+aggregate: total idle-exit gap vs. inventory put income earned over the
+same window ("the distraction P&L").

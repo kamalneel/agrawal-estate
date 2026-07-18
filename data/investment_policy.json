@@ -1,0 +1,8 @@
+{
+  "description": "Two-book strategy classification (docs/INVESTMENTS-PAGE-SPEC.md, 'Strategy model & policy deviations'). CORE = $1T+ durables: never sell, delta-10 covered calls, forced exits must be recovered (re-buy or sell puts until re-assigned). INVENTORY = volatile wheel names: sell puts for premium, on assignment exit via delta-20 calls; holding them passively is the deviation. Symbols are Neel's declaration, not an API lookup — edit here when policy changes. Seeded by Claude 2026-07-12 from known market caps; TSLA and IBIT classifications flagged for Neel's review.",
+  "core": ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA", "AVGO", "META", "AMZN", "LLY"],
+  "inventory": ["INTC", "SOXL", "RKLB", "SPCX", "CBRS", "MU", "FIG", "IBIT", "MGTNW", "HOOD", "TQQQ"],
+  "ignore": ["FDRXX", "CASH"],
+  "default_for_unlisted": "unclassified",
+  "core_exit_window_days": 365
+}

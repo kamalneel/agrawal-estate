@@ -28,6 +28,35 @@ def _friday(d: date) -> date:
     return d + timedelta(days=(4 - d.weekday()) % 7)
 
 
+_EARNINGS_PATH = Path(__file__).resolve().parents[4] / "data" / "earnings_calendar.json"
+_POLICY_PATH = Path(__file__).resolve().parents[4] / "data" / "investment_policy.json"
+
+
+def _load_policy_ignore_list() -> set:
+    """Symbols with no options market (money-market funds, cash sweeps) —
+    the 'ignore' list in investment_policy.json. Engine 1 must never
+    recommend covered calls on these (FDRXX bug, 2026-07-15)."""
+    try:
+        with open(_POLICY_PATH) as f:
+            return set(json.load(f).get("ignore", []))
+    except Exception:
+        return set()
+
+
+def _load_earnings_calendar() -> Dict:
+    """Symbol → next-earnings info, refreshed by /refresh via MCP.
+    Returns {} on any problem — earnings awareness is an annotation,
+    never a reason for the queue to fail."""
+    try:
+        with open(_EARNINGS_PATH) as f:
+            data = json.load(f)
+        cal = dict(data.get("earnings", {}))
+        cal["_lookahead"] = int(data.get("lookahead_days", 16))
+        return cal
+    except Exception:
+        return {}
+
+
 def _acct_rank(name: str) -> int:
     try:
         return CANONICAL_ORDER.index(name)
@@ -121,14 +150,33 @@ def build_action_queue(db: Session) -> Dict:
     items: List[Dict] = []
     board: List[Dict] = []
 
+    earnings_cal = _load_earnings_calendar()
+
     def add_item(priority, action, engine, rule, title, account, symbol,
                  detail, why, earn=None, context=None):
+        ctx = dict(context or {})
+        # Earnings awareness (Neel, 2026-07-14): premium quoted across an
+        # earnings date is event-inflated and IV crushes after the call.
+        # Every item for a reporting symbol carries the callout so both the
+        # queue and the notification emails surface it.
+        er = earnings_cal.get(symbol)
+        if er:
+            er_date = date.fromisoformat(er["date"])
+            days_to_er = (er_date - today).days
+            if 0 <= days_to_er <= earnings_cal.get("_lookahead", 16):
+                timing = {"am": "before open", "pm": "after close"}.get(er.get("timing"), "")
+                verified = "" if er.get("verified", True) else " (unconfirmed)"
+                ctx["next_earnings"] = {"date": er["date"], "timing": er.get("timing"),
+                                        "days": days_to_er, "verified": er.get("verified", True)}
+                why = (f"📅 {symbol} earnings {er_date.strftime('%-m/%-d')} {timing}{verified} "
+                       f"({days_to_er}d away) — premium through that date is event-inflated and IV "
+                       f"crushes after the call. Factor it into entry/roll timing. " + why)
         items.append({
             "id": f"v6_{engine}_{account}_{symbol}_{len(items)}",
             "priority": priority, "action": action, "engine": engine,
             "rule": rule, "title": title, "account": account,
             "symbol": symbol, "detail": detail, "why": why, "earn": earn,
-            "context": context or {},
+            "context": ctx,
         })
 
     # ---- Engine 4: stuck positions ----------------------------------------
@@ -232,7 +280,10 @@ def build_action_queue(db: Session) -> Dict:
                          context=base_ctx)
 
     # ---- Engine 1: uncovered calls ----------------------------------------
+    non_optionable = _load_policy_ignore_list()
     for (account, sym), h in holdings.items():
+        if sym in non_optionable:
+            continue  # money-market funds / cash sweeps have no options
         shares = h["qty"]
         uncovered = shares - covered_calls.get((account, sym), 0)
         n = int(uncovered // 100)
@@ -260,26 +311,83 @@ def build_action_queue(db: Session) -> Dict:
             delta, otm = ("15" if shel else "10-15"), (0.045 if shel else 0.055)
             gate = "Tier 1 hold: income without getting called away."
         else:
-            delta, otm = "80", -0.01
-            gate = "Tier 2 wheel: assignment is the plan — strike at/near ATM for max premium."
-        approx = stock * (1 + otm)
+            # Tier 2: two documented policies conflict (V6 table 2026-07-09
+            # says ATM/max-premium; Neel's stated convention 2026-07-12 says
+            # delta-20 exit calls, ≈6% OTM ≈ 80% chance of profit). Until he
+            # picks one, present BOTH strikes — never the misleading
+            # "delta 80" label (that read as a real delta and matched
+            # neither: a true delta-80 call is deep ITM).
+            delta, otm = "ATM", -0.01
+            gate = ("Tier 2 wheel — two valid strikes: ATM = max premium, likely assigned "
+                    "(fast exit); delta-20 (~6% OTM) = keep the stock most weeks, exit on a "
+                    "rally. Policy not yet fixed — choose per situation.")
+        target = stock * (1 + otm)   # strike the delta rule wants
+        approx = target
         cost_ps = (h["cost_basis"] / shares) if (h["cost_basis"] and shares) else None
         floor_note = ""
         if cost_ps and approx < cost_ps:
             approx, floor_note = cost_ps, " (raised to cost basis floor)"
-        # rough weekly premium: delta% of a ~2% weekly move value
+        # rough weekly premium: delta% of a ~2% weekly move value.
+        # NOTE: this heuristic prices the delta-TARGET strike. It is only
+        # valid when the recommended strike is at/near that target.
         est = int(n * 100 * stock * 0.0030) if tier1 or sym == "TSLA" else int(n * 100 * stock * 0.012)
+        per_share = est / (n * 100) if n else 0
         exp = week_ending if today.weekday() <= 2 else _friday(week_ending + timedelta(days=3))
-        add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
-                 f"{sym}: {n} call{'s' if n > 1 else ''} available", account, sym,
-                 f"{sym} {n}x CALL ~${approx:,.0f}{floor_note} (delta {delta}) {exp.strftime('%m/%d')} · stock ${stock:,.0f}",
-                 f"{int(uncovered):,} uncovered shares earning nothing toward the 1%/mo holdings goal. {gate} "
-                 "Entry timing: sell now if RSI>60; RSI<40 wait; RSI<30 do not sell.",
-                 earn=est,
-                 context={"symbol": sym, "recommended_strike": round(approx, 2),
-                          "option_type": "call", "uncovered_contracts": n,
-                          "unsold_contracts": n, "current_price": stock,
-                          "expiration_date": str(exp), "total_premium": est})
+
+        # Cost-basis floor far above spot ⇒ a near-dated call at the floored
+        # strike pays ~nothing; showing the ATM-priced earn next to the
+        # floored strike is a lie (IBIT bug, 2026-07-13: card said
+        # "~$49 … Earn ~$630" when the $49 weekly was bid $0.01). Present
+        # the real decision instead, with earn=0 for the floored strike.
+        floor_gap_pct = ((approx - target) / stock * 100) if floor_note else 0.0
+        if floor_gap_pct > 5:
+            action_txt = (
+                f"{int(uncovered):,} uncovered shares, but the cost-basis floor "
+                f"${cost_ps:,.2f} sits {floor_gap_pct:.0f}% above spot — a near-dated call there "
+                f"pays ≈$0, so there is no premium without breaking the floor. Decide: "
+                f"(a) skip this cycle and wait for spot to recover toward basis, or "
+                f"(b) Tier-2 wheel exit below basis: strike ~${target:,.0f} pays ≈${est:,} "
+                f"(≈${per_share:.2f}/sh) but assignment realizes the loss vs basis. "
+                "The earn figure is intentionally omitted for the floored strike."
+            )
+            add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
+                     f"{sym}: {n} call{'s' if n > 1 else ''} available — basis floor binds", account, sym,
+                     f"sell {n} call{'s' if n > 1 else ''} · strike ~${approx:,.0f} (basis floor) collects ≈$0 "
+                     f"· alt strike ~${target:,.0f} collects ≈${est:,} · exp {exp.strftime('%m/%d')} · stock ${stock:,.0f}",
+                     action_txt,
+                     earn=0,
+                     context={"symbol": sym, "recommended_strike": round(approx, 2),
+                              "floored_strike_pays": 0, "alt_strike": round(target, 2),
+                              "alt_strike_premium": est, "option_type": "call",
+                              "uncovered_contracts": n, "unsold_contracts": n,
+                              "current_price": stock, "expiration_date": str(exp),
+                              "total_premium": 0})
+        else:
+            # Detail reads as the ORDER to place: what to sell, at which
+            # strike, for how much premium. "~$101 (delta 80)" read like a
+            # sale price and confused the strike with the premium
+            # (Neel, 2026-07-15). Premium figures are heuristics, not
+            # quotes — labeled "est." until the sync carries chain data.
+            if tier1 or sym == "TSLA":
+                strike_txt = f"strike ~${approx:,.0f}{floor_note} (delta {delta})"
+            else:
+                d20 = stock * 1.06
+                strike_txt = (f"ATM ~${approx:,.0f}{floor_note} for max premium (likely assigned) "
+                              f"or delta-20 ~${d20:,.0f} to keep the stock")
+            add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
+                     f"{sym}: {n} call{'s' if n > 1 else ''} available", account, sym,
+                     f"sell {n} call{'s' if n > 1 else ''} · {strike_txt} "
+                     f"· exp {exp.strftime('%m/%d')} · est. ≈${per_share:.2f}/sh (≈${est:,}) — check live quote "
+                     f"· stock ${stock:,.0f}",
+                     f"{int(uncovered):,} uncovered shares earning nothing toward the 1%/mo holdings goal. {gate} "
+                     "Entry timing: sell now if RSI>60; RSI<40 wait; RSI<30 do not sell.",
+                     earn=est,
+                     context={"symbol": sym, "recommended_strike": round(approx, 2),
+                              "target_delta": delta,
+                              "option_type": "call", "uncovered_contracts": n,
+                              "unsold_contracts": n, "current_price": stock,
+                              "expiration_date": str(exp), "total_premium": est,
+                              "limit_per_share": round(per_share, 2)})
 
     # ---- available cash per account (unsold puts — symmetric to uncovered
     # calls above, but on the cash side). Not tied to a symbol: this is
@@ -304,7 +412,18 @@ def build_action_queue(db: Session) -> Dict:
 
     # ---- assemble ----------------------------------------------------------
     prio_rank = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
-    items.sort(key=lambda i: (prio_rank[i["priority"]], _acct_rank(i["account"]), i["symbol"]))
+    # Within a priority tier: things to DO (sell/roll) before things to
+    # WATCH (alerts), then soonest expiry first, then account/symbol.
+    # (Neel, 2026-07-15: same-priority items sorted alphabetically felt
+    # random — actionable items and nearest expiries should lead.)
+    action_rank = {"SELL": 0, "ROLL": 0, "BUY": 0, "ALERT": 1}
+    items.sort(key=lambda i: (
+        prio_rank[i["priority"]],
+        action_rank.get(i["action"], 1),
+        i["context"].get("expiration_date") or "9999-99-99",
+        _acct_rank(i["account"]),
+        i["symbol"],
+    ))
     board.sort(key=lambda b: (b["expiration"] or "9999", _acct_rank(b["account"]), b["symbol"]))
     summary = {p: sum(1 for i in items if i["priority"] == p) for p in prio_rank}
     return {

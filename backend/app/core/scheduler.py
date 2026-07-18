@@ -37,35 +37,37 @@ class RecommendationScheduler:
         """
         Set up scheduled jobs per V3 Algorithm Specification.
         
-        V3 Schedule (Pacific Time, Weekdays Only):
+        Schedule (Pacific Time, Weekdays Only — Neel's decision points, 2026-07-14):
         ============================================
-        Scan 1: 6:00 AM  - Main Daily Scan (comprehensive + technical analysis)
-        Scan 2: 8:00 AM  - Post-Opening Urgent (state changes from market open)
-        Scan 3: 12:00 PM - Midday Opportunities (intraday changes)
-        Scan 4: 12:45 PM - Pre-Close Urgent (expiring today, smart assignment)
-        Scan 5: 8:00 PM  - Evening Planning (next day preparation)
-        
+        Scan 1: 6:50 AM  - Wake-up triage (after the 6:32 post-open MCP sync;
+                           options marks are only real after the 6:30 open)
+        Scan 2: 8:00 AM  - Coffee-break decisions (after the 7:40 sync)
+        Scan 3: 12:00 PM - Final pre-close decisions (after the 11:40 sync;
+                           market closes 1:00 PM)
+        Scan 4: 8:00 PM  - Evening planning for the next day (runs off the
+                           1:10 PM post-close sync — market data is final
+                           after the close, no evening sync needed)
+
         NO after-hours notifications between 1 PM and 8 PM.
         NO weekend notifications (market closed).
         """
-        
+
         # =================================================================
-        # SCAN 1: 6:00 AM - Main Daily Scan (with technical analysis)
+        # SCAN 1: 6:50 AM - Main Daily Scan (with technical analysis)
         # =================================================================
-        # Purpose: Comprehensive evaluation before user wakes up
-        # Evaluates: All positions, pull-backs, ITM escapes, weekly rolls,
-        #           earnings/dividend alerts, new sell opportunities
-        #           Monday only: Buy-back reminders
+        # Purpose: Wake-up triage on REAL post-open options marks — the
+        # 6:32 MCP sync has landed by now. (Was 6:00; pre-open data told
+        # you nothing about options values. Neel, 2026-07-14.)
         self.scheduler.add_job(
             self.run_full_technical_analysis,
             trigger=CronTrigger(
                 hour=6,
-                minute=0,
+                minute=50,
                 day_of_week='mon-fri',
                 timezone=PT
             ),
             id='scan_1_main_daily',
-            name='V3 Scan 1: Main Daily Scan (6:00 AM PT)',
+            name='Scan 1: Wake-up Triage (6:50 AM PT)',
             replace_existing=True
         )
         
@@ -105,23 +107,9 @@ class RecommendationScheduler:
             replace_existing=True
         )
 
-        # =================================================================
-        # SCAN 4: 12:45 PM - Pre-Close (Version-aware)
-        # =================================================================
-        # Purpose: Last 15 minutes before market close (1:00 PM PT)
-        # Routes to V4 or V5 based on ALGORITHM_VERSION
-        self.scheduler.add_job(
-            lambda: self._run_versioned_check(scan_type='1245pm_pre_close'),
-            trigger=CronTrigger(
-                hour=12,
-                minute=45,
-                day_of_week='mon-fri',
-                timezone=PT
-            ),
-            id='scan_4_pre_close',
-            name='Scan 4: Pre-Close (12:45 PM PT)',
-            replace_existing=True
-        )
+        # (12:45 PM pre-close scan removed 2026-07-14: Neel's final decision
+        # point is the 12:00 scan; the last 15 minutes before close were
+        # noise, not a decision window.)
 
         # =================================================================
         # SCAN 5: 8:00 PM - Evening Planning (Version-aware)
@@ -166,7 +154,7 @@ class RecommendationScheduler:
             replace_existing=True
         )
 
-        logger.info("V3 Schedule configured: 5 daily scans (6AM, 8AM, 12PM, 12:45PM, 8PM) weekdays only")
+        logger.info("Schedule configured: 4 daily scans (6:50AM, 8AM, 12PM, 8PM) weekdays only")
         logger.info("Daily portfolio snapshot configured: 8:15 PM PT weekdays")
 
         # =================================================================

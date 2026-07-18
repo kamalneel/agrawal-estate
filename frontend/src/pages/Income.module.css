@@ -1352,3 +1352,23 @@
   overflow-x: auto;
 }
 
+
+/* Page-level scope bar (All Income / Taxable Only) */
+.pageScopeBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.scopeNote {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+/* Goals are portfolio-wide by definition; dim them when the page is
+   scoped to taxable-only so it's obvious they aren't following. */
+.goalsUnscoped {
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}

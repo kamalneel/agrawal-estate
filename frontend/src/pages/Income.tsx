@@ -3389,10 +3389,32 @@ export function Income() {
   // Main view
   return (
     <div className={styles.page}>
+      {/* Page-level scope control: every section below follows it (the
+          goals strip is deliberately exempt — those goals are defined
+          portfolio-wide in goal_settings.json, so it dims instead). */}
+      <div className={styles.pageScopeBar}>
+        <div className={styles.taxableToggle}>
+          <button
+            className={clsx(styles.toggleBtn, !taxableOnly && styles.toggleActive)}
+            onClick={() => setTaxableOnly(false)}
+          >
+            All Income
+          </button>
+          <button
+            className={clsx(styles.toggleBtn, taxableOnly && styles.toggleActive)}
+            onClick={() => setTaxableOnly(true)}
+          >
+            Taxable Only
+          </button>
+        </div>
+        {taxableOnly && <span className={styles.scopeNote}>Showing taxable (brokerage) accounts only — IRAs/Roths excluded</span>}
+      </div>
+
       {/* Level 1: unified income band — the page's single period control.
           Salary since 2026-06 is recurring ACTUAL income (salary_projections
           table) served by /income/unified; no client-side projection. */}
       <UnifiedIncomeBand
+        taxableOnly={taxableOnly}
         onPeriodChange={(g, periodIso) => {
           const d = new Date(periodIso + 'T00:00:00')
           setMainSelectedYear(d.getFullYear())
@@ -3416,18 +3438,24 @@ export function Income() {
         }}
       />
 
-      {/* Goals — actuals vs targets (yield tracker, Objective 2) */}
-      <GoalsStrip
-        year={mainSelectedYear}
-        month={mainSelectedMonth}
-        onDrill={(kind) => setView(kind === 'holdings' ? 'goal_holdings' : 'goal_cash')}
-        capacityByMonth={putCapacity}
-        optionsByType={optionsByTypeAll}
-        dividendsByMonth={dividendsByMonth}
-        equityByMonth={monthlyPositions.equity}
-        liveEquity={portfolioEquity}
-        settings={goalSettings}
-      />
+      {/* Goals — actuals vs targets (yield tracker, Objective 2).
+          Deliberately NOT scoped by Taxable Only: the 1%/2% goals are
+          defined across all accounts (goal_settings.json, Neel 2026-07-05),
+          so scoping would change the goal, not the view. Dimmed instead. */}
+      <div className={taxableOnly ? styles.goalsUnscoped : undefined}
+           title={taxableOnly ? 'Goals are portfolio-wide (all accounts) — not affected by the Taxable Only filter' : undefined}>
+        <GoalsStrip
+          year={mainSelectedYear}
+          month={mainSelectedMonth}
+          onDrill={(kind) => setView(kind === 'holdings' ? 'goal_holdings' : 'goal_cash')}
+          capacityByMonth={putCapacity}
+          optionsByType={optionsByTypeAll}
+          dividendsByMonth={dividendsByMonth}
+          equityByMonth={monthlyPositions.equity}
+          liveEquity={portfolioEquity}
+          settings={goalSettings}
+        />
+      </div>
 
       {/* Level 3: trend — chart + table on the unified definition */}
       <section className={styles.earningsSection}>
@@ -3465,20 +3493,6 @@ export function Income() {
                     {label}
                   </button>
                 ))}
-              </div>
-              <div className={styles.taxableToggle}>
-                <button
-                  className={clsx(styles.toggleBtn, !taxableOnly && styles.toggleActive)}
-                  onClick={() => setTaxableOnly(false)}
-                >
-                  All Income
-                </button>
-                <button
-                  className={clsx(styles.toggleBtn, taxableOnly && styles.toggleActive)}
-                  onClick={() => setTaxableOnly(true)}
-                >
-                  Taxable Only
-                </button>
               </div>
             </div>
           </div>

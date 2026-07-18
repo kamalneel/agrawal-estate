@@ -53,9 +53,11 @@ interface UnifiedIncomeBandProps {
   onPeriodChange?: (granularity: Granularity, periodIso: string) => void
   /** Salary projection (labeled, never mixed into actual totals). */
   projectedSalary?: { monthly: number; startMonth: string }  // startMonth: 'YYYY-MM'
+  /** Page-level scope: taxable (brokerage) accounts only. */
+  taxableOnly?: boolean
 }
 
-export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary }: UnifiedIncomeBandProps) {
+export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary, taxableOnly = false }: UnifiedIncomeBandProps) {
   const [granularity, setGranularity] = useState<Granularity>('month')
   const [periods, setPeriods] = useState<UnifiedPeriod[]>([])
   const [cursor, setCursor] = useState<number>(-1)
@@ -65,7 +67,7 @@ export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary }: 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    fetch(`${API_BASE}/income/unified?granularity=${granularity}`, { headers: getAuthHeaders() })
+    fetch(`${API_BASE}/income/unified?granularity=${granularity}${taxableOnly ? '&taxable_only=true' : ''}`, { headers: getAuthHeaders() })
       .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
       .then(data => {
         if (cancelled) return
@@ -87,7 +89,7 @@ export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary }: 
       })
       .catch(() => !cancelled && setLoading(false))
     return () => { cancelled = true }
-  }, [granularity])
+  }, [granularity, taxableOnly])
 
   const p = cursor >= 0 ? periods[cursor] : undefined
   const accounts = useMemo(
@@ -122,7 +124,7 @@ export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary }: 
   return (
     <section className={styles.band}>
       <div className={styles.topRow}>
-        <span className={styles.title}>All Income</span>
+        <span className={styles.title}>{taxableOnly ? 'Taxable Income' : 'All Income'}</span>
         <div className={styles.granularityToggle}>
           {(['week', 'month', 'year'] as Granularity[]).map(g => (
             <button

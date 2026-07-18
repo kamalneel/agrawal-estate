@@ -103,6 +103,13 @@
   max-width: 700px;
 }
 
+.pureHeroControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
 .pureHeroValue {
   font-family: var(--font-mono);
   font-size: var(--text-5xl, var(--text-6xl));
@@ -1211,3 +1218,54 @@
   }
 }
 
+
+/* Strategy Deviations panel */
+.devSubhead {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+.devChip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+}
+
+.devChipIdle {
+  background: color-mix(in srgb, var(--color-negative, #FF5A5A) 15%, transparent);
+  color: var(--color-negative, #FF5A5A);
+}
+
+.devChipRecovering {
+  background: color-mix(in srgb, #C49A3C 18%, transparent);
+  color: #C49A3C;
+}
+
+.devChipOk {
+  background: color-mix(in srgb, var(--color-positive, #00D632) 12%, transparent);
+  color: var(--color-positive, #00D632);
+}
+
+.devAggregate {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.devAllClear {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.devUnclassified {
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+}
