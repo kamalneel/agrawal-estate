@@ -1167,13 +1167,23 @@ export function Investments() {
                     <button onClick={() => setGhostDetail(null)}>✕</button>
                   </div>
                   <ResponsiveContainer width="100%" height={220}>
-                    <LineChart margin={CHART_MARGINS}>
+                    {/* both series merged onto one sorted date grid — two
+                        Lines with separate data arrays make recharts append
+                        ghost-only dates AFTER the actual dates (Jun 30
+                        rendered right of Jul 16, gold line zigzagging back
+                        through the chart; Neel's screenshot 2026-07-18) */}
+                    <LineChart margin={CHART_MARGINS} data={(() => {
+                      const byDate = new Map<string, { date: string; actual?: number; ghostV?: number }>()
+                      ghostDetail.actual_series.forEach(p => byDate.set(p.date, { ...(byDate.get(p.date) ?? { date: p.date }), actual: p.value }))
+                      ghostDetail.ghost_series.forEach(p => byDate.set(p.date, { ...(byDate.get(p.date) ?? { date: p.date }), ghostV: p.value }))
+                      return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
+                    })()}>
                       <CartesianGrid {...GRID_PROPS} />
-                      <XAxis dataKey="date" {...X_AXIS_PROPS} allowDuplicatedCategory={false} />
+                      <XAxis dataKey="date" {...X_AXIS_PROPS} />
                       <YAxis {...Y_AXIS_PROPS} domain={['auto', 'auto']} tickFormatter={(v: number) => formatCurrencyShort(v)} />
-                      <Tooltip formatter={(v: number) => formatCurrency(v)} />
-                      <Line data={ghostDetail.actual_series} dataKey="value" name="Actual" type="monotone" stroke={CHART_GREEN} dot={false} strokeWidth={2} />
-                      <Line data={ghostDetail.ghost_series} dataKey="value" name="Ghost (frozen)" type="monotone" stroke="#C49A3C" dot={false} strokeWidth={2} strokeDasharray="6 4" />
+                      <Tooltip formatter={(v: number, name: string) => [formatCurrency(v), name]} />
+                      <Line dataKey="actual" name="Actual" type="monotone" stroke={CHART_GREEN} dot={false} strokeWidth={2} connectNulls />
+                      <Line dataKey="ghostV" name="Ghost (frozen)" type="monotone" stroke="#C49A3C" dot={false} strokeWidth={2} strokeDasharray="6 4" connectNulls />
                     </LineChart>
                   </ResponsiveContainer>
                   <p className={styles.ghostSub}>Options premium collected since this date: <strong>{formatCurrency(ghostDetail.premium_since)}</strong></p>
