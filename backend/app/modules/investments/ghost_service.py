@@ -274,14 +274,24 @@ def get_ghost_detail(db: Session, anchor: date) -> Dict:
     today_shares = _shares_today(db)
     ghost_shares = _shares_at(anchor, today_shares, events)
 
-    # weekly price grid from anchor → today
-    px_rows = db.execute(_text("""
+    # price grid from anchor → today. Daily per-symbol prices derived from
+    # holdings history (market_value / quantity), merged over the weekly
+    # symbol_price_history. Weekly-only left recent anchors with a
+    # 1-point ghost line (price history lags ~2 weeks behind the sync).
+    grid: Dict[date, Dict[str, float]] = {}
+    for r in db.execute(_text("""
         SELECT symbol, price_date, close_price FROM symbol_price_history
         WHERE price_date >= :a ORDER BY price_date
-    """), {"a": anchor}).fetchall()
-    grid: Dict[date, Dict[str, float]] = {}
-    for r in px_rows:
+    """), {"a": anchor}).fetchall():
         grid.setdefault(r.price_date, {})[r.symbol] = float(r.close_price)
+    for r in db.execute(_text("""
+        SELECT symbol, snapshot_date, SUM(market_value) AS mv, SUM(quantity) AS q
+        FROM investment_holdings_history
+        WHERE snapshot_date >= :a AND market_value IS NOT NULL AND quantity > 0
+        GROUP BY symbol, snapshot_date
+    """), {"a": anchor}).fetchall():
+        if r.q and float(r.q) > 0:
+            grid.setdefault(r.snapshot_date, {})[r.symbol] = float(r.mv) / float(r.q)
 
     last_px: Dict[str, float] = {}
     ghost_series = []

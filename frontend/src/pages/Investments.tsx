@@ -564,6 +564,39 @@ export function Investments() {
   const totalChange = accounts.reduce((sum, acc) => sum + acc.change, 0)
   const totalChangePercent = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : 0
 
+  // Period options for the pure chart: drop 1D (meaningless at daily
+  // resolution — a weekend click left <2 points and silently fell back
+  // to all-time, Neel 2026-07-18) and hide presets whose cutoff predates
+  // the data (they'd duplicate ALL exactly; YTD/1Y reappear once the
+  // history reaches back that far).
+  const pureChartPeriodOptions = useMemo(() => {
+    const first = purePerf?.chart?.[0]?.date
+    const today = new Date()
+    const cutoffISO = (key: string | null): string | null => {
+      switch (key) {
+        case '1w': return new Date(today.getTime() - 7 * 86400000).toISOString().slice(0, 10)
+        case '30d': return new Date(today.getTime() - 30 * 86400000).toISOString().slice(0, 10)
+        case '90d': return new Date(today.getTime() - 90 * 86400000).toISOString().slice(0, 10)
+        case 'ytd': return `${today.getFullYear()}-01-01`
+        case '1y': return new Date(today.getTime() - 365 * 86400000).toISOString().slice(0, 10)
+        default: return null
+      }
+    }
+    return PERIOD_PRESETS.EXTENDED.filter(o => {
+      if (o.key === '1d') return false
+      if (o.key === null || !first) return true
+      const c = cutoffISO(o.key)
+      return c !== null && c >= first
+    })
+  }, [purePerf])
+
+  // if the selected period's button disappeared, fall back to ALL
+  useEffect(() => {
+    if (pureChartPeriod && !pureChartPeriodOptions.some(o => o.key === pureChartPeriod)) {
+      setPureChartPeriod(null)
+    }
+  }, [pureChartPeriodOptions, pureChartPeriod])
+
   // Same period-filter pattern, applied to the pure-performance chart
   const filteredPureChart = useMemo(() => {
     const chart = purePerf?.chart ?? []
@@ -903,7 +936,7 @@ export function Investments() {
           </div>
           <div className={styles.pureHeroControls}>
             <PeriodSelector
-              options={PERIOD_PRESETS.EXTENDED}
+              options={pureChartPeriodOptions}
               value={pureChartPeriod}
               onChange={setPureChartPeriod}
             />
@@ -1098,6 +1131,7 @@ export function Investments() {
               <span>Premium collected in window: <strong>{formatCurrency(ghost.premium_collected_window)}</strong></span>
               <span className={styles.ghostCaveat}>{ghost.anchors_limited_reason}</span>
             </div>
+            <div style={{ cursor: 'pointer' }}>
             <ResponsiveContainer width="100%" height={220}>
               <AreaChart data={data} margin={CHART_MARGINS}
                 onClick={(e: any) => { const a = e?.activePayload?.[0]?.payload?.anchor; if (a) openGhostDetail(a) }}>
@@ -1115,12 +1149,15 @@ export function Investments() {
                   }}
                 />
                 <ReferenceLine y={0} stroke="var(--color-border)" strokeDasharray="4 4" />
-                <Area type="monotone" dataKey="delta" stroke="#C49A3C" fill="#C49A3C22" strokeWidth={2} />
+                <Area type="monotone" dataKey="delta" stroke="#C49A3C" fill="#C49A3C22" strokeWidth={2}
+                  activeDot={{ r: 6, cursor: 'pointer',
+                               onClick: (_: any, dot: any) => { const a = dot?.payload?.anchor; if (a) openGhostDetail(a) } }} />
                 {markers.map(m => (
                   <ReferenceDot key={m.anchor} x={m.label} y={m.delta} r={4} fill="#C49A3C" stroke="var(--color-bg-primary)" />
                 ))}
               </AreaChart>
             </ResponsiveContainer>
+            </div>
             {ghostDetailLoading && <p className={styles.ghostSub}>Loading drill-down…</p>}
             {ghostDetail && (
               <div className={styles.ghostModalOverlay} onClick={() => setGhostDetail(null)}>
