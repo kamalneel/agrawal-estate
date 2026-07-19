@@ -323,6 +323,24 @@ def get_ghost_detail(db: Session, anchor: date) -> Dict:
             continue
         actual_series.append({"date": r.snapshot_date.isoformat(),
                               "value": round(float(r.mv or 0) + c - b, 2)})
+    # end both lines on the same date (the ghost series appends a "today"
+    # point; without this the chart's final segment exaggerated the gap)
+    last_ghost_date = ghost_series[-1]["date"] if ghost_series else None
+    if last_ghost_date and (not actual_series or actual_series[-1]["date"] < last_ghost_date):
+        eq_now = float(db.execute(_text("""
+            SELECT COALESCE(SUM(quantity * current_price), 0)
+            FROM investment_holdings WHERE current_price IS NOT NULL
+        """)).scalar() or 0)
+        cash_now = float(db.execute(_text("""
+            SELECT COALESCE(SUM(
+                CASE WHEN margin_used > 0 THEN cash_balance - margin_used
+                     ELSE cash_balance + COALESCE(options_collateral, 0)
+                          + COALESCE(pending_orders, 0) END), 0)
+            FROM account_cash_balances
+        """)).scalar() or 0)
+        b_now = _nearest_at_or_before(date.today(), buyback_hist) or 0.0
+        actual_series.append({"date": last_ghost_date,
+                              "value": round(eq_now + cash_now - b_now, 2)})
 
     # divergence table
     now_shares = {s: q for s, q in today_shares.items() if q > 0.0001}
