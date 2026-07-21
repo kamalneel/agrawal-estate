@@ -430,3 +430,38 @@
   border: 1px solid color-mix(in srgb, #c49a3c 40%, transparent);
   white-space: nowrap;
 }
+
+/* Entry-timing wait + roll-streak trend badges (2026-07-21) */
+.waitBadge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: #FF5A5A;
+  background: color-mix(in srgb, #FF5A5A 14%, transparent);
+  border: 1px solid color-mix(in srgb, #FF5A5A 40%, transparent);
+  white-space: nowrap;
+}
+
+.streakBadge,
+.streakBadgeWarn {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+}
+
+.streakBadge {
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-text-secondary) 10%, transparent);
+  border: 1px solid var(--color-border);
+}
+
+.streakBadgeWarn {
+  color: #FF5A5A;
+  background: color-mix(in srgb, #FF5A5A 14%, transparent);
+  border: 1px solid color-mix(in srgb, #FF5A5A 40%, transparent);
+}

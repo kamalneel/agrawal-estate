@@ -16,6 +16,8 @@ from typing import Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.modules.strategies.technical_signals import get_entry_timing, get_roll_streak
+
 TIER1 = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "AMZN", "META", "LLY"}
 NON_TAXABLE_TYPES = {"ira", "roth_ira", "traditional_ira", "401k", "hsa", "retirement"}
 CANONICAL_ORDER = ["Neel's Brokerage", "Neel's Retirement", "Neel's Roth IRA",
@@ -30,6 +32,36 @@ def _friday(d: date) -> date:
 
 _EARNINGS_PATH = Path(__file__).resolve().parents[4] / "data" / "earnings_calendar.json"
 _POLICY_PATH = Path(__file__).resolve().parents[4] / "data" / "investment_policy.json"
+
+
+def _get_roll_streak_ctx(db: Session, account_id: Optional[str], symbol: str,
+                          option_type: str, strike: float, depth: float) -> Optional[Dict]:
+    """Guarded wrapper: no account_id (join miss) or any error → None,
+    never blocks the card (cyclical-vs-runaway signal, Neel 2026-07-21)."""
+    if not account_id:
+        return None
+    try:
+        return get_roll_streak(db, account_id, symbol, option_type, strike, depth)
+    except Exception:
+        return None
+
+
+def _streak_text(streak: Optional[Dict]) -> str:
+    if not streak or streak.get("weeks_rolled", 0) < 2:
+        return ""
+    weeks = streak["weeks_rolled"]
+    trend = streak.get("trend")
+    if trend == "worsening":
+        return (f" ⚠ Rolled {weeks} weeks running, ITM% {streak['itm_pct_at_start']:.0f}%→"
+                f"{streak['itm_pct_now']:.0f}% (worsening) — cyclical-dip assumption weakening; "
+                "consider evaluating a close instead of another roll.")
+    if trend == "stable":
+        return (f" Rolled {weeks} weeks running, ITM% holding near {streak['itm_pct_now']:.0f}% "
+                "(stable) — consistent with a cyclical dip, roll continues to look reasonable.")
+    if trend == "improving":
+        return (f" Rolled {weeks} weeks running, ITM% improving {streak['itm_pct_at_start']:.0f}%→"
+                f"{streak['itm_pct_now']:.0f}% — cycle may be exhausting soon.")
+    return f" Rolled {weeks} weeks running (not enough price history to judge the trend)."
 
 
 def _load_policy_ignore_list() -> set:
@@ -100,12 +132,16 @@ def build_action_queue(db: Session) -> Dict:
     week_ending = _friday(today)
 
     # ---- data: latest option snapshot per account -------------------------
+    # account_id joined in for technical_signals lookups (investment_
+    # transactions / investment_holdings_history key on account_id, not
+    # the display name sold_options_snapshots stores).
     pos_rows = db.execute(text("""
-        SELECT s.account_name, s.snapshot_date, so.symbol, so.strike_price,
+        SELECT s.account_name, ia.account_id, s.snapshot_date, so.symbol, so.strike_price,
                so.option_type, so.expiration_date, so.contracts_sold,
                so.premium_per_contract AS current_mark, so.original_premium
         FROM sold_options so
         JOIN sold_options_snapshots s ON s.id = so.snapshot_id
+        LEFT JOIN investment_accounts ia ON ia.account_name = s.account_name
         WHERE so.snapshot_id IN (
             SELECT MAX(id) FROM sold_options_snapshots
             WHERE parsing_status = 'success' OR parsing_status IS NOT NULL
@@ -114,7 +150,7 @@ def build_action_queue(db: Session) -> Dict:
     """), {"today": today}).fetchall()
 
     hold_rows = db.execute(text("""
-        SELECT a.account_name, a.account_type, h.symbol, h.quantity,
+        SELECT a.account_name, a.account_id, a.account_type, h.symbol, h.quantity,
                h.current_price, h.cost_basis
         FROM investment_holdings h
         JOIN investment_accounts a
@@ -133,6 +169,7 @@ def build_action_queue(db: Session) -> Dict:
         holdings[(r.account_name, r.symbol)] = {
             "qty": float(r.quantity),
             "cost_basis": float(r.cost_basis) if r.cost_basis else None,
+            "account_id": r.account_id,
         }
 
     def is_sheltered(account: str) -> bool:
@@ -190,6 +227,7 @@ def build_action_queue(db: Session) -> Dict:
         exp = p.expiration_date
         dte = (exp - today).days if exp else 999
         account = p.account_name
+        p_acct_id = p.account_id
         stock, estimated = stock_price(sym, strike, mark, opt)
         capture_pct = round((orig - mark) / orig * 100, 1) if orig else None
 
@@ -256,23 +294,27 @@ def build_action_queue(db: Session) -> Dict:
                          "at ~net-zero. Oscillating assumed — do not panic-close (AVGO lesson). Verify no thesis-changing news.",
                          context=base_ctx)
             elif itm and depth >= 10 and exp and exp <= week_ending:
+                streak = _get_roll_streak_ctx(db, p_acct_id, sym, opt, strike, depth)
                 add_item("high", "ROLL", 4, "Deep tested put",
                          f"{sym} put {depth:.0f}% ITM", account, sym, spec,
                          "Roll down and out at net-zero-or-credit while the cycle exhausts; acceptable for multiple "
-                         "weeks. Runaway (structural news) would instead mean evaluate closing.",
-                         context=base_ctx)
+                         "weeks. Runaway (structural news) would instead mean evaluate closing."
+                         + _streak_text(streak),
+                         context={**base_ctx, **({"roll_streak": streak} if streak else {})})
             elif itm and depth >= 10:
                 # Expires AFTER this week's Friday ⇒ already rolled into the
                 # next cycle (Neel, 2026-07-09: 'those have already been
                 # rolled'). Re-rolling mid-cycle is optional, not urgent —
                 # downgrade to a monitor until the position's week arrives.
+                streak = _get_roll_streak_ctx(db, p_acct_id, sym, opt, strike, depth)
                 add_item("medium", "ALERT", 4, "Deep tested put — rolled this cycle",
                          f"{sym} put {depth:.0f}% ITM, rolled to {exp.strftime('%m/%d')}",
                          account, sym, spec,
                          "Already rolled into next week's expiry; this cycle's action is done. Monitor — an "
                          "opportunistic further roll-down only if it nets zero-or-credit. Becomes a ROLL again "
-                         "when its expiry week arrives and it's still ITM.",
-                         context=base_ctx)
+                         "when its expiry week arrives and it's still ITM."
+                         + _streak_text(streak),
+                         context={**base_ctx, **({"roll_streak": streak} if streak else {})})
             elif itm:
                 add_item("low", "ALERT", 4, "Tested put — theta working",
                          f"{sym} put slightly ITM, {dte}d left", account, sym, spec,
@@ -321,6 +363,35 @@ def build_action_queue(db: Session) -> Dict:
             gate = ("Tier 2 wheel — two valid strikes: ATM = max premium, likely assigned "
                     "(fast exit); delta-20 (~6% OTM) = keep the stock most weeks, exit on a "
                     "rally. Policy not yet fixed — choose per situation.")
+
+        # Real entry-timing check (Neel, 2026-07-21): he was skipping calls
+        # into a multi-day decline expecting reversion (TSLA $415→$380) —
+        # the old text just told him to go check RSI himself. Computed from
+        # investment_holdings_history, which always has data for an
+        # Engine-1 candidate (it requires >=100 shares actually held) once
+        # the position is >2 weeks old. Fails OPEN (no annotation, today's
+        # static text stands) when history is too thin — a data gap must
+        # never silently block income generation.
+        acct_id = h.get("account_id")
+        entry = get_entry_timing(db, acct_id, sym) if acct_id else {"available": False}
+        entry_ctx = None
+        if sym == "TSLA":
+            # TSLA's own carve-out is stricter and inverted: default WAIT,
+            # fire only when strongly overbought (RSI>75).
+            if entry.get("available") and entry.get("rsi") is not None:
+                rsi = entry["rsi"]
+                tsla_wait = not (rsi > 75)
+                entry_ctx = {"rsi": rsi, "wait": tsla_wait,
+                             "reason": (f"RSI {rsi:.0f} — needs >75 to fire" if tsla_wait
+                                        else f"RSI {rsi:.0f} — carve-out clear"),
+                             "consecutive_down_days": entry.get("consecutive_down_days"),
+                             "change_pct": entry.get("change_pct")}
+        elif entry.get("available") and entry.get("wait"):
+            entry_ctx = {"rsi": entry.get("rsi"), "wait": True, "reason": entry.get("reason"),
+                         "consecutive_down_days": entry.get("consecutive_down_days"),
+                         "change_pct": entry.get("change_pct")}
+        entry_wait = bool(entry_ctx and entry_ctx.get("wait"))
+
         target = stock * (1 + otm)   # strike the delta rule wants
         approx = target
         cost_ps = (h["cost_basis"] / shares) if (h["cost_basis"] and shares) else None
@@ -354,14 +425,15 @@ def build_action_queue(db: Session) -> Dict:
                      f"{sym}: {n} call{'s' if n > 1 else ''} available — basis floor binds", account, sym,
                      f"sell {n} call{'s' if n > 1 else ''} · strike ~${approx:,.0f} (basis floor) collects ≈$0 "
                      f"· alt strike ~${target:,.0f} collects ≈${est:,} · exp {exp.strftime('%m/%d')} · stock ${stock:,.0f}",
-                     action_txt,
+                     action_txt + (f" ⏸ Also: {entry_ctx['reason']} — entry timing says wait regardless." if entry_wait else ""),
                      earn=0,
                      context={"symbol": sym, "recommended_strike": round(approx, 2),
                               "floored_strike_pays": 0, "alt_strike": round(target, 2),
                               "alt_strike_premium": est, "option_type": "call",
                               "uncovered_contracts": n, "unsold_contracts": n,
                               "current_price": stock, "expiration_date": str(exp),
-                              "total_premium": 0})
+                              "total_premium": 0,
+                              **({"entry_timing": entry_ctx} if entry_ctx else {})})
         else:
             # Detail reads as the ORDER to place: what to sell, at which
             # strike, for how much premium. "~$101 (delta 80)" read like a
@@ -374,20 +446,30 @@ def build_action_queue(db: Session) -> Dict:
                 d20 = stock * 1.06
                 strike_txt = (f"ATM ~${approx:,.0f}{floor_note} for max premium (likely assigned) "
                               f"or delta-20 ~${d20:,.0f} to keep the stock")
+            # Real computed entry-timing reason replaces the old static
+            # "Entry timing: sell now if RSI>60..." hint when we have one;
+            # falls back to the static text when history is too thin
+            # (fail open — see get_entry_timing).
+            entry_line = (f"⏸ WAIT — {entry_ctx['reason']}. Historically this pattern reverts; "
+                          "consider holding off this week." if entry_wait
+                          else f"Entry timing: {entry_ctx['reason']}, clear to sell." if entry_ctx
+                          else "Entry timing: sell now if RSI>60; RSI<40 wait; RSI<30 do not sell.")
             add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
-                     f"{sym}: {n} call{'s' if n > 1 else ''} available", account, sym,
+                     f"{sym}: {n} call{'s' if n > 1 else ''} available"
+                     + (" — entry timing says wait" if entry_wait else ""), account, sym,
                      f"sell {n} call{'s' if n > 1 else ''} · {strike_txt} "
                      f"· exp {exp.strftime('%m/%d')} · est. ≈${per_share:.2f}/sh (≈${est:,}) — check live quote "
                      f"· stock ${stock:,.0f}",
                      f"{int(uncovered):,} uncovered shares earning nothing toward the 1%/mo holdings goal. {gate} "
-                     "Entry timing: sell now if RSI>60; RSI<40 wait; RSI<30 do not sell.",
+                     + entry_line,
                      earn=est,
                      context={"symbol": sym, "recommended_strike": round(approx, 2),
                               "target_delta": delta,
                               "option_type": "call", "uncovered_contracts": n,
                               "unsold_contracts": n, "current_price": stock,
                               "expiration_date": str(exp), "total_premium": est,
-                              "limit_per_share": round(per_share, 2)})
+                              "limit_per_share": round(per_share, 2),
+                              **({"entry_timing": entry_ctx} if entry_ctx else {})})
 
     # ---- available cash per account (unsold puts — symmetric to uncovered
     # calls above, but on the cash side). Not tied to a symbol: this is

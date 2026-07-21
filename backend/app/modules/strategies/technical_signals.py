@@ -1,0 +1,238 @@
+"""
+Real technical signals for the V6 action queue — replaces text-only
+"check RSI yourself" hints with actually-computed numbers.
+
+Built 2026-07-21 after Neel identified two behaviors the engine described
+but never verified:
+  1. He avoids selling calls into a stock that's declined several days
+     running, expecting mean reversion (e.g. TSLA $415→$380) — but the
+     engine's "Entry timing: sell now if RSI>60..." text was never
+     computed, just printed.
+  2. He rolls deep-ITM puts (SOXL, CBRS, INTC, SPCX) forward at an
+     unchanged strike for credit, betting the dip is cyclical — but the
+     engine's own caveat ("runaway would mean evaluate closing") had no
+     mechanism to tell cyclical from runaway.
+
+Deliberately sourced ONLY from already-synced data (investment_holdings_
+history for daily prices, investment_transactions for roll history) — no
+Yahoo/Schwab revival (see docs/INVESTMENTS-PAGE-SPEC.md market-data-source
+rule). This means signals are only as available as the sync's own
+history; both functions report unavailability honestly rather than
+estimate from thin data.
+"""
+
+import re
+from datetime import date, timedelta
+from typing import Dict, List, Optional
+
+from sqlalchemy import text as _text
+from sqlalchemy.orm import Session
+
+_STRIKE_RE = re.compile(r"\$([\d,]+\.?\d*)\s*$")
+
+
+def compute_rsi(closes: List[float], period: int = 14) -> Optional[float]:
+    """Wilder's RSI. None if there isn't enough history."""
+    if len(closes) < period + 1:
+        return None
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    gains = [d if d > 0 else 0.0 for d in deltas]
+    losses = [-d if d < 0 else 0.0 for d in deltas]
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int) -> List[float]:
+    """Daily price series derived from held-share snapshots (market_value /
+    quantity). Real for every Engine-1 candidate by construction — Engine 1
+    only fires on symbols with >=100 shares actually held."""
+    rows = db.execute(_text("""
+        SELECT market_value / NULLIF(quantity, 0) AS px
+        FROM investment_holdings_history
+        WHERE account_id = :acct AND symbol = :sym AND quantity > 0
+          AND market_value IS NOT NULL AND snapshot_date >= :cutoff
+        ORDER BY snapshot_date
+    """), {"acct": account_id, "sym": symbol,
+           "cutoff": date.today() - timedelta(days=lookback_days)}).fetchall()
+    return [float(r.px) for r in rows if r.px]
+
+
+def get_entry_timing(db: Session, account_id: str, symbol: str,
+                     lookback_days: int = 45, min_history: int = 15) -> Dict:
+    """RSI-14 + consecutive-down-day check for covered-call entry timing.
+
+    Returns {'available': False, 'reason': ...} when history is too thin
+    (e.g. a position assigned <2 weeks ago) — callers must fail OPEN
+    (fall back to today's static text) rather than block a trade on a
+    data gap.
+    """
+    closes = _daily_closes(db, account_id, symbol, lookback_days)
+    if len(closes) < min_history:
+        return {"available": False, "reason": f"only {len(closes)}d price history (need {min_history}+)"}
+
+    rsi = compute_rsi(closes)
+
+    down_days = 0
+    for i in range(len(closes) - 1, 0, -1):
+        if closes[i] < closes[i - 1]:
+            down_days += 1
+        else:
+            break
+
+    window = min(5, len(closes) - 1)
+    change_pct = ((closes[-1] - closes[-1 - window]) / closes[-1 - window] * 100
+                  if window > 0 and closes[-1 - window] else 0.0)
+
+    oversold = rsi is not None and rsi < 30
+    declining = down_days >= 3 and change_pct <= -5.0
+
+    reasons = []
+    if oversold:
+        reasons.append(f"RSI {rsi:.0f} (oversold)")
+    if declining:
+        reasons.append(f"down {down_days} straight sessions ({change_pct:+.1f}% over {window}d)")
+
+    return {
+        "available": True,
+        "rsi": round(rsi, 1) if rsi is not None else None,
+        "consecutive_down_days": down_days,
+        "change_pct": round(change_pct, 1),
+        "wait": oversold or declining,
+        "reason": " and ".join(reasons) if reasons else None,
+    }
+
+
+def _parse_strike(description: Optional[str]) -> Optional[float]:
+    if not description:
+        return None
+    m = _STRIKE_RE.search(description.strip())
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _roll_events(db: Session, account_id: str, symbol: str, option_type: str) -> List[Dict]:
+    """Same-day BTC+STO pairs for this position, newest first. Handles
+    multiple distinct strikes rolling the same day (e.g. SOXL $195 and
+    $200 both rolled 7/21) via greedy nearest-strike pairing."""
+    label = option_type.capitalize()  # 'Put' or 'Call' — matches description text
+    rows = db.execute(_text("""
+        SELECT transaction_date, transaction_type, description
+        FROM investment_transactions
+        WHERE account_id = :acct AND symbol = :sym
+          AND transaction_type IN ('STO', 'BTC') AND description ILIKE :label
+        ORDER BY transaction_date
+    """), {"acct": account_id, "sym": symbol, "label": f"%{label}%"}).fetchall()
+
+    by_date: Dict[date, Dict[str, List[float]]] = {}
+    for r in rows:
+        strike = _parse_strike(r.description)
+        if strike is None:
+            continue
+        d = by_date.setdefault(r.transaction_date, {"BTC": [], "STO": []})
+        d[r.transaction_type].append(strike)
+
+    events = []
+    for d in sorted(by_date.keys()):
+        btcs, stos = sorted(by_date[d]["BTC"]), sorted(by_date[d]["STO"])
+        used = [False] * len(stos)
+        for b in btcs:
+            best_i, best_diff = None, None
+            for i, s in enumerate(stos):
+                if used[i]:
+                    continue
+                diff = abs(s - b)
+                if best_diff is None or diff < best_diff:
+                    best_i, best_diff = i, diff
+            if best_i is not None:
+                used[best_i] = True
+                events.append({"date": d, "from_strike": b, "to_strike": stos[best_i]})
+    events.sort(key=lambda e: e["date"], reverse=True)
+    return events
+
+
+def _price_near(db: Session, account_id: str, symbol: str, target: date):
+    """Real price near a date: daily (held-share history) first, then
+    weekly symbol_price_history as a coarser real fallback. Never
+    fabricated — returns None if nothing is within tolerance."""
+    row = db.execute(_text("""
+        SELECT market_value / NULLIF(quantity, 0) AS px
+        FROM investment_holdings_history
+        WHERE account_id = :acct AND symbol = :sym AND quantity > 0
+          AND market_value IS NOT NULL
+          AND snapshot_date BETWEEN :d - INTERVAL '5 days' AND :d + INTERVAL '5 days'
+        ORDER BY ABS(snapshot_date - :d) ASC LIMIT 1
+    """), {"acct": account_id, "sym": symbol, "d": target}).fetchone()
+    if row and row.px:
+        return float(row.px), "daily"
+    row = db.execute(_text("""
+        SELECT close_price
+        FROM symbol_price_history
+        WHERE symbol = :sym
+          AND price_date BETWEEN :d - INTERVAL '10 days' AND :d + INTERVAL '10 days'
+        ORDER BY ABS(price_date - :d) ASC LIMIT 1
+    """), {"sym": symbol, "d": target}).fetchone()
+    if row and row.close_price:
+        return float(row.close_price), "weekly"
+    return None, None
+
+
+def get_roll_streak(db: Session, account_id: str, symbol: str, option_type: str,
+                    current_strike: float, current_itm_pct: float) -> Optional[Dict]:
+    """Consecutive-week roll streak ending at the live position, and
+    whether ITM depth is worsening vs. the streak's first roll — the
+    cyclical-vs-runaway signal Neel asked for, 2026-07-21."""
+    events = _roll_events(db, account_id, symbol, option_type)
+    if not events:
+        return None
+    # sanity: the most recent roll should match the live position; if not,
+    # the transaction history doesn't line up with this card (stale sync,
+    # account mismatch) — don't guess.
+    if abs(events[0]["to_strike"] - current_strike) > max(current_strike * 0.1, 1.0):
+        return None
+
+    chain = [events[0]]
+    for ev in events[1:]:
+        prev = chain[-1]
+        gap_days = (prev["date"] - ev["date"]).days
+        strike_cont = abs(ev["to_strike"] - prev["from_strike"]) <= max(prev["from_strike"] * 0.1, 1.0)
+        if 4 <= gap_days <= 10 and strike_cont:
+            chain.append(ev)
+        else:
+            break
+
+    weeks = len(chain)
+    if weeks < 2:
+        return {"weeks_rolled": weeks, "trend": None}
+
+    first = chain[-1]
+    start_price, source = _price_near(db, account_id, symbol, first["date"])
+    if start_price is None:
+        return {"weeks_rolled": weeks, "trend": None}
+
+    if option_type == "put":
+        start_itm_pct = max((first["from_strike"] - start_price) / first["from_strike"] * 100, 0)
+    else:
+        start_itm_pct = max((start_price - first["from_strike"]) / first["from_strike"] * 100, 0)
+
+    delta_pts = current_itm_pct - start_itm_pct
+    trend = "worsening" if delta_pts >= 5 else "improving" if delta_pts <= -5 else "stable"
+
+    return {
+        "weeks_rolled": weeks,
+        "first_roll_date": first["date"].isoformat(),
+        "itm_pct_at_start": round(start_itm_pct, 1),
+        "itm_pct_now": round(current_itm_pct, 1),
+        "trend": trend,
+        "start_price_source": source,
+    }

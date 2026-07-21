@@ -25,6 +25,10 @@ interface QueueItem {
   earn: number | null
   context?: {
     next_earnings?: { date: string; timing: string | null; days: number; verified: boolean }
+    entry_timing?: { rsi: number | null; wait: boolean; reason: string | null;
+                     consecutive_down_days: number | null; change_pct: number | null }
+    roll_streak?: { weeks_rolled: number; trend: 'worsening' | 'stable' | 'improving' | null;
+                    itm_pct_at_start?: number; itm_pct_now?: number }
     [key: string]: unknown
   }
 }
@@ -389,6 +393,23 @@ export function OptionsExecution() {
                     title={`${item.symbol} reports ${item.context.next_earnings.date}${item.context.next_earnings.timing === 'pm' ? ' after close' : item.context.next_earnings.timing === 'am' ? ' before open' : ''}${item.context.next_earnings.verified ? '' : ' (unconfirmed)'} — premium through that date is event-inflated; IV crushes after the call`}
                   >
                     📅 ER {fmtEarningsDate(item.context.next_earnings.date)}
+                  </span>
+                )}
+                {item.context?.entry_timing?.wait && (
+                  <span className={styles.waitBadge} title={item.context.entry_timing.reason ?? undefined}>
+                    ⏸ WAIT{item.context.entry_timing.rsi != null ? ` (RSI ${Math.round(item.context.entry_timing.rsi)})` : ''}
+                  </span>
+                )}
+                {item.context?.roll_streak && item.context.roll_streak.weeks_rolled >= 2 && (
+                  <span
+                    className={item.context.roll_streak.trend === 'worsening' ? styles.streakBadgeWarn : styles.streakBadge}
+                    title={
+                      item.context.roll_streak.trend
+                        ? `Rolled ${item.context.roll_streak.weeks_rolled} weeks running · ITM% ${item.context.roll_streak.itm_pct_at_start?.toFixed(0)}%→${item.context.roll_streak.itm_pct_now?.toFixed(0)}% (${item.context.roll_streak.trend})`
+                        : `Rolled ${item.context.roll_streak.weeks_rolled} weeks running · not enough price history to judge trend`
+                    }
+                  >
+                    {item.context.roll_streak.trend === 'worsening' ? '⚠' : '↻'} {item.context.roll_streak.weeks_rolled}wk roll
                   </span>
                 )}
                 {item.earn ? <span className={styles.earn}>Earn ~{fmt(item.earn)}</span> : null}
