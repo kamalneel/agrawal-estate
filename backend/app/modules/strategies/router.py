@@ -6963,3 +6963,12 @@ async def get_v6_action_queue(db: Session = Depends(get_db)):
     docs/OPTIONS-EXECUTION-PAGE-SPEC.md."""
     from app.modules.strategies.v6_engine import build_action_queue
     return build_action_queue(db)
+
+
+@router.get("/v6/assignment-loss")
+async def get_v6_assignment_loss(db: Session = Depends(get_db)):
+    """Forced-assignment loss: strike vs. market price AT THE MOMENT OF
+    ASSIGNMENT (not vs. today's price). Neel, 2026-07-22 — see
+    assignment_loss_service.py for the reasoning."""
+    from app.modules.strategies.assignment_loss_service import get_assignment_loss
+    return get_assignment_loss(db)
