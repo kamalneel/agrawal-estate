@@ -18,7 +18,11 @@ from sqlalchemy.orm import Session
 
 from app.modules.strategies.technical_signals import get_entry_timing, get_roll_streak
 
-TIER1 = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "AMZN", "META", "LLY"}
+# GOOG (Class C) and GOOGL (Class A) are the same company (Alphabet) —
+# both get Core/Tier-1 treatment. Caught 2026-07-22: GOOG was falling
+# through to Tier-2 wheel logic (ATM strike, assignment-friendly) purely
+# because only "GOOGL" was listed, even though it's the identical durable.
+TIER1 = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "GOOG", "AMZN", "META", "LLY"}
 NON_TAXABLE_TYPES = {"ira", "roth_ira", "traditional_ira", "401k", "hsa", "retirement"}
 CANONICAL_ORDER = ["Neel's Brokerage", "Neel's Retirement", "Neel's Roth IRA",
                    "Jaya's Brokerage", "Jaya's IRA", "Jaya's Roth IRA",
