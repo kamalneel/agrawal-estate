@@ -456,6 +456,12 @@ export function OptionsExecution() {
           NOT sold alongside what is. */}
       <section className={styles.boardSection}>
         <h2>Open Positions{selectedAccount ? ` — ${selectedAccount}` : ''}</h2>
+        {displayGroups.length === 0 && (
+          <div className={styles.empty}>
+            No open option positions{selectedAccount ? ` in ${selectedAccount}` : ''}
+            {selectedAccount ? ' (and no uncovered holdings ≥100 shares to sell calls against).' : '.'}
+          </div>
+        )}
         {displayGroups.map(({ key, label, rows }) => (
           <div key={key} className={styles.expiryGroup}>
             <div className={styles.expiryHeader}>
