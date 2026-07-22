@@ -16,6 +16,7 @@ import {
 } from 'recharts'
 import styles from './Investments.module.css'
 import clsx from 'clsx'
+import { AssignmentLossCard } from '../components/AssignmentLossCard/AssignmentLossCard'
 import {
   HoldingsTable,
   symbolColumn,
@@ -1102,6 +1103,14 @@ export function Investments() {
           </section>
         )
       })()}
+
+      {/* Assignment Loss history — moved here from Options Execution
+          2026-07-22: that page is scoped to "what should I do today, am
+          I on pace" (current period only); this is retrospective
+          analysis, which belongs with Strategy Deviations / Ghost Curve
+          here instead. Options Execution keeps just the current-month
+          figure (AssignmentLossThisMonth). */}
+      <AssignmentLossCard />
 
       {/* vs. Buy & Hold — ghost freeze-curve (spec: "vs. Buy & Hold").
           Each point: "if I had frozen the options game on this date

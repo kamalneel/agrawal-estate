@@ -3,7 +3,7 @@ import { RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
-import { AssignmentLossCard } from '../components/AssignmentLossCard/AssignmentLossCard'
+import { AssignmentLossThisMonth } from '../components/AssignmentLossCard/AssignmentLossThisMonth'
 import { accountRank } from '../lib/accountOrder'
 import styles from './OptionsExecution.module.css'
 
@@ -315,11 +315,12 @@ export function OptionsExecution() {
         settings={goalSettings}
       />
 
-      {/* Third pacing panel, Neel's idea 2026-07-22: the only concrete
-          cost of a forced assignment is strike vs. market price AT THE
-          MOMENT of assignment — not cost-basis-vs-today, which just
-          drifts. Self-fetching, renders nothing if there's no history. */}
-      <AssignmentLossCard />
+      {/* Current-month figure only — this page is scoped to "what should
+          I do today, am I on pace" (see OPTIONS-EXECUTION-PAGE-SPEC.md).
+          The historical breakdown (chart + all-time + events) lives on
+          the Investments page instead; putting it here broke the page's
+          own scope (Neel, 2026-07-22). */}
+      <AssignmentLossThisMonth />
 
       {/* Account filter — scopes both the Action Queue and the Open
           Positions board below; doubles as a per-account triage summary. */}
