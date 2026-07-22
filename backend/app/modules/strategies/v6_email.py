@@ -66,9 +66,20 @@ def _context_badges(ctx: Dict) -> str:
     return "".join(parts)
 
 
+def _display_action(item: Dict) -> str:
+    """SELL reads as HOLD (yellow) when the real entry-timing check says
+    wait — a green SELL badge next to a red WAIT flag read as
+    contradictory (Neel, 2026-07-22). Mirrors the same override in
+    OptionsExecution.tsx (displayAction) so page and email agree."""
+    ctx = item.get("context") or {}
+    if item.get("action") == "SELL" and (ctx.get("entry_timing") or {}).get("wait"):
+        return "HOLD"
+    return item.get("action", "")
+
+
 def _item_row(item: Dict) -> str:
-    action = item.get("action", "")
-    afg, abg = _ACTION_STYLES.get(action, ("#6b7280", "#f3f4f6"))
+    action = _display_action(item)
+    afg, abg = ("#a16207", "#fef9c3") if action == "HOLD" else _ACTION_STYLES.get(action, ("#6b7280", "#f3f4f6"))
     ctx = item.get("context") or {}
     earn = item.get("earn")
     earn_html = (f'&nbsp; <span style="color:#16a34a; font-weight:600;">Earn ~${earn:,.0f}</span>'

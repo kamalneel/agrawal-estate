@@ -72,6 +72,18 @@ const PRIORITY_COLOR: Record<string, string> = {
 const ACTION_COLOR: Record<string, string> = {
   SELL: '#00D632', ROLL: '#00A3FF', CLOSE: '#A855F7', ALERT: '#FFB800',
 }
+const HOLD_COLOR = '#FACC15'
+
+/** SELL badge reads "HOLD" in yellow when the real entry-timing check
+ * says wait (Neel, 2026-07-22: seeing a green "Earn ~$X" SELL badge next
+ * to a red WAIT flag read as contradictory — the action badge itself
+ * should reflect the caution, not just a smaller badge beside it). */
+function displayAction(item: QueueItem): { label: string; color: string } {
+  if (item.action === 'SELL' && item.context?.entry_timing?.wait) {
+    return { label: 'HOLD', color: HOLD_COLOR }
+  }
+  return { label: item.action, color: ACTION_COLOR[item.action] || '#fff' }
+}
 const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
 
 function fmt(v: number): string {
@@ -379,8 +391,8 @@ export function OptionsExecution() {
             <div key={item.id} className={styles.queueItem}>
               <button className={styles.itemRow} onClick={() => setExpanded(expanded === item.id ? null : item.id)}>
                 <span className={styles.dot} style={{ background: PRIORITY_COLOR[item.priority] }} />
-                <span className={styles.actionBadge} style={{ color: ACTION_COLOR[item.action] || '#fff', borderColor: ACTION_COLOR[item.action] || '#444' }}>
-                  {item.action}
+                <span className={styles.actionBadge} style={{ color: displayAction(item).color, borderColor: displayAction(item).color }}>
+                  {displayAction(item).label}
                 </span>
                 <span className={styles.itemSymbol}>{item.symbol}</span>
                 <span className={styles.itemAccount}>{item.account}</span>
