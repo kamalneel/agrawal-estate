@@ -46,6 +46,25 @@ def _get_roll_streak_ctx(db: Session, account_id: Optional[str], symbol: str,
         return None
 
 
+def _roll_timing_note(dte: int) -> str:
+    """Day-of-week guidance for rolling a deep-ITM position expiring this
+    week (Neel, 2026-07-22): rolling Mon/Tue overpays — meaningful time
+    value hasn't decayed yet, so buying back the current option costs
+    more than it needs to. Waiting until Thu risks early assignment on a
+    deep-ITM position even though official expiry is Friday. Wednesday
+    (dte=2) is the target window — decay has done its work, assignment
+    risk is still low."""
+    if dte >= 3:
+        return (" Still 3+ days out: rolling today overpays for time value that hasn't decayed yet — "
+                 "target Wednesday (2 days out) instead of rolling early.")
+    if dte == 2:
+        return " Good window to roll today — time value mostly decayed, assignment risk still low."
+    if dte == 1:
+        return (" Caution: early-assignment risk on a deep-ITM position rises sharply this close to "
+                 "expiry, even though official expiry is tomorrow. Roll today rather than waiting for Friday.")
+    return " Last day before expiry — assignment likely if still ITM at the close. Roll now if you haven't."
+
+
 def _streak_text(streak: Optional[Dict]) -> str:
     if not streak or streak.get("weeks_rolled", 0) < 2:
         return ""
@@ -291,7 +310,8 @@ def build_action_queue(db: Session) -> Dict:
                          f"{sym} put {'ITM' if itm else 'near ATM'}, expires in {dte}d",
                          account, sym, spec,
                          "1-2 days to expiry and still tested: roll out 1 week; if deeper ITM, roll down+out "
-                         "at ~net-zero. Oscillating assumed — do not panic-close (AVGO lesson). Verify no thesis-changing news.",
+                         "at ~net-zero. Oscillating assumed — do not panic-close (AVGO lesson). Verify no "
+                         "thesis-changing news." + (_roll_timing_note(dte) if itm else ""),
                          context=base_ctx)
             elif itm and depth >= 10 and exp and exp <= week_ending:
                 streak = _get_roll_streak_ctx(db, p_acct_id, sym, opt, strike, depth)
@@ -299,7 +319,7 @@ def build_action_queue(db: Session) -> Dict:
                          f"{sym} put {depth:.0f}% ITM", account, sym, spec,
                          "Roll down and out at net-zero-or-credit while the cycle exhausts; acceptable for multiple "
                          "weeks. Runaway (structural news) would instead mean evaluate closing."
-                         + _streak_text(streak),
+                         + _roll_timing_note(dte) + _streak_text(streak),
                          context={**base_ctx, **({"roll_streak": streak} if streak else {})})
             elif itm and depth >= 10:
                 # Expires AFTER this week's Friday ⇒ already rolled into the
