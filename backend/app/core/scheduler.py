@@ -872,11 +872,82 @@ class RecommendationScheduler:
         version = ALGORITHM_VERSION.lower()
         logger.info(f"[SCHEDULER] Running versioned check: version={version}, scan_type={scan_type}")
 
-        if version == 'v5':
+        if version == 'v6':
+            self.check_and_notify_v6(send_notifications=send_notifications, scan_type=scan_type)
+        elif version == 'v5':
             self.check_and_notify_v5(send_notifications=send_notifications, scan_type=scan_type)
         else:
             # Default to V4 for any other version (including v4, v3, v2, v1)
             self.check_and_notify_v4(send_notifications=send_notifications, scan_type=scan_type)
+
+    # =========================================================================
+    # V6 NOTIFICATION METHOD
+    # =========================================================================
+
+    def check_and_notify_v6(self, send_notifications: bool = True, scan_type: str = None):
+        """
+        V6-native recommendation check and notification — same engine that
+        powers the Options Execution page (build_action_queue). Added
+        2026-07-22 so the email and the page finally agree; see
+        app/modules/strategies/v6_email.py for why.
+        """
+        db: Session = SessionLocal()
+        try:
+            logger.info(f"[V6] Running V6 action-queue check (scan_type={scan_type})...")
+
+            from app.modules.strategies.v6_engine import build_action_queue
+            queue = build_action_queue(db)
+            items = queue.get("items", [])
+            logger.info(f"[V6] Total items: {len(items)}")
+
+            if not send_notifications:
+                logger.info("[V6] Notifications disabled, skipping send")
+                return
+
+            if not items:
+                logger.info("[V6] No items to send")
+                return
+
+            notification_service = get_notification_service()
+            if not notification_service.email_enabled:
+                logger.info("[V6] Email not enabled, skipping send")
+                return
+
+            from app.modules.strategies.v6_email import format_html_email, format_plain_text
+
+            _scan_labels = {
+                "6am_main":         "Scan 1 — Wake-up Triage (6:50 AM PT)",
+                "8am_post_open":    "Scan 2 — Coffee Break (8:00 AM PT)",
+                "12pm_midday":      "Scan 3 — Pre-Close Decisions (12:00 PM PT)",
+                "8pm_evening":      "Scan 5 — Evening Planning (8:00 PM PT)",
+            }
+            scan_label = _scan_labels.get(scan_type or "", scan_type or "")
+
+            html_body = format_html_email(queue, scan_label=scan_label)
+            plain_text = format_plain_text(queue, scan_label=scan_label)
+
+            summary = queue.get("summary", {})
+            urgent = summary.get("urgent", 0)
+            subject = (
+                f"🚨 {urgent} Urgent — V6 Action Queue"
+                if urgent else
+                f"📊 {len(items)} V6 Recommendations — {scan_label.split('—')[0].strip()}"
+            )
+
+            success, _ = notification_service._send_email(
+                subject=subject, html_body=html_body, plain_text=plain_text
+            )
+            if success:
+                logger.info(f"[V6] Sent email notification ({len(items)} items)")
+            else:
+                logger.error("[V6] Failed to send email notification")
+
+            logger.info("[V6] V6 notification check complete")
+
+        except Exception as e:
+            logger.error(f"[V6] Error in V6 recommendation check: {e}", exc_info=True)
+        finally:
+            db.close()
 
     # =========================================================================
     # V5 NOTIFICATION METHOD

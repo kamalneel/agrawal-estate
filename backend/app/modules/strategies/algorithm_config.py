@@ -806,6 +806,11 @@ VERSIONS: Dict[str, Dict[str, Any]] = {
     "v3": V3_CONFIG,
     "v4": V4_CONFIG,
     "v5": V5_CONFIG,  # V5: V4 + LIFE_SUPPORT
+    # V6 (added 2026-07-22, emails pointed here) doesn't read this config —
+    # v6_engine.py is fully self-contained. This entry exists only so legacy
+    # v3-era modules that call get_config() at import time (earnings_alert.py,
+    # early_roll_opportunity.py, etc.) don't crash the whole app on startup.
+    "v6": V5_CONFIG,
 }
 
 # =============================================================================
