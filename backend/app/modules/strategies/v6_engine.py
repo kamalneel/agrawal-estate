@@ -22,7 +22,10 @@ from app.modules.strategies.technical_signals import get_entry_timing, get_roll_
 # both get Core/Tier-1 treatment. Caught 2026-07-22: GOOG was falling
 # through to Tier-2 wheel logic (ATM strike, assignment-friendly) purely
 # because only "GOOGL" was listed, even though it's the identical durable.
-TIER1 = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "GOOG", "AMZN", "META", "LLY"}
+# AMD moved here 2026-07-23 on Neel's explicit override (was classified
+# Inventory 2026-07-22 based on market cap/trading history — his call to
+# move it back, not a correction of that analysis).
+TIER1 = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "GOOG", "AMZN", "META", "LLY", "AMD"}
 NON_TAXABLE_TYPES = {"ira", "roth_ira", "traditional_ira", "401k", "hsa", "retirement"}
 CANONICAL_ORDER = ["Neel's Brokerage", "Neel's Retirement", "Neel's Roth IRA",
                    "Jaya's Brokerage", "Jaya's IRA", "Jaya's Roth IRA",

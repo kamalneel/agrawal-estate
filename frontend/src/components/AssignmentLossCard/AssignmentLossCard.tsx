@@ -62,6 +62,15 @@ export function AssignmentLossCard() {
       .catch(() => {})
   }, [])
 
+  // Arriving via the Options Execution card's link (#assignment-loss) —
+  // scroll to this card and open the events table straight away.
+  useEffect(() => {
+    if (window.location.hash === '#assignment-loss') {
+      setShowEvents(true)
+      document.getElementById('assignment-loss')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [data])
+
   if (!data || data.events.length === 0) return null
 
   const chartData = Object.entries(data.by_month).map(([month, loss]) => ({
@@ -70,7 +79,7 @@ export function AssignmentLossCard() {
   const curMonth = new Date().toISOString().slice(0, 7)
 
   return (
-    <section className={styles.card}>
+    <section id="assignment-loss" className={styles.card}>
       <div className={styles.header}>
         <div>
           <h3 className={styles.title}>Assignment Loss</h3>

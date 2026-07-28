@@ -6972,3 +6972,12 @@ async def get_v6_assignment_loss(db: Session = Depends(get_db)):
     assignment_loss_service.py for the reasoning."""
     from app.modules.strategies.assignment_loss_service import get_assignment_loss
     return get_assignment_loss(db)
+
+
+@router.post("/v6/detect-assignments")
+async def post_v6_detect_assignments(db: Session = Depends(get_db)):
+    """MCP-only assignment detection (no CSV) — run as part of every
+    refresh. See assignment_detection_service.py for the two-signal
+    design and the email-on-unconfirmed flow. Idempotent."""
+    from app.modules.strategies.assignment_detection_service import detect_and_record_assignments
+    return detect_and_record_assignments(db)

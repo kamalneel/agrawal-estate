@@ -50,14 +50,20 @@ discrepancy, unresolved — see the sync doc).
    `python3 scripts/robinhood_mcp_bridge.py <bundle> ` (preview) — check
    every section count matches (`stocks=N/N options=M/M`) — then rerun
    with `--save` for both bundles.
-6. **Post-verify**: activity_since query again (dates should advance for
+6. **Detect assignments** (MCP-only, no CSV — see
+   `assignment_detection_service.py`): `curl -X POST
+   /api/v1/strategies/v6/detect-assignments`. Any `high_confidence` hits
+   are fully corroborated (share count matched); any
+   `pending_confirmation` hits already triggered a one-time confirmation
+   email to Neel — mention both counts in the report.
+7. **Post-verify**: activity_since query again (dates should advance for
    accounts that traded); `curl /api/v1/strategies/v6/action-queue` —
    confirm `data_as_of` is today and skim the summary.
-7. **Monthly-ish, or when a NEW symbol is held**: refresh price history
+8. **Monthly-ish, or when a NEW symbol is held**: refresh price history
    (sync doc step 6 — `get_equity_historicals` 5y weekly → POST
    `/ingestion/price-history`). Skip on routine refreshes.
 
-8. **Weekly (Mondays), or when `data/earnings_calendar.json` is >7 days
+9. **Weekly (Mondays), or when `data/earnings_calendar.json` is >7 days
    old**: refresh the earnings calendar. Call `get_earnings_calendar`
    (days=21, filter=high_market_cap), extract every symbol currently
    held or classified in `data/investment_policy.json`, and rewrite the
@@ -72,14 +78,22 @@ discrepancy, unresolved — see the sync doc).
 Lead with what changed: new fills imported (symbol, qty, account),
 notable position changes (rolls, assignments, new positions), and the
 Action Queue delta (urgent/high counts vs. before the sync). Mention
-the collateral verification passed. Remind Neel that open browser tabs
-need a reload; the pages themselves read live.
+the collateral verification passed, and call out step 6's detection
+result explicitly (e.g. "1 high-confidence assignment recorded (GOOGL
+$370 put, Jaya's Brokerage); 0 pending confirmation"). Remind Neel that
+open browser tabs need a reload; the pages themselves read live.
 
 ## Known gaps (from the sync doc — don't re-derive)
 
-- Dividends, interest, OEXP, assignments do NOT come via MCP — official
-  activity CSV / statements only. If assignments are suspected (deep ITM
-  puts through an expiry), say so in the report.
+- Dividends, interest, and OEXP (plain expirations) do NOT come via
+  MCP — official activity CSV / statements only. We are intentionally
+  **not** doing CSV for this anymore (Neel, 2026-07-23) — this gap
+  stays open rather than being filled by a CSV upload.
+- Assignments ARE now inferred MCP-only via step 6
+  (`assignment_detection_service.py`) — no CSV needed for these. It
+  needs a real close/roll order (or lack thereof) plus the vanished
+  short position to fire, so it only detects on the sync immediately
+  after the assignment happens, not retroactively past that window.
 - MCP amounts are gross; the official CSV is net of fees — the ingestion
   layer reconciles fee variants automatically, so later CSV uploads over
   a synced period are safe.
