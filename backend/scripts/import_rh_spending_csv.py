@@ -35,7 +35,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.database import SessionLocal  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-CARD_ACCOUNT = "Robinhood Credit Card (...8154)"  # matches Monarch's name
+# MUST match the name Monarch currently exports for this account, or the
+# per-account cutoff below finds no coverage and the account splits in two
+# under the old and new names. Monarch renamed this 2026-07-25
+# ("Robinhood Credit Card (...8154)" -> the value below); keep this in sync
+# with ACCOUNT_ALIASES in import_monarch_spending_csv.py.
+CARD_ACCOUNT = "Robinhood Credit Card **8154 (...8154)"
+# Monarch does not track these two — rh_csv is their only source, so these
+# names are ours to keep stable.
 SAVINGS_ACCOUNT = "Robinhood Savings"
 CHECKING_ACCOUNT = "Robinhood Checking (Joint)"
 
