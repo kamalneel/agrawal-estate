@@ -73,16 +73,67 @@ deeper").
   ($28.5K), Cash Delivery, Gifthealth — need Neel's classification.
 - **Supersede rule for future Monarch imports**: Monarch is the
   categorization authority. When a fresh Monarch export covering the
-  rh_csv period is imported, first delete `tags='rh_csv'` rows for the
-  covered accounts+dates, then import — otherwise the same purchases
-  double-count under two hash schemes (NFLX-incident class).
+  rh_csv period is imported, first delete the rows it supersedes, then
+  import — otherwise the same purchases double-count under two hash
+  schemes (NFLX-incident class). Implemented in
+  `backend/scripts/import_monarch_spending_csv.py` (dry-run by default).
+
+  Exercised for real on 2026-07-25, which surfaced two corrections to the
+  rule as originally written:
+
+  1. **Bound the delete per account at that account's own last date in
+     the export — do not clear whole accounts.** Monarch is not uniformly
+     fresher than rh_csv. Its per-account feeds stop at different dates,
+     and the Robinhood ones *lag*: card through 2026-06-26 and Spending
+     through 2026-06-06, while rh_csv ran to 2026-07-08. Clearing the
+     card account wholesale would have destroyed 64 rows of the freshest
+     spending data on the page.
+  2. **Reconcile account renames before deleting or hashing.** Monarch
+     renamed `Robinhood Credit Card (...8154)` →
+     `Robinhood Credit Card **8154 (...8154)` and
+     `Robinhood Spending (...2623)` → `Spending (...dabe)` (new
+     identifier, same account — Jan totals match to the cent). Since
+     `record_hash` includes the account name, a rename makes every row
+     look new: of 1251 rows only 67 hash-matched, and a naive import
+     would have double-counted ~800 card rows. The script keeps an
+     `ACCOUNT_ALIASES` map and renames DB rows in place first; **it must
+     be extended whenever Monarch renames an account.**
+
+  Accounts absent from an export (Robinhood Checking/Savings — Monarch
+  does not track them) are left untouched, so rh_csv remains their only
+  source.
 
 ## Known data notes
 
-- Categorization current through the last RH CSV import (2026-07-08);
-  BofA/Chase composition (the ~5%) still needs a Monarch export.
-- March 2026 shows outflows $179K vs categorized $14K — real, not a bug:
-  tax payments left via ACH, invisible to the card CSV.
-- Outflow freshness tracks the activity-CSV import (Jun 8 as of
-  writing), not the MCP order sync — cash movements don't come through
-  `get_equity_orders`.
+*(updated 2026-07-25 after the 2026 YTD Monarch import)*
+
+- **Categorization is now the fresh side; outflows are the stale side** —
+  the reverse of the situation this page was designed around. Monarch
+  covers 2026-01-01 → 2026-07-25 across all 11 accounts (BofA/Chase/Citi/
+  PayPal included, so the ~5% gap is closed). Uncategorized 2026 spend is
+  $818 across 23 rows, down from ~$48K. Robinhood card/Spending are
+  Monarch-covered through 2026-06-26 / 06-06, with rh_csv carrying the
+  card to 07-08.
+- **Outflows are stale and it distorts every monthly comparison**:
+  `neel_brokerage` through 2026-06-08, `jaya_brokerage` through
+  2026-04-02. Apr–Jul show categorized > outflows purely because the
+  outflow side is missing — not a categorization gap. Needs an
+  activity-CSV import to fix; nothing on the Monarch side will.
+- **Outflows ≠ monthly spend, by construction.** Outflows measure money
+  *leaving the brokerage*, which is lumpy pre-funding, not spend in that
+  month. Feb 2026: $51,337 moved brokerage→spending in 4 transfers
+  against $25,956 of actual categorized spending. The two only converge
+  over longer windows — treat the L1 reconciliation line as a
+  quarter-or-longer check, not a monthly one.
+- **The old March 2026 note was wrong** and has been corrected: it read
+  "outflows $179K vs categorized $14K — tax payments left via ACH."
+  With full Monarch coverage, March categorized is **$81,463**, and the
+  dominant item is a **$55,722 Subaru** (category `ONE TIME`, bought from
+  Home Expense 9486), not taxes. The IRS row that month is a **+$16,897
+  credit**, not a payment.
+- Outflow freshness tracks the activity-CSV import, not the MCP order
+  sync — cash movements don't come through `get_equity_orders`.
+- `monarch_through` on `/spending/outflows` is a global
+  `MAX(transaction_date)` (now 2026-07-25). That overstates the Robinhood
+  card, which Monarch only categorizes through 06-26. A per-account
+  freshness stamp would be more honest if the card's tail ever matters.

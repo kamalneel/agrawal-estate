@@ -44,9 +44,10 @@ def list_transactions(
 
 
 @router.get("/summary/{year}")
-def spending_summary(year: int, db: Session = Depends(get_db)):
+def spending_summary(year: int, month: Optional[int] = None,
+                     db: Session = Depends(get_db)):
     """Get annual spending summary with category breakdown."""
-    return services.get_spending_summary(db, year)
+    return services.get_spending_summary(db, year, month)
 
 
 @router.get("/categories/{year}")
@@ -133,11 +134,15 @@ def get_outflows(db: Session = Depends(get_db)):
         GROUP BY 1, 2 ORDER BY 1
     """)).fetchall()
 
+    # Outflows, plus only the inflows Monarch tagged "Refund:" — same rule as
+    # services._base_query. Income/transfers/businesses drop out by category;
+    # every other inflow is excluded rather than netted.
     monarch = db.execute(text("""
         SELECT date_trunc('month', transaction_date)::date AS mo,
                SUM(-amount) AS spent
         FROM spending_transactions
-        WHERE amount < 0 AND (category IS NULL OR category NOT IN :excluded)
+        WHERE (category IS NULL OR category NOT IN :excluded)
+          AND (amount < 0 OR lower(COALESCE(original_statement,'')) LIKE 'refund:%')
         GROUP BY 1
     """), {"excluded": tuple(EXCLUDED_CATEGORIES)}).fetchall()
     monarch_by_month = {str(r.mo): float(r.spent) for r in monarch}

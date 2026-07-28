@@ -4,7 +4,8 @@ One view over ALL income, fixed + dynamic, per the definition-of-income
 playbook rule and docs/INCOME-UNIFICATION-SPEC.md:
 
 - fixed:   salary (payslip receipt dates; W-2 annual totals at year
-           granularity), rental (monthly table, dated the 1st)
+           granularity), rental (monthly table, dated the 1st), airbnb
+           (build-out costs today, revenue from 2027)
 - dynamic: options premium, dividends, interest, stock lending (SLIP),
            realized equity-sale P/L (shared lot engine; call assignments
            are ordinary equity sales)
@@ -19,10 +20,21 @@ from typing import Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.modules.spending.models import AIRBNB_CATEGORY, HARTSTENE_CATEGORY
 from app.shared.services.cost_basis_service import get_realized_pnl_by_period
 
-FIXED_SOURCES = {"salary", "rental"}
+FIXED_SOURCES = {"salary", "rental", "airbnb"}
 DYNAMIC_SOURCES = {"options", "dividends", "interest", "lending", "equity_sales"}
+
+#: Monarch category -> income stream. Both sides of each category net into
+#: the stream (see the BUSINESS block in get_unified_income).
+#: 303 Hartstene feeds "rental" so the user sees ONE continuous rent line:
+#: the hand-maintained lease schedule before Monarch coverage begins, actual
+#: bank receipts from then on.
+_BUSINESS_STREAMS = {
+    HARTSTENE_CATEGORY: "rental",
+    AIRBNB_CATEGORY: "airbnb",
+}
 
 # Must match backend/app/modules/income/db_queries.py predicates.
 _TXN_SOURCE_CASE = """
@@ -171,20 +183,63 @@ def get_unified_income(
                 if m > 12:
                     y, m = y + 1, 1
 
-    # --- rental (fixed): monthly table, dated the 1st of the month.
-    # The table holds the LEASE SCHEDULE (pre-populated through the lease
-    # term); income counts only elapsed months — receipt basis, the same
-    # clamp recurring salary uses.
+    # --- rental (fixed), pre-Monarch history only.
+    #
+    # `rental_monthly_income` is a hand-maintained LEASE SCHEDULE for 303
+    # Hartstene (property_id 1), pre-populated through the lease term. The
+    # same rent also arrives as actual bank receipts in the Monarch feed
+    # under HARTSTENE_CATEGORY — verified identical: Jan-Mar 2026 is $6,220
+    # in the schedule and $5,000 + $1,220 Zelle in Monarch, to the cent.
+    #
+    # Counting both double-counts the rent, so ownership is split by date:
+    # the schedule supplies history from before Monarch coverage begins, and
+    # Monarch actuals take over from that month on. The boundary is derived
+    # from the data rather than hardcoded, so it moves by itself if an older
+    # Monarch export is ever loaded.
+    #
+    # Future-dated schedule rows are NOT actuals and are excluded here; they
+    # remain available as a projection (see docs/INCOME-UNIFICATION-SPEC.md).
     _today = date.today()
+    _monarch_from = db.execute(text("""
+        SELECT MIN(transaction_date) FROM spending_transactions WHERE category = :cat
+    """), {"cat": HARTSTENE_CATEGORY}).scalar()
+    _cutoff = ((_monarch_from.year, _monarch_from.month) if _monarch_from
+               else (_today.year + 1, 1))
+
     for r in db.execute(text("""
         SELECT tax_year, month, SUM(gross_amount) AS amount
         FROM rental_monthly_income
         WHERE (tax_year, month) <= (:cy, :cm)
         GROUP BY 1, 2
     """), {"cy": _today.year, "cm": _today.month}).fetchall():
+        if (r.tax_year, r.month) >= _cutoff:
+            continue  # Monarch owns this month — see above
         d = date(r.tax_year, r.month, 1)
         if in_range(d) and r.amount:
             by_source[_bucket(d, granularity)]["rental"] += float(r.amount)
+
+    # --- businesses (fixed): income-producing assets whose two sides share
+    # one Monarch category, so the category NETS to a single stream here.
+    #
+    #   303 Hartstene — owned outright and let out. Rent received and
+    #     property costs (HOA, tax, repairs) net to +$65,108 (2025).
+    #   Airbnb — partial ownership, still being built out. Negative until
+    #     2027 revenue, then it behaves exactly like Hartstene above.
+    #
+    # These categories are CategoryKind.BUSINESS, hence excluded from the
+    # Spending page — the exclusion there IS the inclusion here, so a row can
+    # never be counted twice. Spending stores outflows negative, so amounts
+    # carry through unchanged and the sign means what it says.
+    for cat, src in _BUSINESS_STREAMS.items():
+        for r in db.execute(text("""
+            SELECT transaction_date, SUM(amount) AS amount
+            FROM spending_transactions
+            WHERE category = :cat
+            GROUP BY 1
+        """), {"cat": cat}).fetchall():
+            d = r.transaction_date
+            if in_range(d) and r.amount:
+                by_source[_bucket(d, granularity)][src] += float(r.amount)
 
     # --- assemble
     periods: List[Dict] = []

@@ -10,17 +10,48 @@ from sqlalchemy import func, extract, desc, and_, or_
 
 from app.modules.spending.models import (
     SpendingTransaction, EXCLUDED_CATEGORIES, NON_MONTHLY_CATEGORIES, TRIPS,
+    RENT_CATEGORY, REFUND_STATEMENT_PREFIX, display_category, split_rent_label,
 )
 from app.modules.investments.models import InvestmentTransaction
 from app.modules.strategies.expense_forecasting_service import KNOWN_RECURRING_EXPENSES
 
 
 def _base_query(db: Session):
-    """Base query that excludes non-spending categories and filters to expenses (amount < 0)."""
+    """Rows the Spending page counts: money going OUT, plus genuine refunds.
+
+    The Spending page shows spending and nothing else. Two filters, both
+    load-bearing:
+
+    1. Category must be CategoryKind.SPENDING — income, transfers and the
+       property/Airbnb businesses are somebody else's page.
+    2. The row must be an outflow, OR an inflow Monarch explicitly tagged
+       "Refund: <merchant>" (models.is_refund).
+
+    Any other inflow — a bank deposit, a returned security deposit, a tax
+    refund — is EXCLUDED, never netted. Letting unmarked inflows net is what
+    made June 2026 read $3,437 against $17,750 of actual spending.
+    """
     return db.query(SpendingTransaction).filter(
         ~SpendingTransaction.category.in_(EXCLUDED_CATEGORIES),
-        SpendingTransaction.amount < 0,
+        or_(
+            SpendingTransaction.amount < 0,
+            func.lower(SpendingTransaction.original_statement).like(
+                f"{REFUND_STATEMENT_PREFIX}%"),
+        ),
     )
+
+
+def _apply_period(q, year: int, month: Optional[int] = None):
+    """Scope a query to a year, and to one month when the user picked one.
+
+    Every panel must honour the month selector. Previously `/summary` and
+    `/housing` took a year only, so clicking June showed June transactions
+    beside year-to-date categories and housing on the same screen.
+    """
+    q = q.filter(extract("year", SpendingTransaction.transaction_date) == year)
+    if month:
+        q = q.filter(extract("month", SpendingTransaction.transaction_date) == month)
+    return q
 
 
 def _non_monthly_filter():
@@ -47,10 +78,7 @@ def get_available_years(db: Session) -> list[int]:
     """Get all years that have spending data."""
     rows = (
         db.query(extract("year", SpendingTransaction.transaction_date).label("yr"))
-        .filter(
-            ~SpendingTransaction.category.in_(EXCLUDED_CATEGORIES),
-            SpendingTransaction.amount < 0,
-        )
+        .filter(~SpendingTransaction.category.in_(EXCLUDED_CATEGORIES))
         .distinct()
         .order_by(desc("yr"))
         .all()
@@ -157,15 +185,17 @@ def get_spending_transactions(
     }
 
 
-def get_spending_summary(db: Session, year: int) -> dict:
-    """Get annual summary: totals, category breakdown, top merchants, monthly totals."""
-    q = _base_query(db).filter(
-        extract("year", SpendingTransaction.transaction_date) == year
-    )
+def get_spending_summary(db: Session, year: int, month: Optional[int] = None) -> dict:
+    """Totals, category breakdown, top merchants, monthly totals.
+
+    `month` scopes everything to that month — when the user clicks June, every
+    figure this returns is June's.
+    """
+    q = _apply_period(_base_query(db), year, month)
 
     # Total spending (amounts are negative, so sum is negative)
     total_row = q.with_entities(func.sum(SpendingTransaction.amount)).scalar() or 0
-    total_spending = abs(float(total_row))
+    total_spending = -float(total_row)
 
     # Monthly totals
     monthly_rows = (
@@ -189,7 +219,7 @@ def get_spending_summary(db: Session, year: int) -> dict:
         monthly.append({
             "month": m,
             "month_name": month_names[m],
-            "total": abs(float(r.total)),
+            "total": -float(r.total),
             "count": r.count,
         })
 
@@ -204,7 +234,7 @@ def get_spending_summary(db: Session, year: int) -> dict:
         .with_entities(func.sum(SpendingTransaction.amount))
         .scalar()
     ) or 0
-    recurring_spending = abs(float(recurring_row))
+    recurring_spending = -float(recurring_row)
     non_monthly_spending = total_spending - recurring_spending
     avg_monthly = recurring_spending / months_with_data if months_with_data else 0
 
@@ -219,7 +249,7 @@ def get_spending_summary(db: Session, year: int) -> dict:
             .with_entities(func.sum(SpendingTransaction.amount))
             .scalar()
         ) or 0
-        amt = abs(float(trip_sum))
+        amt = -float(trip_sum)
         if amt > 0:
             annual_expenses.append({
                 "label": trip["name"],
@@ -238,7 +268,7 @@ def get_spending_summary(db: Session, year: int) -> dict:
             .with_entities(func.sum(SpendingTransaction.amount))
             .scalar()
         ) or 0
-        amt = abs(float(cat_sum))
+        amt = -float(cat_sum)
         if amt > 0:
             annual_expenses.append({
                 "label": cat,
@@ -249,25 +279,35 @@ def get_spending_summary(db: Session, year: int) -> dict:
     # Sort annual expenses by total descending
     annual_expenses.sort(key=lambda x: x["total"], reverse=True)
 
-    # Category breakdown
+    # Category breakdown. `Rent` is split by counterparty into the two homes
+    # plus one-time search/moving costs (see models.RENT_SPLIT_RULES) — as one
+    # line it hid the move between houses entirely.
     cat_rows = (
         q.with_entities(
             SpendingTransaction.category,
-            func.sum(SpendingTransaction.amount).label("total"),
-            func.count(SpendingTransaction.id).label("count"),
-        )
-        .group_by(SpendingTransaction.category)
-        .order_by(func.sum(SpendingTransaction.amount))  # most negative first
-        .all()
+            SpendingTransaction.merchant,
+            SpendingTransaction.original_statement,
+            SpendingTransaction.amount,
+        ).all()
     )
-    categories = []
+    # Group in Python rather than SQL: the displayed category is derived
+    # per row (merchant overrides, then the per-home rent split), so a plain
+    # GROUP BY on the stored category would report the wrong buckets.
+    cat_totals: dict[str, list] = {}
     for r in cat_rows:
-        cat_total = abs(float(r.total))
-        cat_name = r.category or "Uncategorized"
+        label = display_category(r.category, r.merchant, r.original_statement)
+        entry = cat_totals.setdefault(label, [0.0, 0])
+        entry[0] += -float(r.amount)
+        entry[1] += 1
+
+    categories = []
+    for cat_name, (cat_total, count) in sorted(
+        cat_totals.items(), key=lambda kv: kv[1][0], reverse=True
+    ):
         categories.append({
             "category": cat_name,
             "total": cat_total,
-            "count": r.count,
+            "count": count,
             "percent": round(cat_total / total_spending * 100, 1) if total_spending else 0,
             "is_monthly": cat_name not in NON_MONTHLY_CATEGORIES,
         })
@@ -290,7 +330,7 @@ def get_spending_summary(db: Session, year: int) -> dict:
     for r in merch_rows:
         top_merchants.append({
             "merchant": r.merchant or "Unknown",
-            "total": abs(float(r.total)),
+            "total": -float(r.total),
             "count": r.count,
         })
 
@@ -342,7 +382,7 @@ def get_spending_categories(db: Session, year: int) -> dict:
         cat = r.category or "Uncategorized"
         if cat not in cat_map:
             cat_map[cat] = {"category": cat, "total": 0, "count": 0, "months": {}}
-        amt = abs(float(r.total))
+        amt = -float(r.total)
         cat_map[cat]["total"] += amt
         cat_map[cat]["count"] += r.count
         cat_map[cat]["months"][int(r.month)] = {"total": amt, "count": r.count}
@@ -384,7 +424,7 @@ def get_spending_trends(db: Session) -> dict:
             "year": int(r.year),
             "month": int(r.month),
             "label": f"{month_names[int(r.month)]} {int(r.year)}",
-            "total": abs(float(r.total)),
+            "total": -float(r.total),
             "count": r.count,
         })
 

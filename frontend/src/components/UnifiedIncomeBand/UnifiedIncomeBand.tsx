@@ -23,6 +23,8 @@ interface UnifiedPeriod {
 const SOURCES: Array<{ key: string; label: string; kind: 'fixed' | 'dynamic'; drill?: string }> = [
   { key: 'salary', label: 'Salary', kind: 'fixed', drill: 'salary' },
   { key: 'rental', label: 'Rent', kind: 'fixed', drill: 'rental' },
+  // Build-out costs today, revenue from 2027 — negative until then, by design.
+  { key: 'airbnb', label: 'Airbnb', kind: 'fixed' },
   { key: 'options', label: 'Options', kind: 'dynamic', drill: 'options' },
   { key: 'equity_sales', label: 'Equity Sales', kind: 'dynamic', drill: 'equity_sales' },
   { key: 'dividends', label: 'Dividends', kind: 'dynamic', drill: 'dividends' },

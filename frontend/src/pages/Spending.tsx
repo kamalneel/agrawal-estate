@@ -204,13 +204,18 @@ export default function Spending() {
     } catch { /* ignore */ }
   }, []);
 
+  // selectedMonth MUST stay in the dep list — with an empty array the closure
+  // captures the month at mount (null) and every summary fetch silently asks
+  // for the whole year, which is what made Categories show year-to-date
+  // totals beside June's transactions.
   const fetchSummary = useCallback(async (yr: number) => {
     try {
-      const res = await fetch(`${API}/summary/${yr}`, { headers: getAuthHeaders() });
+      const mq = selectedMonth ? `?month=${selectedMonth}` : '';
+      const res = await fetch(`${API}/summary/${yr}${mq}`, { headers: getAuthHeaders() });
       if (!res.ok) return;
       setSummary(await res.json());
     } catch { /* ignore */ }
-  }, []);
+  }, [selectedMonth]);
 
   const fetchFilters = useCallback(async (yr: number) => {
     try {
@@ -436,17 +441,24 @@ export default function Spending() {
           return (
             <div className={styles.outflowBand}>
               <div>
+                {/* Headline is REAL SPENDING from Monarch — what was actually
+                    bought. Brokerage outflows measure money leaving the
+                    brokerage, which is lumpy pre-funding, not spend; they stay
+                    below as a reconciliation line. Putting the outflow number
+                    here is what made June read $1,777 against $17,750 spent. */}
                 <div className={styles.outflowLabel}>Total spend — {periodLabel}</div>
-                <div className={styles.outflowValue}>{fmt(total)}</div>
+                <div className={styles.outflowValue}>
+                  {fmt(summary?.total_spending ?? monarchTotal)}
+                </div>
                 <div className={styles.outflowSplit}>
-                  <span>{fmt(cardNet)} card &amp; spending (net of cash back)</span>
-                  <span>{fmt(bankOut)} bank transfers out</span>
-                  {monarchCovered.length > 0 && (
+                  <span className={styles.outflowRecon}>
+                    brokerage outflows: {fmt(total)} ({fmt(cardNet)} card, {fmt(bankOut)} bank)
+                  </span>
+                  {summary && total > 0 && (
                     <span className={styles.outflowRecon}>
-                      categorized: {fmt(monarchTotal)}
-                      {monarchCovered.length === rows.length && total > 0 && (
-                        <> ({Math.abs(monarchTotal - total) / total < 0.05 ? 'reconciles' : `Δ ${fmt(Math.abs(monarchTotal - total))}`})</>
-                      )}
+                      {Math.abs(summary.total_spending - total) / total < 0.05
+                        ? 'reconciles'
+                        : `Δ ${fmt(Math.abs(summary.total_spending - total))} — outflows are funding, not spend`}
                     </span>
                   )}
                 </div>
@@ -468,114 +480,22 @@ export default function Spending() {
           </div>
         )}
 
+
         {!loading && summary && (
           <>
             {/* ───── MONTH VIEW ───────────────────────────────────── */}
             {isMonthView && (
               <>
-                {/* Summary Cards — 3 cards */}
-                <div className={styles.summaryGrid} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Monthly Expense Expected</span>
-                    <span className={`${styles.summaryValue} ${styles.negative}`}>
-                      {fmt(cashFlowMonth?.expected_total ?? 0)}
-                    </span>
-                    <span className={styles.summaryNote}>Known recurring expenses</span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Monthly Expense So Far</span>
-                    <span className={`${styles.summaryValue} ${styles.negative}`}>
-                      {fmt(cashFlowMonth?.recurring_total ?? 0)}
-                    </span>
-                    <span className={styles.summaryNote}>Robinhood cash outflows (recurring)</span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>One-Time Expenses This Month</span>
-                    {cashFlowMonth && cashFlowMonth.one_time_expenses.length > 0 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', marginTop: 'var(--space-1)' }}>
-                        {cashFlowMonth.one_time_expenses.map((e, i) => (
-                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 'var(--space-3)' }}>
-                            <span style={{ fontSize: 'var(--text-sm)', color: '#3B82F6', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                              {e.description}
-                            </span>
-                            <span className={styles.summaryValue} style={{ fontSize: 'var(--text-lg)', flexShrink: 0, color: '#3B82F6' }}>
-                              {fmt(e.amount)}
-                            </span>
-                          </div>
-                        ))}
-                        {cashFlowMonth.one_time_expenses.length > 1 && (
-                          <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 'var(--space-1)', display: 'flex', justifyContent: 'space-between' }}>
-                            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-tertiary)' }}>Total</span>
-                            <span className={styles.summaryValue} style={{ fontSize: 'var(--text-lg)', color: '#3B82F6' }}>
-                              {fmt(cashFlowMonth.one_time_total)}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <>
-                        <span className={styles.summaryValue} style={{ color: 'var(--color-text-tertiary)' }}>
-                          {fmt(0)}
-                        </span>
-                        <span className={styles.summaryNote}>No one-time expenses</span>
-                      </>
-                    )}
-                  </div>
-                </div>
 
-                {/* Expected vs Actual — side by side */}
-                <div className={styles.twoColumn} style={{ gridTemplateColumns: '1fr 1fr' }}>
-                  {/* Expected Recurring Expenses */}
-                  <div className={styles.chartCard}>
-                    <h3 className={styles.chartTitle}>Expected</h3>
-                    <p className={styles.chartSubtitle}>
-                      Known recurring &mdash; {fmt(cashFlowMonth?.expected_total ?? 0)}/mo
-                    </p>
-                    <div className={styles.tableContainer}>
-                      <table className={styles.actualsTable}>
-                        <thead>
-                          <tr>
-                            <th style={{ textAlign: 'left' }}>Description</th>
-                            <th>Due Day</th>
-                            <th>Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {cashFlowMonth?.expected_expenses.map((e, i) => (
-                            <tr key={i} className={styles.transactionRow}>
-                              <td style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 500 }}>{e.description}</td>
-                              <td>{e.day_of_month}</td>
-                              <td className={styles.negative}>{fmtFull(e.amount)}</td>
-                            </tr>
-                          ))}
-                          {cashFlowMonth && (
-                            <tr style={{ borderTop: '2px solid var(--color-border)' }}>
-                              <td colSpan={2} style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 700 }}>Total</td>
-                              <td className={styles.negative} style={{ fontWeight: 700 }}>{fmtFull(cashFlowMonth.expected_total)}</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
+                {/* Actual transactions — full width now that Expected is gone. */}
+                <div className={styles.twoColumn} style={{ gridTemplateColumns: '1fr' }}>
                   {/* Actual Cash Flow Transactions — Robinhood */}
                   <div className={styles.chartCard}>
                     <h3 className={styles.chartTitle}>Actual</h3>
                     <p className={styles.chartSubtitle}>
-                      {cashFlowMonth ? `${cashFlowMonth.transactions.length} transactions — Net: ${fmt(cashFlowMonth.net_total)}` : ''}
+                      {/* No net here — the total is already the headline. */}
+                      {cashFlowMonth ? `${cashFlowMonth.transactions.length} transactions` : ''}
                     </p>
-                    <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-xs)' }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#EF4444', display: 'inline-block' }} /> Recurring
-                      </span>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#3B82F6', display: 'inline-block' }} /> One-time
-                      </span>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#10B981', display: 'inline-block' }} /> Transfer In
-                      </span>
-                    </div>
                     <div className={styles.tableContainer}>
                       <table className={styles.actualsTable}>
                         <thead>
@@ -619,24 +539,12 @@ export default function Spending() {
                             </tr>
                           )}
                           {cashFlowMonth && cashFlowMonth.transactions.length > 0 && (
-                            <>
-                              {cashFlowMonth.inflow_total > 0 && (
-                                <tr style={{ borderTop: '1px solid var(--color-border)' }}>
-                                  <td colSpan={3} style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 600, color: '#10B981' }}>Transfers In</td>
-                                  <td style={{ color: '#10B981', fontWeight: 600 }}>+{fmtFull(cashFlowMonth.inflow_total)}</td>
-                                </tr>
-                              )}
-                              <tr>
-                                <td colSpan={3} style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 600, color: '#EF4444' }}>Transfers Out</td>
-                                <td style={{ color: '#EF4444', fontWeight: 600 }}>-{fmtFull(cashFlowMonth.recurring_total)}</td>
-                              </tr>
-                              {cashFlowMonth.one_time_total > 0 && (
-                                <tr>
-                                  <td colSpan={3} style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 600, color: '#3B82F6' }}>One-Time</td>
-                                  <td style={{ color: '#3B82F6', fontWeight: 600 }}>-{fmtFull(cashFlowMonth.one_time_total)}</td>
-                                </tr>
-                              )}
-                            </>
+                            <tr style={{ borderTop: '1px solid var(--color-border)' }}>
+                              <td colSpan={3} style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 700 }}>Net</td>
+                              <td style={{ fontWeight: 700, color: cashFlowMonth.net_total > 0 ? '#EF4444' : '#10B981' }}>
+                                {cashFlowMonth.net_total > 0 ? '-' : '+'}{fmtFull(Math.abs(cashFlowMonth.net_total))}
+                              </td>
+                            </tr>
                           )}
                         </tbody>
                       </table>

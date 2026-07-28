@@ -8,7 +8,7 @@ Serves: Objective 1 in [OBJECTIVES.md](OBJECTIVES.md)
 Income is **realized money events**, fixed + dynamic, across **all accounts**
 — identical definition regardless of tax treatment.
 
-- **Fixed**: salary, rent.
+- **Fixed**: salary, rent, **airbnb**.
 - **Dynamic**: options premium, dividends, interest, stock lending, and
   **realized stock-sale P/L** (positive or negative).
 - **Holding a stock is never income.** Unrealized moves don't count.
@@ -86,6 +86,64 @@ breakdown, per-account breakdown. `/income/summary` becomes a thin wrapper
 One summary band at the top of the Income page: this week / this month /
 this year, fixed vs dynamic, expandable per-source and per-account. Existing
 per-source sections stay beneath. Design tokens only.
+
+## Rental: who owns the number (resolved 2026-07-26)
+
+303 Hartstene's rent was recorded **twice** — in `rental_monthly_income`
+(a hand-maintained lease schedule, property_id 1, pre-populated through
+2027-03) and in the Monarch feed under `303 Hartstene Dr`. Verified
+identical: Jan–Mar 2026 is $6,220/mo in the schedule and $5,000 + $1,220 of
+Zelle receipts in Monarch, to the cent.
+
+Ownership is now split **by date**, both feeding the one `rental` stream so
+the user sees a single continuous line:
+
+- **Before Monarch coverage begins** → the lease schedule (2021-03 → 2024-12).
+- **From Monarch's first row onward** → actual bank receipts, netted against
+  property costs (HOA, tax, repairs) per `CategoryKind.BUSINESS`.
+
+The boundary is derived from `MIN(transaction_date)` for the category, not
+hardcoded, so it moves by itself if an older export is ever loaded.
+Future-dated schedule rows are excluded from actuals.
+
+**Known data-quality caveat.** The Monarch actual is noisier than the
+schedule, for two reasons worth separating:
+
+1. *Timing, not economics* — the $5,000 and $1,220 legs sometimes straddle a
+   month boundary (Feb 27 + Mar 2), so a month can look light and the next
+   heavy. Real cash, real dates; only the monthly shape is affected.
+2. *Miscategorized rows* — a $10,000 wire (2025-03), a $7,000 BofA transfer,
+   Great Wolf Lodge, Uber. 2025 Zelle rent totals $68,600 against a $67,300
+   schedule; the extra $10,429 of "gross" is not rent. **Fix at source in
+   Monarch** — recategorizing there flows through on the next import.
+
+A net-negative month is therefore legitimate (Nov 2025 = −$1,915, a $2,699
+insurance bill against one rent leg), not a bug.
+
+## Pre-revenue streams: Airbnb (built 2026-07-25)
+
+A stream may be **negative before it earns**. The Airbnb business bills
+monthly through 2026 with revenue starting 2027; Neel's instruction was to
+put it on the Income page now and let it read negative until it turns.
+
+- **Source**: `spending_transactions` rows carrying
+  `spending.models.AIRBNB_CATEGORY`. That category is in
+  `EXCLUDED_CATEGORIES`, so the same row can never appear on both the
+  Spending and Income pages — the exclusion there *is* the inclusion here.
+  Both sides import the one constant so the definition cannot drift.
+- **Sign**: spending stores outflows negative, so the amounts carry through
+  as negative income unchanged. No sign-flipping anywhere.
+- **Classified `fixed`**, alongside rent — it is a property-based business,
+  not a market-dependent flow. This means the *Fixed* subtotal absorbs the
+  drag (Apr 2026 fixed income falls to $836 against a $5,564 Airbnb month),
+  which is the honest reading: the household really did earn that much less
+  in fixed income that month.
+- **No new table.** Query-time aggregation, consistent with §1.
+
+**When revenue starts in 2027**, revenue rows must land in this same stream
+so the chip nets to a real margin. Decide then whether Airbnb stays one net
+line or splits into gross-revenue / operating-cost rows the way rental may
+eventually need to.
 
 ## Out of scope (separate problems)
 
