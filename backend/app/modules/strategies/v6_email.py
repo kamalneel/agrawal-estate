@@ -80,12 +80,15 @@ def _display_action(item: Dict) -> str:
 def _item_row(item: Dict) -> str:
     action = _display_action(item)
     afg, abg = ("#a16207", "#fef9c3") if action == "HOLD" else _ACTION_STYLES.get(action, ("#6b7280", "#f3f4f6"))
+    priority = item.get("priority", "low")
+    pfg, pbg = _PRIORITY_STYLES.get(priority, _PRIORITY_STYLES["low"])
     ctx = item.get("context") or {}
     earn = item.get("earn")
     earn_html = (f'&nbsp; <span style="color:#16a34a; font-weight:600;">Earn ~${earn:,.0f}</span>'
                  if earn else "")
     return (
         "<tr>"
+        f'<td style="padding:6px 8px; border-bottom:1px solid #f1f5f9; white-space:nowrap;">{_badge(priority.upper(), pfg, pbg)}</td>'
         f'<td style="padding:6px 8px; border-bottom:1px solid #f1f5f9; white-space:nowrap;">{_badge(action, afg, abg)}</td>'
         f'<td style="padding:6px 8px; border-bottom:1px solid #f1f5f9; font-family:monospace; '
         f'font-weight:700; white-space:nowrap;">{item.get("symbol", "")}</td>'
@@ -148,5 +151,5 @@ def format_plain_text(queue: Dict, scan_label: str = "") -> str:
             continue
         lines.append(f"\n{acct}:")
         for i in rows:
-            lines.append(f"  [{i['action']}] {i['symbol']}: {i['detail']}")
+            lines.append(f"  [{i.get('priority', 'low').upper()}] [{i['action']}] {i['symbol']}: {i['detail']}")
     return "\n".join(lines)

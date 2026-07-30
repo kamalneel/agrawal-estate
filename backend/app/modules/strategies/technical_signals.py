@@ -79,6 +79,61 @@ def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int)
     return [float(r.close_price) for r in reversed(rows)], "weekly"
 
 
+_RECOVERY_CONFIRM_PCT = 3.0   # a single day must gain at least this much to count
+_RECOVERY_CONFIRM_DAYS = 2    # this many such days (not necessarily consecutive-only) clear it
+
+
+def _decline_with_hysteresis(closes: List[float]) -> Dict:
+    """Sticky 'declining' state walked forward across the whole closes
+    series: triggers on 3+ consecutive down days AND >=5% cumulative drop
+    over the trailing window (same signal as before) — but once triggered,
+    stays declining until _RECOVERY_CONFIRM_DAYS individual days each gain
+    >= _RECOVERY_CONFIRM_PCT%. A single big bounce only counts once; small
+    day-to-day noise doesn't accumulate.
+
+    Added 2026-07-30 after backtesting the plain 'any up day clears it'
+    version against INTC/AVGO/SPCX: INTC bounced +8.6% on 2026-07-21 (which
+    would have cleared the flag under a 2-any-up-days rule) then fell
+    another ~22% over the next six sessions — a false recovery. This
+    version stayed correctly 'declining' through that whole stretch because
+    07-20's own move (+2.1%) was too small to count, so only one
+    confirming day had accrued when the drop resumed. Recomputed fresh
+    from source data every call — no persisted state — so a symbol's
+    trigger point is only visible within the lookback window passed in.
+    """
+    n = len(closes)
+    in_decline = False
+    confirm_count = 0
+    trigger_change_pct: Optional[float] = None
+    for i in range(1, n):
+        window = min(5, i)
+        chg = (closes[i] - closes[i - window]) / closes[i - window] * 100 if closes[i - window] else 0.0
+        down_days = 0
+        j = i
+        while j > 0 and closes[j] < closes[j - 1]:
+            down_days += 1
+            j -= 1
+        fresh_trigger = down_days >= 3 and chg <= -5.0
+        day_ret = (closes[i] - closes[i - 1]) / closes[i - 1] * 100 if closes[i - 1] else 0.0
+
+        if fresh_trigger and not in_decline:
+            in_decline = True
+            confirm_count = 0
+            trigger_change_pct = chg
+        if in_decline:
+            confirm_count = confirm_count + 1 if day_ret >= _RECOVERY_CONFIRM_PCT else 0
+            if confirm_count >= _RECOVERY_CONFIRM_DAYS:
+                in_decline = False
+                confirm_count = 0
+                trigger_change_pct = None
+
+    return {
+        "declining": in_decline,
+        "confirm_progress": confirm_count,
+        "trigger_change_pct": round(trigger_change_pct, 1) if trigger_change_pct is not None else None,
+    }
+
+
 def get_entry_timing(db: Session, account_id: str, symbol: str,
                      lookback_days: int = 45, min_history: int = 15) -> Dict:
     """RSI-14 + consecutive-down-day check for covered-call entry timing.
@@ -106,14 +161,21 @@ def get_entry_timing(db: Session, account_id: str, symbol: str,
     change_pct = ((closes[-1] - closes[-1 - window]) / closes[-1 - window] * 100
                   if window > 0 and closes[-1 - window] else 0.0)
 
-    oversold = rsi is not None and rsi < 30
-    declining = down_periods >= 3 and change_pct <= -5.0
+    oversold = rsi is not None and rsi < 40
+    decline_state = _decline_with_hysteresis(closes)
+    declining = decline_state["declining"]
 
     reasons = []
     if oversold:
         reasons.append(f"RSI {rsi:.0f} (oversold)" + (" — weekly bars, no owned-share price history" if price_source == "weekly" else ""))
     if declining:
-        reasons.append(f"down {down_periods} straight {unit}s ({change_pct:+.1f}% over {window} {unit}s)")
+        if decline_state["confirm_progress"] > 0:
+            remaining = _RECOVERY_CONFIRM_DAYS - decline_state["confirm_progress"]
+            reasons.append(f"recovering from a {decline_state['trigger_change_pct']:+.1f}% decline — "
+                            f"{remaining} more {_RECOVERY_CONFIRM_PCT:.0f}%+ {unit} needed to clear")
+        else:
+            reasons.append(f"declining ({decline_state['trigger_change_pct']:+.1f}% drop that triggered it) — "
+                            f"needs {_RECOVERY_CONFIRM_DAYS} {_RECOVERY_CONFIRM_PCT:.0f}%+ {unit}s to clear, none yet")
 
     return {
         "available": True,

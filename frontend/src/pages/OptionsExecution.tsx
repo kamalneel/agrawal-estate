@@ -529,7 +529,7 @@ export function OptionsExecution() {
                         <td className={styles.sym}>{r.symbol}</td>
                         <td>{r.contracts}x {r.type.toUpperCase()}</td>
                         <td>{r.expiration ? new Date(r.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</td>
-                        <td className={styles.num}>{r.strike != null ? `$${r.strike.toLocaleString()}` : '—'}</td>
+                        <td className={styles.num}>{r.strike != null ? `$${r.strike.toFixed(2)}` : '—'}</td>
                         <td className={styles.num}>
                           {r.stock_price != null ? `$${r.stock_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}${r.price_estimated ? '~' : ''}` : '—'}
                         </td>
