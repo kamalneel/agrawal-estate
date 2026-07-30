@@ -277,6 +277,21 @@ def build_action_queue(db: Session) -> Dict:
                     "expiration_date": str(exp) if exp else "",
                     "current_premium": mark, "profit_percent": capture_pct or 0}
 
+        # Surface RSI on existing-position ALERT/ROLL cards too (Neel,
+        # 2026-07-28): these show no entry-timing signal at all today, but
+        # RSI still matters for a held ITM position — e.g. an overbought
+        # RSI on a deep-ITM call suggests the run has room to keep going
+        # (assignment likely stands), not just whether to enter a new sale.
+        entry = get_entry_timing(db, p_acct_id, sym) if p_acct_id else {"available": False}
+        if entry.get("available") and entry.get("rsi") is not None:
+            base_ctx["entry_timing"] = {
+                "rsi": entry["rsi"], "wait": entry.get("wait", False),
+                "reason": entry.get("reason") or f"RSI {entry['rsi']:.0f}",
+                "consecutive_down_days": entry.get("consecutive_down_days"),
+                "change_pct": entry.get("change_pct"),
+                "price_source": entry.get("price_source"),
+            }
+
         if opt == "call" and stock > strike:
             intrinsic = stock - strike
             ipct = round(intrinsic / mark * 100, 0) if mark else 100
@@ -412,11 +427,18 @@ def build_action_queue(db: Session) -> Dict:
                              "reason": (f"RSI {rsi:.0f} — needs >75 to fire" if tsla_wait
                                         else f"RSI {rsi:.0f} — carve-out clear"),
                              "consecutive_down_days": entry.get("consecutive_down_days"),
-                             "change_pct": entry.get("change_pct")}
-        elif entry.get("available") and entry.get("wait"):
-            entry_ctx = {"rsi": entry.get("rsi"), "wait": True, "reason": entry.get("reason"),
+                             "change_pct": entry.get("change_pct"),
+                             "price_source": entry.get("price_source")}
+        elif entry.get("available") and entry.get("rsi") is not None:
+            # Attach regardless of wait: RSI is worth showing even when it
+            # isn't triggering a hold (2026-07-29 — was gated on wait=True
+            # only, so a SELL card with RSI available but not oversold
+            # showed no RSI at all, unlike the Engine-4 cards).
+            entry_ctx = {"rsi": entry.get("rsi"), "wait": bool(entry.get("wait")),
+                         "reason": entry.get("reason") or f"RSI {entry['rsi']:.0f}",
                          "consecutive_down_days": entry.get("consecutive_down_days"),
-                         "change_pct": entry.get("change_pct")}
+                         "change_pct": entry.get("change_pct"),
+                         "price_source": entry.get("price_source")}
         entry_wait = bool(entry_ctx and entry_ctx.get("wait"))
 
         target = stock * (1 + otm)   # strike the delta rule wants
@@ -484,9 +506,8 @@ def build_action_queue(db: Session) -> Dict:
             add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
                      f"{sym}: {n} call{'s' if n > 1 else ''} available"
                      + (" — entry timing says wait" if entry_wait else ""), account, sym,
-                     f"sell {n} call{'s' if n > 1 else ''} · {strike_txt} "
-                     f"· exp {exp.strftime('%m/%d')} · est. ≈${per_share:.2f}/sh (≈${est:,}) — check live quote "
-                     f"· stock ${stock:,.0f}",
+                     f"sell {n} call{'s' if n > 1 else ''} at {strike_txt}, "
+                     f"expiring {exp.strftime('%m/%d')}. Current stock price: ${stock:,.0f}.",
                      f"{int(uncovered):,} uncovered shares earning nothing toward the 1%/mo holdings goal. {gate} "
                      + entry_line,
                      earn=est,

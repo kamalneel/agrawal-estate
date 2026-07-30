@@ -444,6 +444,21 @@
   white-space: nowrap;
 }
 
+/* Neutral RSI info badge — shown on ALERT/ROLL cards for a held position
+   where RSI is informative but there's no "wait before selling" verdict
+   (that's .waitBadge, reserved for entry_timing.wait === true). */
+.rsiBadge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-text-secondary) 10%, transparent);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
 .streakBadge,
 .streakBadgeWarn {
   flex-shrink: 0;

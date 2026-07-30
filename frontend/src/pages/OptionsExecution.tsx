@@ -27,7 +27,8 @@ interface QueueItem {
   context?: {
     next_earnings?: { date: string; timing: string | null; days: number; verified: boolean }
     entry_timing?: { rsi: number | null; wait: boolean; reason: string | null;
-                     consecutive_down_days: number | null; change_pct: number | null }
+                     consecutive_down_days: number | null; change_pct: number | null;
+                     price_source?: 'daily' | 'weekly' | null }
     roll_streak?: { weeks_rolled: number; trend: 'worsening' | 'stable' | 'improving' | null;
                     itm_pct_at_start?: number; itm_pct_now?: number }
     [key: string]: unknown
@@ -415,11 +416,19 @@ export function OptionsExecution() {
                     📅 ER {fmtEarningsDate(item.context.next_earnings.date)}
                   </span>
                 )}
-                {item.context?.entry_timing?.wait && (
-                  <span className={styles.waitBadge} title={item.context.entry_timing.reason ?? undefined}>
-                    ⏸ WAIT{item.context.entry_timing.rsi != null ? ` (RSI ${Math.round(item.context.entry_timing.rsi)})` : ''}
-                  </span>
-                )}
+                {item.context?.entry_timing?.rsi != null && (() => {
+                  const et = item.context.entry_timing
+                  const wk = et.price_source === 'weekly' ? ', wk' : ''
+                  return et.wait ? (
+                    <span className={styles.waitBadge} title={et.reason ?? undefined}>
+                      ⏸ WAIT (RSI {Math.round(et.rsi!)}{wk})
+                    </span>
+                  ) : (
+                    <span className={styles.rsiBadge} title={et.reason ?? undefined}>
+                      RSI {Math.round(et.rsi!)}{wk}
+                    </span>
+                  )
+                })()}
                 {item.context?.roll_streak && item.context.roll_streak.weeks_rolled >= 2 && (
                   <span
                     className={item.context.roll_streak.trend === 'worsening' ? styles.streakBadgeWarn : styles.streakBadge}
@@ -432,7 +441,7 @@ export function OptionsExecution() {
                     {item.context.roll_streak.trend === 'worsening' ? '⚠' : '↻'} {item.context.roll_streak.weeks_rolled}wk roll
                   </span>
                 )}
-                {item.earn ? <span className={styles.earn}>Earn ~{fmt(item.earn)}</span> : null}
+                {item.earn && !item.context?.entry_timing?.wait ? <span className={styles.earn}>Earn ~{fmt(item.earn)}</span> : null}
                 {expanded === item.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               </button>
               {expanded === item.id && (

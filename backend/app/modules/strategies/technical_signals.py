@@ -49,10 +49,17 @@ def compute_rsi(closes: List[float], period: int = 14) -> Optional[float]:
     return 100 - (100 / (1 + rs))
 
 
-def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int) -> List[float]:
+def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int) -> tuple[List[float], str]:
     """Daily price series derived from held-share snapshots (market_value /
-    quantity). Real for every Engine-1 candidate by construction — Engine 1
-    only fires on symbols with >=100 shares actually held."""
+    quantity) when the account actually owns the stock — real for every
+    Engine-1 candidate by construction (Engine 1 only fires on symbols with
+    >=100 shares actually held). Falls back to symbol_price_history (weekly
+    bars, symbol-level — not tied to any one account's holdings) for a
+    symbol written as an option against cash rather than owned shares, e.g.
+    a cash-secured put with zero underlying position in that account
+    (2026-07-29: AMD in Neel's Brokerage had 0 holdings-history rows, so its
+    RSI silently never appeared until this fallback). Returns (closes,
+    source) — source is 'daily' or 'weekly' so callers can label which."""
     rows = db.execute(_text("""
         SELECT market_value / NULLIF(quantity, 0) AS px
         FROM investment_holdings_history
@@ -61,7 +68,15 @@ def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int)
         ORDER BY snapshot_date
     """), {"acct": account_id, "sym": symbol,
            "cutoff": date.today() - timedelta(days=lookback_days)}).fetchall()
-    return [float(r.px) for r in rows if r.px]
+    closes = [float(r.px) for r in rows if r.px]
+    if closes:
+        return closes, "daily"
+
+    rows = db.execute(_text("""
+        SELECT close_price FROM symbol_price_history
+        WHERE symbol = :sym ORDER BY price_date DESC LIMIT 30
+    """), {"sym": symbol}).fetchall()
+    return [float(r.close_price) for r in reversed(rows)], "weekly"
 
 
 def get_entry_timing(db: Session, account_id: str, symbol: str,
@@ -73,16 +88,17 @@ def get_entry_timing(db: Session, account_id: str, symbol: str,
     (fall back to today's static text) rather than block a trade on a
     data gap.
     """
-    closes = _daily_closes(db, account_id, symbol, lookback_days)
+    closes, price_source = _daily_closes(db, account_id, symbol, lookback_days)
     if len(closes) < min_history:
-        return {"available": False, "reason": f"only {len(closes)}d price history (need {min_history}+)"}
+        return {"available": False, "reason": f"only {len(closes)} price points on file (need {min_history}+)"}
 
     rsi = compute_rsi(closes)
+    unit = "session" if price_source == "daily" else "week"
 
-    down_days = 0
+    down_periods = 0
     for i in range(len(closes) - 1, 0, -1):
         if closes[i] < closes[i - 1]:
-            down_days += 1
+            down_periods += 1
         else:
             break
 
@@ -91,18 +107,19 @@ def get_entry_timing(db: Session, account_id: str, symbol: str,
                   if window > 0 and closes[-1 - window] else 0.0)
 
     oversold = rsi is not None and rsi < 30
-    declining = down_days >= 3 and change_pct <= -5.0
+    declining = down_periods >= 3 and change_pct <= -5.0
 
     reasons = []
     if oversold:
-        reasons.append(f"RSI {rsi:.0f} (oversold)")
+        reasons.append(f"RSI {rsi:.0f} (oversold)" + (" — weekly bars, no owned-share price history" if price_source == "weekly" else ""))
     if declining:
-        reasons.append(f"down {down_days} straight sessions ({change_pct:+.1f}% over {window}d)")
+        reasons.append(f"down {down_periods} straight {unit}s ({change_pct:+.1f}% over {window} {unit}s)")
 
     return {
         "available": True,
         "rsi": round(rsi, 1) if rsi is not None else None,
-        "consecutive_down_days": down_days,
+        "price_source": price_source,
+        "consecutive_down_days": down_periods,
         "change_pct": round(change_pct, 1),
         "wait": oversold or declining,
         "reason": " and ".join(reasons) if reasons else None,

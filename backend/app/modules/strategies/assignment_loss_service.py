@@ -42,11 +42,23 @@ def _parse_option_type(description: Optional[str]) -> Optional[str]:
 
 
 def get_assignment_loss(db: Session) -> Dict:
+    # DISTINCT ON collapses provisional MCP-inferred detections (source
+    # 'robinhood_mcp_inferred[_pending_confirmation]') against the same
+    # real-world event once the official CSV's confirmed row lands —
+    # the two never share a transaction_date (detection necessarily lags
+    # the true settle date by ~1 sync), so a date-keyed dedup can't catch
+    # this pairing; (account_id, symbol, description) identifies the
+    # contract regardless of which row recorded it. Prefer the
+    # CSV-confirmed 'robinhood' source when both exist (2026-07-28
+    # incident: GOOGL + GOOG puts each double-counted this way).
     rows = db.execute(_text("""
-        SELECT transaction_date, account_id, symbol, description, quantity
+        SELECT DISTINCT ON (account_id, symbol, description)
+               transaction_date, account_id, symbol, description, quantity
         FROM investment_transactions
         WHERE transaction_type = 'OASGN'
-        ORDER BY transaction_date
+        ORDER BY account_id, symbol, description,
+                 (source NOT LIKE 'robinhood_mcp_inferred%') DESC,
+                 transaction_date ASC
     """)).fetchall()
 
     acct_names = {r.account_id: r.account_name for r in db.execute(_text(
