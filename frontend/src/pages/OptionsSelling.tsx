@@ -2197,8 +2197,7 @@ export default function OptionsSelling() {
                   <tbody>
                     {sortedPutSymbols.map((put) => {
                       const strikeLabel = put.strikes.length === 0 ? '—'
-                        : put.strikes.length === 1 ? `$${put.strikes[0].toLocaleString()}`
-                        : put.strikes.map(s => `$${s}`).join(', ');
+                        : put.strikes.map(s => `$${s.toFixed(2)}`).join(', ');
                       return (
                         <tr key={put.symbol}>
                           <td>
@@ -2701,8 +2700,7 @@ export default function OptionsSelling() {
                       <tbody>
                         {accountPuts.map(put => {
                           const strikeLabel = put.strikes.length === 0 ? '—'
-                            : put.strikes.length === 1 ? `$${put.strikes[0].toLocaleString()}`
-                            : put.strikes.map(s => `$${s}`).join(', ');
+                            : put.strikes.map(s => `$${s.toFixed(2)}`).join(', ');
                           return (
                             <tr key={put.symbol}>
                               <td>

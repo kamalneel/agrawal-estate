@@ -198,13 +198,36 @@ def build_action_queue(db: Session) -> Dict:
             "account_id": r.account_id,
         }
 
+    # Real quote for option-only underlyings (no owned shares, so nothing
+    # in `price` above) — e.g. SOXL/CBRS cash-secured puts. Sourced from
+    # symbol_price_history, which the MCP bridge now upserts every sync
+    # from the same equity_marks quote already fetched for the paste
+    # (2026-07-30: previously fetched and silently discarded for any
+    # symbol without an owned equity_position, so these had no real price
+    # anywhere and each option contract independently guessed a different
+    # one — see hist_price fallback in stock_price() below).
+    hist_price: Dict[str, float] = {
+        r.symbol: float(r.close_price) for r in db.execute(text("""
+            SELECT DISTINCT ON (symbol) symbol, close_price
+            FROM symbol_price_history ORDER BY symbol, price_date DESC
+        """)).fetchall()
+    }
+
     def is_sheltered(account: str) -> bool:
         return acct_type.get(account, "") in NON_TAXABLE_TYPES
 
     def stock_price(sym: str, strike: float, mark: float, opt: str):
-        """Synced price, else deep-ITM estimate from the mark (flagged)."""
+        """Synced (owned-share) price first — real and current by
+        construction. Else a real quote from symbol_price_history for a
+        symbol with no owned shares (flagged as estimated since it isn't
+        necessarily today's price). Else, last resort, a deep-ITM estimate
+        backed out from this specific option's own mark (flagged — and can
+        disagree contract-to-contract for the same stock, since it assumes
+        ~zero extrinsic value, which is only true when deep enough ITM)."""
         if sym in price:
             return price[sym], False
+        if sym in hist_price:
+            return hist_price[sym], True
         if mark and strike and mark > 0.05 * strike:
             est = strike - mark if opt == "put" else strike + mark
             return max(est, 0.01), True

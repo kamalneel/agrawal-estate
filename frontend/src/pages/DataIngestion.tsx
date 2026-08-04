@@ -966,7 +966,7 @@ $2.84
                             {previewResult.options.map((opt, i) => (
                               <tr key={i}>
                                 <td><strong>{opt.symbol}</strong></td>
-                                <td>${opt.strike_price}</td>
+                                <td>${opt.strike_price.toFixed(2)}</td>
                                 <td>{opt.option_type}</td>
                                 <td>{opt.expiration_date || '-'}</td>
                                 <td>{opt.contracts}</td>

@@ -88,6 +88,22 @@ function displayAction(item: QueueItem): { label: string; color: string } {
 }
 const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
 
+/** Backend timestamps (e.g. data_as_of) come from a `timestamp without
+ * time zone` Postgres column storing UTC, serialized as a plain
+ * space-separated string with no 'Z'/offset — e.g. "2026-08-04
+ * 14:54:47.002950". `new Date(...)` on that string has no timezone marker
+ * to go on, so browsers silently treat it as already-local and skip
+ * conversion entirely, showing the raw UTC hour as if it were local
+ * (2026-08-04, Neel: dashboard showed a future-looking "2:54:47 PM" at
+ * 8:39 AM PT — it was 14:54 UTC with no conversion applied at all).
+ * Force the 'Z' so it parses as UTC, then always render in Pacific
+ * explicitly — not the viewer's browser timezone — since this is a
+ * single-family, Pacific-based app. */
+function fmtPacific(utcLike: string): string {
+  const iso = utcLike.replace(' ', 'T') + (/[Z]|[+-]\d\d:\d\d$/.test(utcLike) ? '' : 'Z')
+  return new Date(iso).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', dateStyle: 'short', timeStyle: 'medium' })
+}
+
 function fmt(v: number): string {
   const sign = v < 0 ? '-' : ''
   return `${sign}$${Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
@@ -297,7 +313,7 @@ export function OptionsExecution() {
             </span>
           </div>
           {queue?.data_as_of && (
-            <div className={styles.dataAsOf}>data as of {new Date(queue.data_as_of).toLocaleString()}</div>
+            <div className={styles.dataAsOf}>data as of {fmtPacific(queue.data_as_of)} PT</div>
           )}
         </div>
         <button onClick={fetchAll} className={styles.refresh} title="Refresh" disabled={loading}>

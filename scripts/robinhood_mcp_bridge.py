@@ -298,6 +298,34 @@ def sync_account(api: str, account: dict, bundle: dict, save: bool) -> None:
         (INBOX / fname).write_text(csv_text)
 
 
+def sync_price_history(api: str, bundle: dict, save: bool) -> None:
+    """Persist every synced equity mark — owned stock AND option-only
+    underlyings like SOXL/CBRS alike — into symbol_price_history. This
+    piggybacks on quotes the sync already fetches for the paste (no extra
+    MCP calls). Fixes 2026-07-30: a cash-secured put on a symbol with no
+    owned shares had no real stock price anywhere in the app, so the
+    action queue independently reconstructed a different pseudo-price per
+    CONTRACT from each option's own strike/mark (assuming ~zero extrinsic
+    value) — four different "stock prices" shown for one stock. Previously
+    equity_marks was fetched into every bundle but only ever read for
+    symbols with an owned equity_position when building the paste's
+    Stocks section — option-only underlyings were fetched and discarded.
+    Source is tagged distinctly from the manual weekly-bar refresh
+    (docs/ROBINHOOD_MCP_SYNC.md step 6, source='robinhood_mcp') since this
+    is a live intraday quote at sync time, not a settled close."""
+    marks = bundle.get("equity_marks") or {}
+    if not marks:
+        return
+    bars = [{"symbol": sym, "date": bundle["as_of"], "close": price} for sym, price in marks.items()]
+    print(f"\n=== price history ({len(bars)} symbols as of {bundle['as_of']}) ===")
+    if save:
+        result = post(api, "/ingestion/price-history",
+                     {"source": "robinhood_mcp_live_quote", "bars": bars})
+        print(f"  upserted: {result.get('upserted')}")
+    else:
+        print(f"  preview only — would upsert {len(bars)} symbols")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("bundle", type=Path)
@@ -309,6 +337,7 @@ def main() -> None:
     bundle = json.loads(args.bundle.read_text())
     for account in bundle["accounts"]:
         sync_account(args.api, account, bundle, args.save)
+    sync_price_history(args.api, bundle, args.save)
 
     if args.save:
         scan = post(args.api, "/ingestion/scan", {})

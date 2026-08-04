@@ -80,13 +80,27 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    filter=high_market_cap)` → rewrite `data/earnings_calendar.json` for
    held/classified symbols. The v6 engine stamps queue items + emails
    with "📅 earnings X" from this file (added 2026-07-14).
-7. **Price history (monthly-ish, or when a new symbol is bought):**
+6b. **Every sync (automatic, added 2026-07-30):** `robinhood_mcp_bridge.py`
+   now also POSTs the whole `equity_marks` dict — every quote pulled for
+   step 3, not just owned-stock symbols — to `/ingestion/price-history`
+   as `source:"robinhood_mcp_live_quote"`, dated the bundle's `as_of`.
+   Fixes cash-secured puts on symbols with no owned shares (SOXL, CBRS):
+   previously equity_marks was fetched but only ever read for symbols
+   with an owned equity_position, so the action queue's Open Positions
+   board had no real stock price for those and independently guessed a
+   different one per contract from each option's own strike/mark —
+   4 different "stock prices" shown for one stock. `v6_engine.py`'s
+   `stock_price()` now checks this table (flagged as estimated) before
+   falling back to that per-contract guess.
+7. **Price history — 5y weekly backfill (monthly-ish, or when a new
+   symbol is bought):**
    `get_equity_historicals(symbols≤10, start_time=5y ago, interval=week)`
    for all held symbols, then POST
    `{source:"robinhood_mcp", bars:[{symbol,date,close}]}` to
    `/ingestion/price-history` (upserts `symbol_price_history`). Feeds the
    Investments page YTD/1Y/5Y growth columns (anchors = close ≤ target
-   date within 21 days + live synced price). jq transform:
+   date within 21 days + live synced price) — a separate, longer-range
+   need from 6b's per-sync live quote. jq transform:
    `jq '{source:"robinhood_mcp", bars:[.data.results[] | .symbol as $s |
    .bars[] | {symbol:$s, date:(.begins_at[:10]),
    close:(.close_price|tonumber)}]}'`.

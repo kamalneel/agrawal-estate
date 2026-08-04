@@ -189,22 +189,37 @@ def _share_delta(db: Session, account_id: str, symbol: str, since: date, until: 
     return float(after_row.quantity) - before
 
 
-def _looks_like_roll(curr: Dict[Tuple, int], vanished_key: Tuple) -> bool:
+def _looks_like_roll(prev: Dict[Tuple, int], curr: Dict[Tuple, int], vanished_key: Tuple) -> bool:
     """A real assignment always changes option TYPE — a put assignment
     hands you shares, which get covered with a CALL; a call assignment
-    takes shares away, recovered with a PUT. A same-snapshot new
+    takes shares away, recovered with a PUT. A same-snapshot NEW
     position of the SAME type at a nearby strike (put->put, call->call)
     is the mechanical fingerprint of a plain strike/expiration ROLL, not
     an assignment. Checked directly against the snapshot data (already
     in hand, no sync lag) rather than the transactions table, which can
     lag behind the snapshot by the time detection runs (see
-    _explaining_transaction_exists — that's the check this backstops)."""
+    _explaining_transaction_exists — that's the check this backstops).
+
+    Requires the candidate roll-destination to be genuinely NEW this
+    window (absent or zero in `prev`) — added 2026-08-04 after this
+    missed a real assignment: Neel's Retirement ran an unrelated, already-
+    open INTC $110 put ladder (its own ongoing roll chain) at the same
+    time a separate INTC $120 put got assigned. $110 sits within 15% of
+    $120, so the old version treated that pre-existing, coincidental
+    neighbor as if it were this vanish event's roll target and vetoed the
+    detection before signal 3 ever ran — nothing was written, not even a
+    pending row. A concurrent multi-strike put ladder on the same symbol
+    is normal for this account's strategy, so "same type, nearby strike"
+    alone isn't a safe-enough fingerprint; it also has to be new."""
     symbol, strike, opt_type, _exp = vanished_key
-    for (sym2, strike2, type2, _exp2), qty2 in curr.items():
+    for (sym2, strike2, type2, exp2), qty2 in curr.items():
         if qty2 <= 0 or sym2 != symbol or type2 != opt_type:
             continue
-        if (sym2, strike2, type2, _exp2) == vanished_key:
+        key2 = (sym2, strike2, type2, exp2)
+        if key2 == vanished_key:
             continue
+        if prev.get(key2, 0) > 0:
+            continue  # pre-existing, unrelated position — not this vanish's roll target
         if strike and abs(strike2 - strike) / strike <= 0.15:
             return True
     return False
@@ -218,6 +233,66 @@ def _already_recorded(db: Session, account_id: str, symbol: str, description: st
         LIMIT 1
     """), {"acct": account_id, "sym": symbol, "desc": description}).fetchone()
     return row is not None
+
+
+def _reconcile_pending(db: Session) -> Dict:
+    """Re-check every existing 'pending_confirmation' row against
+    whatever holdings-history data has landed since it was written, and
+    resolve it — instead of leaving it stuck forever.
+
+    Added 2026-08-04: `_already_recorded` blocks re-detection for ANY
+    existing OASGN row for a given (account, symbol, description), pending
+    or not — correct for avoiding duplicate emails/rows on a re-run, but
+    it meant a pending row, once written, could never be revisited even
+    after the share-count data it was waiting on finally arrived. A batch
+    of 10 pending rows from 2026-08-03 sat there for a day; every single
+    one turned out to be a plain OTM Friday expiration once checked by
+    hand (flat share count, strike far from the stock price) — the
+    contradiction signal was available a day later, just never re-run.
+    This closes that loop on every call, before fresh detection runs:
+      - share count now confirms the expected +/-(contracts x 100) move
+        -> promote to a confirmed detection (source='robinhood_mcp_inferred').
+      - share count now contradicts it (flat, or moved some other way)
+        -> delete the row; it was a false positive (OTM expiration).
+      - still no holdings-history row landed in the window -> leave as is,
+        no change, no new email.
+    `since`/`until` reconstruct the original detection window: the pending
+    row only stores its own transaction_date (the day the vanish was
+    NOTICED, i.e. the original `curr_date`), not the paired `prev_date`,
+    so `since` is approximated as the day before — safe, because
+    `_share_delta`'s own 10-day backward lookback absorbs a day or two of
+    slack in that estimate."""
+    rows = db.execute(_text("""
+        SELECT id, account_id, symbol, description, quantity, transaction_date
+        FROM investment_transactions
+        WHERE transaction_type = 'OASGN' AND source = 'robinhood_mcp_inferred_pending_confirmation'
+    """)).fetchall()
+
+    promoted, dismissed, still_pending = [], [], []
+    for r in rows:
+        opt_type = _parse_option_type(r.description)
+        if opt_type is None:
+            still_pending.append(r.description)
+            continue
+        since = r.transaction_date - timedelta(days=1)
+        delta = _share_delta(db, r.account_id, r.symbol, since, r.transaction_date)
+        expected = float(r.quantity) * 100 * (1 if opt_type == "put" else -1)
+        if delta is None:
+            still_pending.append(r.description)
+            continue
+        if abs(delta - expected) < 1.0:
+            db.execute(_text("""
+                UPDATE investment_transactions SET source = 'robinhood_mcp_inferred', updated_at = NOW()
+                WHERE id = :id
+            """), {"id": r.id})
+            promoted.append({"account_id": r.account_id, "symbol": r.symbol, "description": r.description})
+        else:
+            db.execute(_text("DELETE FROM investment_transactions WHERE id = :id"), {"id": r.id})
+            dismissed.append({"account_id": r.account_id, "symbol": r.symbol, "description": r.description,
+                              "share_delta_observed": delta, "share_delta_expected": expected})
+
+    db.commit()
+    return {"promoted": promoted, "dismissed": dismissed, "still_pending": still_pending}
 
 
 def _send_confirmation_email(records: List[Dict]) -> None:
@@ -273,7 +348,12 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
     signal-3 share-count history didn't exist that far back to break the
     tie. Bounding to a recent rolling window keeps this a per-sync
     incremental check (resilient to an occasional missed sync) without
-    ever repeating that backfill. Idempotent — safe to call every sync."""
+    ever repeating that backfill. Idempotent — safe to call every sync.
+
+    Reconciles existing pending rows against newly-landed data FIRST
+    (see _reconcile_pending), before scanning for fresh detections."""
+    reconciled = _reconcile_pending(db)
+
     accounts = db.execute(_text(
         "SELECT DISTINCT account_id, account_name FROM investment_accounts"
     )).fetchall()
@@ -307,7 +387,7 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
                     continue
                 if _explaining_transaction_exists(db, account_id, symbol, description, prev_date, curr_date):
                     continue  # a real close/roll already accounts for this
-                if _looks_like_roll(curr, key):
+                if _looks_like_roll(prev, curr, key):
                     continue  # same-type replacement at a nearby strike — a roll, not an assignment
 
                 # Signals 1+2 hold. Signal 3 now decides what happens next:
@@ -358,4 +438,5 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
         "high_confidence": high_confidence,
         "pending_confirmation": pending_confirmation,
         "total_detected": len(high_confidence) + len(pending_confirmation),
+        "reconciled": reconciled,
     }
