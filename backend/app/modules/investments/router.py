@@ -1525,6 +1525,16 @@ async def get_pure_performance_endpoint(db: Session = Depends(get_db)):
     return get_pure_performance(db)
 
 
+@router.get("/allocation-plan")
+async def get_allocation_plan_endpoint(db: Session = Depends(get_db)):
+    """Target allocation vs. actual, plus the ATM option orders that close
+    each gap. See docs/INVESTMENTS-PAGE-SPEC.md, "Allocation targets &
+    execution". Targets are declared in data/allocation_targets.json.
+    """
+    from app.modules.investments.allocation_service import get_allocation_plan
+    return get_allocation_plan(db)
+
+
 @router.get("/policy-deviations")
 async def get_policy_deviations_endpoint(db: Session = Depends(get_db)):
     """Two-book strategy deviations (Investments page): core exit-recovery

@@ -15,6 +15,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Page Design Playbook](../docs/PAGE-DESIGN-PLAYBOOK.md) — the method distilled from the Income page: 4-level hierarchy, one period model/one total, importance ordering, sign-coloring, gross+net, scoped drill-downs, reusable components
 
 ### Finance
+- [Buy in Round Lots of 100 Shares](playbook/universal/finance/buy-in-round-lots-of-100.md) — every position a multiple of 100, floor 100, so covered calls can be sold against all of it
 - [Definition of Income](playbook/universal/finance/definition-of-income.md) — realized-only, all accounts, tax-independent; call assignment = income at sale, put assignment = strike-basis lot
 
 ### Process
@@ -43,6 +44,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 
 ## Wiki — Concepts
 - [Buy-Borrow-Die Strategy](wiki/concepts/buy-borrow-die.md) — buy assets, borrow against them, avoid capital gains
+- [AI Value-Chain Thesis](wiki/concepts/ai-value-chain-thesis.md) — 50% AI value chain (hyperscalers, GPUs, TSMC, custom ASIC, inference memory+networking) / 50% core AAPL-TSLA-SpaceX; stated 2026-08-08
 - [Options Selling Strategy](wiki/concepts/options-selling-strategy.md) — weekly income via covered calls/puts, V6 algorithm (puts primary, runaway vs. oscillating, account-type delta)
 - [Data Ingestion Pipeline](wiki/concepts/data-ingestion-pipeline.md) — file-based import with automatic deduplication
 - [Communication Agent](wiki/concepts/communication-agent.md) — Gmail/Calendar/Drive MCP integration; drafts email, manages calendar, preferences captured iteratively

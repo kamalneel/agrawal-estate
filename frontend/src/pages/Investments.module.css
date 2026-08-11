@@ -182,6 +182,233 @@
   text-align: right;
 }
 
+/* ── Allocation targets (L1.5) ─────────────────────────────────────── */
+
+.allocHeader {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.allocSub {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* Progress bar reads in SHARES, not dollars — see the comment in the TSX */
+.allocProgress {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+}
+
+.allocProgressBarWrap {
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary, var(--color-bg-primary));
+  overflow: hidden;
+}
+
+.allocProgressBar {
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: var(--radius-sm);
+  transition: width 300ms ease;
+}
+
+.allocProgressStats {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+}
+
+.allocProgressMain {
+  color: var(--color-text-primary);
+  font-weight: var(--font-semibold, 600);
+}
+
+.allocProgressStat {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.allocProgressNote {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.allocBucket {
+  margin-top: var(--space-4);
+}
+
+/* Third line of the order cell: which account to place it in */
+.allocRouting {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.allocRouting strong {
+  color: var(--color-text-secondary);
+  font-weight: var(--font-medium);
+}
+
+.allocShelter {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--color-positive-muted);
+  color: var(--color-positive);
+  font-size: var(--text-xs);
+}
+
+.allocSaves {
+  display: block;
+  color: var(--color-positive);
+}
+
+/* Lot breakdown under a trim — which specific shares the assignment delivers */
+.allocLots {
+  display: block;
+  margin: 2px 0 2px var(--space-3);
+  border-left: 2px solid var(--color-border);
+  padding-left: var(--space-2);
+}
+
+.allocLotLine {
+  display: block;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.allocUnfunded {
+  display: block;
+  color: var(--color-warning);
+}
+
+.allocBucketPct {
+  margin-left: var(--space-3);
+  color: var(--color-text-tertiary);
+  font-weight: var(--font-normal, 400);
+  font-size: var(--text-sm);
+}
+
+.allocNote {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* The order cell stacks instruction over meta — it is the thing being
+   read for action, so it gets two lines while every other cell gets one */
+.allocActionCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.allocOrder {
+  color: var(--color-text-primary);
+  font-weight: var(--font-medium);
+}
+
+.allocOrderMeta,
+.allocGuidance {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.allocChip {
+  align-self: flex-start;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.allocBuy {
+  background: var(--color-positive-muted);
+  color: var(--color-positive);
+}
+
+.allocTrim {
+  background: var(--color-warning-muted);
+  color: var(--color-warning);
+}
+
+.allocExit {
+  background: var(--color-negative-muted);
+  color: var(--color-negative);
+}
+
+/* Marks a price that came from frozen config rather than a live quote —
+   staleness has to be visible or it silently becomes wrong */
+.allocRefPx {
+  margin-left: var(--space-2);
+  padding: 0 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-normal, 400);
+}
+
+.allocFeasibility,
+.allocDisclaimer {
+  margin-top: var(--space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.allocDisclaimer {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.allocLink {
+  color: var(--color-accent, #00D632);
+  text-decoration: none;
+}
+
+.allocLink:hover {
+  text-decoration: underline;
+}
+
+.sortableTh {
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Qualified with the element, same reason as th.num above: .betsTable th
+   (class+element) would otherwise win the color over a bare class */
+.betsTable th.sortableTh:hover,
+.betsTable th.sortableTh:focus-visible,
+.betsTable th.sortedTh {
+  color: var(--color-text-primary);
+}
+
+.sortIcon {
+  display: inline-block;
+  width: 1em;
+  margin-left: var(--space-1);
+  text-align: left;
+}
+
+/* Idle arrows stay visible but recessive — a hidden affordance is one
+   nobody clicks */
+.sortIconIdle {
+  opacity: 0.3;
+}
+
 .betsTable td {
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--color-border);

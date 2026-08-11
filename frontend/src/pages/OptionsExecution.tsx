@@ -31,6 +31,12 @@ interface QueueItem {
                      price_source?: 'daily' | 'weekly' | null }
     roll_streak?: { weeks_rolled: number; trend: 'worsening' | 'stable' | 'improving' | null;
                     itm_pct_at_start?: number; itm_pct_now?: number }
+    /** Allocation-driven trade — see Investments "Allocation Targets".
+        Present means this card exists to move the position toward its
+        target, so an ATM strike on a Tier-1 name is deliberate, not a bug. */
+    rebalance?: { action: 'buy' | 'trim' | 'exit'; target_shares: number | null
+                  gap_shares?: number; sheltered?: boolean
+                  realized_gain?: number | null; funded?: boolean }
     [key: string]: unknown
   }
 }
@@ -455,6 +461,20 @@ export function OptionsExecution() {
                     }
                   >
                     {item.context.roll_streak.trend === 'worsening' ? '⚠' : '↻'} {item.context.roll_streak.weeks_rolled}wk roll
+                  </span>
+                )}
+                {item.context?.rebalance && (
+                  <span
+                    className={styles.rebalanceBadge}
+                    title={`Allocation-driven: ${item.context.rebalance.action} toward a ${item.context.rebalance.target_shares?.toLocaleString()}-share target. Set on the Investments page.`}
+                  >
+                    ⇄ Rebalancing
+                    {item.context.rebalance.target_shares != null && ` → ${item.context.rebalance.target_shares.toLocaleString()}`}
+                  </span>
+                )}
+                {item.context?.rebalance?.funded === false && (
+                  <span className={styles.notFundedBadge} title="No account can secure this put yet — it becomes placeable once the exit and trim proceeds land.">
+                    not funded
                   </span>
                 )}
                 {item.earn && !item.context?.entry_timing?.wait ? <span className={styles.earn}>Earn ~{fmt(item.earn)}</span> : null}

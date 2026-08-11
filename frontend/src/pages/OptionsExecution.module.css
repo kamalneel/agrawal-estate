@@ -459,6 +459,10 @@
   white-space: nowrap;
 }
 
+/* Allocation-driven card — makes an ATM strike on a Tier-1 name read as
+   deliberate rather than a rule violation. Mirrors the email badge. */
+.rebalanceBadge,
+.notFundedBadge,
 .streakBadge,
 .streakBadgeWarn {
   flex-shrink: 0;
@@ -467,6 +471,18 @@
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   white-space: nowrap;
+}
+
+.rebalanceBadge {
+  color: var(--color-info, #4A9EFF);
+  background: var(--color-info-muted, rgba(74, 158, 255, 0.12));
+  border: 1px solid transparent;
+}
+
+.notFundedBadge {
+  color: var(--color-warning);
+  background: var(--color-warning-muted);
+  border: 1px solid transparent;
 }
 
 .streakBadge {

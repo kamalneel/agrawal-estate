@@ -59,11 +59,19 @@ def _account_names(db: Session) -> Dict[str, str]:
 
 
 def _current_prices(db: Session) -> Dict[str, float]:
+    """Current price per symbol, from the most recently updated row.
+
+    Was `MAX(current_price)` until 2026-08-08, which returns the *stalest*
+    price whenever a dead feed happens to hold a higher number. Alisha's
+    Brokerage has not updated since 2026-01-07 (known data gap, see the page
+    spec), so MAX served TSLA at $423.74 from June against a live $328.55 —
+    a 29% error feeding the core-exit gap math on this page.
+    """
     rows = db.execute(_text("""
-        SELECT symbol, MAX(current_price) AS px
+        SELECT DISTINCT ON (symbol) symbol, current_price AS px
         FROM investment_holdings
         WHERE current_price IS NOT NULL
-        GROUP BY symbol
+        ORDER BY symbol, last_updated DESC NULLS LAST
     """)).fetchall()
     return {r.symbol: float(r.px) for r in rows}
 

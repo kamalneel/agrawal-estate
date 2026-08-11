@@ -64,7 +64,9 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
 
 1. Per account: `get_portfolio`, `get_equity_positions`,
    `get_option_positions(nonzero=true)`, `get_option_orders(created_at_gte=…)`,
-   `get_equity_orders(created_at_gte=…)`.
+   `get_equity_orders(created_at_gte=…)`. Include each position's
+   `average_buy_price` in the bundle's `equity_positions` entries (added
+   2026-08-08) — see 6c.
 2. Across accounts: `get_option_instruments(ids=…)` for every option_id
    (strike/type), `get_option_quotes` (current marks),
    `get_equity_quotes` (stock prices).
@@ -92,6 +94,26 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    4 different "stock prices" shown for one stock. `v6_engine.py`'s
    `stock_price()` now checks this table (flagged as estimated) before
    falling back to that per-contract guess.
+6c. **Every sync (automatic, added 2026-08-08):** after each account's
+   paste save, `robinhood_mcp_bridge.py` POSTs every equity position's
+   `average_buy_price` to `/ingestion/cost-basis` (upserts
+   `investment_cost_basis_history`, keyed by account_id+symbol+date).
+   This is Robinhood's own average-cost figure (already adjusted for
+   partial sells), not something reconstructed from our transaction
+   history. Feeds `assignment_loss_service.py`'s "vs. cost basis" column
+   on future CALL assignments — the existing strike-vs-market "Loss"
+   figure answers "what did being assigned cost me vs. the market that
+   day," this answers "did I make or lose real money vs. what I paid,"
+   which only exists for calls (a put assignment creates a NEW lot at
+   the strike — no prior cost basis to compare). Silently skipped, not
+   aborted, for any position missing the field. Bundles built before
+   this date have no `average_buy_price` on their equity_positions
+   entries, so historical assignments before 2026-08-08 fall back to a
+   weighted-average reconstruction from `investment_transactions` BUY
+   history instead (flagged `cost_basis_source: "reconstructed"`, with
+   an `incomplete` flag when the reconstructed share count falls short
+   of the assigned share count — real gaps exist, e.g. a partial-history
+   backfill boundary in older accounts).
 7. **Price history — 5y weekly backfill (monthly-ish, or when a new
    symbol is bought):**
    `get_equity_historicals(symbols≤10, start_time=5y ago, interval=week)`

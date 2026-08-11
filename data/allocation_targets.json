@@ -1,0 +1,71 @@
+{
+  "description": "Target allocation for the AI value-chain thesis (docs/INVESTMENTS-PAGE-SPEC.md, 'Allocation targets & execution'; project-kb/wiki/concepts/ai-value-chain-thesis.md). Targets are SHARE COUNTS, not percentages, because every position must be a round lot of 100 so covered calls can be written against all of it (playbook/universal/finance/buy-in-round-lots-of-100.md). Symbols and counts are Neel's declaration, not an API lookup -- edit here when policy changes. Infrastructure AI counts set by Neel 2026-08-09, prioritising NVDA/AMD/AVGO as the head holdings; these land at 48.86% of the book, and with AAPL at 1500 the whole thing sums to 99.4%. (The 2026-08-08 seed was Claude's premium-tilted proposal -- superseded.) SUPERSEDED 2026-08-09: the AAPL 1800->1500 trim is CANCELLED (AAPL stays 1800). The Physical trim is TSLA 2000->1600 instead, and the reason is lot-level, not average-basis. TSLA holds 480 shares bought ABOVE the current $328.55 -- two put assignments at $435 (100 sh 06-17 Jaya, 100 sh 06-25 Neel), 200 sh at $375 (03-20 assignment), 70 at $396.89, 10 at $390.20. Selling 400 of them highest-basis-first realises a $32,264 LOSS ($31,648 of it short-term, which offsets option premium at ordinary rates) and raises $131,420. The AAPL alternative realised a $54,689 GAIN and raised only $93,990 -- an $86,953 swing in taxable income. 400 not 500: the 5th contract would dip 20 shares into the 2024 lots at $85.81 and realise ~$3,900 of long-term gain for no extra loss, and the remaining 80 underwater shares stay banked as a tax asset for the next trim. *** CONTINGENT ON LOT SELECTION: under FIFO this same trade realises +$97,096 because FIFO reaches past these lots to the 2024 ones at $85.81 -- a $129,360 swing. Verify the broker supports specific-lot identification AND that it survives call assignment before placing. If FIFO only, revert to AAPL 1800->1500. ***",
+  "as_of": "2026-08-09",
+  "buckets": {
+    "physical_ai": {
+      "label": "Physical AI",
+      "target_pct": 50,
+      "note": "Held for their own reasons, not part of the AI value-chain thesis.",
+      "targets": {
+        "AAPL": 1800,
+        "TSLA": 1600,
+        "SPCX": 500
+      }
+    },
+    "infrastructure_ai": {
+      "label": "Infrastructure AI",
+      "target_pct": 50,
+      "note": "Four layers: hyperscalers (AMZN/MSFT/GOOGL), GPUs (NVDA/AMD), fab (TSM), custom ASIC (AVGO), inference memory + networking (MU/MRVL).",
+      "targets": {
+        "NVDA": 1000,
+        "AVGO": 500,
+        "MU": 200,
+        "AMD": 300,
+        "MSFT": 200,
+        "TSM": 200,
+        "GOOGL": 200,
+        "AMZN": 200,
+        "MRVL": 200
+      }
+    },
+    "hold_other": {
+      "label": "Hold — outside the thesis",
+      "target_pct": null,
+      "note": "Not part of the AI thesis and not being sold. Target equals the current position, so these read at-target and produce no orders.",
+      "targets": {
+        "IBIT": 1500,
+        "LLY": 20
+      }
+    }
+  },
+  "_hold_bucket_note": "Neel 2026-08-09: keeping Bitcoin (IBIT) and LLY. Both moved off the exit list into their own bucket -- outside the AI thesis but not being sold, so they must stay visible in the denominator without generating exit orders. Target = current shares, so they read 'at target'. IBIT's 15 open calls should stay Tier-1 (delta 10-15, keep the stock), NOT the ATM exit calls the exit list produced. Note IBIT sits on a $14,634 unrealised LOSS -- keeping it forgoes that harvest, which is Neel's call, but it remains available if a loss is ever needed to offset gains. LLY is 20 shares, under one contract, so it cannot be optioned either way.",
+  "exclude_accounts": {
+    "_note": "Accounts outside this strategy entirely -- excluded from the base, the share counts, the routing and the progress baseline. Neel 2026-08-09: Alisha's Brokerage holds token amounts (2 AAPL, 1 TSLA, 17 IBIT, 2 HOOD, 2 FIG -- $1,926 all in) and is not part of the plan. It is also the dead feed (last updated 2026-06-03), so its stale prices were leaking into the numbers.",
+    "accounts": ["alisha_brokerage"]
+  },
+  "aliases": {
+    "_note": "Share classes of the same company roll up to one target. GOOG (Alphabet Class C) counts toward the GOOGL target -- same precedent as data/investment_policy.json, which classifies both together. Without this the 100 GOOG shares are invisible to the plan and GOOGL reads 100 shares lighter than it is.",
+    "GOOG": "GOOGL"
+  },
+  "reference_prices": {
+    "description": "Fallback price ONLY for target symbols not yet held -- the app has no quote source for a symbol absent from investment_holdings. A live price always wins; these go stale and the UI stamps them 'ref MM/DD'. Captured 2026-08-08. Delete a symbol's entry once it is actually held.",
+    "as_of": "2026-08-08",
+    "prices": {
+      "AMZN": 274.48,
+      "TSM": 420.04,
+      "MRVL": 218.72
+    }
+  },
+  "_non_optionable_note": "Values here render directly in the UI cell -- keep them user-facing. Implementation rule for these symbols: never emit a contract recommendation. SPCX was listed here 2026-08-08 and REMOVED 2026-08-09 -- the claim 'private, no options market' was wrong. It has a live options market (3 open calls, 6 open puts, 97 STO/BTC transactions in 180 days netting $10,306). The mistake came from get_pure_performance returning value=None for SPCX, which is a lot-join gap, not a missing quote -- _fresh_prices has it at $133.11 throughout. Do not infer 'not optionable' from a missing lot-engine value again.",
+  "non_optionable": {},
+  "exit": {
+    "description": "Off-thesis -- sell to zero via ATM calls. Funds the Infrastructure AI buys. IBIT and LLY removed 2026-08-09 (Neel is keeping both) -- see hold_other bucket. That drops exit proceeds from $176,759 to $97,882.",
+    "symbols": ["INTC", "RKLB", "FIG"]
+  },
+  "execution": {
+    "buy": "put",
+    "sell": "call",
+    "aggression": "ATM",
+    "note": "Neel does not trade stock directly: below target -> sell ATM puts and take assignment; above target -> sell ATM calls and get called away. ATM = strike at spot, max premium, ~50% assignment odds per expiry. Deliberately NOT labelled 'delta 80' -- that label was retired in v6_engine.py for being misleading."
+  }
+}

@@ -2098,3 +2098,35 @@ async def ingest_price_history(payload: dict, db: Session = Depends(get_db)):
         upserted += 1
     db.commit()
     return {"success": True, "upserted": upserted}
+
+
+@router.post("/cost-basis")
+async def ingest_cost_basis(payload: dict, db: Session = Depends(get_db)):
+    """Upsert per-account, per-symbol average cost per share:
+    {source, bars: [{account_id, symbol, date, cost_basis}]}.
+
+    Sourced from Robinhood's own average_buy_price (average-cost
+    accounting, already adjusted for partial sells — the MCP tool's own
+    guide text: "the average cost per share shown in the Robinhood
+    app") via the MCP sync, NOT reconstructed here — this is a thin
+    upsert into investment_cost_basis_history, same shape as
+    /price-history. Feeds assignment_loss_service.py's "vs. cost
+    basis" figure on call assignments (Neel, 2026-08-08)."""
+    from sqlalchemy import text as _text
+    bars = payload.get("bars") or []
+    source = payload.get("source") or "robinhood_mcp"
+    if not bars:
+        raise HTTPException(status_code=400, detail="no bars")
+    upserted = 0
+    for b in bars:
+        db.execute(_text("""
+            INSERT INTO investment_cost_basis_history
+                (source, account_id, symbol, snapshot_date, avg_cost_per_share, updated_at)
+            VALUES (:src, :acct, :sym, :d, :c, NOW())
+            ON CONFLICT ON CONSTRAINT uq_cost_basis_history
+            DO UPDATE SET avg_cost_per_share = EXCLUDED.avg_cost_per_share, updated_at = NOW()
+        """), {"src": source, "acct": b["account_id"], "sym": b["symbol"].upper(),
+               "d": b["date"], "c": b["cost_basis"]})
+        upserted += 1
+    db.commit()
+    return {"success": True, "upserted": upserted}

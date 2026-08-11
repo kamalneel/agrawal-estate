@@ -11,9 +11,18 @@ Status: **approved design** (Neel, 2026-07-09). Method per
 > what should I do more/less of?"**
 
 Explicitly NOT: total wealth (cash-inclusive, income mixes in — that's
-fine elsewhere), what to trade (Options Execution), what was earned
-(Income). This page is **pure price performance of the holdings
-themselves.**
+fine elsewhere), what was earned (Income). This page is **pure price
+performance of the holdings themselves** — plus, since 2026-08-08, where
+that portfolio is *supposed* to be and what closes the gap (see
+"Allocation targets & execution" below).
+
+**Scope boundary moved 2026-08-08 (Neel).** This page previously disowned
+"what to trade" entirely. It now owns the *allocation-driven* half of that
+question — which names to buy or sell and how many contracts — because
+that follows directly from the targets, which live here. Options Execution
+keeps the *weekly* half: which strike this Friday, RSI gating, per-account
+selection, rolls. One rule of thumb: **Investments answers "what should my
+portfolio become"; Options Execution answers "what do I place today."**
 
 ## Why "pure" is exact, not approximated
 
@@ -51,6 +60,12 @@ Investments will agree by construction, not by coincidence.
   lot purchase/sale dates — not a snapshot, a real trajectory). The gap
   between the two lines is the pure investment return, visually, over
   time.
+- **L1.5 — Allocation targets (added 2026-08-08).** Two tables, Physical
+  AI and Infrastructure AI, showing current vs. target holding (%, $, and
+  shares) per symbol with the gap and the option order that closes it.
+  Sits above Winners & Losers because the target is now the primary read:
+  W&L says how the bets did, this says what the book should be. See
+  "Allocation targets & execution" below.
 - **L2 — Winners & Losers.** Every symbol aggregated across accounts
   (a bet is "AAPL," not "AAPL in three different accounts"), ranked by
   return %, weight-in-portfolio shown alongside. Closed positions listed
@@ -102,7 +117,87 @@ Backed by `get_pure_performance()` in
 `get_realized_pnl_by_period`, same module that already serves both Income
 and this page).
 
+## Allocation targets & execution (added 2026-08-08, Neel)
+
+### The policy
+
+Two buckets, 50/50, per the AI value-chain thesis
+(`project-kb/wiki/concepts/ai-value-chain-thesis.md`):
+
+- **Physical AI** — AAPL, TSLA, SPCX.
+- **Infrastructure AI** — the nine-name AI value chain: hyperscalers
+  (AMZN, MSFT, GOOGL), GPUs (NVDA, AMD), fab (TSM), custom ASIC (AVGO),
+  inference memory + networking (MU, MRVL).
+
+Everything else is off-thesis and sells to zero.
+
+### Targets are declared, not computed
+
+Target **share counts** (not percentages) live in
+`data/allocation_targets.json` — user-declared, hand-editable, exactly the
+`data/investment_policy.json` pattern. Share counts because of the
+round-lot rule (`playbook/universal/finance/buy-in-round-lots-of-100.md`):
+every position is a multiple of 100 so calls can be written against all of
+it, and a dollar target that implies 247 shares is not actionable.
+
+The weights behind those counts came from a one-time volatility analysis
+(premium yield per name, 2026-08-08). That analysis is **frozen into the
+config, not re-run at request time** — deliberately. Recomputing volatility
+per page load would add a Yahoo daily-history dependency, which the
+`market-data-source-order` KB rule forbids on must-succeed paths. When the
+thesis changes, edit the JSON.
+
+### Execution model
+
+Neel does not buy and sell stock directly. He expresses both sides as short
+options and lets them be exercised, earning premium on the way:
+
+| Intent | Action |
+|---|---|
+| Buy (below target) | Sell **ATM puts** — assigned, shares arrive at strike |
+| Sell / trim (above target) | Sell **ATM calls** — called away at strike |
+| Exit (off-thesis) | Sell **ATM calls** until the position is gone |
+
+**"Aggressive" = ATM**, fixed 2026-08-08. Strike at spot: max premium,
+~50% assignment odds per expiry. It is *not* "delta 80" — that label was
+already retired in `v6_engine.py` for being misleading (a true delta-80
+call is deep ITM and matched neither documented policy).
+
+Contract counts are `abs(gap_shares) // 100`, **net of options already
+open** on that symbol — a name with 5 puts already sold needs 5 more, not
+10. Recommendations are aggregate (per symbol, all accounts), matching the
+W&L convention that a bet is "AAPL," not "AAPL in three accounts";
+per-account placement is Options Execution's job.
+
+Strike and premium estimates call the **same helper V6 uses**, so a symbol
+shows identical numbers on both pages. Premium figures are heuristics, not
+quotes — labelled "est." until a live chain feed exists. As of 2026-08-08
+there is none: Schwab tokens are revoked and yfinance's chain endpoint is
+broken.
+
+### Feasibility
+
+Selling ATM puts to acquire stock ties up collateral equal to the notional.
+The page states the total collateral the buy program needs against
+available cash (`/ingestion/robinhood-cash/balances`). If the plan cannot
+be placed, it says so rather than listing unplaceable orders.
+
+### Endpoint
+
+`GET /api/v1/investments/allocation-plan` →
+`{as_of, base_value, buckets[{key, label, target_pct, current_pct, rows[]}], exit_rows[], feasibility}`.
+Backed by `get_allocation_plan()` in
+`app/modules/investments/allocation_service.py`.
+
 ## Strategy model & policy deviations (added 2026-07-12, Neel)
+
+**Demoted to an archive fold 2026-08-08 (Neel: "this is not helping me in
+any way").** The section still renders — the core-exit ledger and idle
+inventory are real facts and the endpoint is unchanged — but it now sits
+collapsed at the bottom of the page instead of above Winners & Losers. It
+answers a question Neel is no longer asking weekly; the allocation targets
+above answer the one he is. Do not delete it; the two-book model still
+informs the delta rules on Options Execution.
 
 Two books, two rule sets. Classification lives in
 `data/investment_policy.json` (user-declared, seeded from known market

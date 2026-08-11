@@ -36,11 +36,11 @@ export function AssignmentLossThisMonth() {
       <div className={styles.header}>
         <span className={styles.title}>Assignment Loss — this month</span>
       </div>
-      <div className={styles.value} style={{ color: loss > 0 ? '#FF5A5A' : '#6b7280' }}>
-        {loss > 0 ? `-$${loss.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '$0'}
+      <div className={styles.value} style={{ color: loss === 0 ? '#6b7280' : loss > 0 ? '#FF5A5A' : '#00D632' }}>
+        {loss === 0 ? '$0' : `${loss > 0 ? '-' : '+'}$${Math.abs(loss).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
       </div>
       <div className={styles.sub}>
-        strike vs. market price at the moment of assignment — view the events behind this
+        puts: strike vs. market at assignment · calls: cost basis vs. strike — view the events behind this
         <ChevronRight size={13} style={{ verticalAlign: '-2px', marginLeft: 2 }} />
       </div>
     </button>

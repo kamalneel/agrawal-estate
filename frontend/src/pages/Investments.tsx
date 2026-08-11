@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { TrendingUp, TrendingDown, ArrowLeft, User, Heart, Briefcase, RefreshCw, AlertCircle, ChevronRight } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import {
@@ -102,6 +103,223 @@ function formatHeld(days: number): string {
   if (days < 70) return `${Math.round(days / 7)}w`
   if (days < 365) return `${Math.round(days / 30.44)}mo`
   return `${(days / 365).toFixed(1)}y`
+}
+
+// ── Winners & Losers sorting ────────────────────────────────────────────
+// Same interaction as HoldingsTable: click cycles desc → asc → unsorted
+// (unsorted restores the backend's gain-ranked order, which IS the point
+// of the panel — winners top, losers bottom).
+type SortDir = 'asc' | 'desc' | null
+
+/** Sort value per column; null/undefined always sinks to the bottom */
+const OPEN_SORT_VALUES: Record<string, (p: PurePosition) => number | string | null | undefined> = {
+  symbol: p => p.symbol,
+  weight: p => p.weight_pct,
+  value: p => p.value,
+  cost_basis: p => p.cost_basis,
+  gain: p => p.gain,
+  gain_pct: p => p.gain_pct,
+  held: p => p.held_days,
+  annualized: p => p.annualized_pct,
+}
+
+const CLOSED_SORT_VALUES: Record<string, (p: PurePosition) => number | string | null | undefined> = {
+  symbol: p => p.symbol,
+  closed_date: p => p.closed_date,
+  proceeds: p => p.proceeds,
+  cost_basis: p => p.cost_basis,
+  gain: p => p.gain,
+  gain_pct: p => p.gain_pct,
+}
+
+function sortPositions(
+  rows: PurePosition[],
+  key: string,
+  dir: SortDir,
+  accessors: Record<string, (p: PurePosition) => number | string | null | undefined>,
+): PurePosition[] {
+  const get = accessors[key]
+  if (dir === null || !get) return rows
+  const sign = dir === 'asc' ? 1 : -1
+  return [...rows].sort((a, b) => {
+    const va = get(a)
+    const vb = get(b)
+    // Missing values (— cells: no ann. return, no close date) stay last in
+    // both directions — they carry no rank, so flipping them is noise.
+    if (va == null && vb == null) return a.symbol.localeCompare(b.symbol)
+    if (va == null) return 1
+    if (vb == null) return -1
+    const cmp = typeof va === 'string' || typeof vb === 'string'
+      ? String(va).localeCompare(String(vb))
+      : (va as number) - (vb as number)
+    return sign * cmp
+  })
+}
+
+function SortTh({ label, sortKey, active, dir, onSort, numeric = true }: {
+  label: string
+  sortKey: string
+  active: string
+  dir: SortDir
+  onSort: (key: string) => void
+  numeric?: boolean
+}) {
+  const isActive = active === sortKey && dir !== null
+  return (
+    <th
+      className={clsx(numeric && styles.num, styles.sortableTh, isActive && styles.sortedTh)}
+      onClick={() => onSort(sortKey)}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSort(sortKey) } }}
+      tabIndex={0}
+      role="columnheader"
+      aria-sort={isActive ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      {label}
+      <span className={clsx(styles.sortIcon, !isActive && styles.sortIconIdle)}>
+        {isActive ? (dir === 'asc' ? '↑' : '↓') : '⇅'}
+      </span>
+    </th>
+  )
+}
+
+/** account_id → short human label for the allocation routing cells */
+const ACCT_LABELS: Record<string, string> = {
+  neel_brokerage: 'Neel Brok', neel_retirement: 'Neel IRA', neel_roth_ira: 'Neel Roth',
+  jaya_brokerage: 'Jaya Brok', jaya_ira: 'Jaya IRA', jaya_roth_ira: 'Jaya Roth',
+  alisha_brokerage: 'Alisha Brok', family_hsa: 'HSA',
+}
+const acctLabel = (id: string) => ACCT_LABELS[id] ?? id
+
+// Allocation targets — see docs/INVESTMENTS-PAGE-SPEC.md, "Allocation
+// targets & execution". Targets are declared share counts in
+// data/allocation_targets.json; the backend turns each gap into the ATM
+// option order that closes it.
+interface AllocOrder {
+  option_type: 'put' | 'call'
+  /** sell = write new contracts; roll = existing far-OTM calls occupy the
+      shares and must be rolled down to ATM to actually produce the exit */
+  instruction: 'sell' | 'roll'
+  contracts: number
+  sell_contracts: number
+  roll_contracts: number
+  strike: number
+  est_premium: number
+  expiration: string
+}
+
+interface AllocAccount {
+  account_id: string
+  held_as: string
+  shares: number
+  sheltered: boolean
+  cost_per_share: number | null
+}
+
+interface AllocLot {
+  purchase_date: string
+  shares: number
+  cost_per_share: number
+  realized_gain: number
+}
+
+interface AllocRouting {
+  /** trim/exit: which accounts to sell calls in, cheapest tax first, with the
+      exact lots each leg would deliver (highest basis first) */
+  legs?: { account_id: string; shares: number; contracts: number; sheltered: boolean; realized_gain: number | null; lots?: AllocLot[] }[]
+  /** total gain/loss the recommended routing realizes */
+  realized_gain?: number
+  /** gain avoided vs FIFO — GAIN, not tax (the rate is Neel's) */
+  gain_avoided_vs_worst?: number
+  basis_unknown?: boolean
+  /** buy: which account to sell puts in */
+  buy_account?: string
+  consolidates?: boolean
+  funded?: boolean
+  shortfall?: number
+}
+
+interface AllocRow {
+  symbol: string
+  accounts: AllocAccount[]
+  routing: AllocRouting | null
+  baseline_shares: number | null
+  shares_moved: number | null
+  gap_closed_pct: number | null
+  current_shares: number
+  current_value: number
+  current_pct: number | null
+  target_shares: number
+  target_value: number | null
+  target_pct: number | null
+  gap_shares: number
+  gap_value: number | null
+  action: 'buy' | 'trim' | 'exit' | 'hold' | 'done'
+  contracts: number
+  /** shares the round-lot rule can't express as a contract (MU's 60) */
+  residual_shares: number
+  open_contracts: number
+  order: AllocOrder | null
+  guidance: string | null
+  optionable: boolean
+  price: number | null
+  price_source: 'live' | 'reference' | 'none'
+  price_as_of: string | null
+}
+
+interface AllocBucket {
+  key: string
+  label: string
+  note: string | null
+  target_pct: number | null
+  rows: AllocRow[]
+  current_value: number
+  current_pct: number | null
+  target_value: number
+  target_computed_pct: number | null
+  shares_needed: number
+  shares_moved: number
+  gap_closed_pct: number
+}
+
+interface AllocProgression {
+  since: string
+  days_elapsed: number
+  /** false until enough history exists — velocity off 1 day is noise */
+  measurable: boolean
+  shares_needed: number
+  shares_moved: number
+  gap_closed_pct: number
+  shares_per_week: number | null
+  weeks_to_target: number | null
+  premium_since: number
+  note: string
+  early_note: string | null
+}
+
+interface AllocationPlan {
+  as_of: string
+  policy_as_of: string | null
+  base_value: number
+  expiration: string
+  buckets: AllocBucket[]
+  exit_rows: AllocRow[]
+  progression: AllocProgression
+  feasibility: {
+    put_collateral_needed: number
+    total_cash: number | null
+    /** excludes collateral already securing open puts and margin-drawn accounts */
+    deployable_cash: number
+    cash_by_account: Record<string, { account_name: string; total_cash: number; deployable_cash: number; collateral_committed: number; margin_used: number; sheltered: boolean }>
+    largest_single_put_affordable: number
+    unaffordable_today: string[]
+    exit_and_trim_proceeds: number
+    headroom: number
+    covered: boolean
+    covered_by_cash_alone: boolean
+    note: string
+  }
+  reference_priced_symbols: string[]
+  premium_disclaimer: string
 }
 
 // Two-book strategy deviations — see docs/INVESTMENTS-PAGE-SPEC.md,
@@ -406,9 +624,16 @@ export function Investments() {
   const [showSmallOpen, setShowSmallOpen] = useState(false)
   const [showSmallClosed, setShowSmallClosed] = useState(false)
   const [expandedBet, setExpandedBet] = useState<string | null>(null)
+  // null dir = backend's gain-ranked order (the panel's default reading)
+  const [openSortKey, setOpenSortKey] = useState('gain')
+  const [openSortDir, setOpenSortDir] = useState<SortDir>(null)
+  const [closedSortKey, setClosedSortKey] = useState('gain')
+  const [closedSortDir, setClosedSortDir] = useState<SortDir>(null)
   const [betTrades, setBetTrades] = useState<CapitalEvent[] | null>(null)
   const [pureChartPeriod, setPureChartPeriod] = useState<string | null>(null)
   const [deviations, setDeviations] = useState<PolicyDeviations | null>(null)
+  const [allocation, setAllocation] = useState<AllocationPlan | null>(null)
+  const [showArchive, setShowArchive] = useState(false)
   const [showRecoveredExits, setShowRecoveredExits] = useState(false)
   const [ghost, setGhost] = useState<GhostCurve | null>(null)
   const [ghostDetail, setGhostDetail] = useState<GhostDetail | null>(null)
@@ -530,7 +755,15 @@ export function Investments() {
       .catch(() => {})
     fetchPurePerformance()
     fetchPolicyDeviations()
+    fetchAllocationPlan()
   }, [])
+
+  const fetchAllocationPlan = () => {
+    fetch(`${API_BASE}/investments/allocation-plan`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setAllocation(d))
+      .catch(() => {})
+  }
 
   const fetchPurePerformance = () => {
     fetch(`${API_BASE}/investments/pure-performance`, { headers: getAuthHeaders() })
@@ -948,6 +1181,244 @@ export function Investments() {
         </section>
       )}
 
+      {/* L1.5 — Allocation targets. Sits above Winners & Losers because the
+          target is now the primary read: W&L says how the bets did, this
+          says what the book should become and what order closes the gap.
+          Spec: "Allocation targets & execution". */}
+      {allocation && allocation.buckets.length > 0 && (() => {
+        const pct = (v: number | null) => v == null ? '—' : `${v.toFixed(1)}%`
+        // Fractional shares are real (MU is 41.873) but 3 decimals in a share
+        // column is noise — show 2 only when the position actually is partial.
+        const sh = (v: number) => Number.isInteger(v)
+          ? v.toLocaleString()
+          : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        const actionChip = (r: AllocRow) => {
+          if (r.action === 'hold' || r.action === 'done') return null
+          const cls = r.action === 'buy' ? styles.allocBuy
+            : r.action === 'trim' ? styles.allocTrim : styles.allocExit
+          return <span className={clsx(styles.allocChip, cls)}>{r.action}</span>
+        }
+        // The order IS the instruction — "sell 10 puts @ $216.53" is what
+        // gets placed. Roll vs sell matters: existing Tier-1 calls occupy
+        // the shares but are too far OTM to ever produce the exit.
+        // Which account to place it in. For trims this is the tax decision —
+        // the same 600 NVDA shares realise $143K of gain from Jaya's
+        // Brokerage (basis $18.93) and nothing from Jaya's IRA (basis $215).
+        const routingCell = (r: AllocRow) => {
+          const rt = r.routing
+          if (!rt) return null
+          if (rt.legs?.length) {
+            const g = rt.realized_gain ?? 0
+            return (
+              <span className={styles.allocRouting}>
+                in {rt.legs.map(l => (
+                  <span key={l.account_id}>
+                    <strong>{acctLabel(l.account_id)}</strong> ({l.contracts}c
+                    {l.sheltered && <span className={styles.allocShelter} title="Sheltered — sale is not a taxable event">tax-free</span>})
+                    {' '}
+                  </span>
+                ))}
+                {/* The exact lots the sale delivers, highest basis first.
+                    Without this the recommendation is un-checkable: "sell 4
+                    TSLA calls" reads identically whether it realizes a $32K
+                    loss or a $97K gain — the difference is only which lots go. */}
+                {rt.legs.some(l => l.lots?.length) && (
+                  <span className={styles.allocLots}>
+                    {/* index in the key: same-day same-price lots are common
+                        (IBIT has several), so date+basis is not unique */}
+                    {rt.legs.flatMap(l => (l.lots ?? []).map((lot, i) => (
+                      <span key={`${l.account_id}-${i}-${lot.purchase_date}`} className={styles.allocLotLine}>
+                        {acctLabel(l.account_id)} · {lot.shares.toLocaleString()} sh @ ${lot.cost_per_share.toFixed(2)}
+                        {' '}({new Date(lot.purchase_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })})
+                        <span style={{ color: lot.realized_gain >= 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
+                          {' '}{lot.realized_gain >= 0 ? '+' : '−'}{formatCurrency(Math.abs(lot.realized_gain))}
+                        </span>
+                      </span>
+                    )))}
+                  </span>
+                )}
+                {rt.realized_gain != null && rt.legs.some(l => !l.sheltered) && (
+                  <span className={g <= 0 ? styles.allocSaves : styles.allocUnfunded}>
+                    realizes {g <= 0 ? 'a LOSS of ' : 'a gain of '}{formatCurrency(Math.abs(g))}
+                    {(rt.gain_avoided_vs_worst ?? 0) > 500 && ` · ${formatCurrency(rt.gain_avoided_vs_worst!)} better than FIFO`}
+                  </span>
+                )}
+                {rt.legs.every(l => l.sheltered) && (rt.gain_avoided_vs_worst ?? 0) > 500 && (
+                  <span className={styles.allocSaves}>tax-free — avoids {formatCurrency(rt.gain_avoided_vs_worst!)} of gain vs. the taxable account</span>
+                )}
+              </span>
+            )
+          }
+          if (rt.buy_account) {
+            return (
+              <span className={styles.allocRouting}>
+                in <strong>{acctLabel(rt.buy_account)}</strong>
+                {rt.consolidates && <span className={styles.allocShelter} title="Already holds this symbol — keeps the position in one account">consolidates</span>}
+                {rt.funded === false && (
+                  <span className={styles.allocUnfunded}>
+                    can’t secure yet — short {formatCurrency(rt.shortfall ?? 0)}
+                  </span>
+                )}
+              </span>
+            )
+          }
+          return null
+        }
+        const orderCell = (r: AllocRow) => {
+          if (!r.order) {
+            return (
+              <>
+                <span className={styles.allocGuidance}>{r.guidance ?? '—'}</span>
+                {routingCell(r)}
+              </>
+            )
+          }
+          const o = r.order
+          return (
+            <>
+              <span className={styles.allocOrder}>
+                {o.instruction === 'roll' ? 'roll' : 'sell'} {o.contracts} {o.option_type}
+                {o.contracts === 1 ? '' : 's'} → ATM ${o.strike.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </span>
+              <span className={styles.allocOrderMeta}>
+                est {formatCurrency(o.est_premium)}/wk · exp {new Date(o.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                {o.instruction === 'roll' && ' · existing calls too far OTM to assign'}
+                {r.residual_shares > 0 && ` · +${r.residual_shares} sh odd lot`}
+              </span>
+              {routingCell(r)}
+            </>
+          )
+        }
+        const allocRow = (r: AllocRow) => (
+          <tr key={r.symbol} className={styles.betRow}>
+            <td className={styles.betSym}>
+              {r.symbol}
+              {r.price_source === 'reference' && (
+                <span className={styles.allocRefPx} title={`Not held — no quote source. Reference price from data/allocation_targets.json, ${r.price_as_of}`}>ref</span>
+              )}
+            </td>
+            <td className={styles.num}>{pct(r.current_pct)}</td>
+            <td className={styles.num}>{formatCurrency(r.current_value)}</td>
+            <td className={styles.num}>{sh(r.current_shares)}</td>
+            <td className={styles.num}>{pct(r.target_pct)}</td>
+            <td className={styles.num}>{r.target_value != null ? formatCurrency(r.target_value) : '—'}</td>
+            <td className={styles.num}>{sh(r.target_shares)}</td>
+            <td className={styles.num} style={{ color: Math.abs(r.gap_shares) < 1 ? undefined : r.gap_shares > 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+              {Math.abs(r.gap_shares) < 1 ? '—' : `${r.gap_shares > 0 ? '+' : ''}${sh(Math.round(r.gap_shares))}`}
+            </td>
+            <td className={styles.allocActionCell}>{actionChip(r)}{orderCell(r)}</td>
+          </tr>
+        )
+        const header = (
+          <tr>
+            <th>Symbol</th>
+            <th className={styles.num}>Now %</th><th className={styles.num}>Now $</th><th className={styles.num}>Now sh</th>
+            <th className={styles.num}>Target %</th><th className={styles.num}>Target $</th><th className={styles.num}>Target sh</th>
+            <th className={styles.num}>Gap sh</th>
+            <th>Order</th>
+          </tr>
+        )
+        const f = allocation.feasibility
+        return (
+          <section className={styles.betsSection}>
+            <div className={styles.allocHeader}>
+              <h2>Allocation Targets</h2>
+              <span className={styles.allocSub}>
+                base {formatCurrency(allocation.base_value)} · policy {allocation.policy_as_of}
+              </span>
+            </div>
+
+            {/* Progress is counted in SHARES. At ATM roughly half the
+                contracts expire unassigned, so premium can climb for months
+                while the position never moves — showing dollars first would
+                make a stalled plan look like a working one. */}
+            {(() => {
+              const p = allocation.progression
+              return (
+                <div className={styles.allocProgress}>
+                  <div className={styles.allocProgressBarWrap}>
+                    <div className={styles.allocProgressBar} style={{ width: `${Math.min(100, p.gap_closed_pct)}%` }} />
+                  </div>
+                  <div className={styles.allocProgressStats}>
+                    <span className={styles.allocProgressMain}>{p.gap_closed_pct}% of the plan executed</span>
+                    <span className={styles.allocProgressStat}>{p.shares_moved.toLocaleString()} of {p.shares_needed.toLocaleString()} shares moved</span>
+                    <span className={styles.allocProgressStat}>premium since {p.since}: <strong>{formatCurrency(p.premium_since)}</strong></span>
+                    {p.measurable && p.shares_per_week != null && (
+                      <span className={styles.allocProgressStat}>{p.shares_per_week.toLocaleString()} sh/wk</span>
+                    )}
+                    {p.measurable && p.weeks_to_target != null && (
+                      <span className={styles.allocProgressStat}>≈{p.weeks_to_target} weeks to target</span>
+                    )}
+                  </div>
+                  <p className={styles.allocProgressNote}>{p.early_note ?? p.note}</p>
+                </div>
+              )
+            })()}
+
+            {allocation.buckets.map(b => (
+              <div key={b.key} className={styles.allocBucket}>
+                <h3 className={styles.devSubhead}>
+                  {b.label}
+                  <span className={styles.allocBucketPct}>
+                    now {pct(b.current_pct)} → target {b.target_pct}%
+                    {b.target_computed_pct != null && ` (these share counts = ${b.target_computed_pct.toFixed(1)}%)`}
+                    {b.shares_needed > 0 && ` · ${b.gap_closed_pct}% executed, ${b.shares_moved.toLocaleString()}/${b.shares_needed.toLocaleString()} sh`}
+                  </span>
+                </h3>
+                {b.note && <p className={styles.allocNote}>{b.note}</p>}
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>{header}</thead>
+                    <tbody>{b.rows.map(allocRow)}</tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+
+            {allocation.exit_rows.length > 0 && (
+              <div className={styles.allocBucket}>
+                <h3 className={styles.devSubhead}>
+                  Off-thesis — exit
+                  <span className={styles.allocBucketPct}>
+                    {formatCurrency(allocation.exit_rows.reduce((s, r) => s + r.current_value, 0))} to recycle
+                  </span>
+                </h3>
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>{header}</thead>
+                    <tbody>{allocation.exit_rows.map(allocRow)}</tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Feasibility: ATM puts tie up the full strike notional, so the
+                buy program is gated on the sells clearing first. Saying this
+                beats listing orders that can't be placed. */}
+            <p className={styles.allocFeasibility}>
+              Put collateral needed <strong>{formatCurrency(f.put_collateral_needed)}</strong>
+              {' · '}deployable cash <strong style={{ color: f.covered_by_cash_alone ? undefined : 'var(--color-negative, #FF5A5A)' }}>{formatCurrency(f.deployable_cash)}</strong>
+              {' '}<span className={styles.allocOrderMeta}>(of {formatCurrency(f.total_cash ?? 0)} total — the rest is collateral already securing open puts, or margin-drawn)</span>
+              {' · '}exit + trim proceeds <strong>{formatCurrency(f.exit_and_trim_proceeds)}</strong>
+              <br />
+              Largest single put you can secure today: <strong>{formatCurrency(f.largest_single_put_affordable)}</strong>
+              {f.unaffordable_today.length > 0 && (
+                <> — <strong style={{ color: 'var(--color-negative, #FF5A5A)' }}>{f.unaffordable_today.join(', ')}</strong> cannot be sold as cash-secured puts until the sells clear.</>
+              )}
+              <br />{f.note}
+            </p>
+            <p className={styles.allocDisclaimer}>
+              {allocation.premium_disclaimer}
+              {allocation.reference_priced_symbols.length > 0 && (
+                <> Reference-priced (not held, no live quote): {allocation.reference_priced_symbols.join(', ')}.</>
+              )}
+              {' '}Placement, per-account sizing and this week's RSI gate stay on{' '}
+              <Link to="/strategies/options-selling" className={styles.allocLink}>Options Execution</Link>.
+            </p>
+          </section>
+        )
+      })()}
+
       {purePerf && purePerf.chart.length > 1 && (
         <ChartWrapper
           title="Value vs. Capital Invested"
@@ -986,123 +1457,6 @@ export function Investments() {
         </ChartWrapper>
       )}
 
-      {/* L2 — winners & losers: which bets are working, ranked by return.
-          Positions under $5K fold into one expandable line — space follows
-          money (playbook), and a $24 FIG row shouldn't get equal billing
-          with a $787K TSLA bet. */}
-      {/* Strategy Deviations — two-book model (spec: "Strategy model &
-          policy deviations"). Core exits must be recovered; inventory must
-          have exit calls. Facts + gap math only; option actions stay on
-          the Options Execution page. */}
-      {deviations && (() => {
-        const openExits = deviations.core_exits.filter(e => e.status !== 'recovered')
-        const recoveredExits = deviations.core_exits.filter(e => e.status === 'recovered')
-        const statusChip = (s: CoreExit['status']) => (
-          <span className={clsx(styles.devChip,
-            s === 'idle' ? styles.devChipIdle : s === 'recovering' ? styles.devChipRecovering : styles.devChipOk)}>
-            {s === 'idle' ? 'idle — no re-entry' : s}
-          </span>
-        )
-        const exitRow = (e: CoreExit) => (
-          <tr key={`${e.account_id}-${e.symbol}-${e.exit_date}`} className={styles.betRow}>
-            <td className={styles.betSym}>{e.symbol}</td>
-            <td>{e.account_name}</td>
-            <td>{new Date(e.exit_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · {formatHeld(e.days_since_exit)} ago</td>
-            <td className={styles.num}>{e.shares_unrecovered.toLocaleString()} of {e.shares_sold.toLocaleString()}</td>
-            <td className={styles.num}>{formatCurrency(e.sale_px)}</td>
-            <td className={styles.num}>{e.price_now != null ? formatCurrency(e.price_now) : '—'}</td>
-            <td className={styles.num}>{e.open_put_contracts > 0 ? `${e.open_put_contracts} open` : '—'}</td>
-            <td className={styles.num}>{formatCurrency(e.put_premium_since)}</td>
-            <td className={styles.num} style={{ color: e.gap == null ? undefined : e.gap > 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
-              {e.gap != null ? `${e.gap > 0 ? '−' : '+'}${formatCurrency(Math.abs(e.gap))}` : '—'}
-            </td>
-            <td>{statusChip(e.status)}</td>
-          </tr>
-        )
-        return (
-          <section className={styles.betsSection}>
-            <h2>Strategy Deviations</h2>
-            {openExits.length === 0 && deviations.idle_inventory.length === 0 && (
-              <p className={styles.devAllClear}>No open deviations — every core exit is recovered or recovering, and all inventory has exit calls written.</p>
-            )}
-            {openExits.length > 0 && (
-              <>
-                <h3 className={styles.devSubhead}>Core exits awaiting re-entry ({openExits.length})</h3>
-                <div className={styles.betsTableWrap}>
-                  <table className={styles.betsTable}>
-                    <thead>
-                      <tr>
-                        <th>Symbol</th><th>Account</th><th>Exited</th>
-                        <th className={styles.num}>Unrecovered</th>
-                        <th className={styles.num}>Sold @</th><th className={styles.num}>Now</th>
-                        <th className={styles.num}>Puts</th>
-                        <th className={styles.num}>Put prem. since</th>
-                        <th className={styles.num}>Gap</th><th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>{openExits.map(exitRow)}</tbody>
-                  </table>
-                </div>
-                <p className={styles.devAggregate}>
-                  Cost of waiting across open exits: <strong style={{ color: 'var(--color-negative, #FF5A5A)' }}>−{formatCurrency(deviations.distraction.open_exit_gap)}</strong>
-                  {deviations.distraction.since && (
-                    <> · inventory-book put income since {new Date(deviations.distraction.since + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}: <strong>{formatCurrency(deviations.distraction.inventory_put_income_since)}</strong></>
-                  )} — the honest version of the "puts pay 4–6x more" comparison.
-                </p>
-              </>
-            )}
-            {deviations.idle_inventory.length > 0 && (
-              <>
-                <h3 className={styles.devSubhead}>Idle inventory — no exit call written ({deviations.idle_inventory.length})</h3>
-                <div className={styles.betsTableWrap}>
-                  <table className={styles.betsTable}>
-                    <thead>
-                      <tr>
-                        <th>Symbol</th><th>Account</th>
-                        <th className={styles.num}>Shares</th>
-                        <th className={styles.num}>Calls open</th>
-                        <th className={styles.num}>Uncovered</th>
-                        <th className={styles.num}>Idle value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {deviations.idle_inventory.map(i => (
-                        <tr key={`${i.account_id}-${i.symbol}`} className={styles.betRow}>
-                          <td className={styles.betSym}>{i.symbol}</td>
-                          <td>{i.account_name}</td>
-                          <td className={styles.num}>{i.shares.toLocaleString()}</td>
-                          <td className={styles.num}>{i.open_call_contracts}</td>
-                          <td className={styles.num}>{i.uncovered_contracts} contract{i.uncovered_contracts === 1 ? '' : 's'}</td>
-                          <td className={styles.num}>{i.idle_value != null ? formatCurrency(i.idle_value) : '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-            {deviations.policy.unclassified.length > 0 && (
-              <p className={styles.devUnclassified}>
-                Unclassified holdings (edit <code>data/investment_policy.json</code>): {deviations.policy.unclassified.join(', ')}
-              </p>
-            )}
-            {recoveredExits.length > 0 && (
-              <div className={styles.closedBetsToggle}>
-                <button onClick={() => setShowRecoveredExits(v => !v)}>
-                  {showRecoveredExits ? 'hide' : 'show'} recovered exits ({recoveredExits.length})
-                </button>
-                {showRecoveredExits && (
-                  <div className={styles.betsTableWrap}>
-                    <table className={styles.betsTable}>
-                      <tbody>{recoveredExits.map(exitRow)}</tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-        )
-      })()}
 
       {/* Assignment Loss history — moved here from Options Execution
           2026-07-22: that page is scoped to "what should I do today, am
@@ -1225,16 +1579,42 @@ export function Investments() {
         )
       })()}
 
+      {/* L2 — winners & losers: which bets are working, ranked by return.
+          Positions under $5K fold into one expandable line — space follows
+          money (playbook), and a $24 FIG row shouldn't get equal billing
+          with a $787K TSLA bet. */}
       {purePerf && purePerf.open_positions.length > 0 && (() => {
         const SMALL = 5000
         const isSmallOpen = (p: PurePosition) => Math.max(p.value ?? 0, p.cost_basis) < SMALL
         const isSmallClosed = (p: PurePosition) => Math.max(p.proceeds ?? 0, p.cost_basis) < SMALL
-        const mainOpen = purePerf.open_positions.filter(p => !isSmallOpen(p))
-        const smallOpen = purePerf.open_positions.filter(isSmallOpen)
-        const mainClosed = purePerf.closed_positions.filter(p => !isSmallClosed(p))
-        const smallClosed = purePerf.closed_positions.filter(isSmallClosed)
+        const sortOpen = (rows: PurePosition[]) => sortPositions(rows, openSortKey, openSortDir, OPEN_SORT_VALUES)
+        const sortClosed = (rows: PurePosition[]) => sortPositions(rows, closedSortKey, closedSortDir, CLOSED_SORT_VALUES)
+        // Small positions sort within their fold, not into the main list —
+        // the <$5K rollup stays one collapsed block whatever the sort.
+        const mainOpen = sortOpen(purePerf.open_positions.filter(p => !isSmallOpen(p)))
+        const smallOpen = sortOpen(purePerf.open_positions.filter(isSmallOpen))
+        const mainClosed = sortClosed(purePerf.closed_positions.filter(p => !isSmallClosed(p)))
+        const smallClosed = sortClosed(purePerf.closed_positions.filter(isSmallClosed))
         const smallOpenNet = smallOpen.reduce((s, p) => s + (p.gain ?? 0), 0)
         const smallClosedNet = smallClosed.reduce((s, p) => s + (p.gain ?? 0), 0)
+
+        // Direction comes from the functional setter, not a param — the
+        // caller's `dir` would be a stale closure on rapid clicks.
+        const cycleSort = (
+          key: string,
+          activeKey: string,
+          setKey: (k: string) => void,
+          setDir: (d: SortDir | ((d: SortDir) => SortDir)) => void,
+        ) => {
+          if (activeKey !== key) {
+            setKey(key)
+            setDir(key === 'symbol' ? 'asc' : 'desc')
+          } else {
+            setDir(d => (d === 'desc' ? 'asc' : d === 'asc' ? null : 'desc'))
+          }
+        }
+        const sortOpenBy = (key: string) => cycleSort(key, openSortKey, setOpenSortKey, setOpenSortDir)
+        const sortClosedBy = (key: string) => cycleSort(key, closedSortKey, setClosedSortKey, setClosedSortDir)
 
         const openRow = (p: PurePosition) => (
           <React.Fragment key={p.symbol}>
@@ -1319,10 +1699,19 @@ export function Investments() {
             <table className={styles.betsTable}>
               <thead>
                 <tr>
-                  <th>Symbol</th><th className={styles.num}>Weight</th>
-                  <th className={styles.num}>Value</th><th className={styles.num}>Cost Basis</th>
-                  <th className={styles.num}>Gain</th><th className={styles.num}>Return</th>
-                  <th className={styles.num}>Held</th><th className={styles.num}>Ann. Return</th>
+                  {([
+                    ['Symbol', 'symbol', false],
+                    ['Weight', 'weight', true],
+                    ['Value', 'value', true],
+                    ['Cost Basis', 'cost_basis', true],
+                    ['Gain', 'gain', true],
+                    ['Return', 'gain_pct', true],
+                    ['Held', 'held', true],
+                    ['Ann. Return', 'annualized', true],
+                  ] as [string, string, boolean][]).map(([label, key, numeric]) => (
+                    <SortTh key={key} label={label} sortKey={key} numeric={numeric}
+                      active={openSortKey} dir={openSortDir} onSort={sortOpenBy} />
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -1343,9 +1732,17 @@ export function Investments() {
                   <table className={styles.betsTable}>
                     <thead>
                       <tr>
-                        <th>Symbol</th><th>Closed</th>
-                        <th className={styles.num}>Proceeds</th><th className={styles.num}>Cost Basis</th>
-                        <th className={styles.num}>Gain</th><th className={styles.num}>Return</th>
+                        {([
+                          ['Symbol', 'symbol', false],
+                          ['Closed', 'closed_date', false],
+                          ['Proceeds', 'proceeds', true],
+                          ['Cost Basis', 'cost_basis', true],
+                          ['Gain', 'gain', true],
+                          ['Return', 'gain_pct', true],
+                        ] as [string, string, boolean][]).map(([label, key, numeric]) => (
+                          <SortTh key={key} label={label} sortKey={key} numeric={numeric}
+                            active={closedSortKey} dir={closedSortDir} onSort={sortClosedBy} />
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -1481,6 +1878,135 @@ export function Investments() {
           </section>
         )
       })()}
+
+
+      {/* Archive — Strategy Deviations. Demoted from above Winners &
+          Losers 2026-08-08 (Neel: "this is not helping me in any way").
+          Kept, not deleted: the core-exit ledger and idle-inventory facts
+          still inform the delta rules on Options Execution, they just are
+          not a weekly read anymore. Collapsed by default. */}
+      {deviations && (
+        <div className={styles.closedBetsToggle}>
+          <button onClick={() => setShowArchive(v => !v)}>
+            {showArchive ? 'hide' : 'show'} archive — Strategy Deviations
+          </button>
+          {showArchive && (<>
+      {/* Strategy Deviations — two-book model (spec: "Strategy model &
+          policy deviations"). Core exits must be recovered; inventory must
+          have exit calls. Facts + gap math only; option actions stay on
+          the Options Execution page. */}
+      {deviations && (() => {
+        const openExits = deviations.core_exits.filter(e => e.status !== 'recovered')
+        const recoveredExits = deviations.core_exits.filter(e => e.status === 'recovered')
+        const statusChip = (s: CoreExit['status']) => (
+          <span className={clsx(styles.devChip,
+            s === 'idle' ? styles.devChipIdle : s === 'recovering' ? styles.devChipRecovering : styles.devChipOk)}>
+            {s === 'idle' ? 'idle — no re-entry' : s}
+          </span>
+        )
+        const exitRow = (e: CoreExit) => (
+          <tr key={`${e.account_id}-${e.symbol}-${e.exit_date}`} className={styles.betRow}>
+            <td className={styles.betSym}>{e.symbol}</td>
+            <td>{e.account_name}</td>
+            <td>{new Date(e.exit_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · {formatHeld(e.days_since_exit)} ago</td>
+            <td className={styles.num}>{e.shares_unrecovered.toLocaleString()} of {e.shares_sold.toLocaleString()}</td>
+            <td className={styles.num}>{formatCurrency(e.sale_px)}</td>
+            <td className={styles.num}>{e.price_now != null ? formatCurrency(e.price_now) : '—'}</td>
+            <td className={styles.num}>{e.open_put_contracts > 0 ? `${e.open_put_contracts} open` : '—'}</td>
+            <td className={styles.num}>{formatCurrency(e.put_premium_since)}</td>
+            <td className={styles.num} style={{ color: e.gap == null ? undefined : e.gap > 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
+              {e.gap != null ? `${e.gap > 0 ? '−' : '+'}${formatCurrency(Math.abs(e.gap))}` : '—'}
+            </td>
+            <td>{statusChip(e.status)}</td>
+          </tr>
+        )
+        return (
+          <section className={styles.betsSection}>
+            <h2>Strategy Deviations</h2>
+            {openExits.length === 0 && deviations.idle_inventory.length === 0 && (
+              <p className={styles.devAllClear}>No open deviations — every core exit is recovered or recovering, and all inventory has exit calls written.</p>
+            )}
+            {openExits.length > 0 && (
+              <>
+                <h3 className={styles.devSubhead}>Core exits awaiting re-entry ({openExits.length})</h3>
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>
+                      <tr>
+                        <th>Symbol</th><th>Account</th><th>Exited</th>
+                        <th className={styles.num}>Unrecovered</th>
+                        <th className={styles.num}>Sold @</th><th className={styles.num}>Now</th>
+                        <th className={styles.num}>Puts</th>
+                        <th className={styles.num}>Put prem. since</th>
+                        <th className={styles.num}>Gap</th><th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>{openExits.map(exitRow)}</tbody>
+                  </table>
+                </div>
+                <p className={styles.devAggregate}>
+                  Cost of waiting across open exits: <strong style={{ color: 'var(--color-negative, #FF5A5A)' }}>−{formatCurrency(deviations.distraction.open_exit_gap)}</strong>
+                  {deviations.distraction.since && (
+                    <> · inventory-book put income since {new Date(deviations.distraction.since + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}: <strong>{formatCurrency(deviations.distraction.inventory_put_income_since)}</strong></>
+                  )} — the honest version of the "puts pay 4–6x more" comparison.
+                </p>
+              </>
+            )}
+            {deviations.idle_inventory.length > 0 && (
+              <>
+                <h3 className={styles.devSubhead}>Idle inventory — no exit call written ({deviations.idle_inventory.length})</h3>
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>
+                      <tr>
+                        <th>Symbol</th><th>Account</th>
+                        <th className={styles.num}>Shares</th>
+                        <th className={styles.num}>Calls open</th>
+                        <th className={styles.num}>Uncovered</th>
+                        <th className={styles.num}>Idle value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deviations.idle_inventory.map(i => (
+                        <tr key={`${i.account_id}-${i.symbol}`} className={styles.betRow}>
+                          <td className={styles.betSym}>{i.symbol}</td>
+                          <td>{i.account_name}</td>
+                          <td className={styles.num}>{i.shares.toLocaleString()}</td>
+                          <td className={styles.num}>{i.open_call_contracts}</td>
+                          <td className={styles.num}>{i.uncovered_contracts} contract{i.uncovered_contracts === 1 ? '' : 's'}</td>
+                          <td className={styles.num}>{i.idle_value != null ? formatCurrency(i.idle_value) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            {deviations.policy.unclassified.length > 0 && (
+              <p className={styles.devUnclassified}>
+                Unclassified holdings (edit <code>data/investment_policy.json</code>): {deviations.policy.unclassified.join(', ')}
+              </p>
+            )}
+            {recoveredExits.length > 0 && (
+              <div className={styles.closedBetsToggle}>
+                <button onClick={() => setShowRecoveredExits(v => !v)}>
+                  {showRecoveredExits ? 'hide' : 'show'} recovered exits ({recoveredExits.length})
+                </button>
+                {showRecoveredExits && (
+                  <div className={styles.betsTableWrap}>
+                    <table className={styles.betsTable}>
+                      <tbody>{recoveredExits.map(exitRow)}</tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )
+      })()}
+          </>)}
+        </div>
+      )}
 
     </div>
   )

@@ -45,6 +45,21 @@ def _context_badges(ctx: Dict) -> str:
     roll-streak trend — so the email carries the same signal, not a
     stripped-down summary."""
     parts = []
+    # Rebalancing badge: the email row renders priority/action/symbol/detail
+    # but never `rule`, so without this the reason the trade exists — the
+    # allocation target — is invisible in the inbox, and an ATM call on a
+    # Tier-1 name reads like a mistake.
+    rbx = ctx.get("rebalance")
+    if rbx:
+        tgt = rbx.get("target_shares")
+        label = "REBALANCING" + (f" -> {tgt:,}" if isinstance(tgt, (int, float)) else "")
+        parts.append(
+            '<span style="font-size:10px; color:#1d4ed8; background:#dbeafe; '
+            f'padding:1px 6px; border-radius:8px; margin-left:4px;">&#8646; {label}</span>')
+        if rbx.get("funded") is False:
+            parts.append(
+                '<span style="font-size:10px; color:#92400e; background:#fef3c7; '
+                'padding:1px 6px; border-radius:8px; margin-left:4px;">NOT FUNDED</span>')
     er = ctx.get("next_earnings")
     if er and er.get("date"):
         parts.append(
@@ -151,5 +166,15 @@ def format_plain_text(queue: Dict, scan_label: str = "") -> str:
             continue
         lines.append(f"\n{acct}:")
         for i in rows:
-            lines.append(f"  [{i.get('priority', 'low').upper()}] [{i['action']}] {i['symbol']}: {i['detail']}")
+            # Same reason as the HTML badge: without the tag an ATM call on a
+            # Tier-1 name looks like a bug rather than a deliberate trim.
+            ctx = i.get("context") or {}
+            rbx = ctx.get("rebalance")
+            tag = ""
+            if rbx:
+                tgt = rbx.get("target_shares")
+                tag = " [REBALANCING" + (f" -> {tgt:,}" if isinstance(tgt, (int, float)) else "") + "]"
+                if rbx.get("funded") is False:
+                    tag += " [NOT FUNDED]"
+            lines.append(f"  [{i.get('priority', 'low').upper()}] [{i['action']}] {i['symbol']}:{tag} {i['detail']}")
     return "\n".join(lines)

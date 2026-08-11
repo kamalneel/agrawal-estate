@@ -266,6 +266,58 @@ def _price_near(db: Session, account_id: str, symbol: str, target: date):
     return None, None
 
 
+def _cost_basis_near(db: Session, account_id: str, symbol: str, target: date):
+    """Average cost per share near a date, for a CALL assignment's
+    'vs. cost basis' figure (Neel, 2026-08-08 — a put assignment has no
+    prior cost basis to compare against; it CREATES a lot at the strike,
+    so this is only ever called for calls).
+
+    Two sources, preferred in order:
+      1. 'live' — Robinhood's own average_buy_price, captured every sync
+         since 2026-08-08 into investment_cost_basis_history (average-cost
+         accounting, already adjusted for partial sells — authoritative,
+         not reconstructed).
+      2. 'reconstructed' — weighted average of every BUY transaction for
+         this account+symbol up to `target`, for assignments that
+         predate live capture. Deliberately NOT FIFO/lot-order (Neel,
+         2026-08-08: "I'm not using this for tax calculation... this is
+         to truly calculate if I lost money"): in average-cost accounting
+         a partial sale doesn't change the remaining shares' average
+         cost, so summing every buy through the target date is the
+         correct running average regardless of any assignments/sales
+         that happened in between — no lot-matching needed.
+    Returns (avg_cost_per_share, source, incomplete) — incomplete=True
+    when the reconstructed share count falls short of `shares_involved`
+    (a real gap in transaction history, e.g. a pre-backfill boundary;
+    surfaced honestly rather than silently trusted)."""
+    row = db.execute(_text("""
+        SELECT avg_cost_per_share FROM investment_cost_basis_history
+        WHERE account_id = :acct AND symbol = :sym
+          AND snapshot_date BETWEEN :d - INTERVAL '5 days' AND :d + INTERVAL '5 days'
+        ORDER BY ABS(snapshot_date - :d) ASC LIMIT 1
+    """), {"acct": account_id, "sym": symbol, "d": target}).fetchone()
+    if row and row.avg_cost_per_share:
+        return float(row.avg_cost_per_share), "live", False
+    return None, None, None
+
+
+def _reconstruct_cost_basis(db: Session, account_id: str, symbol: str,
+                            before: date, shares_involved: float):
+    """Weighted average of every BUY transaction for this account+symbol
+    on or before `before` — see _cost_basis_near for why this is a plain
+    average, not FIFO. Returns (avg_cost_per_share, incomplete)."""
+    rows = db.execute(_text("""
+        SELECT quantity, amount FROM investment_transactions
+        WHERE account_id = :acct AND symbol = :sym AND transaction_type = 'BUY'
+          AND transaction_date <= :d
+    """), {"acct": account_id, "sym": symbol, "d": before}).fetchall()
+    total_shares = sum(float(r.quantity) for r in rows)
+    total_cost = sum(-float(r.amount) for r in rows)  # BUY amounts are negative
+    if total_shares <= 0:
+        return None, True
+    return total_cost / total_shares, total_shares < shares_involved - 0.01
+
+
 def get_roll_streak(db: Session, account_id: str, symbol: str, option_type: str,
                     current_strike: float, current_itm_pct: float) -> Optional[Dict]:
     """Consecutive-week roll streak ending at the live position, and

@@ -43,6 +43,19 @@ from pathlib import Path
 DEFAULT_API = "http://localhost:8000/api/v1"
 INBOX = Path(__file__).resolve().parent.parent / "data" / "inbox" / "investments" / "robinhood"
 
+# App account_id per docs/ROBINHOOD_MCP_SYNC.md's account table — needed
+# because investment_cost_basis_history keys on account_id (e.g.
+# "jaya_ira"), not the display account_name used by the paste/cash
+# endpoints. Update alongside that table if accounts are added/renamed.
+ACCOUNT_ID_BY_NAME = {
+    "Jaya's Brokerage": "jaya_brokerage",
+    "Jaya's IRA": "jaya_ira",
+    "Jaya's Roth IRA": "jaya_roth_ira",
+    "Neel's Brokerage": "neel_brokerage",
+    "Neel's Retirement": "neel_retirement",
+    "Neel's Roth IRA": "neel_roth_ira",
+}
+
 CSV_COLUMNS = ["Activity Date", "Process Date", "Settle Date", "Instrument",
                "Description", "Trans Code", "Quantity", "Price", "Amount"]
 
@@ -276,6 +289,23 @@ def sync_account(api: str, account: dict, bundle: dict, save: bool) -> None:
         result = post(api, "/ingestion/robinhood-paste/save",
                       {"text": text, "account_name": name, "confirm_empty_sections": True})
         print(f"  paste saved: {json.dumps({k: v for k, v in result.items() if isinstance(v, (int, str, bool))})}")
+
+        # --- 1b. cost basis (Neel, 2026-08-08 — Robinhood's own
+        # average_buy_price, average-cost accounting already adjusted for
+        # partial sells; feeds assignment_loss_service's "vs. cost basis"
+        # figure on future call assignments). Skipped, not aborted, when a
+        # position lacks the field — this is best-effort enrichment, not
+        # a correctness gate like the premium drift check above.
+        acct_id = ACCOUNT_ID_BY_NAME.get(name)
+        cb_bars = [
+            {"account_id": acct_id, "symbol": pos["symbol"], "date": bundle["as_of"],
+             "cost_basis": float(pos["average_buy_price"])}
+            for pos in account.get("equity_positions", [])
+            if acct_id and pos.get("average_buy_price") is not None
+        ]
+        if cb_bars:
+            cb_result = post(api, "/ingestion/cost-basis", {"source": "robinhood_mcp", "bars": cb_bars})
+            print(f"  cost basis: upserted {cb_result.get('upserted')}")
 
     # --- 2. cash breakdown ---
     cash_text = build_cash_text(account, instruments)

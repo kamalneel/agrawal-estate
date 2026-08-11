@@ -9,14 +9,24 @@ Decision tables are transcribed from docs/OPTIONS-STRATEGY-V6-ENGINES.md
 (V6.1). Runs entirely off synced data — no external calls.
 """
 import json
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.modules.strategies.technical_signals import get_entry_timing, get_roll_streak
+# Strike/premium heuristics are shared with the Investments allocation plan —
+# one definition so the two pages cannot quote different numbers for the same
+# symbol. See app/shared/services/option_premium.py.
+from app.shared.services.option_premium import (
+    OTM_ATM, OTM_TIER1_SHELTERED, OTM_TIER1_TAXABLE, OTM_TSLA,
+    RATE_ATM_WEEKLY, RATE_TIER1_WEEKLY, strike_for, weekly_premium,
+)
 
 # GOOG (Class C) and GOOGL (Class A) are the same company (Alphabet) —
 # both get Core/Tier-1 treatment. Caught 2026-07-22: GOOG was falling
@@ -153,9 +163,45 @@ def _put_capacity_by_account(db: Session) -> Dict[str, float]:
     return capacity
 
 
+def _rebalance_lookup(db: Session) -> Dict[str, Dict]:
+    """Per-symbol rebalance intent from the Investments allocation plan.
+
+    This is what makes the two pages agree. Without it Engine 1 tells Neel to
+    sell delta-15 NVDA calls to KEEP the stock in the same week the
+    Investments page tells him to roll to ATM and let 761 shares go — same
+    symbol, opposite instruction, and the email is what he acts on.
+
+    Fails open: any error here leaves the queue exactly as it was, because a
+    broken allocation plan must never block weekly income generation.
+    """
+    try:
+        from app.modules.investments.allocation_service import get_allocation_plan
+        plan = get_allocation_plan(db)
+    except Exception as e:                     # noqa: BLE001 - deliberate
+        logger.warning(f"[V6] allocation plan unavailable, rebalance overlay off: {e}")
+        return {}
+    out: Dict[str, Dict] = {}
+    rows = [r for b in plan.get("buckets", []) for r in b.get("rows", [])]
+    rows += plan.get("exit_rows", [])
+    for r in rows:
+        if r.get("action") in ("buy", "trim", "exit") and r.get("contracts", 0) > 0:
+            out[r["symbol"]] = {
+                "action": r["action"],
+                "target_shares": r.get("target_shares"),
+                "current_shares": r.get("current_shares"),
+                "contracts": r.get("contracts"),
+                "gap_shares": r.get("gap_shares"),
+                "routing": r.get("routing") or {},
+                "order": r.get("order") or {},
+                "price": r.get("price"),
+            }
+    return out
+
+
 def build_action_queue(db: Session) -> Dict:
     today = date.today()
     week_ending = _friday(today)
+    rebalance = _rebalance_lookup(db)
 
     # ---- data: latest option snapshot per account -------------------------
     # account_id joined in for technical_signals lookups (investment_
@@ -177,11 +223,12 @@ def build_action_queue(db: Session) -> Dict:
 
     hold_rows = db.execute(text("""
         SELECT a.account_name, a.account_id, a.account_type, h.symbol, h.quantity,
-               h.current_price, h.cost_basis
+               h.current_price, h.cost_basis, h.last_updated
         FROM investment_holdings h
         JOIN investment_accounts a
           ON a.account_id = h.account_id AND a.source = h.source
         WHERE a.is_active = 'Y' AND h.quantity > 0 AND h.symbol != 'CASH'
+        ORDER BY h.last_updated ASC
     """)).fetchall()
 
     data_as_of = max((r.snapshot_date for r in pos_rows), default=None)
@@ -190,6 +237,16 @@ def build_action_queue(db: Session) -> Dict:
     price: Dict[str, float] = {}
     holdings: Dict[tuple, dict] = {}
     for r in hold_rows:
+        # Symbols held in more than one account (e.g. TSLA in both Neel's
+        # Brokerage and Alisha's, which is deliberately never synced — see
+        # docs/ROBINHOOD_MCP_SYNC.md) previously let whichever row the DB
+        # happened to return LAST win, with no regard for freshness — a
+        # stale, months-old Alisha/HSA price could silently shadow a
+        # same-day synced one (2026-08-05: TSLA showed $423.74 from a
+        # 2026-06-03 Alisha row instead of the real $321.46, producing a
+        # false "deep ITM, wait" alert). ORDER BY last_updated ASC above
+        # makes the last write in this loop the most recently synced row,
+        # deterministically.
         if r.current_price:
             price[r.symbol] = float(r.current_price)
         holdings[(r.account_name, r.symbol)] = {
@@ -411,11 +468,34 @@ def build_action_queue(db: Session) -> Dict:
 
         shel = is_sheltered(account)
         tier1 = sym in TIER1
+
+        # ---- Rebalance overlay -------------------------------------------
+        # A symbol ABOVE its allocation target is being deliberately reduced,
+        # so its calls go ATM to get assigned. That directly overrides the
+        # Tier-1 "income without getting called away" rule, which exists to
+        # PREVENT assignment. The override is scoped and temporary: it applies
+        # only while the position is more than one contract above target, and
+        # the moment it is in range the symbol reverts to normal Tier-1
+        # treatment. The two-book model is the resting state; rebalancing is
+        # a regime, not a replacement.
+        rb = rebalance.get(sym)
+        rebalancing = bool(rb and rb["action"] in ("trim", "exit"))
+        if rebalancing:
+            # Engine 5 owns this symbol entirely. Emitting a Tier-1 card here
+            # too would put "sell delta-15 calls to KEEP the stock" in the
+            # same email as "roll to ATM and let it go" — the exact
+            # contradiction this overlay exists to remove. Engine 1 also
+            # cannot express the real instruction: NVDA's 1,761 shares are
+            # already covered by 16 calls, so Engine 1 sees only the HSA's
+            # 161 uncovered and would recommend one new call while the actual
+            # trade is rolling seven existing ones down.
+            continue
+
         if sym == "TSLA":
-            delta, otm = "10-12", 0.06
+            delta, otm = "10-12", OTM_TSLA
             gate = "TSLA carve-out: fire only when RSI > 75; roll at zero cost if ITM, never panic-close."
         elif tier1:
-            delta, otm = ("15" if shel else "10-15"), (0.045 if shel else 0.055)
+            delta, otm = ("15" if shel else "10-15"), (OTM_TIER1_SHELTERED if shel else OTM_TIER1_TAXABLE)
             gate = "Tier 1 hold: income without getting called away."
         else:
             # Tier 2: two documented policies conflict (V6 table 2026-07-09
@@ -424,7 +504,7 @@ def build_action_queue(db: Session) -> Dict:
             # picks one, present BOTH strikes — never the misleading
             # "delta 80" label (that read as a real delta and matched
             # neither: a true delta-80 call is deep ITM).
-            delta, otm = "ATM", -0.01
+            delta, otm = "ATM", OTM_ATM
             gate = ("Tier 2 wheel — two valid strikes: ATM = max premium, likely assigned "
                     "(fast exit); delta-20 (~6% OTM) = keep the stock most weeks, exit on a "
                     "rally. Policy not yet fixed — choose per situation.")
@@ -464,7 +544,7 @@ def build_action_queue(db: Session) -> Dict:
                          "price_source": entry.get("price_source")}
         entry_wait = bool(entry_ctx and entry_ctx.get("wait"))
 
-        target = stock * (1 + otm)   # strike the delta rule wants
+        target = strike_for(stock, otm)   # strike the delta rule wants
         approx = target
         cost_ps = (h["cost_basis"] / shares) if (h["cost_basis"] and shares) else None
         floor_note = ""
@@ -473,7 +553,8 @@ def build_action_queue(db: Session) -> Dict:
         # rough weekly premium: delta% of a ~2% weekly move value.
         # NOTE: this heuristic prices the delta-TARGET strike. It is only
         # valid when the recommended strike is at/near that target.
-        est = int(n * 100 * stock * 0.0030) if tier1 or sym == "TSLA" else int(n * 100 * stock * 0.012)
+        est = weekly_premium(n, stock,
+                             RATE_TIER1_WEEKLY if (tier1 or sym == "TSLA") else RATE_ATM_WEEKLY)
         per_share = est / (n * 100) if n else 0
         exp = week_ending if today.weekday() <= 2 else _friday(week_ending + timedelta(days=3))
 
@@ -516,8 +597,13 @@ def build_action_queue(db: Session) -> Dict:
                 strike_txt = f"strike ~${approx:,.0f}{floor_note} (delta {delta})"
             else:
                 d20 = stock * 1.06
-                strike_txt = (f"ATM ~${approx:,.0f}{floor_note} for max premium (likely assigned) "
-                              f"or delta-20 ~${d20:,.0f} to keep the stock")
+                # Explicit "strike $X (why)" for both options — not "ATM
+                # ~$X", the same ambiguous pattern already fixed on the
+                # Engine-5 rebalancing card 2026-08-11 (is that the strike
+                # or the current price?). Current stock price is stated
+                # separately below regardless of which branch fires.
+                strike_txt = (f"strike ${approx:,.0f}{floor_note} (ATM, max premium, likely assigned) "
+                              f"or strike ${d20:,.0f} (delta-20, keeps the stock)")
             # Real computed entry-timing reason replaces the old static
             # "Entry timing: sell now if RSI>60..." hint when we have one;
             # falls back to the static text when history is too thin
@@ -526,6 +612,10 @@ def build_action_queue(db: Session) -> Dict:
                           "consider holding off this week." if entry_wait
                           else f"Entry timing: {entry_ctx['reason']}, clear to sell." if entry_ctx
                           else "Entry timing: sell now if RSI>60; RSI<40 wait; RSI<30 do not sell.")
+            # Entry timing is an income-optimisation gate — "wait for a better
+            # RSI to sell this call". It does not apply to a rebalance: the
+            # trade is a position decision, not a premium decision, and
+            # holding off for a nicer entry just leaves the book off-target.
             add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
                      f"{sym}: {n} call{'s' if n > 1 else ''} available"
                      + (" — entry timing says wait" if entry_wait else ""), account, sym,
@@ -541,6 +631,119 @@ def build_action_queue(db: Session) -> Dict:
                               "expiration_date": str(exp), "total_premium": est,
                               "limit_per_share": round(per_share, 2),
                               **({"entry_timing": entry_ctx} if entry_ctx else {})})
+
+    # ---- Engine 5: rebalance buys -----------------------------------------
+    # Engine 1 structurally cannot see these. It iterates `holdings`, and
+    # requires >=100 shares to write a call — so MRVL, TSM and AMZN at zero
+    # shares produce nothing, no matter how large the gap. Acquiring is
+    # expressed as short ATM puts: assignment delivers the stock at the
+    # strike and pays premium for the wait.
+    acct_id_to_name = {r.account_id: r.account_name for r in db.execute(text(
+        "SELECT account_id, account_name FROM investment_accounts")).fetchall()}
+
+    for sym, rb in sorted(rebalance.items(), key=lambda kv: -(kv[1].get("order") or {}).get("est_premium", 0)):
+        # ---- sell side: one card per account leg, because the account is
+        # the tax decision. The Investments page already picked the legs
+        # lowest-tax-first; this just renders each as a placeable order.
+        if rb["action"] in ("trim", "exit"):
+            order = rb.get("order") or {}
+            legs = (rb.get("routing") or {}).get("legs") or []
+            if not order.get("strike") or not legs:
+                continue
+            roll = order.get("instruction") == "roll"
+            verb = "roll" if roll else "sell"
+            tgt = rb.get("target_shares") or 0
+            for leg in legs:
+                lc = int(leg.get("contracts") or 0)
+                if lc < 1:
+                    continue
+                acct_name = acct_id_to_name.get(leg["account_id"], leg["account_id"])
+                lots = leg.get("lots") or []
+                lots_txt = "; ".join(f"{int(l['shares'])} sh @ ${l['cost_per_share']:,.2f}"
+                                     for l in lots[:4])
+                g = leg.get("realized_gain")
+                tax_txt = ""
+                if leg.get("sheltered"):
+                    tax_txt = " Sheltered account — the sale is not a taxable event."
+                elif g is not None:
+                    tax_txt = (f" Delivers (highest basis first): {lots_txt}. Realizes "
+                               f"{'a LOSS of ' if g < 0 else 'a gain of '}${abs(g):,.0f}.")
+                # Detail states the strike as an exact, real number and the
+                # stock price separately (Neel, 2026-08-11: "ATM ~$96.20"
+                # read as ambiguous — is that the strike or the current
+                # price? — and $96.20 wasn't even a real listed strike,
+                # just spot*0.99 with two decimals of false precision).
+                # Same fix already applied to the Engine-1 SELL card
+                # 2026-07-15 for the identical confusion; atm_order() now
+                # rounds to the nearest whole dollar so this number is
+                # always at least a plausible real strike.
+                price_txt = f" Current stock price: ${rb['price']:,.2f}." if rb.get("price") else ""
+                add_item(
+                    "medium", "ROLL" if roll else "SELL", 5, "Rebalancing",
+                    f"{sym}: {verb} {lc} call{'s' if lc > 1 else ''} to reach {tgt:,} target",
+                    acct_name, sym,
+                    f"{verb} {lc} call{'s' if lc > 1 else ''} at strike ${order['strike']:,.0f}, "
+                    f"expiring {order.get('expiration')}.{price_txt} Collects ≈"
+                    f"${int((order.get('est_premium') or 0) * lc / max(1, order.get('contracts') or 1)):,}",
+                    (f"Rebalancing — {sym}: holding {rb['current_shares']:,.0f} against a "
+                     f"{tgt:,} target, {abs(int(rb['gap_shares'])):,} to release."
+                     + (" The existing calls are far OTM and will never assign; rolling them "
+                        "down to ATM is what actually produces the exit." if roll else "")
+                     + " Assignment is the intended outcome, not a risk." + tax_txt),
+                    earn=int((order.get("est_premium") or 0) * lc / max(1, order.get("contracts") or 1)),
+                    context={"symbol": sym, "recommended_strike": order["strike"],
+                             "target_delta": "ATM", "option_type": "call",
+                             "unsold_contracts": lc, "current_price": rb.get("price"),
+                             "expiration_date": order.get("expiration"),
+                             "total_premium": order.get("est_premium"),
+                             "rebalance": {"action": rb["action"], "target_shares": tgt,
+                                           "gap_shares": rb.get("gap_shares"),
+                                           "sheltered": leg.get("sheltered"),
+                                           "realized_gain": g}})
+            continue
+        if rb["action"] != "buy":
+            continue
+        order = rb.get("order") or {}
+        routing = rb.get("routing") or {}
+        acct = routing.get("buy_account")
+        n = int(order.get("contracts") or 0)
+        if n < 1 or not order.get("strike"):
+            # Nothing sellable: either open puts already cover the gap, or
+            # the remainder is an odd lot. Both are already explained on the
+            # Investments page; emitting a card here would be noise.
+            continue
+        acct_name = acct_id_to_name.get(acct, MARGIN_ID_TO_NAME.get(acct, acct))
+        funded = routing.get("funded", True)
+        short = routing.get("shortfall") or 0
+        # Same fix as the trim/exit card above: exact whole-dollar strike
+        # (atm_order() already rounds it — this was purely a display
+        # issue, .2f exposing false precision on a value that's now
+        # always a real number) and current stock price stated
+        # separately, not implied by "ATM ~$X" (2026-08-11).
+        price_txt = f" Current stock price: ${rb['price']:,.2f}." if rb.get("price") else ""
+        add_item(
+            "medium" if funded else "low", "SELL", 5, "Rebalancing",
+            f"{sym}: {n} put{'s' if n > 1 else ''} to acquire toward {rb.get('target_shares'):,} target"
+            + ("" if funded else " — not funded yet"),
+            acct_name or "—", sym,
+            f"sell {n} put{'s' if n > 1 else ''} at strike ${order['strike']:,.0f}, "
+            f"expiring {order.get('expiration')}.{price_txt} Collects ≈${order.get('est_premium', 0):,}",
+            (f"Rebalancing — holding {rb['current_shares']:,.0f} of a {rb.get('target_shares'):,} target. "
+             f"Selling ATM puts acquires the shares at the strike and pays premium while waiting; "
+             f"assignment is the intended outcome, not a risk."
+             + ("" if funded else
+                f" ⚠ No account can secure this yet — short ${short:,.0f} of collateral. "
+                f"It becomes placeable once the exit and trim proceeds land.")),
+            earn=order.get("est_premium"),
+            context={"symbol": sym, "recommended_strike": order["strike"],
+                     "target_delta": "ATM", "option_type": "put",
+                     "unsold_contracts": n, "current_price": rb.get("price"),
+                     "expiration_date": order.get("expiration"),
+                     "total_premium": order.get("est_premium"),
+                     "rebalance": {"action": "buy",
+                                   "target_shares": rb.get("target_shares"),
+                                   "gap_shares": rb.get("gap_shares"),
+                                   "funded": funded}})
 
     # ---- available cash per account (unsold puts — symmetric to uncovered
     # calls above, but on the cash side). Not tied to a symbol: this is
