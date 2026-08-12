@@ -222,6 +222,7 @@ def _rebalance_lookup(db: Session) -> Dict[str, Dict]:
                 "routing": r.get("routing") or {},
                 "order": r.get("order") or {},
                 "price": r.get("price"),
+                "share_buy": r.get("share_buy"),
             }
     return out
 
@@ -807,6 +808,32 @@ def build_action_queue(db: Session) -> Dict:
                                    "target_shares": rb.get("target_shares"),
                                    "gap_shares": rb.get("gap_shares"),
                                    "funded": funded}})
+
+        # Unfunded + RSI says it's actually cheap right now: buy whatever
+        # spare cash affords outright instead of waiting on exit/trim
+        # proceeds to fully collateralize the put (Neel, 2026-08-11 — "no
+        # point waiting to acquire the money because I have some money").
+        # allocation_service already vetted this (RSI < 50, spare cash not
+        # already claimed by another funded rebalance target) — see
+        # allocation_service.py module docstring for the full rule.
+        sb = rb.get("share_buy")
+        if not funded and sb:
+            sb_acct = acct_id_to_name.get(sb["account_id"], MARGIN_ID_TO_NAME.get(sb["account_id"], sb["account_id"]))
+            add_item(
+                "medium", "BUY", 5, "Rebalancing — buy shares (put unfunded)",
+                f"{sym}: buy {sb['shares']} shares outright — put needs ${short:,.0f} more than any account has",
+                sb_acct or "—", sym,
+                f"buy {sb['shares']} shares at ${rb['price']:,.2f} ≈ ${sb['cash_used']:,.0f}"
+                + (f" in {sb_acct}" if sb_acct else "") + ".",
+                (f"RSI {sb['rsi']:.0f} — genuinely cheap, not just idle cash chasing a name. "
+                 f"The full {n}-put position (${order['strike'] * 100 * n:,.0f} collateral) is "
+                 f"still the target once exit/trim proceeds land; this is real progress now "
+                 f"instead of waiting on that."
+                 + (f" Consolidates into the account that already holds {sym}." if sb.get("consolidates") else "")),
+                context={"symbol": sym, "current_price": rb.get("price"),
+                         "share_buy": sb,
+                         "rebalance": {"action": "buy", "target_shares": rb.get("target_shares"),
+                                       "gap_shares": rb.get("gap_shares"), "funded": False}})
 
     # ---- available cash per account (unsold puts — symmetric to uncovered
     # calls above, but on the cash side). Not tied to a symbol: this is

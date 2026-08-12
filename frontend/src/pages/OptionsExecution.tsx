@@ -78,7 +78,7 @@ const PRIORITY_COLOR: Record<string, string> = {
   urgent: '#dc2626', high: '#d97706', medium: '#2563eb', low: '#6b7280',
 }
 const ACTION_COLOR: Record<string, string> = {
-  SELL: '#00D632', ROLL: '#00A3FF', CLOSE: '#A855F7', WATCH: '#FFB800',
+  SELL: '#00D632', ROLL: '#00A3FF', CLOSE: '#A855F7', WATCH: '#FFB800', BUY: '#14B8A6',
 }
 const HOLD_COLOR = '#FACC15'
 

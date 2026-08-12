@@ -12,6 +12,16 @@ Neel does not buy or sell stock directly: below target he sells ATM puts and
 takes assignment, above target he sells ATM calls and gets called away,
 earning premium on both sides. So every gap is expressed as a contract
 count, not a dollar order.
+
+One exception (Neel, 2026-08-11): a buy target whose put isn't fully
+collateralized anywhere is stuck waiting on exit/trim proceeds that may
+take weeks, even though there's often smaller, genuinely spare cash sitting
+idle in some other account today. "There is no point waiting to acquire
+the money because I have some money." Rather than wait for the full
+collateral, `share_buy` (see below) proposes buying whatever whole shares
+that spare cash affords outright -- but only when RSI says the entry is
+actually cheap; buying more of an overbought name just because cash sits
+idle would be timing, not patience.
 """
 import json
 from datetime import date
@@ -23,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.shared.services.cost_basis_service import get_pure_performance
 from app.shared.services.option_premium import atm_order, next_expiration, strike_for, OTM_ATM
+from app.modules.strategies.technical_signals import get_entry_timing
 
 # A rolled call already sitting within this band of the LIVE ATM target
 # doesn't need re-rolling just because spot drifted a little since the
@@ -941,6 +952,54 @@ def get_allocation_plan(db: Session) -> Dict:
             "shares_moved": round(did),
             "gap_closed_pct": round(100 * did / need, 1) if need else 100.0,
         })
+
+    # Buy-shares fallback for unfunded, cheap-RSI buy targets (Neel,
+    # 2026-08-11, see module docstring). Runs AFTER every row exists so it
+    # never changes any existing put/`funded` result -- purely additive.
+    #
+    # Reserve spare cash against every buy target that's already funded, in
+    # bucket/declaration order, using the REAL total collateral (strike *
+    # 100 * all contracts) rather than the single-contract check
+    # `_route_buy` uses for "funded" -- otherwise two funded-looking targets
+    # sharing one account (e.g. AMZN + MRVL both routed to the same IRA)
+    # would each look like they have the account's full cash still free,
+    # when placing both wouldn't actually fit. Only after this reservation
+    # is what's left genuinely uncommitted.
+    buy_rows = [r for bkt in buckets for r in bkt["rows"] if r["action"] == "buy"]
+    spare_cash = {k: v["deployable_cash"] for k, v in cash_by_acct.items()}
+    for r in buy_rows:
+        o = r.get("order")
+        acct = (r.get("routing") or {}).get("buy_account")
+        if o and (r["routing"] or {}).get("funded") and acct in spare_cash:
+            need = o["strike"] * SHARES_PER_CONTRACT * (o.get("sell_contracts") or o.get("contracts") or 0)
+            spare_cash[acct] = max(0.0, spare_cash[acct] - need)
+
+    for r in buy_rows:
+        if (r["routing"] or {}).get("funded", True) or not r.get("price"):
+            continue  # already fundable via puts, or unpriced -- nothing to add
+        sym = r["symbol"]
+        holder_ids = [a["account_id"] for a in r["accounts"] if a["shares"] > 0]
+        entry = get_entry_timing(db, holder_ids[0] if holder_ids else "neel_brokerage", sym)
+        rsi = entry.get("rsi") if entry.get("available") else None
+        if rsi is None or rsi >= 50:
+            continue  # no signal, or not actually cheap -- don't buy into strength
+        # Prefer an account already holding the name (consolidation, same
+        # rule _route_buy uses), else whichever account has the most spare
+        # cash left after the reservation pass above.
+        candidates = {a: spare_cash[a] for a in holder_ids if a in spare_cash and spare_cash[a] > 0}
+        acct = max(candidates, key=candidates.get) if candidates else (
+            max(spare_cash, key=spare_cash.get) if spare_cash else None)
+        if not acct:
+            continue
+        shares = int(spare_cash[acct] // r["price"])
+        if shares < 1:
+            continue
+        cash_used = round(shares * r["price"], 2)
+        r["share_buy"] = {
+            "account_id": acct, "shares": shares, "cash_used": cash_used,
+            "rsi": round(rsi, 1), "consolidates": acct in holder_ids,
+        }
+        spare_cash[acct] = round(spare_cash[acct] - cash_used, 2)
 
     exit_cfg = cfg.get("exit", {}) or {}
     exit_rows = [build_row(s, 0, "exit") for s in (exit_cfg.get("symbols") or [])
