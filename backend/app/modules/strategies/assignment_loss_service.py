@@ -151,8 +151,9 @@ def get_assignment_loss(db: Session) -> Dict:
                                         r.description, open_row.transaction_date,
                                         float(open_row.amount))
             premium, chain_weeks = chain["net_premium"], chain["chain_weeks"]
+            premium_incomplete = chain["incomplete"]
         else:
-            premium, chain_weeks = 0.0, 0
+            premium, chain_weeks, premium_incomplete = 0.0, 0, False
 
         events.append({
             "date": r.transaction_date.isoformat(),
@@ -168,6 +169,7 @@ def get_assignment_loss(db: Session) -> Dict:
             "loss": round(loss, 2),  # signed for calls; puts always > 0 (filtered above)
             "premium_collected": round(premium, 2),  # net across the whole roll chain
             "premium_chain_weeks": chain_weeks,
+            "premium_incomplete": premium_incomplete,  # chain hit a real ledger gap, not a clean start
             "cost_basis_per_share": cost_basis_per_share,
             "cost_basis_source": cost_basis_source,  # "live" | "reconstructed" | None
             "cost_basis_incomplete": cost_basis_incomplete,

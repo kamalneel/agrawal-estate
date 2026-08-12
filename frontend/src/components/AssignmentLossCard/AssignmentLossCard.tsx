@@ -44,6 +44,7 @@ interface AssignmentEvent {
   loss: number
   premium_collected: number
   premium_chain_weeks: number
+  premium_incomplete: boolean
   cost_basis_per_share: number | null
   cost_basis_source: 'live' | 'reconstructed' | null
   cost_basis_incomplete: boolean | null
@@ -213,7 +214,7 @@ export function AssignmentLossCard() {
                     {e.price_at_assignment == null ? '—' : (
                       <>
                         ${e.price_at_assignment.toFixed(2)}
-                        {e.price_source === 'weekly' && <span className={styles.estFlag} title="Nearest weekly price, not the exact-day close">~</span>}
+                        {e.price_source === 'weekly' && <span className={styles.estFlag} title="Nearest available symbol-level close — used when it lands closer to the assignment date than this account's own held-share price history (e.g. shares briefly at zero around the assignment)">~</span>}
                       </>
                     )}
                   </td>
@@ -243,6 +244,9 @@ export function AssignmentLossCard() {
                       <span className={styles.estFlag} title={`Net of every open (STO) and close (BTC) across ${e.premium_chain_weeks} weekly rolls, not just the final contract's own premium.`}>
                         {` (${e.premium_chain_weeks}wk)`}
                       </span>
+                    )}
+                    {e.premium_incomplete && (
+                      <span className={styles.estFlag} title="This account's transaction history has a gap further back — an earlier leg was closed but its own opening sale is missing from the ledger, so the chain stops here. The true total (if the full history existed) would extend earlier than this.">⚠</span>
                     )}
                   </td>
                 </tr>

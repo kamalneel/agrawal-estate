@@ -261,12 +261,23 @@ def _roll_chain_premium(db: Session, account_id: str, symbol: str, option_type: 
     on that day handles parallel chains at other strikes rolling the same
     day (e.g. SPCX ran a $200 and a $162.50 put chain concurrently) without
     crossing them. Stops the moment a leg's open date has no same-day BTC
-    -- that STO was the chain's true first sale, not a roll continuation.
-    Capped at 104 hops (~2 years of weeklies) so a data anomaly can't loop.
-    """
+    -- that STO was the chain's true first sale, not a roll continuation
+    (clean stop, `incomplete=False`). Capped at 104 hops (~2 years of
+    weeklies) so a data anomaly can't loop.
+
+    `incomplete=True` (Neel, 2026-08-12, verifying a Neel's Brokerage SPCX
+    chain that stopped at 3 weeks): a BTC WAS found — proving an earlier
+    leg really was rolled into this one — but that earlier leg's own STO
+    is missing from the ledger (this account's history has a real gap
+    around 2026-07-10: a BTC closes "SPCX 7/17 Put $200" on 7/15, but no
+    STO ever opened it). That's different from a clean chain start: there
+    IS more history, it just can't be priced, so the total is a real but
+    partial floor, not the whole chain — surfaced honestly rather than
+    silently presented as complete."""
     label = option_type.capitalize()
     total = final_amount
     weeks = 1
+    incomplete = False
     cur_desc, cur_date = final_description, final_open_date
     cur_strike = _parse_strike(final_description)
     seen = {cur_desc}
@@ -277,7 +288,7 @@ def _roll_chain_premium(db: Session, account_id: str, symbol: str, option_type: 
               AND transaction_date = :d AND description ILIKE :label
         """), {"acct": account_id, "sym": symbol, "d": cur_date, "label": f"%{label}%"}).fetchall()
         if not btc_rows:
-            break
+            break  # clean chain start -- no evidence of an earlier leg
         best = min(btc_rows, key=lambda r: abs((_parse_strike(r.description) or 1e9) - (cur_strike or 0)))
         if best.description in seen:
             break  # guard against a malformed/cyclical match
@@ -287,39 +298,56 @@ def _roll_chain_premium(db: Session, account_id: str, symbol: str, option_type: 
               AND transaction_type = 'STO' ORDER BY transaction_date DESC LIMIT 1
         """), {"acct": account_id, "sym": symbol, "desc": best.description}).fetchone()
         if not sto_row:
-            break  # opened before transaction history starts -- chain truncates honestly here
+            incomplete = True  # a prior leg existed (this BTC closed it) but its open is missing
+            break
         total += float(best.amount) + float(sto_row.amount)
         seen.add(best.description)
         weeks += 1
         cur_desc, cur_date = best.description, sto_row.transaction_date
         cur_strike = _parse_strike(best.description)
-    return {"net_premium": round(total, 2), "chain_weeks": weeks}
+    return {"net_premium": round(total, 2), "chain_weeks": weeks, "incomplete": incomplete}
 
 
 def _price_near(db: Session, account_id: str, symbol: str, target: date):
-    """Real price near a date: daily (held-share history) first, then
-    weekly symbol_price_history as a coarser real fallback. Never
-    fabricated — returns None if nothing is within tolerance."""
-    row = db.execute(_text("""
-        SELECT market_value / NULLIF(quantity, 0) AS px
+    """Real price near a date: whichever of two real sources lands
+    CLOSER to the target date wins — daily (held-share history, only
+    exists on days the account actually held nonzero shares) or
+    symbol-level close (symbol_price_history, always available
+    regardless of holdings). Unconditionally preferring 'daily' used to
+    pick a 5-day-stale account-specific price over a same-day
+    symbol-level close (Neel, 2026-08-12: two accounts assigned the same
+    SPCX put chain on the same day showed different assignment prices —
+    $125.89 vs $133.29 — because one account's shares had been called
+    away days earlier by an unrelated covered call, leaving no 'daily'
+    price point anywhere near the assignment date in that account, so
+    the old logic fell back 5 days instead of to the closer, same-day
+    symbol_price_history close). Never fabricated — returns None if
+    nothing is within tolerance on either source."""
+    daily = db.execute(_text("""
+        SELECT snapshot_date, market_value / NULLIF(quantity, 0) AS px
         FROM investment_holdings_history
         WHERE account_id = :acct AND symbol = :sym AND quantity > 0
           AND market_value IS NOT NULL
           AND snapshot_date BETWEEN :d - INTERVAL '5 days' AND :d + INTERVAL '5 days'
         ORDER BY ABS(snapshot_date - :d) ASC LIMIT 1
     """), {"acct": account_id, "sym": symbol, "d": target}).fetchone()
-    if row and row.px:
-        return float(row.px), "daily"
-    row = db.execute(_text("""
-        SELECT close_price
+    weekly = db.execute(_text("""
+        SELECT price_date, close_price
         FROM symbol_price_history
         WHERE symbol = :sym
           AND price_date BETWEEN :d - INTERVAL '10 days' AND :d + INTERVAL '10 days'
         ORDER BY ABS(price_date - :d) ASC LIMIT 1
     """), {"sym": symbol, "d": target}).fetchone()
-    if row and row.close_price:
-        return float(row.close_price), "weekly"
-    return None, None
+
+    candidates = []
+    if daily and daily.px:
+        candidates.append((abs((daily.snapshot_date - target).days), float(daily.px), "daily"))
+    if weekly and weekly.close_price:
+        candidates.append((abs((weekly.price_date - target).days), float(weekly.close_price), "weekly"))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda c: c[0])  # closer wins; ties keep 'daily' (added first, stable sort)
+    return candidates[0][1], candidates[0][2]
 
 
 def _cost_basis_near(db: Session, account_id: str, symbol: str, target: date):
