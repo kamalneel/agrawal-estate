@@ -431,6 +431,41 @@ def build_action_queue(db: Session) -> Dict:
                 "price_source": entry.get("price_source"),
             }
 
+        # Rebalance overlay for EXISTING positions (Neel, 2026-08-12): Engine
+        # 5 only emits its own dedicated cards for NEW orders it wants
+        # placed — it says nothing on an ALREADY-OPEN put/call for a symbol
+        # that also carries a rebalance target, so this ROLL/WATCH card read
+        # identically whether assignment here was wanted (aligned with a buy
+        # target) or actively unwanted (a trim/exit target, where assignment
+        # would ADD shares to a symbol Neel is trying to REDUCE — e.g. GOOGL:
+        # 400 held vs a 200 target). "Are you asking me to roll because you
+        # forgot we wanted assignment?" — this makes the answer explicit
+        # instead of silent. Badge only set when actually aligned (same
+        # context.rebalance shape Engine 1/5 already use, so the frontend's
+        # existing REBALANCING badge just works); a put that conflicts with
+        # a trim/exit target gets a caution instead of the badge, since
+        # showing "REBALANCING" there would imply the opposite of what's
+        # true.
+        rb_sym = rebalance.get(sym)
+        rebalance_note = ""
+        if rb_sym:
+            tgt = rb_sym.get("target_shares")
+            tgt_txt = f" ({tgt:,} sh)" if tgt is not None else ""
+            if opt == "put" and rb_sym["action"] == "buy":
+                base_ctx["rebalance"] = {"action": "buy", "target_shares": tgt,
+                                          "gap_shares": rb_sym.get("gap_shares")}
+                rebalance_note = (f" This put also counts toward the {sym} buy target{tgt_txt} — "
+                                  "assignment here is wanted, in line with rebalancing, not a risk.")
+            elif opt == "put" and rb_sym["action"] in ("trim", "exit"):
+                rebalance_note = (f" ⚠ Unrelated to rebalancing — {sym} is a TRIM target{tgt_txt}; "
+                                  "assignment on THIS put would ADD shares, working against that. "
+                                  "Manage it on its own income merits, not as a rebalancing play.")
+            elif opt == "call" and rb_sym["action"] in ("trim", "exit"):
+                base_ctx["rebalance"] = {"action": rb_sym["action"], "target_shares": tgt,
+                                          "gap_shares": rb_sym.get("gap_shares")}
+                rebalance_note = (f" This call is part of the {sym} {rb_sym['action']} — assignment "
+                                  "here is the intended outcome, not a risk.")
+
         if opt == "call" and stock > strike:
             intrinsic = stock - strike
             ipct = round(intrinsic / mark * 100, 0) if mark else 100
@@ -439,24 +474,28 @@ def build_action_queue(db: Session) -> Dict:
                 add_item("high", "WATCH", 4, "ITM call >80% intrinsic",
                          f"{sym} call deep ITM — wait, don't roll", account, sym, spec,
                          "Mostly intrinsic: compression too expensive. Set price alerts "
-                         "(-5% evaluate, -10% compress, at-strike full exit). Cut only if thesis changed.",
+                         "(-5% evaluate, -10% compress, at-strike full exit). Cut only if thesis changed."
+                         + rebalance_note,
                          context=base_ctx)
             elif ipct > 60:
                 add_item("medium", "WATCH", 4, "ITM call 60-80% intrinsic",
                          f"{sym} call ITM — wait for mean reversion, don't roll", account, sym, spec,
-                         "Stock must move back; do NOT compress (too expensive at this intrinsic level).",
+                         "Stock must move back; do NOT compress (too expensive at this intrinsic level)."
+                         + rebalance_note,
                          context=base_ctx)
             elif ipct > 40:
                 shel = is_sheltered(account)
                 add_item("high", "ROLL", 4, "ITM call 40-60% intrinsic (crossover)",
                          f"{sym} call — evaluate compression", account, sym, spec,
                          f"Crossover zone: compress (≤4 weeks total, target delta 30, small debit OK) "
-                         f"or wait for pullback. {'IRA: compress more aggressively.' if shel else 'Taxable: slightly more patient, but avoid the 12-week trap.'}",
+                         f"or wait for pullback. {'IRA: compress more aggressively.' if shel else 'Taxable: slightly more patient, but avoid the 12-week trap.'}"
+                         + rebalance_note,
                          context=base_ctx)
             elif dte <= 2:
                 add_item("urgent", "ROLL", 4, "ITM call at expiry",
                          f"{sym} call ITM, expires in {dte}d", account, sym, spec,
-                         "Time-dominated ITM call at expiry: roll up/out to next week or accept assignment (called away = plan for Tier 2).",
+                         "Time-dominated ITM call at expiry: roll up/out to next week or accept assignment (called away = plan for Tier 2)."
+                         + rebalance_note,
                          context=base_ctx)
 
         elif opt == "put" and stock < strike * 1.02:
@@ -491,7 +530,7 @@ def build_action_queue(db: Session) -> Dict:
                          account, sym, spec,
                          "1-2 days to expiry and still tested: roll out 1 week; if deeper ITM, roll down+out "
                          "at ~net-zero. Oscillating assumed — do not panic-close (AVGO lesson). Verify no "
-                         "thesis-changing news." + roll_txt + (_roll_timing_note(dte) if itm else ""),
+                         "thesis-changing news." + roll_txt + (_roll_timing_note(dte) if itm else "") + rebalance_note,
                          earn=roll_premium,
                          context={**base_ctx, **roll_ctx})
             elif itm and depth >= 10 and exp and exp <= week_ending:
@@ -500,7 +539,7 @@ def build_action_queue(db: Session) -> Dict:
                          f"{sym} put {depth:.0f}% ITM", account, sym, spec,
                          "Roll down and out at net-zero-or-credit while the cycle exhausts; acceptable for multiple "
                          "weeks. Runaway (structural news) would instead mean evaluate closing."
-                         + roll_txt + _roll_timing_note(dte) + _streak_text(streak),
+                         + roll_txt + _roll_timing_note(dte) + _streak_text(streak) + rebalance_note,
                          earn=roll_premium,
                          context={**base_ctx, **roll_ctx, **({"roll_streak": streak} if streak else {})})
             elif itm and depth >= 10:
@@ -515,12 +554,13 @@ def build_action_queue(db: Session) -> Dict:
                          "Already rolled into next week's expiry; this cycle's action is done. Monitor — an "
                          "opportunistic further roll-down only if it nets zero-or-credit. Becomes a ROLL again "
                          "when its expiry week arrives and it's still ITM."
-                         + _streak_text(streak),
+                         + _streak_text(streak) + rebalance_note,
                          context={**base_ctx, **({"roll_streak": streak} if streak else {})})
             elif itm:
                 add_item("low", "WATCH", 4, "Tested put — theta working",
                          f"{sym} put slightly ITM, {dte}d left", account, sym, spec,
-                         "More than 5 days out: let theta work (RSI<30 stocks are already beaten up).",
+                         "More than 5 days out: let theta work (RSI<30 stocks are already beaten up)."
+                         + rebalance_note,
                          context=base_ctx)
 
     # ---- Engine 1: uncovered calls ----------------------------------------
