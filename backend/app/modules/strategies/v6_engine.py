@@ -465,6 +465,25 @@ def build_action_queue(db: Session) -> Dict:
             spec = (f"{sym} {contracts}x PUT ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f}"
                     + (f" · {depth:.0f}% ITM" if itm else " · near ATM")
                     + (" (est.)" if estimated else ""))
+            # Roll TARGET — strike, date, credit — not just the strategy in
+            # words (Neel, 2026-08-12: "you're not telling me to roll it to
+            # what amount and what date" / "you used to say how much money
+            # will be made"). Next Friday out; strike walks down to current
+            # stock price when ITM ("roll down and out"), stays put when
+            # merely near-ATM. est_premium is the NEW leg's gross credit
+            # only, same convention as every other card in this file — the
+            # buy-to-close cost on the leg being replaced isn't priced (no
+            # live chain feed), so this is not a true net roll credit, just
+            # what "net-zero-or-credit" is measured against.
+            roll_exp = exp + timedelta(days=7) if exp else None
+            roll_strike = round(stock) if itm else strike
+            roll_premium = weekly_premium(contracts, stock, RATE_ATM_WEEKLY)
+            roll_txt = (f" Roll to strike ${roll_strike:,.0f}, expiring "
+                        f"{roll_exp.strftime('%m/%d') if roll_exp else '?'} — new leg collects "
+                        f"≈${roll_premium:,} (est., gross — net of closing the current leg).")
+            roll_ctx = {"roll_to_strike": roll_strike,
+                        "roll_to_expiration": str(roll_exp) if roll_exp else None,
+                        "roll_to_premium": roll_premium}
             if dte <= 2:
                 add_item("urgent" if itm else "high", "ROLL", 4,
                          "Tested put at expiry",
@@ -472,16 +491,18 @@ def build_action_queue(db: Session) -> Dict:
                          account, sym, spec,
                          "1-2 days to expiry and still tested: roll out 1 week; if deeper ITM, roll down+out "
                          "at ~net-zero. Oscillating assumed — do not panic-close (AVGO lesson). Verify no "
-                         "thesis-changing news." + (_roll_timing_note(dte) if itm else ""),
-                         context=base_ctx)
+                         "thesis-changing news." + roll_txt + (_roll_timing_note(dte) if itm else ""),
+                         earn=roll_premium,
+                         context={**base_ctx, **roll_ctx})
             elif itm and depth >= 10 and exp and exp <= week_ending:
                 streak = _get_roll_streak_ctx(db, p_acct_id, sym, opt, strike, depth)
                 add_item("high", "ROLL", 4, "Deep tested put",
                          f"{sym} put {depth:.0f}% ITM", account, sym, spec,
                          "Roll down and out at net-zero-or-credit while the cycle exhausts; acceptable for multiple "
                          "weeks. Runaway (structural news) would instead mean evaluate closing."
-                         + _roll_timing_note(dte) + _streak_text(streak),
-                         context={**base_ctx, **({"roll_streak": streak} if streak else {})})
+                         + roll_txt + _roll_timing_note(dte) + _streak_text(streak),
+                         earn=roll_premium,
+                         context={**base_ctx, **roll_ctx, **({"roll_streak": streak} if streak else {})})
             elif itm and depth >= 10:
                 # Expires AFTER this week's Friday ⇒ already rolled into the
                 # next cycle (Neel, 2026-07-09: 'those have already been
