@@ -60,6 +60,9 @@ interface BoardRow {
   original_premium: number | null
   capture_pct: number | null
   itm: boolean
+  total_collected: number | null
+  total_collected_weeks: number | null
+  total_collected_incomplete: boolean | null
   uncovered?: boolean
   uncovered_shares?: number
   uncovered_cash?: number
@@ -122,7 +125,7 @@ function statusOf(r: BoardRow): string {
   return r.itm ? 'ITM' : near ? 'NEAR' : 'OTM'
 }
 
-type BoardSortKey = 'account' | 'symbol' | 'type' | 'expiry' | 'strike' | 'stock' | 'mark' | 'collected' | 'capture' | 'status'
+type BoardSortKey = 'account' | 'symbol' | 'type' | 'expiry' | 'strike' | 'stock' | 'mark' | 'collected' | 'total' | 'capture' | 'status'
 
 function boardSortValue(r: BoardRow, key: BoardSortKey): number | string | null {
   switch (key) {
@@ -134,6 +137,7 @@ function boardSortValue(r: BoardRow, key: BoardSortKey): number | string | null 
     case 'stock': return r.stock_price
     case 'mark': return r.current_mark
     case 'collected': return r.original_premium
+    case 'total': return r.total_collected
     case 'capture': return r.capture_pct
     case 'status': return statusOf(r)
   }
@@ -520,7 +524,8 @@ export function OptionsExecution() {
                     {([
                       ['account', 'Account', false], ['symbol', 'Symbol', false], ['type', 'Type', false],
                       ['expiry', 'Expiry', false], ['strike', 'Strike', true], ['stock', 'Stock', true],
-                      ['mark', 'Mark', true], ['collected', 'Collected', true], ['capture', 'Capture', true],
+                      ['mark', 'Mark', true], ['collected', 'Collected', true],
+                      ['total', 'Total Collected', true], ['capture', 'Capture', true],
                       ['status', 'Status', false],
                     ] as Array<[BoardSortKey, string, boolean]>).map(([k, label2, numeric]) => (
                       <th key={k} className={numeric ? styles.num : undefined}>
@@ -554,6 +559,7 @@ export function OptionsExecution() {
                           <td className={styles.num}>—</td>
                           <td className={styles.num}>—</td>
                           <td className={styles.num}>—</td>
+                          <td className={styles.num}>—</td>
                           <td><span className={styles.status} style={{ color: '#00D632', borderColor: '#00D632' }}>{status}</span></td>
                         </tr>
                       )
@@ -571,6 +577,21 @@ export function OptionsExecution() {
                         </td>
                         <td className={styles.num}>{r.current_mark != null ? `$${r.current_mark.toFixed(2)}` : '—'}</td>
                         <td className={styles.num}>{r.original_premium != null ? `$${r.original_premium.toFixed(2)}` : '—'}</td>
+                        <td className={styles.num}>
+                          {r.total_collected != null ? (
+                            <span style={{ color: r.total_collected < 0 ? '#FF5A5A' : '#00D632' }}>
+                              {fmt(r.total_collected)}
+                              {r.total_collected_weeks != null && r.total_collected_weeks > 1 && (
+                                <span className={styles.estFlag} title={`Net of every open (STO) and close (BTC) across ${r.total_collected_weeks} weekly rolls, not just this contract's own premium.`}>
+                                  {` (${r.total_collected_weeks}wk)`}
+                                </span>
+                              )}
+                              {r.total_collected_incomplete && (
+                                <span className={styles.estFlag} title="This account's ledger has a gap further back — an earlier leg was closed but its own opening sale is missing, so this total stops there rather than guessing further.">⚠</span>
+                              )}
+                            </span>
+                          ) : '—'}
+                        </td>
                         <td className={styles.num} style={{ color: r.capture_pct == null ? undefined : r.capture_pct < 0 ? '#FF5A5A' : '#00D632' }}>
                           {r.capture_pct != null ? `${r.capture_pct.toFixed(0)}%` : '—'}
                         </td>

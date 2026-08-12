@@ -396,6 +396,12 @@
   border-bottom: none;
 }
 
+.estFlag {
+  color: var(--color-text-secondary, #a3a3a3);
+  margin-left: 2px;
+  cursor: help;
+}
+
 .num {
   text-align: right;
   font-variant-numeric: tabular-nums;

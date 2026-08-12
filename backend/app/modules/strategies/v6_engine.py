@@ -12,14 +12,16 @@ import json
 import logging
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.modules.strategies.technical_signals import get_entry_timing, get_roll_streak
+from app.modules.strategies.technical_signals import (
+    get_entry_timing, get_roll_streak, _index_roll_transactions, _walk_roll_chain,
+)
 # Strike/premium heuristics are shared with the Investments allocation plan —
 # one definition so the two pages cannot quote different numbers for the same
 # symbol. See app/shared/services/option_premium.py.
@@ -354,6 +356,33 @@ def build_action_queue(db: Session) -> Dict:
 
     # ---- Engine 4: stuck positions ----------------------------------------
     covered_calls: Dict[tuple, int] = {}
+    # One ledger index per (account, symbol, option_type), reused across
+    # every board row that shares it (e.g. two open SPCX calls at
+    # different strikes both hit the same cache entry) — this page already
+    # had one quadratic-query performance incident, so ~98 open contracts
+    # get at most a few dozen queries total here, not one each (Neel,
+    # 2026-08-12, asking for this same "total collected across all rolls"
+    # figure on the open-positions board: "make sure... you're not making
+    # mistakes and that you write safe code... on a bigger table").
+    _roll_chain_cache: Dict[Tuple[str, str, str], Tuple[Dict, Dict]] = {}
+
+    def _roll_chain_for(acct_id: Optional[str], sym_: str, opt_: str, strike_: float, exp_):
+        """Total collected across every roll leading to this OPEN
+        position, or None when the ledger has no matching leg (old
+        position predating tracked history, etc.) — never fabricated."""
+        if not acct_id or not exp_:
+            return None
+        cache_key = (acct_id, sym_, opt_)
+        idx = _roll_chain_cache.get(cache_key)
+        if idx is None:
+            idx = _index_roll_transactions(db, acct_id, sym_, opt_)
+            _roll_chain_cache[cache_key] = idx
+        sto_by_leg, btc_by_date = idx
+        leg = sto_by_leg.get((strike_, exp_))
+        if leg is None:
+            return None
+        return _walk_roll_chain(sto_by_leg, btc_by_date, strike_, exp_, leg["date"], leg["amount"])
+
     for p in pos_rows:
         sym, strike = p.symbol, float(p.strike_price)
         mark = float(p.current_mark or 0)
@@ -370,6 +399,8 @@ def build_action_queue(db: Session) -> Dict:
         if opt == "call":
             covered_calls[(account, sym)] = covered_calls.get((account, sym), 0) + contracts * 100
 
+        chain = _roll_chain_for(p_acct_id, sym, opt, strike, exp)
+
         board.append({
             "account": account, "symbol": sym, "type": opt, "strike": strike,
             "expiration": str(exp) if exp else None, "dte": dte,
@@ -378,6 +409,9 @@ def build_action_queue(db: Session) -> Dict:
             "original_premium": orig, "capture_pct": capture_pct,
             "itm": bool(stock and ((opt == "call" and stock > strike)
                                    or (opt == "put" and stock < strike))),
+            "total_collected": chain["net_premium"] if chain else None,
+            "total_collected_weeks": chain["chain_weeks"] if chain else None,
+            "total_collected_incomplete": chain["incomplete"] if chain else None,
         })
 
         if stock is None:

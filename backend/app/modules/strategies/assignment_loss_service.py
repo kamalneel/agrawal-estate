@@ -45,8 +45,9 @@ matched transactions with an identical description (same strike +
 expiration) as the assigned contract, which in practice meant "the one
 STO that opened this exact week's contract" — looked like a total,
 wasn't one (Neel, re: a $9,005 figure that turned out to be a single
-transaction). See `_roll_chain_premium` in technical_signals.py for the
-walk-back.
+transaction). See `_walk_roll_chain` in technical_signals.py for the
+walk-back. Also used, batched, by the open-positions board
+(v6_engine.py) for the same figure on still-open contracts.
 """
 
 from datetime import date
@@ -56,7 +57,8 @@ from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 from app.modules.strategies.technical_signals import (
-    _parse_strike, _price_near, _cost_basis_near, _reconstruct_cost_basis, _roll_chain_premium,
+    _parse_strike, _parse_expiration, _price_near, _cost_basis_near, _reconstruct_cost_basis,
+    _index_roll_transactions, _walk_roll_chain,
 )
 
 
@@ -138,18 +140,18 @@ def get_assignment_loss(db: Session) -> Dict:
         # contract, not just its own STO (Neel, 2026-08-12: a $9,005
         # "premium collected" figure turned out to be one transaction, not
         # a total — he expected "since I first sold this put and rolled it
-        # week over week, what's the total" — see _roll_chain_premium for
-        # the full walk-back and why it nets STO opens against BTC closes
-        # rather than summing STOs alone).
-        open_row = db.execute(_text("""
-            SELECT transaction_date, amount FROM investment_transactions
-            WHERE account_id = :acct AND symbol = :sym AND description = :desc
-              AND transaction_type = 'STO' ORDER BY transaction_date DESC LIMIT 1
-        """), {"acct": r.account_id, "sym": r.symbol, "desc": r.description}).fetchone()
-        if open_row:
-            chain = _roll_chain_premium(db, r.account_id, r.symbol, opt_type,
-                                        r.description, open_row.transaction_date,
-                                        float(open_row.amount))
+        # week over week, what's the total" — see _walk_roll_chain for the
+        # full walk-back and why it nets STO opens against BTC closes
+        # rather than summing STOs alone). Identity is (strike, expiration)
+        # parsed from this exact OASGN's own description, not raw text —
+        # same scheme _index_roll_transactions indexes by, so the lookup
+        # below is a plain dict get, not another query.
+        expiration = _parse_expiration(r.description)
+        sto_by_leg, btc_by_date = _index_roll_transactions(db, r.account_id, r.symbol, opt_type)
+        final_leg = sto_by_leg.get((strike, expiration)) if expiration else None
+        if final_leg:
+            chain = _walk_roll_chain(sto_by_leg, btc_by_date, strike, expiration,
+                                     final_leg["date"], final_leg["amount"])
             premium, chain_weeks = chain["net_premium"], chain["chain_weeks"]
             premium_incomplete = chain["incomplete"]
         else:

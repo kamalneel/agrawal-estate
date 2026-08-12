@@ -23,12 +23,13 @@ estimate from thin data.
 
 import re
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 _STRIKE_RE = re.compile(r"\$([\d,]+\.?\d*)\s*$")
+_EXP_RE = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})")
 
 
 def compute_rsi(closes: List[float], period: int = 14) -> Optional[float]:
@@ -240,11 +241,74 @@ def _roll_events(db: Session, account_id: str, symbol: str, option_type: str) ->
     return events
 
 
-def _roll_chain_premium(db: Session, account_id: str, symbol: str, option_type: str,
-                        final_description: str, final_open_date: date,
-                        final_amount: float) -> Dict:
+def _parse_expiration(description: Optional[str]) -> Optional[date]:
+    """First M/D/YYYY substring in a description, e.g. 'SPCX 8/14/2026 Put
+    $200.00' -> 2026-08-14. Paired with _parse_strike as the (strike,
+    expiration) identity of one specific contract -- more robust than
+    matching the raw description string (whitespace/formatting drift
+    between syncs would silently break an exact-string match; two parsed
+    numbers can't drift)."""
+    if not description:
+        return None
+    m = _EXP_RE.search(description)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+
+
+def _index_roll_transactions(db: Session, account_id: str, symbol: str,
+                             option_type: str) -> Tuple[Dict[Tuple[float, date], Dict],
+                                                         Dict[date, List[Dict]]]:
+    """One (account, symbol, option_type)'s entire STO/BTC history, fetched
+    in a SINGLE query and indexed by contract identity (strike, expiration)
+    for in-memory chain walking. Split out from _roll_chain_premium so the
+    open-positions board (dozens of contracts, often repeating the same
+    account+symbol+type) can index once per unique triple and walk every
+    row against the same in-memory data, instead of re-querying per row
+    per hop — this page already had one quadratic-query performance
+    incident; N+1 queries across ~100 open contracts would be another.
+
+    Legs are keyed by PARSED (strike, expiration), not raw description
+    text, so a same-contract STO split across two fills (rare, but seen)
+    sums correctly instead of needing an exact string match. `date` on
+    each STO leg is the EARLIEST fill — the day the leg was actually
+    opened, which is what the backward walk needs to find the roll that
+    funded it (a later top-up fill must not be mistaken for the open)."""
+    label = option_type.capitalize()
+    rows = db.execute(_text("""
+        SELECT transaction_date, transaction_type, description, amount
+        FROM investment_transactions
+        WHERE account_id = :acct AND symbol = :sym
+          AND transaction_type IN ('STO', 'BTC') AND description ILIKE :label
+        ORDER BY transaction_date
+    """), {"acct": account_id, "sym": symbol, "label": f"%{label}%"}).fetchall()
+
+    sto_by_leg: Dict[Tuple[float, date], Dict] = {}
+    btc_by_date: Dict[date, List[Dict]] = {}
+    for r in rows:
+        strike = _parse_strike(r.description)
+        exp = _parse_expiration(r.description)
+        if strike is None or exp is None:
+            continue
+        if r.transaction_type == "STO":
+            leg = sto_by_leg.setdefault((strike, exp), {"amount": 0.0, "date": r.transaction_date})
+            leg["amount"] += float(r.amount)
+            leg["date"] = min(leg["date"], r.transaction_date)
+        else:
+            btc_by_date.setdefault(r.transaction_date, []).append(
+                {"strike": strike, "expiration": exp, "amount": float(r.amount)})
+    return sto_by_leg, btc_by_date
+
+
+def _walk_roll_chain(sto_by_leg: Dict[Tuple[float, date], Dict], btc_by_date: Dict[date, List[Dict]],
+                     final_strike: float, final_expiration: Optional[date],
+                     final_open_date: date, final_amount: float) -> Dict:
     """True net premium across the WHOLE weekly roll chain that fed into
-    one specific contract -- not just that one contract's own STO.
+    one specific contract -- not just that one contract's own STO. Pure
+    in-memory walk over data from _index_roll_transactions.
 
     Neel, 2026-08-12, on an assignment-loss row reading "$9,005 premium
     collected": that figure was literally one STO transaction -- the exact
@@ -257,54 +321,61 @@ def _roll_chain_premium(db: Session, account_id: str, symbol: str, option_type: 
     actually pocketed in cash over the life of the position.
 
     Walks backward one roll at a time: the BTC on the day this leg opened
-    (same account/symbol/type) is what funded it. Nearest-strike matching
-    on that day handles parallel chains at other strikes rolling the same
-    day (e.g. SPCX ran a $200 and a $162.50 put chain concurrently) without
-    crossing them. Stops the moment a leg's open date has no same-day BTC
-    -- that STO was the chain's true first sale, not a roll continuation
-    (clean stop, `incomplete=False`). Capped at 104 hops (~2 years of
-    weeklies) so a data anomaly can't loop.
+    is what funded it. Nearest-strike matching among that day's BTCs
+    handles parallel chains at other strikes rolling the same day (e.g.
+    SPCX ran a $200 and a $162.50 put chain concurrently) without crossing
+    them. Stops the moment a leg's open date has no same-day BTC -- that
+    STO was the chain's true first sale, not a roll continuation (clean
+    stop, `incomplete=False`). Capped at 104 hops (~2 years of weeklies)
+    so a data anomaly can't loop.
 
     `incomplete=True` (Neel, 2026-08-12, verifying a Neel's Brokerage SPCX
     chain that stopped at 3 weeks): a BTC WAS found — proving an earlier
     leg really was rolled into this one — but that earlier leg's own STO
-    is missing from the ledger (this account's history has a real gap
-    around 2026-07-10: a BTC closes "SPCX 7/17 Put $200" on 7/15, but no
-    STO ever opened it). That's different from a clean chain start: there
-    IS more history, it just can't be priced, so the total is a real but
-    partial floor, not the whole chain — surfaced honestly rather than
-    silently presented as complete."""
-    label = option_type.capitalize()
+    is missing from the ledger (a real gap, not a bug: this account's
+    history shows a BTC closing "SPCX 7/17 Put $200" on 7/15 with no STO
+    ever opening it). Different from a clean chain start: there IS more
+    history, it just can't be priced, so the total is a real but partial
+    floor — surfaced honestly rather than silently presented as complete."""
     total = final_amount
     weeks = 1
     incomplete = False
-    cur_desc, cur_date = final_description, final_open_date
-    cur_strike = _parse_strike(final_description)
-    seen = {cur_desc}
+    cur_strike, cur_exp, cur_date = final_strike, final_expiration, final_open_date
+    seen = {(cur_strike, cur_exp)}
     for _ in range(104):
-        btc_rows = db.execute(_text("""
-            SELECT description, amount FROM investment_transactions
-            WHERE account_id = :acct AND symbol = :sym AND transaction_type = 'BTC'
-              AND transaction_date = :d AND description ILIKE :label
-        """), {"acct": account_id, "sym": symbol, "d": cur_date, "label": f"%{label}%"}).fetchall()
-        if not btc_rows:
+        btcs = btc_by_date.get(cur_date)
+        if not btcs:
             break  # clean chain start -- no evidence of an earlier leg
-        best = min(btc_rows, key=lambda r: abs((_parse_strike(r.description) or 1e9) - (cur_strike or 0)))
-        if best.description in seen:
+        # Nearest-strike match, but only when there's a single distinct
+        # (strike, expiration) closest to cur_strike -- duplicate rows for
+        # the SAME contract (multi-lot fills) collapse to one key and are
+        # fine, but two genuinely DIFFERENT contracts tying on distance
+        # (e.g. an account running parallel same-symbol positions, both
+        # closed same day) is a real ambiguity, not a coin flip to guess:
+        # an account was found running two independent AVGO put chains
+        # that both happened to sit at the same $360 strike on the same
+        # close day (2026-08-12) -- picking either arbitrarily risks
+        # splicing one chain's history onto the other's total.
+        min_diff = min(abs(b["strike"] - cur_strike) for b in btcs)
+        tied_keys = {(b["strike"], b["expiration"]) for b in btcs
+                    if abs(b["strike"] - cur_strike) == min_diff}
+        if len(tied_keys) > 1:
+            incomplete = True  # ambiguous same-day match -- don't guess which contract this was
+            break
+        key = next(iter(tied_keys))
+        if key in seen:
             break  # guard against a malformed/cyclical match
-        sto_row = db.execute(_text("""
-            SELECT transaction_date, amount FROM investment_transactions
-            WHERE account_id = :acct AND symbol = :sym AND description = :desc
-              AND transaction_type = 'STO' ORDER BY transaction_date DESC LIMIT 1
-        """), {"acct": account_id, "sym": symbol, "desc": best.description}).fetchone()
-        if not sto_row:
+        leg = sto_by_leg.get(key)
+        if leg is None:
             incomplete = True  # a prior leg existed (this BTC closed it) but its open is missing
             break
-        total += float(best.amount) + float(sto_row.amount)
-        seen.add(best.description)
+        # Sum every BTC row matching this exact contract (multi-lot closes,
+        # same reasoning as summing multi-lot STO fills on the open side).
+        btc_amount = sum(b["amount"] for b in btcs if (b["strike"], b["expiration"]) == key)
+        total += btc_amount + leg["amount"]
+        seen.add(key)
         weeks += 1
-        cur_desc, cur_date = best.description, sto_row.transaction_date
-        cur_strike = _parse_strike(best.description)
+        cur_strike, cur_exp, cur_date = key[0], key[1], leg["date"]
     return {"net_premium": round(total, 2), "chain_weeks": weeks, "incomplete": incomplete}
 
 
