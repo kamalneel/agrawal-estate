@@ -28,15 +28,25 @@ the remaining shares' average cost, so summing every BUY through the
 assignment date is correct regardless of what else happened to the
 position in between.
 
-Both are deliberately GROSS — not netted against the premium collected
-on that contract, which is already counted once, elsewhere, as income;
-netting here would double-count it in the opposite direction. Premium
-is still reported alongside each event for context. `cost_basis_per_share`
-is reported as its own field (source 'live' = Robinhood's own
+Both loss figures are deliberately GROSS — not netted against premium,
+which is already counted once, elsewhere, as income; netting here would
+double-count it in the opposite direction. `cost_basis_per_share` is
+reported as its own field (source 'live' = Robinhood's own
 average_buy_price captured at sync time since 2026-08-08; 'reconstructed'
 = weighted average of BUY transaction history for assignments before
 that, flagged `incomplete` when the reconstruction can't account for
 all the assigned shares — a real gap, not hidden).
+
+`premium_collected` (redefined 2026-08-12): the true NET premium across
+the WHOLE weekly roll chain leading to the assigned contract — every
+STO open minus every BTC close, back to the first time this position was
+ever sold — not just the final leg's own STO. The original version only
+matched transactions with an identical description (same strike +
+expiration) as the assigned contract, which in practice meant "the one
+STO that opened this exact week's contract" — looked like a total,
+wasn't one (Neel, re: a $9,005 figure that turned out to be a single
+transaction). See `_roll_chain_premium` in technical_signals.py for the
+walk-back.
 """
 
 from datetime import date
@@ -46,7 +56,7 @@ from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 from app.modules.strategies.technical_signals import (
-    _parse_strike, _price_near, _cost_basis_near, _reconstruct_cost_basis,
+    _parse_strike, _price_near, _cost_basis_near, _reconstruct_cost_basis, _roll_chain_premium,
 )
 
 
@@ -124,15 +134,25 @@ def get_assignment_loss(db: Session) -> Dict:
             # real gain, not something to clamp away (Neel, 2026-08-08).
             loss = (cb - strike) * shares
 
-        # premium originally collected on this exact contract (same
-        # symbol+strike+expiration+type = identical description text)
-        premium_row = db.execute(_text("""
-            SELECT SUM(amount) AS prem FROM investment_transactions
+        # True net premium across the WHOLE roll chain that led to this
+        # contract, not just its own STO (Neel, 2026-08-12: a $9,005
+        # "premium collected" figure turned out to be one transaction, not
+        # a total — he expected "since I first sold this put and rolled it
+        # week over week, what's the total" — see _roll_chain_premium for
+        # the full walk-back and why it nets STO opens against BTC closes
+        # rather than summing STOs alone).
+        open_row = db.execute(_text("""
+            SELECT transaction_date, amount FROM investment_transactions
             WHERE account_id = :acct AND symbol = :sym AND description = :desc
-              AND transaction_type = 'STO' AND transaction_date <= :d
-        """), {"acct": r.account_id, "sym": r.symbol, "desc": r.description,
-               "d": r.transaction_date}).fetchone()
-        premium = float(premium_row.prem or 0) if premium_row else 0.0
+              AND transaction_type = 'STO' ORDER BY transaction_date DESC LIMIT 1
+        """), {"acct": r.account_id, "sym": r.symbol, "desc": r.description}).fetchone()
+        if open_row:
+            chain = _roll_chain_premium(db, r.account_id, r.symbol, opt_type,
+                                        r.description, open_row.transaction_date,
+                                        float(open_row.amount))
+            premium, chain_weeks = chain["net_premium"], chain["chain_weeks"]
+        else:
+            premium, chain_weeks = 0.0, 0
 
         events.append({
             "date": r.transaction_date.isoformat(),
@@ -146,7 +166,8 @@ def get_assignment_loss(db: Session) -> Dict:
             "price_source": price_source,  # "daily" or "weekly" — transparency on precision
             "shares": shares,
             "loss": round(loss, 2),  # signed for calls; puts always > 0 (filtered above)
-            "premium_collected": round(premium, 2),
+            "premium_collected": round(premium, 2),  # net across the whole roll chain
+            "premium_chain_weeks": chain_weeks,
             "cost_basis_per_share": cost_basis_per_share,
             "cost_basis_source": cost_basis_source,  # "live" | "reconstructed" | None
             "cost_basis_incomplete": cost_basis_incomplete,

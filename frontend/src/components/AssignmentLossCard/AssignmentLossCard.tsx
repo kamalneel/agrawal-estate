@@ -24,7 +24,11 @@ const API_BASE = '/api/v1'
  *
  * Both deliberately exclude premium (the Cash Goal card above already
  * counts that) — netting here would double-count the same dollars in
- * the opposite direction. Premium is still shown alongside for context.
+ * the opposite direction. Premium is still shown alongside for context —
+ * as the TRUE NET across the whole roll chain (every STO open minus every
+ * BTC close, back to the first sale), not just the final contract's own
+ * STO (Neel, 2026-08-12: a $9,005 figure turned out to be one transaction,
+ * not a total of what was actually collected while rolling week over week).
  */
 
 interface AssignmentEvent {
@@ -39,6 +43,7 @@ interface AssignmentEvent {
   shares: number
   loss: number
   premium_collected: number
+  premium_chain_weeks: number
   cost_basis_per_share: number | null
   cost_basis_source: 'live' | 'reconstructed' | null
   cost_basis_incomplete: boolean | null
@@ -85,7 +90,7 @@ function compareEvents(a: AssignmentEvent, b: AssignmentEvent, key: EventSortKey
 const EVENT_COLUMNS: Array<[EventSortKey, string]> = [
   ['date', 'Date'], ['account_name', 'Account'], ['symbol', 'Symbol'], ['option_type', 'Type'],
   ['strike', 'Strike'], ['price_at_assignment', 'Price at assignment'], ['shares', 'Shares'],
-  ['cost_basis_per_share', 'Cost basis'], ['loss', 'Loss'], ['premium_collected', 'Premium collected'],
+  ['cost_basis_per_share', 'Cost basis'], ['loss', 'Loss'], ['premium_collected', 'Premium collected (net, all rolls)'],
 ]
 
 export function AssignmentLossCard() {
@@ -154,7 +159,7 @@ export function AssignmentLossCard() {
         </div>
         <div>
           <div className={styles.statValue} style={{ color: '#00D632' }}>{fmt(data.total_premium_on_assigned_contracts)}</div>
-          <div className={styles.statLabel}>premium collected on these same contracts</div>
+          <div className={styles.statLabel}>net premium collected across every roll of these positions</div>
         </div>
       </div>
 
@@ -232,7 +237,14 @@ export function AssignmentLossCard() {
                   <td className={styles.num} style={{ color: e.loss >= 0 ? '#FF5A5A' : '#00D632' }}>
                     {e.loss >= 0 ? '-' : '+'}{fmt(e.loss)}
                   </td>
-                  <td className={styles.num} style={{ color: '#00D632' }}>{fmt(e.premium_collected)}</td>
+                  <td className={styles.num} style={{ color: '#00D632' }}>
+                    {fmt(e.premium_collected)}
+                    {e.premium_chain_weeks > 1 && (
+                      <span className={styles.estFlag} title={`Net of every open (STO) and close (BTC) across ${e.premium_chain_weeks} weekly rolls, not just the final contract's own premium.`}>
+                        {` (${e.premium_chain_weeks}wk)`}
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

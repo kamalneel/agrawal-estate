@@ -240,6 +240,62 @@ def _roll_events(db: Session, account_id: str, symbol: str, option_type: str) ->
     return events
 
 
+def _roll_chain_premium(db: Session, account_id: str, symbol: str, option_type: str,
+                        final_description: str, final_open_date: date,
+                        final_amount: float) -> Dict:
+    """True net premium across the WHOLE weekly roll chain that fed into
+    one specific contract -- not just that one contract's own STO.
+
+    Neel, 2026-08-12, on an assignment-loss row reading "$9,005 premium
+    collected": that figure was literally one STO transaction -- the exact
+    contract that happened to be open at assignment -- with nothing summed.
+    What he actually wanted: "since the first time I've sold this put and
+    been rolling it week over week, what is the total premium collected."
+    Gross-summing every STO in the chain overstates it though (it ignores
+    what was paid to close each prior leg before rolling) -- so this sums
+    STO opens MINUS BTC closes across the whole chain, which is what was
+    actually pocketed in cash over the life of the position.
+
+    Walks backward one roll at a time: the BTC on the day this leg opened
+    (same account/symbol/type) is what funded it. Nearest-strike matching
+    on that day handles parallel chains at other strikes rolling the same
+    day (e.g. SPCX ran a $200 and a $162.50 put chain concurrently) without
+    crossing them. Stops the moment a leg's open date has no same-day BTC
+    -- that STO was the chain's true first sale, not a roll continuation.
+    Capped at 104 hops (~2 years of weeklies) so a data anomaly can't loop.
+    """
+    label = option_type.capitalize()
+    total = final_amount
+    weeks = 1
+    cur_desc, cur_date = final_description, final_open_date
+    cur_strike = _parse_strike(final_description)
+    seen = {cur_desc}
+    for _ in range(104):
+        btc_rows = db.execute(_text("""
+            SELECT description, amount FROM investment_transactions
+            WHERE account_id = :acct AND symbol = :sym AND transaction_type = 'BTC'
+              AND transaction_date = :d AND description ILIKE :label
+        """), {"acct": account_id, "sym": symbol, "d": cur_date, "label": f"%{label}%"}).fetchall()
+        if not btc_rows:
+            break
+        best = min(btc_rows, key=lambda r: abs((_parse_strike(r.description) or 1e9) - (cur_strike or 0)))
+        if best.description in seen:
+            break  # guard against a malformed/cyclical match
+        sto_row = db.execute(_text("""
+            SELECT transaction_date, amount FROM investment_transactions
+            WHERE account_id = :acct AND symbol = :sym AND description = :desc
+              AND transaction_type = 'STO' ORDER BY transaction_date DESC LIMIT 1
+        """), {"acct": account_id, "sym": symbol, "desc": best.description}).fetchone()
+        if not sto_row:
+            break  # opened before transaction history starts -- chain truncates honestly here
+        total += float(best.amount) + float(sto_row.amount)
+        seen.add(best.description)
+        weeks += 1
+        cur_desc, cur_date = best.description, sto_row.transaction_date
+        cur_strike = _parse_strike(best.description)
+    return {"net_premium": round(total, 2), "chain_weeks": weeks}
+
+
 def _price_near(db: Session, account_id: str, symbol: str, target: date):
     """Real price near a date: daily (held-share history) first, then
     weekly symbol_price_history as a coarser real fallback. Never
