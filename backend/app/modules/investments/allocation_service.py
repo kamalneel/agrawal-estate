@@ -26,12 +26,16 @@ from app.shared.services.option_premium import atm_order, next_expiration, strik
 
 # A rolled call already sitting within this band of the LIVE ATM target
 # doesn't need re-rolling just because spot drifted a little since the
-# plan was last computed (Neel, 2026-08-11: rolled TSLA to $335, target
-# recomputed a few dollars lower the next check purely from spot ticking,
-# so the card kept saying "roll 1 call" as if the $335 roll never
-# happened). 3% is deliberately loose — the point is "already effectively
-# ATM," not "exactly today's target."
-ATM_TOLERANCE_PCT = 0.03
+# plan was last computed. Widened 3%->5% same day (Neel, 2026-08-11):
+# rolled TSLA $355->$340 (3 contracts) and $350->$335 (1 contract) —
+# all 4 needed contracts, confirmed via the transaction ledger — but
+# $340 priced out at +3.20% vs the live target, just outside the
+# original 3% band, so 3 of the 4 stayed uncredited while $350/$355
+# (genuinely untouched, +6-8%) correctly still needed a roll. "Close
+# enough, not exact" was the explicit intent (Neel: "I don't have to go
+# for the exact number") — 5% credits $335/$340 while still correctly
+# leaving $350/$355 flagged.
+ATM_TOLERANCE_PCT = 0.05
 
 TARGETS_PATH = Path(__file__).resolve().parents[4] / "data" / "allocation_targets.json"
 
@@ -186,6 +190,61 @@ def _open_call_strikes(db: Session) -> Dict[str, List[Tuple[float, int]]]:
     out: Dict[str, List[Tuple[float, int]]] = {}
     for r in rows:
         out.setdefault(r.symbol, []).append((float(r.strike_price), int(r.contracts_sold or 0)))
+    return out
+
+
+def _recent_call_rolldowns(db: Session, lookback_days: int = 14) -> Dict[str, Dict[float, int]]:
+    """Per-symbol {new_strike: contracts} for same-day BTC(higher strike) +
+    STO(lower strike) call pairs in the last `lookback_days` — i.e. calls
+    someone actually, deliberately rolled DOWN recently, as opposed to a
+    strike that merely happens to sit near today's ATM target.
+
+    Added 2026-08-11 after ATM_TOLERANCE_PCT alone produced a false
+    positive: AAPL's routine Tier-1 income call (STO $310, 9/4 exp, rolled
+    UP from $300 on 08-04 — ordinary strike management, unrelated to
+    rebalancing) drifted to within the tolerance band purely because AAPL's
+    spot price rose toward it, and got miscounted as "already done"
+    rebalancing progress — silently suppressing a real AAPL trim
+    recommendation. A pure percentage-of-spot tolerance can't tell "rolled
+    down on purpose" apart from "an old strike the stock happened to grow
+    into"; only the transaction ledger can. This narrows credit to strikes
+    with actual roll-DOWN evidence: TSLA's real rolls (BTC $355->STO $340,
+    BTC $350->STO $335, both 2026-08-10/11) show up here; the AAPL $310
+    roll doesn't (it moved UP, $300->$310) and neither does a routine
+    weekly down-roll on an unrelated strike still far from ATM (filtered
+    by the ATM_TOLERANCE_PCT check that runs alongside this, in build_row).
+    """
+    rows = db.execute(_text("""
+        WITH pairs AS (
+            SELECT account_id, symbol, transaction_date,
+                   transaction_type,
+                   substring(description from '\\$([0-9.,]+)\\s*$') AS strike_txt,
+                   quantity
+            FROM investment_transactions
+            WHERE transaction_type IN ('BTC', 'STO')
+              AND description ILIKE '%Call%'
+              AND transaction_date >= CURRENT_DATE - make_interval(days => :lookback)
+        )
+        SELECT b.symbol, b.account_id, b.transaction_date,
+               REPLACE(b.strike_txt, ',', '')::numeric AS old_strike,
+               REPLACE(s.strike_txt, ',', '')::numeric AS new_strike,
+               LEAST(b.quantity, s.quantity) AS contracts
+        FROM pairs b
+        JOIN pairs s
+          ON s.account_id = b.account_id AND s.symbol = b.symbol
+         -- Close and reopen aren't always same-day (TSLA's real roll:
+         -- BTC $355 on 08-10, STO $340 the next day, 08-11) — a few
+         -- days' window still means "this was one roll," not two
+         -- unrelated trades.
+         AND s.transaction_date BETWEEN b.transaction_date AND b.transaction_date + INTERVAL '3 days'
+         AND b.transaction_type = 'BTC' AND s.transaction_type = 'STO'
+        WHERE REPLACE(s.strike_txt, ',', '')::numeric < REPLACE(b.strike_txt, ',', '')::numeric
+    """), {"lookback": lookback_days}).fetchall()
+    out: Dict[str, Dict[float, int]] = {}
+    for r in rows:
+        sym_map = out.setdefault(r.symbol, {})
+        new_strike = float(r.new_strike)
+        sym_map[new_strike] = sym_map.get(new_strike, 0) + int(r.contracts or 0)
     return out
 
 
@@ -629,6 +688,7 @@ def get_allocation_plan(db: Session) -> Dict:
     ref_as_of = ref_block.get("as_of")
     open_short = _open_short_contracts(db)
     call_strikes = _open_call_strikes(db)
+    rolldowns = _recent_call_rolldowns(db)
     non_optionable = cfg.get("non_optionable", {}) or {}
     exp = next_expiration(date.today())
     policy_as_of = cfg.get("as_of") or str(date.today())
@@ -707,19 +767,32 @@ def get_allocation_plan(db: Session) -> Dict:
         roll_contracts = 0
         if option_type == "call":
             # `contracts` calls need to reach ATM to produce the trim.
-            # Subtract however many are ALREADY within ATM_TOLERANCE_PCT
-            # of the live target — that's completed work, not just a
-            # smaller pool to pick from (the bug in the first version of
-            # this fix: capping against the not-yet-near-ATM pool instead
-            # of reducing the requirement itself left this unchanged at
-            # 4 even with 1 real roll already done). Cap at how many
-            # not-yet-near-ATM calls actually exist, so we never
-            # recommend rolling more than are genuinely open.
+            # Subtract however many are ALREADY credited as done — that's
+            # completed work, not just a smaller pool to pick from (the
+            # bug in the first version of this fix: capping against the
+            # not-yet-near-ATM pool instead of reducing the requirement
+            # itself left this unchanged at 4 even with 1 real roll
+            # already done).
+            #
+            # "Done" requires BOTH signals, not proximity alone (2026-08-11,
+            # second bug found the same day): a strike within
+            # ATM_TOLERANCE_PCT of today's live target isn't necessarily a
+            # deliberate rebalancing roll — AAPL's routine Tier-1 income
+            # call (STO $310, unrelated to this plan) drifted within the
+            # band purely because spot rose toward it, and got miscounted
+            # as progress, silently suppressing a real AAPL trim order. A
+            # static percentage can't tell "rolled down on purpose" apart
+            # from "an old strike the stock grew into" — only the
+            # transaction ledger can (_recent_call_rolldowns). Require
+            # both: recently rolled DOWN (real intent) AND landed near ATM
+            # (not a routine weekly adjustment still far from target,
+            # like AAPL's $330->$325 same-day roll).
             already_near_atm = 0
             if px is not None:
                 atm_target = strike_for(px, OTM_ATM)
+                rolled = rolldowns.get(sym, {})
                 already_near_atm = sum(
-                    c for st, c in call_strikes.get(sym, [])
+                    min(c, rolled.get(st, 0)) for st, c in call_strikes.get(sym, [])
                     if st <= atm_target * (1 + ATM_TOLERANCE_PCT)
                 )
             remaining_trim = max(0, contracts - already_near_atm)

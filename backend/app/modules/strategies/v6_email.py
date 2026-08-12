@@ -30,7 +30,8 @@ _ACTION_STYLES = {
     "SELL":  ("#2563eb", "#dbeafe"),
     "ROLL":  ("#d97706", "#fef3c7"),
     "BUY":   ("#2563eb", "#dbeafe"),
-    "ALERT": ("#dc2626", "#fee2e2"),
+    "WATCH": ("#a16207", "#fef9c3"),
+    "CLOSE": ("#7c3aed", "#ede9fe"),
 }
 
 

@@ -125,6 +125,34 @@ def _load_earnings_calendar() -> Dict:
         return {}
 
 
+_ALLOCATION_TARGETS_PATH = Path(__file__).resolve().parents[4] / "data" / "allocation_targets.json"
+
+
+def _load_wanted_symbols() -> set:
+    """Every symbol the AI value-chain allocation plan actually wants held
+    (physical_ai + infrastructure_ai + hold_other buckets, aliases
+    resolved) — the complement of this is "off-thesis." Feeds Engine 6
+    (Neel, 2026-08-11): a put sold on a name that was never part of the
+    plan (CBRS, SOXL — not on the exit list either, just never in the
+    plan at all) ties up collateral for nothing; closing it, not rolling
+    it, is what actually frees that cash for a wanted buy. Returns empty
+    on any problem — fails open, same as _load_policy_ignore_list, so a
+    config gap never blocks the rest of the queue."""
+    try:
+        with open(_ALLOCATION_TARGETS_PATH) as f:
+            cfg = json.load(f)
+        wanted = set()
+        for bucket in (cfg.get("buckets") or {}).values():
+            wanted.update((bucket.get("targets") or {}).keys())
+        aliases = (cfg.get("aliases") or {}).items()
+        for a, b in aliases:
+            if not a.startswith("_"):
+                wanted.add(a)  # the alias symbol itself also reads as wanted
+        return wanted
+    except Exception:
+        return set()
+
+
 def _acct_rank(name: str) -> int:
     try:
         return CANONICAL_ORDER.index(name)
@@ -294,6 +322,7 @@ def build_action_queue(db: Session) -> Dict:
     board: List[Dict] = []
 
     earnings_cal = _load_earnings_calendar()
+    wanted_symbols = _load_wanted_symbols()
 
     def add_item(priority, action, engine, rule, title, account, symbol,
                  detail, why, earn=None, context=None):
@@ -357,6 +386,35 @@ def build_action_queue(db: Session) -> Dict:
                     "expiration_date": str(exp) if exp else "",
                     "current_premium": mark, "profit_percent": capture_pct or 0}
 
+        # ---- Engine 6: free collateral on off-thesis puts ------------------
+        # Neel, 2026-08-11: TSLA/NVDA/GOOGL-style rebalancing rolls can take
+        # weeks (they only complete via natural weekly assignment) and he's
+        # not in a rush there. What IS urgent: puts sold on names that were
+        # never part of the AI value-chain plan (CBRS, SOXL here — not even
+        # on the exit list, just never in the plan) lock up collateral for
+        # nothing. Closing one — not rolling it, which would only extend the
+        # unwanted exposure — frees that cash for a wanted buy instead.
+        # Scoped strictly to off-thesis names only (confirmed with Neel):
+        # a wanted-but-mistimed put (GOOGL over target, AMD at target, SPCX's
+        # excess wheel activity) does NOT trigger this — those stay on the
+        # normal, lower-urgency path below. wanted_symbols empty (config
+        # failed to load) means skip entirely, not flag everything.
+        if opt == "put" and wanted_symbols and sym not in wanted_symbols:
+            collateral = strike * contracts * 100
+            close_cost = mark * contracts * 100
+            add_item(
+                "high", "CLOSE", 6, "Off-thesis put — free collateral",
+                f"{sym}: not in the allocation plan — close to free ${collateral:,.0f}", account, sym,
+                f"buy to close {contracts} put{'s' if contracts > 1 else ''} at ${strike:g}, "
+                f"expiring {exp.strftime('%m/%d') if exp else '?'}. Current stock price: ${stock:,.0f}. "
+                f"Costs ≈${close_cost:,.0f} to close, frees ${collateral:,.0f} collateral.",
+                f"{sym} isn't part of the AI value-chain allocation plan — assignment would deliver a stock "
+                "not on the buy list. Closing (not rolling — a roll just extends this same unwanted exposure) "
+                "frees the collateral for a wanted put instead (SPCX/MU/MSFT/TSM/AMZN/MRVL, per the allocation plan).",
+                context={**base_ctx, "off_thesis": True,
+                         "collateral_freed": round(collateral, 2), "close_cost": round(close_cost, 2)})
+            continue
+
         # Surface RSI on existing-position ALERT/ROLL cards too (Neel,
         # 2026-07-28): these show no entry-timing signal at all today, but
         # RSI still matters for a held ITM position — e.g. an overbought
@@ -377,14 +435,14 @@ def build_action_queue(db: Session) -> Dict:
             ipct = round(intrinsic / mark * 100, 0) if mark else 100
             spec = f"{sym} {contracts}x CALL ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f} · {ipct:.0f}% intrinsic"
             if ipct > 80:
-                add_item("high", "ALERT", 4, "ITM call >80% intrinsic",
-                         f"{sym} call deep ITM — wait", account, sym, spec,
+                add_item("high", "WATCH", 4, "ITM call >80% intrinsic",
+                         f"{sym} call deep ITM — wait, don't roll", account, sym, spec,
                          "Mostly intrinsic: compression too expensive. Set price alerts "
                          "(-5% evaluate, -10% compress, at-strike full exit). Cut only if thesis changed.",
                          context=base_ctx)
             elif ipct > 60:
-                add_item("medium", "ALERT", 4, "ITM call 60-80% intrinsic",
-                         f"{sym} call ITM — wait for mean reversion", account, sym, spec,
+                add_item("medium", "WATCH", 4, "ITM call 60-80% intrinsic",
+                         f"{sym} call ITM — wait for mean reversion, don't roll", account, sym, spec,
                          "Stock must move back; do NOT compress (too expensive at this intrinsic level).",
                          context=base_ctx)
             elif ipct > 40:
@@ -429,7 +487,7 @@ def build_action_queue(db: Session) -> Dict:
                 # rolled'). Re-rolling mid-cycle is optional, not urgent —
                 # downgrade to a monitor until the position's week arrives.
                 streak = _get_roll_streak_ctx(db, p_acct_id, sym, opt, strike, depth)
-                add_item("medium", "ALERT", 4, "Deep tested put — rolled this cycle",
+                add_item("medium", "WATCH", 4, "Deep tested put — rolled this cycle",
                          f"{sym} put {depth:.0f}% ITM, rolled to {exp.strftime('%m/%d')}",
                          account, sym, spec,
                          "Already rolled into next week's expiry; this cycle's action is done. Monitor — an "
@@ -438,7 +496,7 @@ def build_action_queue(db: Session) -> Dict:
                          + _streak_text(streak),
                          context={**base_ctx, **({"roll_streak": streak} if streak else {})})
             elif itm:
-                add_item("low", "ALERT", 4, "Tested put — theta working",
+                add_item("low", "WATCH", 4, "Tested put — theta working",
                          f"{sym} put slightly ITM, {dte}d left", account, sym, spec,
                          "More than 5 days out: let theta work (RSI<30 stocks are already beaten up).",
                          context=base_ctx)
@@ -678,8 +736,13 @@ def build_action_queue(db: Session) -> Dict:
                 # rounds to the nearest whole dollar so this number is
                 # always at least a plausible real strike.
                 price_txt = f" Current stock price: ${rb['price']:,.2f}." if rb.get("price") else ""
+                # Low priority, not medium (Neel, 2026-08-11): these only
+                # complete via natural weekly assignment over several
+                # cycles — "not in a rush to get to the new place right
+                # away." Engine 6's off-thesis-put closes are the actually
+                # urgent item now; this queue's priority should say so.
                 add_item(
-                    "medium", "ROLL" if roll else "SELL", 5, "Rebalancing",
+                    "low", "ROLL" if roll else "SELL", 5, "Rebalancing",
                     f"{sym}: {verb} {lc} call{'s' if lc > 1 else ''} to reach {tgt:,} target",
                     acct_name, sym,
                     f"{verb} {lc} call{'s' if lc > 1 else ''} at strike ${order['strike']:,.0f}, "
@@ -769,10 +832,10 @@ def build_action_queue(db: Session) -> Dict:
     # ---- assemble ----------------------------------------------------------
     prio_rank = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
     # Within a priority tier: things to DO (sell/roll) before things to
-    # WATCH (alerts), then soonest expiry first, then account/symbol.
+    # WATCH, then soonest expiry first, then account/symbol.
     # (Neel, 2026-07-15: same-priority items sorted alphabetically felt
     # random — actionable items and nearest expiries should lead.)
-    action_rank = {"SELL": 0, "ROLL": 0, "BUY": 0, "ALERT": 1}
+    action_rank = {"SELL": 0, "ROLL": 0, "BUY": 0, "WATCH": 1}
     items.sort(key=lambda i: (
         prio_rank[i["priority"]],
         action_rank.get(i["action"], 1),
