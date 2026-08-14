@@ -519,18 +519,42 @@ def build_action_queue(db: Session) -> Dict:
                          context=base_ctx)
             elif ipct > 40:
                 shel = is_sheltered(account)
-                add_item("high", "ROLL", 4, "ITM call 40-60% intrinsic (crossover)",
-                         f"{sym} call — evaluate compression", account, sym, spec,
-                         f"Crossover zone: compress (≤4 weeks total, target delta 30, small debit OK) "
-                         f"or wait for pullback. {'IRA: compress more aggressively.' if shel else 'Taxable: slightly more patient, but avoid the 12-week trap.'}"
-                         + rebalance_note,
-                         context=base_ctx)
+                # Both "compress" and "wait for pullback" are assignment-
+                # AVOIDANCE moves — nonsensical advice on a call that's
+                # part of a trim/exit, where assignment IS the goal (Neel,
+                # 2026-08-14, re: a TSLA $335 call: "why is the UI asking
+                # me to roll?" — the rebalance_note said assignment here
+                # is the intended outcome, right next to a ROLL action
+                # telling him to fight that same assignment). Trim/exit-
+                # aligned calls get WATCH instead — nothing to place,
+                # letting it run toward assignment IS the position working.
+                if rb_sym and rb_sym["action"] in ("trim", "exit"):
+                    add_item("medium", "WATCH", 4, "ITM call 40-60% intrinsic (crossover)",
+                             f"{sym} call — let it ride toward assignment", account, sym, spec,
+                             f"This call is part of the {sym} {rb_sym['action']} — compressing or waiting "
+                             "for a pullback would both mean fighting the assignment this position exists "
+                             "to deliver. No action: letting it run to expiry (or getting called away "
+                             "before then) is the trim working, not a risk to manage.",
+                             context=base_ctx)
+                else:
+                    add_item("high", "ROLL", 4, "ITM call 40-60% intrinsic (crossover)",
+                             f"{sym} call — evaluate compression", account, sym, spec,
+                             f"Crossover zone: compress (≤4 weeks total, target delta 30, small debit OK) "
+                             f"or wait for pullback. {'IRA: compress more aggressively.' if shel else 'Taxable: slightly more patient, but avoid the 12-week trap.'}",
+                             context=base_ctx)
             elif dte <= 2:
-                add_item("urgent", "ROLL", 4, "ITM call at expiry",
-                         f"{sym} call ITM, expires in {dte}d", account, sym, spec,
-                         "Time-dominated ITM call at expiry: roll up/out to next week or accept assignment (called away = plan for Tier 2)."
-                         + rebalance_note,
-                         context=base_ctx)
+                if rb_sym and rb_sym["action"] in ("trim", "exit"):
+                    add_item("medium", "WATCH", 4, "ITM call at expiry",
+                             f"{sym} call ITM, expires in {dte}d — let it assign", account, sym, spec,
+                             f"This call is part of the {sym} {rb_sym['action']} — rolling up/out would "
+                             "delay the exact assignment this position is meant to deliver. No action: "
+                             "let it expire in the money and get called away.",
+                             context=base_ctx)
+                else:
+                    add_item("urgent", "ROLL", 4, "ITM call at expiry",
+                             f"{sym} call ITM, expires in {dte}d", account, sym, spec,
+                             "Time-dominated ITM call at expiry: roll up/out to next week or accept assignment (called away = plan for Tier 2).",
+                             context=base_ctx)
 
         elif opt == "put" and stock < strike * 1.02:
             itm = stock < strike
