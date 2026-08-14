@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.shared.services.cost_basis_service import get_pure_performance
 from app.shared.services.option_premium import atm_order, next_expiration, strike_for, OTM_ATM
-from app.modules.strategies.technical_signals import get_entry_timing
+from app.modules.strategies.technical_signals import get_entry_timing, _price_near
 
 # A rolled call already sitting within this band of the LIVE ATM target
 # doesn't need re-rolling just because spot drifted a little since the
@@ -204,26 +204,86 @@ def _open_call_strikes(db: Session) -> Dict[str, List[Tuple[float, int]]]:
     return out
 
 
+def _open_call_strikes_by_account(db: Session) -> Dict[Tuple[str, str], List[Tuple[float, int]]]:
+    """Same as _open_call_strikes but keyed by (symbol, account_id) too.
+
+    Needed because the aggregate "already near ATM" credit fixes the
+    TOTAL contracts still needed for a trim/exit, but says nothing about
+    WHICH account's shares that credit belongs to — _route_trim_lots then
+    picks accounts purely by tax cost, blind to whether an account's own
+    shares are already backing an open call. Found 2026-08-14: INTC exit
+    recommended "sell 1 call" in Neel's Brokerage even though its only
+    100 shares were already fully covered by an existing (deeply ITM)
+    call — the account never needed a NEW contract, its shares just
+    weren't credited out of the routing pool."""
+    rows = db.execute(_text("""
+        WITH latest AS (
+            SELECT account_name, MAX(snapshot_date) AS snap
+            FROM sold_options_snapshots GROUP BY account_name
+        )
+        SELECT o.symbol, ia.account_id, o.strike_price, o.contracts_sold
+        FROM sold_options o
+        JOIN sold_options_snapshots s ON s.id = o.snapshot_id
+        JOIN latest l ON l.account_name = s.account_name AND l.snap = s.snapshot_date
+        LEFT JOIN investment_accounts ia ON ia.account_name = s.account_name
+        WHERE o.expiration_date >= CURRENT_DATE AND LOWER(o.option_type) = 'call'
+    """)).fetchall()
+    out: Dict[Tuple[str, str], List[Tuple[float, int]]] = {}
+    for r in rows:
+        if not r.account_id:
+            continue
+        out.setdefault((r.symbol, r.account_id), []).append(
+            (float(r.strike_price), int(r.contracts_sold or 0)))
+    return out
+
+
+def _credited_call_contracts(strikes: List[Tuple[float, int]], px: float,
+                             atm_target: float, rolled: Dict[float, int]) -> int:
+    """How many of these open call contracts already count as "done" for
+    a trim/exit: genuinely ITM (heading to assignment regardless of roll
+    history), or verified near-ATM via an actual roll (see
+    _recent_call_rolldowns). Shared between the aggregate credit (how
+    many MORE contracts the trim still needs) and the per-account routing
+    reduction (whose shares are already spoken for, see
+    _open_call_strikes_by_account) — same test, different scope."""
+    credit = 0
+    for st, c in strikes:
+        if st < px:
+            credit += c
+        elif st <= atm_target * (1 + ATM_TOLERANCE_PCT):
+            credit += min(c, rolled.get(st, 0))
+    return credit
+
+
 def _recent_call_rolldowns(db: Session, lookback_days: int = 14) -> Dict[str, Dict[float, int]]:
-    """Per-symbol {new_strike: contracts} for same-day BTC(higher strike) +
-    STO(lower strike) call pairs in the last `lookback_days` — i.e. calls
-    someone actually, deliberately rolled DOWN recently, as opposed to a
-    strike that merely happens to sit near today's ATM target.
+    """Per-symbol {new_strike: contracts} for same-day BTC+STO call pairs in
+    the last `lookback_days` that represent maintaining an ALREADY-near-ATM
+    position — as opposed to a strike that merely happens to sit near
+    today's ATM target by coincidence.
 
     Added 2026-08-11 after ATM_TOLERANCE_PCT alone produced a false
     positive: AAPL's routine Tier-1 income call (STO $310, 9/4 exp, rolled
     UP from $300 on 08-04 — ordinary strike management, unrelated to
     rebalancing) drifted to within the tolerance band purely because AAPL's
-    spot price rose toward it, and got miscounted as "already done"
-    rebalancing progress — silently suppressing a real AAPL trim
-    recommendation. A pure percentage-of-spot tolerance can't tell "rolled
-    down on purpose" apart from "an old strike the stock happened to grow
-    into"; only the transaction ledger can. This narrows credit to strikes
-    with actual roll-DOWN evidence: TSLA's real rolls (BTC $355->STO $340,
-    BTC $350->STO $335, both 2026-08-10/11) show up here; the AAPL $310
-    roll doesn't (it moved UP, $300->$310) and neither does a routine
-    weekly down-roll on an unrelated strike still far from ATM (filtered
-    by the ATM_TOLERANCE_PCT check that runs alongside this, in build_row).
+    spot price rose toward it over the following days, and got miscounted
+    as "already done" rebalancing progress. The first fix required the
+    roll to be a DECREASE (rolled down = deliberate trim progress) — but
+    that broke a real case 2026-08-14: NVDA's weekly ATM-tracking roll
+    ($225.00 -> $227.50, a few cents UP because spot itself ticked up)
+    IS genuine trim maintenance, just not a decrease, so it went
+    uncredited and the queue kept asking to re-roll a position already
+    freshly rolled.
+
+    The real distinguishing signal was never direction — it's whether the
+    OLD strike was ALSO near-ATM at the time of the roll (NVDA's $225 was,
+    the same day, essentially spot; AAPL's $300 on 08-04 was a genuine
+    Tier-1 far-OTM strike that only LOOKED close in hindsight once spot
+    caught up days later). So: any same-day roll qualifies, direction
+    aside, but only if the price on that historical date shows the old
+    strike was already within ATM_TOLERANCE_PCT back then — using today's
+    price for that check (as a pure strike-vs-strike comparison would)
+    doesn't work, since by today AAPL's spot has moved enough that both
+    $300 and $310 look close now, same as the original bug.
     """
     rows = db.execute(_text("""
         WITH pairs AS (
@@ -249,10 +309,19 @@ def _recent_call_rolldowns(db: Session, lookback_days: int = 14) -> Dict[str, Di
          -- unrelated trades.
          AND s.transaction_date BETWEEN b.transaction_date AND b.transaction_date + INTERVAL '3 days'
          AND b.transaction_type = 'BTC' AND s.transaction_type = 'STO'
-        WHERE REPLACE(s.strike_txt, ',', '')::numeric < REPLACE(b.strike_txt, ',', '')::numeric
     """), {"lookback": lookback_days}).fetchall()
     out: Dict[str, Dict[float, int]] = {}
     for r in rows:
+        old_strike = float(r.old_strike)
+        # Was the strike being replaced ALREADY near-ATM, using the price
+        # AS OF that roll date (not today's) — the whole point being that
+        # today's price can't tell a maintenance roll from a coincidence.
+        hist_price, _src = _price_near(db, r.account_id, r.symbol, r.transaction_date)
+        if hist_price is None:
+            continue  # no historical price to judge against -- don't guess
+        hist_atm_target = strike_for(hist_price, OTM_ATM)
+        if old_strike > hist_atm_target * (1 + ATM_TOLERANCE_PCT):
+            continue  # old strike was genuinely far-OTM at roll time -- not a maintenance roll
         sym_map = out.setdefault(r.symbol, {})
         new_strike = float(r.new_strike)
         sym_map[new_strike] = sym_map.get(new_strike, 0) + int(r.contracts or 0)
@@ -699,6 +768,7 @@ def get_allocation_plan(db: Session) -> Dict:
     ref_as_of = ref_block.get("as_of")
     open_short = _open_short_contracts(db)
     call_strikes = _open_call_strikes(db)
+    call_strikes_by_acct = _open_call_strikes_by_account(db)
     rolldowns = _recent_call_rolldowns(db)
     non_optionable = cfg.get("non_optionable", {}) or {}
     exp = next_expiration(date.today())
@@ -785,27 +855,21 @@ def get_allocation_plan(db: Session) -> Dict:
             # itself left this unchanged at 4 even with 1 real roll
             # already done).
             #
-            # "Done" requires BOTH signals, not proximity alone (2026-08-11,
-            # second bug found the same day): a strike within
-            # ATM_TOLERANCE_PCT of today's live target isn't necessarily a
-            # deliberate rebalancing roll — AAPL's routine Tier-1 income
-            # call (STO $310, unrelated to this plan) drifted within the
-            # band purely because spot rose toward it, and got miscounted
-            # as progress, silently suppressing a real AAPL trim order. A
-            # static percentage can't tell "rolled down on purpose" apart
-            # from "an old strike the stock grew into" — only the
-            # transaction ledger can (_recent_call_rolldowns). Require
-            # both: recently rolled DOWN (real intent) AND landed near ATM
-            # (not a routine weekly adjustment still far from target,
-            # like AAPL's $330->$325 same-day roll).
+            # "Done" means either: genuinely ITM already (heading to
+            # assignment regardless of roll history — an old strike the
+            # stock simply grew past needs no roll to be "finished"), or
+            # verified near-ATM via an actual roll AT THE TIME it happened
+            # (2026-08-11: a static percentage-of-today's-spot check alone
+            # can't tell "rolled to maintain ATM" apart from "an old
+            # far-OTM strike the stock later happened to grow near" —
+            # only the transaction ledger, checked against the PRICE ON
+            # THAT DATE, can — see _recent_call_rolldowns).
             already_near_atm = 0
             if px is not None:
                 atm_target = strike_for(px, OTM_ATM)
                 rolled = rolldowns.get(sym, {})
-                already_near_atm = sum(
-                    min(c, rolled.get(st, 0)) for st, c in call_strikes.get(sym, [])
-                    if st <= atm_target * (1 + ATM_TOLERANCE_PCT)
-                )
+                already_near_atm = _credited_call_contracts(
+                    call_strikes.get(sym, []), px, atm_target, rolled)
             remaining_trim = max(0, contracts - already_near_atm)
             still_open_not_done = max(0, already - already_near_atm)
             roll_contracts = min(remaining_trim, still_open_not_done)
@@ -872,8 +936,28 @@ def get_allocation_plan(db: Session) -> Dict:
             # aggregate left the card itself unchanged at "roll 1 call").
             trim_shares_needed = (max(0.0, abs(gap_shares) - already_near_atm * SHARES_PER_CONTRACT)
                                   if action == "trim" else cur_shares)
+            # Per-account version of the same credit, applied to the
+            # ROUTING pool specifically (2026-08-14): the aggregate credit
+            # above correctly shrinks the TOTAL still needed, but
+            # _route_trim_lots picks WHICH accounts to route it to purely
+            # by tax cost — blind to whether a given account's own shares
+            # are already backing an already-credited call. Without this,
+            # an account that's 100% covered (its one call already ITM)
+            # could still get selected for a brand-new redundant contract
+            # while a genuinely uncovered account went unrepresented —
+            # found on INTC: Neel's Brokerage's only 100 shares were
+            # already fully covered, yet still got "sell 1 call".
+            accts_for_routing = accts
+            if px is not None:
+                atm_target = strike_for(px, OTM_ATM)
+                rolled = rolldowns.get(sym, {})
+                accts_for_routing = [
+                    {**a, "shares": max(0.0, a["shares"] - SHARES_PER_CONTRACT * _credited_call_contracts(
+                        call_strikes_by_acct.get((sym, a["account_id"]), []), px, atm_target, rolled))}
+                    for a in accts
+                ]
             routing = _route_trim_lots(
-                sym, accts, trim_shares_needed, sale_px, lots_by_acct)
+                sym, accts_for_routing, trim_shares_needed, sale_px, lots_by_acct)
         elif action == "buy" and px is not None:
             routing = _route_buy(accts, cash_by_acct, order["strike"] if order else px)
 
