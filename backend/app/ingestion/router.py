@@ -2130,3 +2130,41 @@ async def ingest_cost_basis(payload: dict, db: Session = Depends(get_db)):
         upserted += 1
     db.commit()
     return {"success": True, "upserted": upserted}
+
+
+@router.post("/realized-pnl")
+async def ingest_realized_pnl(payload: dict, db: Session = Depends(get_db)):
+    """Upsert Robinhood's own per-trade realized P&L:
+    {source, trades: [{account_id, symbol, date, quantity, price, realized_gain}]}.
+
+    From get_pnl_trade_history (the data behind the app's "Realized profit
+    & loss" hub), NOT computed here. Feeds assignment_loss_service.py's
+    call-assignment figure directly, replacing a cost-basis estimate that
+    could not survive a stock split: NFLX's 10:1 in Nov 2025 left the
+    reconstruction dividing pre-split dollars by pre-split shares, turning
+    a $1,065.71 gain into a reported $323,178 loss (Neel, 2026-08-14).
+
+    Covers IRAs too, which is why this beats a 1099-B — retirement accounts
+    produce no 1099-B at all, and 4 of the 6 known-bad events are in one."""
+    from sqlalchemy import text as _text
+    trades = payload.get("trades") or []
+    source = payload.get("source") or "robinhood_mcp"
+    if not trades:
+        raise HTTPException(status_code=400, detail="no trades")
+    upserted = 0
+    for t in trades:
+        db.execute(_text("""
+            INSERT INTO robinhood_realized_trades
+                (source, account_id, symbol, trade_date, quantity, price, realized_gain, updated_at)
+            VALUES (:src, :acct, :sym, :d, :q, :p, :g, NOW())
+            ON CONFLICT ON CONSTRAINT uq_rh_realized_trade
+            DO UPDATE SET realized_gain = EXCLUDED.realized_gain,
+                          price = EXCLUDED.price,
+                          source = EXCLUDED.source,
+                          updated_at = NOW()
+        """), {"src": source, "acct": t["account_id"], "sym": t["symbol"].upper(),
+               "d": t["date"], "q": t["quantity"], "p": t.get("price"),
+               "g": t["realized_gain"]})
+        upserted += 1
+    db.commit()
+    return {"success": True, "upserted": upserted}

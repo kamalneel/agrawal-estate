@@ -25,6 +25,9 @@ Usage:
 Known gaps vs the manual sources (still need monthly statement / activity CSV):
   - Dividends and interest (no MCP tool exposes them)
   - Option expirations & assignments (not orders, so not in order history)
+  - One-off account incentives (Robinhood's "ACAT Bonus Payment" — 1099-MISC
+    Other income, $464.95 on Jaya's brokerage for 2025 — is in no MCP tool
+    and no ledger stream; only the consolidated 1099 shows it)
   - Do NOT also import Robinhood's official activity CSV for a period synced
     here: synthesized Amounts are gross (no reg fees), so rows would not
     dedup against the official CSV's net amounts.
@@ -306,6 +309,34 @@ def sync_account(api: str, account: dict, bundle: dict, save: bool) -> None:
         if cb_bars:
             cb_result = post(api, "/ingestion/cost-basis", {"source": "robinhood_mcp", "bars": cb_bars})
             print(f"  cost basis: upserted {cb_result.get('upserted')}")
+
+    # --- 1c. realized P&L (Neel, 2026-08-14). Robinhood's own realized
+    # gain/loss per closing trade, from get_pnl_trade_history(span=...).
+    # This REPLACES the cost-basis path for call assignments rather than
+    # enriching it: the reconstruction in technical_signals.py could not
+    # survive a stock split, and NFLX's 10:1 turned a $1,065.71 gain into
+    # a reported $323,178 loss. Six events were wrong that way, four of
+    # them in IRAs — which is also why a 1099-B can't be the fix, since
+    # retirement accounts never get one.
+    #
+    # Bundle shape (list, may be absent on bundles built before this date):
+    #   "realized_trades": [{"symbol","date","quantity","price","realized_gain"}]
+    # `date` is the fill date in the ACCOUNT's own terms; the matcher in
+    # assignment_loss_service allows +/-2 days because Robinhood stamps
+    # these in UTC and can land a day either side of the ledger's OASGN.
+    acct_id = ACCOUNT_ID_BY_NAME.get(name)
+    rp_trades = [
+        {"account_id": acct_id, "symbol": t["symbol"], "date": t["date"],
+         "quantity": float(t["quantity"]), "price": t.get("price"),
+         "realized_gain": float(t["realized_gain"])}
+        for t in account.get("realized_trades", [])
+        if acct_id and t.get("realized_gain") is not None
+    ]
+    print(f"  realized P&L: {len(rp_trades)} closing trades")
+    if save and rp_trades:
+        rp_result = post(api, "/ingestion/realized-pnl",
+                         {"source": "robinhood_mcp", "trades": rp_trades})
+        print(f"  realized P&L: upserted {rp_result.get('upserted')}")
 
     # --- 2. cash breakdown ---
     cash_text = build_cash_text(account, instruments)

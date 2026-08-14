@@ -46,7 +46,7 @@ interface AssignmentEvent {
   premium_chain_weeks: number
   premium_incomplete: boolean
   cost_basis_per_share: number | null
-  cost_basis_source: 'live' | 'reconstructed' | null
+  cost_basis_source: 'live' | 'reconstructed' | 'robinhood_realized' | null
   cost_basis_incomplete: boolean | null
 }
 
@@ -93,6 +93,26 @@ const EVENT_COLUMNS: Array<[EventSortKey, string]> = [
   ['strike', 'Strike'], ['price_at_assignment', 'Price at assignment'], ['shares', 'Shares'],
   ['cost_basis_per_share', 'Cost basis'], ['loss', 'Loss'], ['premium_collected', 'Premium collected (net, all rolls)'],
 ]
+
+const money = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/** The arithmetic behind the Loss column, spelled out per row so the
+ *  number can be checked by eye rather than taken on faith (Neel,
+ *  2026-08-14: "Is there a way I can see the calculation?"). */
+function calculationText(e: AssignmentEvent): string | null {
+  // No arithmetic of ours to show — this IS the broker's number.
+  if (e.cost_basis_source === 'robinhood_realized') {
+    return `Robinhood realized P&L on ${e.shares.toLocaleString()} sh (no cost-basis estimate)`
+  }
+  if (e.option_type === 'call') {
+    if (e.cost_basis_per_share == null) return null
+    const diff = e.cost_basis_per_share - e.strike
+    return `(${money(e.cost_basis_per_share)} cost basis − ${money(e.strike)} strike) × ${e.shares.toLocaleString()} sh = ${diff < 0 ? '+' : '−'}${fmt(diff * e.shares)}`
+  }
+  if (e.price_at_assignment == null) return null
+  const diff = e.strike - e.price_at_assignment
+  return `(${money(e.strike)} strike − ${money(e.price_at_assignment)} market) × ${e.shares.toLocaleString()} sh = −${fmt(diff * e.shares)}`
+}
 
 export function AssignmentLossCard() {
   const [data, setData] = useState<AssignmentLossData | null>(null)
@@ -200,6 +220,7 @@ export function AssignmentLossCard() {
                     </button>
                   </th>
                 ))}
+                <th className={styles.calcCol}>Calculation</th>
               </tr>
             </thead>
             <tbody>
@@ -220,7 +241,9 @@ export function AssignmentLossCard() {
                   </td>
                   <td className={styles.num}>{e.shares.toLocaleString()}</td>
                   <td className={styles.num}>
-                    {e.cost_basis_per_share == null ? '—' : (
+                    {e.cost_basis_source === 'robinhood_realized' ? (
+                      <span title="Robinhood's own realized gain/loss on this sale — used directly, so no cost basis is estimated.">broker</span>
+                    ) : e.cost_basis_per_share == null ? '—' : (
                       <>
                         ${e.cost_basis_per_share.toFixed(2)}
                         <span
@@ -249,6 +272,7 @@ export function AssignmentLossCard() {
                       <span className={styles.estFlag} title="This account's transaction history has a gap further back — an earlier leg was closed but its own opening sale is missing from the ledger, so the chain stops here. The true total (if the full history existed) would extend earlier than this.">⚠</span>
                     )}
                   </td>
+                  <td className={styles.calcCol}>{calculationText(e) ?? '—'}</td>
                 </tr>
               ))}
             </tbody>

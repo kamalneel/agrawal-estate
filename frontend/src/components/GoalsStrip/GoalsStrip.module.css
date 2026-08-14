@@ -5,8 +5,20 @@
   margin-bottom: var(--space-6, 24px);
 }
 
+/* Three-up when a third cell is passed in (Income: assignment loss). */
+.stripThree {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+@media (max-width: 1080px) {
+  .stripThree {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 @media (max-width: 720px) {
-  .strip {
+  .strip,
+  .stripThree {
     grid-template-columns: 1fr;
   }
 }

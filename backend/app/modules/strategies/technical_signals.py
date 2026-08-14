@@ -461,16 +461,39 @@ def _reconstruct_cost_basis(db: Session, account_id: str, symbol: str,
     """Weighted average of every BUY transaction for this account+symbol
     on or before `before` — see _cost_basis_near for why this is a plain
     average, not FIFO. Returns (avg_cost_per_share, incomplete)."""
+    #
+    # SPLIT/SPL rows are included and carry no cost: a split multiplies the
+    # share count while leaving total dollars paid unchanged. Summing BUY
+    # rows alone divides pre-split dollars by pre-split share counts, which
+    # is then compared against a POST-split strike — NFLX's 10:1 in Nov 2025
+    # produced a $733.36/share basis against an $87 strike, a $323,178
+    # phantom loss on a real gain (Neel, 2026-08-14). Robinhood's own
+    # realized gain is preferred over this whole path where available; this
+    # remains the fallback, and v6_engine.py calls it too.
     rows = db.execute(_text("""
-        SELECT quantity, amount FROM investment_transactions
-        WHERE account_id = :acct AND symbol = :sym AND transaction_type = 'BUY'
+        SELECT transaction_date, transaction_type, quantity, amount
+        FROM investment_transactions
+        WHERE account_id = :acct AND symbol = :sym
+          AND transaction_type IN ('BUY', 'SPLIT', 'SPL')
           AND transaction_date <= :d
+        ORDER BY transaction_date, transaction_type
     """), {"acct": account_id, "sym": symbol, "d": before}).fetchall()
-    total_shares = sum(float(r.quantity) for r in rows)
-    total_cost = sum(-float(r.amount) for r in rows)  # BUY amounts are negative
+    total_shares = 0.0
+    total_cost = 0.0
+    bought_shares = 0.0  # excludes split-created shares, for the coverage check
+    for r in rows:
+        qty = float(r.quantity or 0)
+        if r.transaction_type == 'BUY':
+            total_shares += qty
+            bought_shares += qty
+            total_cost += -float(r.amount)  # BUY amounts are negative
+        else:
+            # quantity on a split row is the shares ADDED, not the ratio.
+            total_shares += qty
+            bought_shares += qty
     if total_shares <= 0:
         return None, True
-    return total_cost / total_shares, total_shares < shares_involved - 0.01
+    return total_cost / total_shares, bought_shares < shares_involved - 0.01
 
 
 def get_roll_streak(db: Session, account_id: str, symbol: str, option_type: str,

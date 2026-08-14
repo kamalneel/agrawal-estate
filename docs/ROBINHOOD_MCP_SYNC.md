@@ -66,7 +66,8 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    `get_option_positions(nonzero=true)`, `get_option_orders(created_at_gte=…)`,
    `get_equity_orders(created_at_gte=…)`. Include each position's
    `average_buy_price` in the bundle's `equity_positions` entries (added
-   2026-08-08) — see 6c.
+   2026-08-08) — see 6c. Also `get_pnl_trade_history(span="ytd")` per
+   account into `realized_trades` (added 2026-08-14) — see 6d.
 2. Across accounts: `get_option_instruments(ids=…)` for every option_id
    (strike/type), `get_option_quotes` (current marks),
    `get_equity_quotes` (stock prices).
@@ -114,6 +115,29 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    an `incomplete` flag when the reconstructed share count falls short
    of the assigned share count — real gaps exist, e.g. a partial-history
    backfill boundary in older accounts).
+6d. **Every sync (automatic, added 2026-08-14):** each account's
+   `get_pnl_trade_history` rows go to `/ingestion/realized-pnl`
+   (upserts `robinhood_realized_trades`, keyed account+symbol+date+qty).
+   `assignment_loss_service.py` matches an OASGN to one of these on
+   account + symbol + exact share count + date ±2 days (Robinhood stamps
+   fills in UTC, so an Aug-29 assignment can arrive as 2025-08-30T04:11Z)
+   and uses the broker's realized gain DIRECTLY as the assignment figure,
+   in preference to any cost basis we derive.
+   Why it replaced the derived number: `_reconstruct_cost_basis` summed
+   BUY rows and ignored SPLIT rows, so NFLX's 10:1 split (2025-11-17) had
+   it dividing pre-split dollars by pre-split share counts and comparing
+   the result to a post-split strike — a $733.36/share basis against an
+   $87 strike, reporting a **$323,178 loss on an assignment Robinhood
+   records as a $1,065.71 gain**. Six events were wrong this way; May 2026
+   alone moved from a $351,088 loss to a $292,125 gain. The reconstruction
+   is now split-aware and remains the fallback (v6_engine.py calls it too),
+   but it is no longer the source for anything Robinhood can answer.
+   Note `span` is preset-only (week/month/3month/ytd/all) — no arbitrary
+   date range. `all` reaches back to 2024-10 on these accounts, so a
+   one-off `span="all"` backfill covers every assignment on record; the
+   routine sync uses `ytd`. Covers IRAs, which a 1099-B never does —
+   4 of the 6 bad events were in retirement accounts.
+
 7. **Price history — 5y weekly backfill (monthly-ish, or when a new
    symbol is bought):**
    `get_equity_historicals(symbols≤10, start_time=5y ago, interval=week)`

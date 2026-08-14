@@ -122,6 +122,18 @@
   color: var(--color-accent, #00D632);
 }
 
+/* Spelled-out arithmetic behind the Loss column — monospace so the
+   figures line up and can be checked against the columns to its left. */
+.calcCol {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  text-align: left;
+  padding-left: var(--space-3, 12px);
+  border-left: 1px solid var(--color-border);
+}
+
 .estFlag {
   color: var(--color-text-secondary, #a3a3a3);
   margin-left: 2px;

@@ -16,6 +16,14 @@
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
+/* As a cell in the GoalsStrip grid the track sets the width and the
+   strip owns the bottom margin — otherwise the card sits narrow inside
+   its own cell and pushes the row taller than the two gauges. */
+.cardInGrid {
+  max-width: none;
+  margin-bottom: 0;
+}
+
 .card:hover {
   border-color: var(--color-border-hover, #444);
   background: var(--color-bg-tertiary, #1f1f1f);

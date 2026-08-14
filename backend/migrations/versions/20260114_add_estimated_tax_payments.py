@@ -1,9 +1,17 @@
 """Add estimated_tax_payments table for tracking manual tax payments
 
-Revision ID: a1b2c3d4e5f6
-Revises: (latest)
+Revision ID: 20260114_est_tax_payments
+Revises: None (root)
 Create Date: 2026-01-14 10:00:00.000000
 
+Renamed 2026-08-14: this file shipped with the unedited template id
+'a1b2c3d4e5f6', which is also the real id of
+20251202_add_retirement_contributions.py. Two files declaring one revision
+made every alembic command fail ("Revision a1b2c3d4e5f6 is present more
+than once"), and left 20251202_add_sold_options_tracking.py's
+down_revision ambiguous. It resolves to the retirement migration — same
+date, and this one postdates it by six weeks. Only the id changed; the
+revision stays a root, as it already was in practice.
 """
 from typing import Sequence, Union
 
@@ -12,8 +20,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'a1b2c3d4e5f6'
-down_revision: Union[str, None] = None  # Will be set by alembic
+revision: str = '20260114_est_tax_payments'
+down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

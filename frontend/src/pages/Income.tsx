@@ -38,6 +38,7 @@ import { UnifiedIncomeBand } from '../components/UnifiedIncomeBand/UnifiedIncome
 import { EquitySalesDetail, DrillRange } from '../components/EquitySalesDetail/EquitySalesDetail'
 import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
 import { GoalDrill } from '../components/GoalsStrip/GoalDrill'
+import { AssignmentLossThisMonth } from '../components/AssignmentLossCard/AssignmentLossThisMonth'
 import { accountRank } from '../lib/accountOrder'
 import {
   formatCurrency as sharedFormatCurrency,
@@ -2176,7 +2177,11 @@ interface SalaryDetailProps {
 function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<any>(null)
-  const [selectedYear, setSelectedYear] = useState<number | 'all'>(2026)
+  // null = "not chosen yet", resolved below to the most recent year that
+  // actually HAS records. Defaulting to the current year opened the page on
+  // a year whose W-2 does not exist until the following January, so every
+  // tile read $0 and the table was empty (Neel, 2026-08-14).
+  const [selectedYear, setSelectedYear] = useState<number | 'all' | null>(null)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -2226,11 +2231,15 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
 
   // Get available years
   const years = data.yearly_summary?.map((y: any) => y.year) || []
-  
+
+  // Land on the newest year with data; 'all' when there is none at all.
+  const activeYear: number | 'all' =
+    selectedYear ?? (years.length ? Math.max(...(years as number[])) : 'all')
+
   // Filter records by selected year
-  const filteredRecords = selectedYear === 'all' 
-    ? data.records 
-    : data.records?.filter((r: any) => r.year === selectedYear) || []
+  const filteredRecords = activeYear === 'all'
+    ? data.records
+    : data.records?.filter((r: any) => r.year === activeYear) || []
 
   // Calculate totals for filtered data
   const filteredTotal = filteredRecords.reduce((sum: number, r: any) => sum + r.wages, 0)
@@ -2258,7 +2267,7 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
       {/* Year Filter */}
       <div className={styles.yearFilter}>
         <button
-          className={`${styles.yearButton} ${selectedYear === 'all' ? styles.active : ''}`}
+          className={`${styles.yearButton} ${activeYear === 'all' ? styles.active : ''}`}
           onClick={() => setSelectedYear('all')}
         >
           All Time
@@ -2266,7 +2275,7 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
         {years.map((year: number) => (
           <button
             key={year}
-            className={`${styles.yearButton} ${selectedYear === year ? styles.active : ''}`}
+            className={`${styles.yearButton} ${activeYear === year ? styles.active : ''}`}
             onClick={() => setSelectedYear(year)}
           >
             {year}
@@ -2304,7 +2313,7 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
 
       {/* W-2 Records Table */}
       <section className={styles.accountsSection}>
-        <h2>W-2 Records {selectedYear !== 'all' ? `(${selectedYear})` : '(All Years)'}</h2>
+        <h2>W-2 Records {activeYear !== 'all' ? `(${activeYear})` : '(All Years)'}</h2>
         <div className={styles.w2Table}>
           <div className={styles.w2Header}>
             <span>Year</span>
@@ -2336,7 +2345,7 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
       <SalaryProjectionConfig employeeName={data.employee_name} />
 
       {/* Yearly Summary Chart */}
-      {selectedYear === 'all' && data.yearly_summary && (
+      {activeYear === 'all' && data.yearly_summary && (
         <section className={styles.chartSection}>
           <div className={styles.chartHeader}>
             <h2>Yearly Wages Trend</h2>
@@ -2421,6 +2430,15 @@ export function Income() {
   // Yield-tracker goal settings (targets + margin limits)
   const [goalSettings, setGoalSettings] = useState<any>(null)
   const [putCapacity, setPutCapacity] = useState<Record<string, { capacity: number; partial: boolean }>>({})
+  // Assignment loss per month — reported alongside income but deliberately
+  // NOT netted into the totals; see the table's Assignment Loss column.
+  const [assignmentLossByMonth, setAssignmentLossByMonth] = useState<Record<string, number>>({})
+  // Recorded monthly take-home per person (salary_projections) — the actual
+  // numbers behind the Salary column, shown directly on the drill-down.
+  const [salaryProjections, setSalaryProjections] = useState<Array<{
+    id: number; person: string; monthly_net: number
+    effective_from: string; effective_to: string | null; notes: string | null
+  }>>([])
   // Period the user was viewing when they drilled into a source
   const [drillRange, setDrillRange] = useState<DrillRange | null>(null)
 
@@ -2455,7 +2473,7 @@ export function Income() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes, realizedRes, goalRes, capacityRes] = await Promise.all([
+      const [summaryRes, optionsRes, dividendsRes, interestRes, optionsChartRes, dividendChartRes, interestChartRes, rentalRes, rentalChartRes, salaryRes, byTypeRes, byTypeTaxableRes, holdingsRes, cashRes, monthlyPosRes, unifiedRes, unifiedTaxRes, realizedRes, goalRes, capacityRes, assignLossRes, salaryProjRes] = await Promise.all([
         fetch(`${API_BASE}/income/summary`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/options`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/dividends`, { headers: getAuthHeaders() }),
@@ -2476,6 +2494,8 @@ export function Income() {
         fetch(`${API_BASE}/investments/realized-pnl?granularity=month`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/goal-settings`, { headers: getAuthHeaders() }),
         fetch(`${API_BASE}/income/put-capacity`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/strategies/v6/assignment-loss`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/income/salary/projections`, { headers: getAuthHeaders() }),
       ])
 
       if (summaryRes.ok) {
@@ -2557,6 +2577,14 @@ export function Income() {
       if (capacityRes.ok) {
         const data = await capacityRes.json()
         setPutCapacity(Object.fromEntries((data.months || []).map((m: any) => [m.month, { capacity: m.capacity, partial: m.partial }])))
+      }
+      if (assignLossRes.ok) {
+        const data = await assignLossRes.json()
+        setAssignmentLossByMonth(data.by_month || {})
+      }
+      if (salaryProjRes.ok) {
+        const data = await salaryProjRes.json()
+        setSalaryProjections(data.projections || [])
       }
     } catch (err) {
       console.error('Error fetching income data:', err)
@@ -3136,6 +3164,10 @@ export function Income() {
         dividends: s.dividends || 0, interest: s.interest || 0,
         lending: s.lending || 0, rental: s.rental || 0,
         salary, total,
+        // Service convention: positive = a loss. Reported next to income
+        // but NOT in `total` — an assignment converts a position, it is
+        // not money that failed to arrive (Neel, 2026-08-14).
+        assignmentLoss: assignmentLossByMonth[monthKey] || 0,
         highlighted: mainSelectedYear !== 'all' && mainSelectedMonth !== null
           && monthKey === `${mainSelectedYear}-${String(mainSelectedMonth).padStart(2, '0')}`,
       }
@@ -3328,13 +3360,20 @@ export function Income() {
     )
   }
 
-  // Salary drill-down: pick the person first
+  // Salary drill-down: the recorded take-home figures themselves. This used
+  // to be two cards linking to each person's W-2 history page, which answered
+  // a different question than the one the Salary column raises (Neel,
+  // 2026-08-14: "it doesn't make sense to go to the tax page").
   if (view === 'salary_pick') {
-    const employees = [
-      ...(jayaSalary ? ['Jaya'] : []),
-      ...(neelSalary ? ['Neel'] : []),
-    ]
-    const names = employees.length > 0 ? employees : ['Jaya', 'Neel']
+    const nowKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
+    const isActive = (p: { effective_from: string; effective_to: string | null }) =>
+      p.effective_from <= nowKey && (p.effective_to === null || p.effective_to >= nowKey)
+    const rows = [...salaryProjections].sort((a, b) =>
+      a.person === b.person
+        ? b.effective_from.localeCompare(a.effective_from)
+        : a.person.localeCompare(b.person))
+    const currentTotal = rows.filter(isActive).reduce((s, p) => s + p.monthly_net, 0)
+
     return (
       <div className={styles.page}>
         <div className={styles.detailView}>
@@ -3342,21 +3381,65 @@ export function Income() {
             <ArrowLeft size={16} /> Back to Income
           </button>
           <h1 style={{ margin: 'var(--space-4) 0' }}>Salary</h1>
-          <div className={styles.sourcesGrid}>
-            {names.map(name => (
-              <button
-                key={name}
-                className={styles.sourceCard}
-                onClick={() => {
-                  setSelectedEmployee(name)
-                  setView('salary_detail')
-                }}
-              >
-                <h3 className={styles.sourceName}>{name}'s Salary</h3>
-                <p className={styles.sourceDescription}>Payslips, W-2 history, projections</p>
-              </button>
-            ))}
-          </div>
+          <p className={styles.sourceDescription} style={{ marginBottom: 'var(--space-4)' }}>
+            Monthly take-home on record. These are the figures behind the Salary
+            column on the income table — net of tax and deductions, not gross pay.
+          </p>
+
+          {rows.length === 0 ? (
+            <div className={styles.chartEmpty}>No salary figures recorded yet.</div>
+          ) : (
+            <div className={styles.earningsTableContainer}>
+              <table className={styles.earningsTable}>
+                <thead>
+                  <tr>
+                    <th>Person</th>
+                    <th>Monthly Take-Home</th>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Status</th>
+                    <th style={{ textAlign: 'left' }}>Notes</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(p => {
+                    const active = isActive(p)
+                    return (
+                      <tr key={p.id} className={active ? styles.earningsHighlightedRow : undefined}>
+                        <td style={{ textAlign: 'left' }}><strong>{p.person}</strong></td>
+                        <td style={{ color: '#00D632' }}>
+                          <strong>{formatFullCurrency(p.monthly_net)}</strong>
+                        </td>
+                        <td>{p.effective_from}</td>
+                        <td>{p.effective_to || '—'}</td>
+                        <td>{active ? 'Current' : 'Past'}</td>
+                        <td style={{ textAlign: 'left', whiteSpace: 'normal', fontFamily: 'inherit' }}>
+                          {p.notes || '—'}
+                        </td>
+                        <td>
+                          <button
+                            className={styles.linkButton}
+                            onClick={() => {
+                              setSelectedEmployee(p.person)
+                              setView('salary_detail')
+                            }}
+                          >
+                            W-2 history
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  <tr className={styles.earningsTotalRow}>
+                    <td style={{ textAlign: 'left' }}><strong>Current total</strong></td>
+                    <td><strong>{formatFullCurrency(currentTotal)}</strong></td>
+                    <td colSpan={5}></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     )
@@ -3454,6 +3537,11 @@ export function Income() {
           equityByMonth={monthlyPositions.equity}
           liveEquity={portfolioEquity}
           settings={goalSettings}
+          /* Third cell: what assignments cost against the same period the
+             two gauges cover. Premium is already counted in the Cash Goal
+             beside it, so this card deliberately excludes it — see
+             AssignmentLossCard.tsx. Click-through goes to the events. */
+          extra={<AssignmentLossThisMonth year={mainSelectedYear} month={mainSelectedMonth} inGrid />}
         />
       </div>
 
@@ -3589,6 +3677,12 @@ export function Income() {
                       <th>Rent</th>
                       <th>Salary</th>
                       <th>Total</th>
+                      <th
+                        className={styles.earningsAsideCol}
+                        title="Assignment loss is shown for context only and is NOT subtracted from Total — an assignment converts a position rather than losing income."
+                      >
+                        Assignment Loss<span className={styles.earningsAsideMark}> *</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3609,6 +3703,9 @@ export function Income() {
                         <td style={{ color: d.rental < 0 ? '#FF5A5A' : undefined }}>{d.rental !== 0 ? formatFullCurrency(d.rental) : '—'}</td>
                         <td style={{ color: d.salary < 0 ? '#FF5A5A' : undefined }}>{d.salary !== 0 ? formatFullCurrency(d.salary) : '—'}</td>
                         <td><strong style={{ color: d.total < 0 ? '#FF5A5A' : '#00D632' }}>{formatFullCurrency(d.total)}</strong></td>
+                        <td className={styles.earningsAsideCol} style={{ color: d.assignmentLoss > 0 ? '#FF5A5A' : d.assignmentLoss < 0 ? '#00D632' : undefined }}>
+                          {d.assignmentLoss !== 0 ? formatFullCurrency(-d.assignmentLoss) : '—'}
+                        </td>
                       </tr>
                     ))}
                     {unifiedTableRows.length > 1 && (() => {
@@ -3621,7 +3718,8 @@ export function Income() {
                         rental: acc.rental + d.rental,
                         salary: acc.salary + d.salary,
                         total: acc.total + d.total,
-                      }), { options: 0, equity_sales: 0, dividends: 0, interest: 0, lending: 0, rental: 0, salary: 0, total: 0 })
+                        assignmentLoss: acc.assignmentLoss + d.assignmentLoss,
+                      }), { options: 0, equity_sales: 0, dividends: 0, interest: 0, lending: 0, rental: 0, salary: 0, total: 0, assignmentLoss: 0 })
                       return (
                         <tr className={styles.earningsTotalRow}>
                           <td><strong>Total</strong></td>
@@ -3633,11 +3731,18 @@ export function Income() {
                           <td><strong>{formatFullCurrency(t.rental)}</strong></td>
                           <td><strong>{formatFullCurrency(t.salary)}</strong></td>
                           <td><strong>{formatFullCurrency(t.total)}</strong></td>
+                          <td className={styles.earningsAsideCol} style={{ color: t.assignmentLoss > 0 ? '#FF5A5A' : t.assignmentLoss < 0 ? '#00D632' : undefined }}>
+                            <strong>{t.assignmentLoss !== 0 ? formatFullCurrency(-t.assignmentLoss) : '—'}</strong>
+                          </td>
                         </tr>
                       )
                     })()}
                   </tbody>
                 </table>
+                <div className={styles.earningsTableNote}>
+                  * Assignment loss is reported for context and is <strong>not</strong> subtracted
+                  from Total — an assignment converts a position rather than losing income.
+                </div>
               </div>
             )
           ) : (

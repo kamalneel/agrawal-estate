@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
+import clsx from 'clsx'
 import styles from './GoalsStrip.module.css'
 
 /** Yield-tracker gauges (Objective 2): 1%/mo on holdings, 2%/mo on cash
@@ -26,6 +27,10 @@ interface GoalsStripProps {
   equityByMonth: Record<string, number>
   liveEquity: number | null
   settings: GoalSettings | null
+  /** Optional third cell rendered inside the strip's own grid, so it
+   *  shares the row and the gauges' height instead of stacking below.
+   *  Income passes the assignment-loss card here. */
+  extra?: ReactNode
 }
 
 function fmt(v: number): string {
@@ -37,7 +42,7 @@ function monthKey(y: number, m: number): string {
   return `${y}-${String(m).padStart(2, '0')}`
 }
 
-export function GoalsStrip({ year, month, onDrill, capacityByMonth, optionsByType, dividendsByMonth, equityByMonth, liveEquity, settings }: GoalsStripProps) {
+export function GoalsStrip({ year, month, onDrill, capacityByMonth, optionsByType, dividendsByMonth, equityByMonth, liveEquity, settings, extra }: GoalsStripProps) {
   const now = new Date()
   const curKey = monthKey(now.getFullYear(), now.getMonth() + 1)
 
@@ -133,7 +138,7 @@ export function GoalsStrip({ year, month, onDrill, capacityByMonth, optionsByTyp
   ]
 
   return (
-    <div className={styles.strip}>
+    <div className={clsx(styles.strip, extra && styles.stripThree)}>
       {rows.map(({ kind, title, sub, g }) => {
         const ratio = g.target > 0 ? g.income / g.target : 0
         const color = ratio >= 1 ? '#00D632' : ratio >= 0.7 ? '#FFB800' : '#FF5A5A'
@@ -167,6 +172,7 @@ export function GoalsStrip({ year, month, onDrill, capacityByMonth, optionsByTyp
           </div>
         )
       })}
+      {extra}
     </div>
   )
 }
