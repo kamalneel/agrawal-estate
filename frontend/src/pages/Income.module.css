@@ -1318,9 +1318,19 @@
 }
 
 .earningsTableNote {
-  padding: var(--space-2) var(--space-3) var(--space-3);
+  padding: var(--space-3);
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
+  line-height: 1.5;
+  max-width: 78ch; /* definitions are prose — keep the measure readable */
+}
+
+.earningsTableNote p + p {
+  margin-top: var(--space-2);
+}
+
+.earningsTableNote strong {
+  color: var(--color-text-secondary);
 }
 
 .taxableToggle {

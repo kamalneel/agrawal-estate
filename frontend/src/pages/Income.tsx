@@ -3740,8 +3740,26 @@ export function Income() {
                   </tbody>
                 </table>
                 <div className={styles.earningsTableNote}>
-                  * Assignment loss is reported for context and is <strong>not</strong> subtracted
-                  from Total — an assignment converts a position rather than losing income.
+                  <p>
+                    <strong>Equity Sales</strong> — money made or lost by actually selling
+                    shares: what they sold for, minus what they originally cost. Counted in
+                    Total. Shares sold because a covered call was assigned are included here,
+                    booked at the strike price you were obliged to accept.
+                  </p>
+                  <p>
+                    <strong>Assignment Loss *</strong> — context only, never added to or
+                    subtracted from Total. It answers a different question: what being
+                    <em> forced</em> to trade at the strike cost you, versus having chosen
+                    freely. For a put, you had to buy shares for more than they were worth
+                    that day. For a call, you had to give up shares you owned, so it compares
+                    the strike against what those shares had cost you. A negative figure
+                    means the forced trade went in your favour.
+                  </p>
+                  <p>
+                    The two never double-count: Equity Sales is the cash result of the sale,
+                    Assignment Loss is a measure of the price you paid for being assigned.
+                    Neither includes option premium — that is already income under Options.
+                  </p>
                 </div>
               </div>
             )

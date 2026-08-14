@@ -120,49 +120,32 @@ def get_assignment_loss(db: Session) -> Dict:
             if loss <= 0:
                 continue  # assignment happened at/through the strike — no gap to report
         else:
-            # Robinhood's OWN realized gain on this sale, when we have it —
-            # the broker's record of what the shares actually made or lost.
-            # Preferred over any cost-basis figure we derive because the
-            # derivation cannot survive a stock split: NFLX split 10:1 in
-            # Nov 2025 and the reconstruction below divided pre-split
-            # dollars by pre-split share counts, reporting a $323,178 loss
-            # on an assignment Robinhood records as a $1,065.71 gain. Five
-            # other events were wrong the same way (Neel, 2026-08-14).
-            #
-            # Date tolerance: Robinhood timestamps the fill in UTC, which
-            # can land a day either side of the ledger's OASGN date (an
-            # Aug-29 assignment stamped 2025-08-30T04:11Z). Quantity must
-            # match exactly so a same-week partial sale can't be mistaken
-            # for the assignment.
-            rh = db.execute(_text("""
-                SELECT realized_gain FROM robinhood_realized_trades
-                WHERE account_id = :acct AND symbol = :sym
-                  AND quantity = :q
-                  AND trade_date BETWEEN :d - INTERVAL '2 days' AND :d + INTERVAL '2 days'
-                ORDER BY ABS(trade_date - :d) ASC LIMIT 1
-            """), {"acct": r.account_id, "sym": r.symbol, "q": shares,
-                   "d": r.transaction_date}).fetchone()
-            if rh and rh.realized_gain is not None:
-                # `loss` is positive-is-bad; a realized GAIN is a negative loss.
-                loss = -float(rh.realized_gain)
-                cost_basis_source = "robinhood_realized"
-                cost_basis_incomplete = False
-            else:
-                cb, cb_source, _ = _cost_basis_near(db, r.account_id, r.symbol, r.transaction_date)
-                incomplete = False
-                if cb is None:
-                    cb, incomplete = _reconstruct_cost_basis(
-                        db, r.account_id, r.symbol, r.transaction_date, shares)
-                if cb is None:
-                    skipped_no_data += 1
-                    continue  # honest omission — no fabricated cost basis
-                cb_source = cb_source or "reconstructed"
-                cost_basis_per_share = round(cb, 2)
-                cost_basis_source = cb_source
-                cost_basis_incomplete = incomplete
-                # Signed, unlike puts: a call sold above what it cost is a
-                # real gain, not something to clamp away (Neel, 2026-08-08).
-                loss = (cb - strike) * shares
+            # NOT sourced from robinhood_realized_trades, despite that table
+            # existing and covering these events (tried and reverted
+            # 2026-08-14). Robinhood's realized_gain folds the assigned
+            # contract's premium INTO the stock sale: it booked the
+            # 2026-05-22 NFLX assignment at $89.64948/share against an
+            # $87.00 strike, and the $1,325.74 difference is exactly the
+            # premium on that contract (STO 3 @ 794.85 + 2 @ 529.89 =
+            # $1,324.74). Using it double-counts premium, which is already
+            # income in the options stream — precisely what the module
+            # docstring forbids. The table is still populated for
+            # verification; it just cannot be this figure.
+            cb, cb_source, _ = _cost_basis_near(db, r.account_id, r.symbol, r.transaction_date)
+            incomplete = False
+            if cb is None:
+                cb, incomplete = _reconstruct_cost_basis(
+                    db, r.account_id, r.symbol, r.transaction_date, shares)
+            if cb is None:
+                skipped_no_data += 1
+                continue  # honest omission — no fabricated cost basis
+            cb_source = cb_source or "reconstructed"
+            cost_basis_per_share = round(cb, 2)
+            cost_basis_source = cb_source
+            cost_basis_incomplete = incomplete
+            # Signed, unlike puts: a call sold above what it cost is a
+            # real gain, not something to clamp away (Neel, 2026-08-08).
+            loss = (cb - strike) * shares
 
         # True net premium across the WHOLE roll chain that led to this
         # contract, not just its own STO (Neel, 2026-08-12: a $9,005
