@@ -1,5 +1,11 @@
 """Update account cash balances as of 2026-05-23.
 
+NOT a migration. This lived in migrations/versions/ until 2026-08-14, where
+it broke alembic outright: alembic imports every file in that directory and
+requires a module-level `revision`, so its absence here made *every* alembic
+command fail with "Could not determine revision id from filename". Moved to
+scripts/ (run it via its run(db) entry point); nothing imports it.
+
 Values from Robinhood buying power screenshots after May 22 put assignments.
 Storing gross cash (before options collateral) — collateral is tracked separately
 via the SoldOption table.
