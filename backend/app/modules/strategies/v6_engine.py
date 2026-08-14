@@ -828,13 +828,20 @@ def build_action_queue(db: Session) -> Dict:
             legs = (rb.get("routing") or {}).get("legs") or []
             if not order.get("strike") or not legs:
                 continue
-            roll = order.get("instruction") == "roll"
-            verb = "roll" if roll else "sell"
             tgt = rb.get("target_shares") or 0
             for leg in legs:
                 lc = int(leg.get("contracts") or 0)
                 if lc < 1:
                     continue
+                # Per-LEG instruction, not one verb for the whole order
+                # (2026-08-14): an account can need a ROLL (its own
+                # existing call, not yet near ATM) while a DIFFERENT
+                # account in the same symbol needs a fresh SELL (genuinely
+                # naked shares) — allocation_service now tags each leg
+                # with which one it actually is, instead of the old single
+                # order.instruction applied uniformly to every leg.
+                roll = leg.get("instruction", "sell") == "roll"
+                verb = "roll" if roll else "sell"
                 acct_name = acct_id_to_name.get(leg["account_id"], leg["account_id"])
                 lots = leg.get("lots") or []
                 lots_txt = "; ".join(f"{int(l['shares'])} sh @ ${l['cost_per_share']:,.2f}"

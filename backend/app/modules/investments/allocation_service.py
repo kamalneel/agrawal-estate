@@ -536,6 +536,7 @@ def _route_trim_lots(sym: str, accounts: List[Dict], shares_needed: float, price
             "cost_per_share": a["cost_per_share"],
             "realized_gain": None if (not a["sheltered"] and not acct_lots) else round(g, 2),
             "lots": touched,
+            "instruction": "sell",
         })
 
     # Worst case: the same number of contracts taken oldest-lot-first (FIFO)
@@ -927,37 +928,79 @@ def get_allocation_plan(db: Session) -> Dict:
             # harvested loss by ~$1,900 on 400 shares, and the gap widens the
             # further the strike sits from spot.
             sale_px = order["strike"] if order else px
-            # Same ATM-tolerance credit as roll_contracts above, applied to
-            # the share count this routes — otherwise the per-account leg
-            # split (what the queue card actually displays) stays blind to
-            # an already-near-ATM roll even after the aggregate order.contracts
-            # above correctly drops (2026-08-11: this routing function reads
-            # gap_shares directly, not order.contracts, so fixing only the
-            # aggregate left the card itself unchanged at "roll 1 call").
-            trim_shares_needed = (max(0.0, abs(gap_shares) - already_near_atm * SHARES_PER_CONTRACT)
-                                  if action == "trim" else cur_shares)
-            # Per-account version of the same credit, applied to the
-            # ROUTING pool specifically (2026-08-14): the aggregate credit
-            # above correctly shrinks the TOTAL still needed, but
-            # _route_trim_lots picks WHICH accounts to route it to purely
-            # by tax cost — blind to whether a given account's own shares
-            # are already backing an already-credited call. Without this,
-            # an account that's 100% covered (its one call already ITM)
-            # could still get selected for a brand-new redundant contract
-            # while a genuinely uncovered account went unrepresented —
-            # found on INTC: Neel's Brokerage's only 100 shares were
-            # already fully covered, yet still got "sell 1 call".
-            accts_for_routing = accts
-            if px is not None:
-                atm_target = strike_for(px, OTM_ATM)
-                rolled = rolldowns.get(sym, {})
-                accts_for_routing = [
-                    {**a, "shares": max(0.0, a["shares"] - SHARES_PER_CONTRACT * _credited_call_contracts(
-                        call_strikes_by_acct.get((sym, a["account_id"]), []), px, atm_target, rolled))}
+            atm_target = strike_for(px, OTM_ATM)
+            rolled = rolldowns.get(sym, {})
+
+            # Two mechanically DIFFERENT kinds of leg, not one blended pool
+            # (2026-08-14, second bug in one day on this same routing):
+            #
+            # ROLL legs — an account's own EXISTING call that isn't yet
+            # credited (not ITM, not verified near-ATM). There's no "which
+            # account's shares" choice here: you roll YOUR OWN open
+            # contract, full stop. Read straight off call_strikes_by_acct.
+            #
+            # SELL legs — brand-new contracts, which can ONLY go against
+            # shares with NO existing call AT ALL (any strike, credited or
+            # not) — an account whose shares already back an uncredited
+            # call has zero naked shares left; selling a fresh contract
+            # there would be a second call against the same 100 shares,
+            # which isn't a real order. Found on INTC: Jaya's IRA had just
+            # sold 3 calls at $110 (genuinely still OTM, so uncredited —
+            # correctly gets a ROLL leg) but its 300 shares, already fully
+            # spoken for by that contract, were ALSO being routed for a
+            # fresh "sell 3" on top, because the old single-pool routing
+            # only excluded CREDITED coverage, not all existing coverage.
+            roll_legs = []
+            for a in accts:
+                aid = a["account_id"]
+                for st, c in call_strikes_by_acct.get((sym, aid), []):
+                    credited = _credited_call_contracts([(st, c)], px, atm_target, rolled)
+                    uncredited = c - credited
+                    if uncredited > 0:
+                        roll_legs.append({
+                            "account_id": aid, "shares": uncredited * SHARES_PER_CONTRACT,
+                            "contracts": uncredited, "sheltered": a["sheltered"],
+                            "cost_per_share": a["cost_per_share"], "realized_gain": None,
+                            "lots": [], "instruction": "roll", "_dist": abs(st - atm_target),
+                        })
+            # A TRIM only needs enough contracts near ATM to reach the
+            # target, not necessarily every currently-uncovered contract
+            # moved — NVDA has held 16 open calls against only ~8 needed
+            # for its 761-share trim; rolling all 14 uncredited ones toward
+            # ATM would overshoot the 1,000-share target by hundreds of
+            # shares once they all assign. Cap at roll_contracts (already
+            # computed above as the genuine remaining need), closest-to-
+            # ATM strikes first — those finish with the least work, and an
+            # EXIT (target 0) has no such ceiling since every share is
+            # meant to leave regardless (roll_contracts there already
+            # equals every uncredited contract, so the cap is a no-op).
+            roll_legs.sort(key=lambda l: l["_dist"])
+            capped, cap_left = [], roll_contracts
+            for leg in roll_legs:
+                if cap_left <= 0:
+                    break
+                take = min(leg["contracts"], cap_left)
+                leg = {**leg, "contracts": take, "shares": take * SHARES_PER_CONTRACT}
+                del leg["_dist"]
+                capped.append(leg)
+                cap_left -= take
+            roll_legs = capped
+
+            sell_legs, gain_avoided, basis_unknown = [], 0.0, False
+            if new_contracts > 0:
+                naked_accts = [
+                    {**a, "shares": max(0.0, a["shares"] - SHARES_PER_CONTRACT * sum(
+                        c for _st, c in call_strikes_by_acct.get((sym, a["account_id"]), [])))}
                     for a in accts
                 ]
-            routing = _route_trim_lots(
-                sym, accts_for_routing, trim_shares_needed, sale_px, lots_by_acct)
+                sell_routing = _route_trim_lots(
+                    sym, naked_accts, new_contracts * SHARES_PER_CONTRACT, sale_px, lots_by_acct)
+                sell_legs = sell_routing["legs"]
+                gain_avoided = sell_routing["gain_avoided_vs_worst"]
+                basis_unknown = sell_routing["basis_unknown"]
+
+            routing = {"legs": sell_legs + roll_legs, "gain_avoided_vs_worst": gain_avoided,
+                      "basis_unknown": basis_unknown, "lot_aware": True}
         elif action == "buy" and px is not None:
             routing = _route_buy(accts, cash_by_acct, order["strike"] if order else px)
 
