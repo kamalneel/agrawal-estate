@@ -832,13 +832,22 @@ def build_action_queue(db: Session) -> Dict:
                 # rounds to the nearest whole dollar so this number is
                 # always at least a plausible real strike.
                 price_txt = f" Current stock price: ${rb['price']:,.2f}." if rb.get("price") else ""
-                # Low priority, not medium (Neel, 2026-08-11): these only
-                # complete via natural weekly assignment over several
-                # cycles — "not in a rush to get to the new place right
-                # away." Engine 6's off-thesis-put closes are the actually
-                # urgent item now; this queue's priority should say so.
+                # Medium, not low (Neel, 2026-08-14, reverting the 2026-08-11
+                # demotion): the REBALANCE overall is patient — "not in a
+                # rush to get to the new place right away" — but each of
+                # these cards is still a real, placeable order for THIS
+                # week's expiry (strike/premium computed for the current
+                # cycle), not a standing "no action needed" note. Demoting
+                # it to low buried it under the collapsed "show low
+                # priority" toggle by default, which cost real weekly
+                # premium/progress rather than just deferring urgency —
+                # conflated "the multi-week trim isn't urgent" with "this
+                # week's specific order isn't worth seeing." Engine 6's
+                # off-thesis-put closes are still the highest-urgency item
+                # (that stays "high"); this is one notch below that, same
+                # as an ordinary Engine-1 income sell, not buried with it.
                 add_item(
-                    "low", "ROLL" if roll else "SELL", 5, "Rebalancing",
+                    "medium", "ROLL" if roll else "SELL", 5, "Rebalancing",
                     f"{sym}: {verb} {lc} call{'s' if lc > 1 else ''} to reach {tgt:,} target",
                     acct_name, sym,
                     f"{verb} {lc} call{'s' if lc > 1 else ''} at strike ${order['strike']:,.0f}, "
