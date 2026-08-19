@@ -68,19 +68,35 @@ def _fmt_exp(exp) -> str:
     return exp.strftime("%m/%d")
 
 
-def _order_line(verb: str, n: int, unit: str, strike: float, exp, price_txt: str) -> str:
+def _order_line(verb: str, n: int, unit: str, strike, exp, price_txt: str) -> str:
     """'{verb} N {call|put}s at strike $X, expiring MM/DD.{price_txt}' —
-    the shared shape for every Engine 5 order card. Deliberately does NOT
-    append a "Collects/Costs ≈$X" clause the way earlier versions of
-    these two cards did: that number was ALSO passed as `earn=` to
-    add_item, which the frontend already renders as its own green "Earn
-    ~$X" badge — the two together said the same dollar figure twice on
-    one card (2026-08-19 audit). Callers that have no earn= (e.g.
-    Engine 6's CLOSE, which costs money rather than collecting it) build
-    their own line instead, since there's no badge duplicating that
-    number to avoid."""
+    the shared shape for every "here is the order to place" card in this
+    file (2026-08-19, resuming the formatting pass after fixing the two
+    most visible symptoms — date format and the duplicated Earn text —
+    since the same drift was present in more places once actually
+    audited: Engine 1's floor-bound branch used a '·'-bullet layout
+    instead of this sentence shape, and Engine 6's CLOSE card rebuilt
+    an equivalent line by hand instead of calling this).
+
+    `strike` is normally a number (formatted to whole dollars, matching
+    every other strike in this file), but Engine 1's Tier-1/Tier-2 cards
+    need to show either a delta-qualified strike ("~$101 (delta 10-15)")
+    or two alternative strikes side by side — pass a pre-formatted
+    string in `strike` for that case and it's used as-is instead of
+    being formatted as currency, since the caller already knows exactly
+    what belongs there.
+
+    Deliberately does NOT append a "Collects/Costs ≈$X" clause the way
+    earlier versions of the Engine 5 cards did: that number was ALSO
+    passed as `earn=` to add_item, which the frontend already renders as
+    its own green "Earn ~$X" badge — the two together said the same
+    dollar figure twice on one card (2026-08-19 audit). Callers that
+    have no earn= (Engine 6's CLOSE, which costs money rather than
+    collecting it) append their own trailing clause after calling this,
+    since there's no badge duplicating that number to avoid."""
     plural = "s" if n != 1 else ""
-    return f"{verb} {n} {unit}{plural} at strike ${strike:,.0f}, expiring {_fmt_exp(exp)}.{price_txt}"
+    strike_txt = strike if isinstance(strike, str) else f"strike ${strike:,.0f}"
+    return f"{verb} {n} {unit}{plural} at {strike_txt}, expiring {_fmt_exp(exp)}.{price_txt}"
 
 
 _EARNINGS_PATH = Path(__file__).resolve().parents[4] / "data" / "earnings_calendar.json"
@@ -494,12 +510,18 @@ def build_action_queue(db: Session) -> Dict:
         if opt == "put" and wanted_symbols and sym not in wanted_symbols:
             collateral = strike * contracts * 100
             close_cost = mark * contracts * 100
+            # Real, already-open strike (not a computed ATM target like
+            # Engine 5's), so it can be fractional ($162.50) — pass it as
+            # a pre-formatted string rather than through _order_line's
+            # numeric path, which rounds to whole dollars (safe there
+            # only because atm_order() itself always produces a whole
+            # number; would silently mis-state a real strike here).
             add_item(
                 "high", "CLOSE", 6, "Off-thesis put — free collateral",
                 f"{sym}: not in the allocation plan — close to free ${collateral:,.0f}", account, sym,
-                f"buy to close {contracts} put{'s' if contracts > 1 else ''} at ${strike:g}, "
-                f"expiring {_fmt_exp(exp)}. Current stock price: ${stock:,.0f}. "
-                f"Costs ≈${close_cost:,.0f} to close, frees ${collateral:,.0f} collateral.",
+                _order_line("buy to close", contracts, "put", f"strike ${strike:g}", exp,
+                           f" Current stock price: ${stock:,.0f}.")
+                + f" Costs ≈${close_cost:,.0f} to close, frees ${collateral:,.0f} collateral.",
                 f"{sym} isn't part of the AI value-chain allocation plan — assignment would deliver a stock "
                 "not on the buy list. Closing (not rolling — a roll just extends this same unwanted exposure) "
                 "frees the collateral for a wanted put instead (SPCX/MU/MSFT/TSM/AMZN/MRVL, per the allocation plan).",
@@ -822,10 +844,12 @@ def build_action_queue(db: Session) -> Dict:
                 f"(≈${per_share:.2f}/sh) but assignment realizes the loss vs basis. "
                 "The earn figure is intentionally omitted for the floored strike."
             )
+            floor_strike_txt = (f"strike ~${approx:,.0f} (basis floor, collects ≈$0) or "
+                               f"strike ~${target:,.0f} (alt, collects ≈${est:,})")
             add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
                      f"{sym}: {n} call{'s' if n > 1 else ''} available — basis floor binds", account, sym,
-                     f"sell {n} call{'s' if n > 1 else ''} · strike ~${approx:,.0f} (basis floor) collects ≈$0 "
-                     f"· alt strike ~${target:,.0f} collects ≈${est:,} · exp {_fmt_exp(exp)} · stock ${stock:,.0f}",
+                     _order_line("sell", n, "call", floor_strike_txt, exp,
+                                f" Current stock price: ${stock:,.0f}."),
                      action_txt + (f" ⏸ Also: {entry_ctx['reason']} — entry timing says wait regardless." if entry_wait else ""),
                      earn=0,
                      context={"symbol": sym, "recommended_strike": round(approx, 2),
@@ -867,8 +891,8 @@ def build_action_queue(db: Session) -> Dict:
             add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
                      f"{sym}: {n} call{'s' if n > 1 else ''} available"
                      + (" — entry timing says wait" if entry_wait else ""), account, sym,
-                     f"sell {n} call{'s' if n > 1 else ''} at {strike_txt}, "
-                     f"expiring {_fmt_exp(exp)}. Current stock price: ${stock:,.0f}.",
+                     _order_line("sell", n, "call", strike_txt, exp,
+                                f" Current stock price: ${stock:,.0f}."),
                      f"{int(uncovered):,} uncovered shares earning nothing toward the 1%/mo holdings goal. {gate} "
                      + entry_line,
                      earn=est,
@@ -932,7 +956,11 @@ def build_action_queue(db: Session) -> Dict:
                 # 2026-07-15 for the identical confusion; atm_order() now
                 # rounds to the nearest whole dollar so this number is
                 # always at least a plausible real strike.
-                price_txt = f" Current stock price: ${rb['price']:,.2f}." if rb.get("price") else ""
+                # Whole dollars, matching every other "Current stock
+                # price" mention in this file (Engine 4's spec line,
+                # Engine 1, Engine 6) — this was the one spot still
+                # showing cents (2026-08-19 formatting pass).
+                price_txt = f" Current stock price: ${rb['price']:,.0f}." if rb.get("price") else ""
                 # Medium, not low (Neel, 2026-08-14, reverting the 2026-08-11
                 # demotion): the REBALANCE overall is patient — "not in a
                 # rush to get to the new place right away" — but each of
@@ -987,7 +1015,7 @@ def build_action_queue(db: Session) -> Dict:
         # issue, .2f exposing false precision on a value that's now
         # always a real number) and current stock price stated
         # separately, not implied by "ATM ~$X" (2026-08-11).
-        price_txt = f" Current stock price: ${rb['price']:,.2f}." if rb.get("price") else ""
+        price_txt = f" Current stock price: ${rb['price']:,.0f}." if rb.get("price") else ""
         add_item(
             "medium" if funded else "low", "SELL", 5, "Rebalancing",
             f"{sym}: {n} put{'s' if n > 1 else ''} to acquire toward {rb.get('target_shares'):,} target"
