@@ -49,6 +49,40 @@ def _friday(d: date) -> date:
     return d + timedelta(days=(4 - d.weekday()) % 7)
 
 
+def _fmt_exp(exp) -> str:
+    """MM/DD — the one expiration format every card in this file uses,
+    EXCEPT Engine 5's trim/exit and buy-side cards, which rendered
+    allocation_service's raw order["expiration"] (an ISO string,
+    "2026-08-21") unformatted (Neel, 2026-08-19: "I don't think it is
+    consistent" — screenshot showed "expiring 08/21" and "expiring
+    2026-08-21" back to back in the same queue). Accepts a date, the ISO
+    string allocation_service stores in order["expiration"], or None (a
+    handful of call sites had their own '?'/'' fallback for a missing
+    date before this existed — standardized on '?' here) — every call
+    site in the file goes through this one function now, regardless of
+    which shape or gap it started with."""
+    if exp is None:
+        return "?"
+    if isinstance(exp, str):
+        exp = date.fromisoformat(exp)
+    return exp.strftime("%m/%d")
+
+
+def _order_line(verb: str, n: int, unit: str, strike: float, exp, price_txt: str) -> str:
+    """'{verb} N {call|put}s at strike $X, expiring MM/DD.{price_txt}' —
+    the shared shape for every Engine 5 order card. Deliberately does NOT
+    append a "Collects/Costs ≈$X" clause the way earlier versions of
+    these two cards did: that number was ALSO passed as `earn=` to
+    add_item, which the frontend already renders as its own green "Earn
+    ~$X" badge — the two together said the same dollar figure twice on
+    one card (2026-08-19 audit). Callers that have no earn= (e.g.
+    Engine 6's CLOSE, which costs money rather than collecting it) build
+    their own line instead, since there's no badge duplicating that
+    number to avoid."""
+    plural = "s" if n != 1 else ""
+    return f"{verb} {n} {unit}{plural} at strike ${strike:,.0f}, expiring {_fmt_exp(exp)}.{price_txt}"
+
+
 _EARNINGS_PATH = Path(__file__).resolve().parents[4] / "data" / "earnings_calendar.json"
 _POLICY_PATH = Path(__file__).resolve().parents[4] / "data" / "investment_policy.json"
 
@@ -464,7 +498,7 @@ def build_action_queue(db: Session) -> Dict:
                 "high", "CLOSE", 6, "Off-thesis put — free collateral",
                 f"{sym}: not in the allocation plan — close to free ${collateral:,.0f}", account, sym,
                 f"buy to close {contracts} put{'s' if contracts > 1 else ''} at ${strike:g}, "
-                f"expiring {exp.strftime('%m/%d') if exp else '?'}. Current stock price: ${stock:,.0f}. "
+                f"expiring {_fmt_exp(exp)}. Current stock price: ${stock:,.0f}. "
                 f"Costs ≈${close_cost:,.0f} to close, frees ${collateral:,.0f} collateral.",
                 f"{sym} isn't part of the AI value-chain allocation plan — assignment would deliver a stock "
                 "not on the buy list. Closing (not rolling — a roll just extends this same unwanted exposure) "
@@ -539,7 +573,7 @@ def build_action_queue(db: Session) -> Dict:
         if opt == "call" and stock > strike:
             intrinsic = stock - strike
             ipct = round(intrinsic / mark * 100, 0) if mark else 100
-            spec = f"{sym} {contracts}x CALL ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f} · {ipct:.0f}% intrinsic"
+            spec = f"{sym} {contracts}x CALL ${strike:g} {_fmt_exp(exp)} · stock ${stock:,.0f} · {ipct:.0f}% intrinsic"
             if ipct > 80:
                 add_item("high", "WATCH", 4, "ITM call >80% intrinsic",
                          f"{sym} call deep ITM — wait, don't roll", account, sym, spec,
@@ -595,7 +629,7 @@ def build_action_queue(db: Session) -> Dict:
         elif opt == "put" and stock < strike * 1.02:
             itm = stock < strike
             depth = round((strike - stock) / strike * 100, 1) if itm else 0
-            spec = (f"{sym} {contracts}x PUT ${strike:g} {exp.strftime('%m/%d') if exp else ''} · stock ${stock:,.0f}"
+            spec = (f"{sym} {contracts}x PUT ${strike:g} {_fmt_exp(exp)} · stock ${stock:,.0f}"
                     + (f" · {depth:.0f}% ITM" if itm else " · near ATM")
                     + (" (est.)" if estimated else ""))
             # Roll TARGET — strike, date, credit — not just the strategy in
@@ -612,7 +646,7 @@ def build_action_queue(db: Session) -> Dict:
             roll_strike = round(stock) if itm else strike
             roll_premium = weekly_premium(contracts, stock, RATE_ATM_WEEKLY)
             roll_txt = (f" Roll to strike ${roll_strike:,.0f}, expiring "
-                        f"{roll_exp.strftime('%m/%d') if roll_exp else '?'} — new leg collects "
+                        f"{_fmt_exp(roll_exp)} — new leg collects "
                         f"≈${roll_premium:,} (est., gross — net of closing the current leg).")
             roll_ctx = {"roll_to_strike": roll_strike,
                         "roll_to_expiration": str(roll_exp) if roll_exp else None,
@@ -643,7 +677,7 @@ def build_action_queue(db: Session) -> Dict:
                 # downgrade to a monitor until the position's week arrives.
                 streak = _get_roll_streak_ctx(db, p_acct_id, sym, opt, strike, depth)
                 add_item("medium", "WATCH", 4, "Deep tested put — rolled this cycle",
-                         f"{sym} put {depth:.0f}% ITM, rolled to {exp.strftime('%m/%d')}",
+                         f"{sym} put {depth:.0f}% ITM, rolled to {_fmt_exp(exp)}",
                          account, sym, spec,
                          "Already rolled into next week's expiry; this cycle's action is done. Monitor — an "
                          "opportunistic further roll-down only if it nets zero-or-credit. Becomes a ROLL again "
@@ -791,7 +825,7 @@ def build_action_queue(db: Session) -> Dict:
             add_item("medium", "SELL", 1, "Uncovered holdings ≥ 100 shares",
                      f"{sym}: {n} call{'s' if n > 1 else ''} available — basis floor binds", account, sym,
                      f"sell {n} call{'s' if n > 1 else ''} · strike ~${approx:,.0f} (basis floor) collects ≈$0 "
-                     f"· alt strike ~${target:,.0f} collects ≈${est:,} · exp {exp.strftime('%m/%d')} · stock ${stock:,.0f}",
+                     f"· alt strike ~${target:,.0f} collects ≈${est:,} · exp {_fmt_exp(exp)} · stock ${stock:,.0f}",
                      action_txt + (f" ⏸ Also: {entry_ctx['reason']} — entry timing says wait regardless." if entry_wait else ""),
                      earn=0,
                      context={"symbol": sym, "recommended_strike": round(approx, 2),
@@ -834,7 +868,7 @@ def build_action_queue(db: Session) -> Dict:
                      f"{sym}: {n} call{'s' if n > 1 else ''} available"
                      + (" — entry timing says wait" if entry_wait else ""), account, sym,
                      f"sell {n} call{'s' if n > 1 else ''} at {strike_txt}, "
-                     f"expiring {exp.strftime('%m/%d')}. Current stock price: ${stock:,.0f}.",
+                     f"expiring {_fmt_exp(exp)}. Current stock price: ${stock:,.0f}.",
                      f"{int(uncovered):,} uncovered shares earning nothing toward the 1%/mo holdings goal. {gate} "
                      + entry_line,
                      earn=est,
@@ -917,9 +951,7 @@ def build_action_queue(db: Session) -> Dict:
                     "medium", "ROLL" if roll else "SELL", 5, "Rebalancing",
                     f"{sym}: {verb} {lc} call{'s' if lc > 1 else ''} to reach {tgt:,} target",
                     acct_name, sym,
-                    f"{verb} {lc} call{'s' if lc > 1 else ''} at strike ${order['strike']:,.0f}, "
-                    f"expiring {order.get('expiration')}.{price_txt} Collects ≈"
-                    f"${int((order.get('est_premium') or 0) * lc / max(1, order.get('contracts') or 1)):,}",
+                    _order_line(verb, lc, "call", order["strike"], order.get("expiration"), price_txt),
                     (f"Rebalancing — {sym}: holding {rb['current_shares']:,.0f} against a "
                      f"{tgt:,} target, {abs(int(rb['gap_shares'])):,} to release."
                      + (" The existing calls are far OTM and will never assign; rolling them "
@@ -961,8 +993,7 @@ def build_action_queue(db: Session) -> Dict:
             f"{sym}: {n} put{'s' if n > 1 else ''} to acquire toward {rb.get('target_shares'):,} target"
             + ("" if funded else " — not funded yet"),
             acct_name or "—", sym,
-            f"sell {n} put{'s' if n > 1 else ''} at strike ${order['strike']:,.0f}, "
-            f"expiring {order.get('expiration')}.{price_txt} Collects ≈${order.get('est_premium', 0):,}",
+            _order_line("sell", n, "put", order["strike"], order.get("expiration"), price_txt),
             (f"Rebalancing — holding {rb['current_shares']:,.0f} of a {rb.get('target_shares'):,} target. "
              f"Selling ATM puts acquires the shares at the strike and pays premium while waiting; "
              f"assignment is the intended outcome, not a risk."
