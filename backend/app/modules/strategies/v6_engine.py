@@ -155,6 +155,28 @@ def _load_wanted_symbols() -> set:
         return set()
 
 
+def _load_symbol_aliases() -> Dict[str, str]:
+    """Raw held-symbol -> canonical rebalance-plan symbol (e.g. GOOG ->
+    GOOGL). Every OTHER rebalance-aware path already resolves this —
+    allocation_service aliases holdings before building the plan, and
+    _load_wanted_symbols adds the alias key itself to the wanted set — but
+    `rebalance` (built by _rebalance_lookup from the plan's already-
+    canonical rows) is keyed ONLY by "GOOGL", never "GOOG". Engine 1/4
+    iterate `holdings`, which is keyed by the RAW synced symbol, so
+    `rebalance.get("GOOG")` silently missed every time (2026-08-19,
+    audit: Jaya's Brokerage GOOG holding got a fresh Engine-1 income-call
+    recommendation as if it were an unrelated symbol, when GOOGL is
+    actually a trim target Engine 5 already owns entirely for this exact
+    position). Returns {} on any problem — fails open, same as
+    _load_wanted_symbols."""
+    try:
+        with open(_ALLOCATION_TARGETS_PATH) as f:
+            cfg = json.load(f)
+        return {a: b for a, b in (cfg.get("aliases") or {}).items() if not a.startswith("_")}
+    except Exception:
+        return {}
+
+
 def _acct_rank(name: str) -> int:
     try:
         return CANONICAL_ORDER.index(name)
@@ -326,6 +348,7 @@ def build_action_queue(db: Session) -> Dict:
 
     earnings_cal = _load_earnings_calendar()
     wanted_symbols = _load_wanted_symbols()
+    symbol_aliases = _load_symbol_aliases()
 
     def add_item(priority, action, engine, rule, title, account, symbol,
                  detail, why, earn=None, context=None):
@@ -480,7 +503,7 @@ def build_action_queue(db: Session) -> Dict:
         # a trim/exit target gets a caution instead of the badge, since
         # showing "REBALANCING" there would imply the opposite of what's
         # true.
-        rb_sym = rebalance.get(sym)
+        rb_sym = rebalance.get(symbol_aliases.get(sym, sym))
         rebalance_note = ""
         if rb_sym:
             tgt = rb_sym.get("target_shares")
@@ -499,6 +522,19 @@ def build_action_queue(db: Session) -> Dict:
                                           "gap_shares": rb_sym.get("gap_shares")}
                 rebalance_note = (f" This call is part of the {sym} {rb_sym['action']} — assignment "
                                   "here is the intended outcome, not a risk.")
+            elif opt == "call" and rb_sym["action"] == "buy":
+                # Mirror image of the put-on-a-trim-target case (2026-08-19
+                # audit): a call assigning delivers the shares AWAY, which
+                # is the opposite of what a buy target wants. Found on
+                # MSFT: 100 held vs a 200 target, yet an existing $450 call
+                # at 98% intrinsic — near-certain assignment — would drop
+                # it to 0 held, WIDENING the gap the separate MSFT put
+                # recommendation is trying to close. No REBALANCING badge
+                # (that would claim alignment); a caution instead.
+                rebalance_note = (f" ⚠ Unrelated to rebalancing — {sym} is a BUY target{tgt_txt}; "
+                                  "assignment on THIS call would REMOVE shares, widening the gap "
+                                  "the put-side buy recommendation is trying to close. Manage it on "
+                                  "its own income merits — letting it assign works against the plan.")
 
         if opt == "call" and stock > strike:
             intrinsic = stock - strike
@@ -656,7 +692,7 @@ def build_action_queue(db: Session) -> Dict:
         # the moment it is in range the symbol reverts to normal Tier-1
         # treatment. The two-book model is the resting state; rebalancing is
         # a regime, not a replacement.
-        rb = rebalance.get(sym)
+        rb = rebalance.get(symbol_aliases.get(sym, sym))
         rebalancing = bool(rb and rb["action"] in ("trim", "exit"))
         if rebalancing:
             # Engine 5 owns this symbol entirely. Emitting a Tier-1 card here
