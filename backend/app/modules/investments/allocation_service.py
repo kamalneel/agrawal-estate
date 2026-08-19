@@ -984,7 +984,23 @@ def get_allocation_plan(db: Session) -> Dict:
                 del leg["_dist"]
                 capped.append(leg)
                 cap_left -= take
-            roll_legs = capped
+            # One account can hold call_strikes_by_acct entries at MULTIPLE
+            # strikes at once (SPCX in Neel's Brokerage: 1 @ $145, 1 @ $150,
+            # both uncredited) — each produced its own leg above, which
+            # rendered as two separate, identically-worded "roll 1 call"
+            # cards for the same account (found 2026-08-19). The strike
+            # itself doesn't survive into the card text (it shows the
+            # shared ATM target, not each leg's own current strike), so
+            # merge same-account legs into one before returning.
+            merged: Dict[str, Dict] = {}
+            for leg in capped:
+                aid = leg["account_id"]
+                if aid in merged:
+                    merged[aid]["contracts"] += leg["contracts"]
+                    merged[aid]["shares"] += leg["shares"]
+                else:
+                    merged[aid] = dict(leg)
+            roll_legs = list(merged.values())
 
             sell_legs, gain_avoided, basis_unknown = [], 0.0, False
             if new_contracts > 0:
