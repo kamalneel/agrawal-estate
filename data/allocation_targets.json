@@ -44,8 +44,7 @@
     "accounts": ["alisha_brokerage"]
   },
   "aliases": {
-    "_note": "Share classes of the same company roll up to one target. GOOG (Alphabet Class C) counts toward the GOOGL target -- same precedent as data/investment_policy.json, which classifies both together. Without this the 100 GOOG shares are invisible to the plan and GOOGL reads 100 shares lighter than it is.",
-    "GOOG": "GOOGL"
+    "_note": "SUPERSEDED 2026-08-19: GOOG used to roll up into the GOOGL target (from 2026-07-22 -- same precedent as data/investment_policy.json's 'core' classification, which still lists both together for the separate Tier-1/Tier-2 option-strategy question; that classification is untouched). Neel, 2026-08-19, on discovering an audit fix that made Engine 1 respect this rollup: 'GOOG and GOOGL are two separate stocks of Google company and so this is not an alias issue' -- explicit decision to STOP treating them as one position for the allocation plan. The GOOG entry is removed (not set to null/empty -- an entry present with no value would still register as an alias key and get treated as wanted/tracked by _load_wanted_symbols). GOOG now falls through to plain off-thesis: still counted in the book's total value (every held symbol is, per `base` in allocation_service.py), but no bucket target, no rebalance card, and Engine 6 (v6_engine.py) will flag any GOOG puts as off-thesis collateral to free, same as any other untracked name."
   },
   "reference_prices": {
     "description": "Fallback price ONLY for target symbols not yet held -- the app has no quote source for a symbol absent from investment_holdings. A live price always wins; these go stale and the UI stamps them 'ref MM/DD'. Captured 2026-08-08. Delete a symbol's entry once it is actually held.",
