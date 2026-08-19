@@ -673,11 +673,24 @@ def build_action_queue(db: Session) -> Dict:
             roll_ctx = {"roll_to_strike": roll_strike,
                         "roll_to_expiration": str(roll_exp) if roll_exp else None,
                         "roll_to_premium": roll_premium}
+            # The roll target (strike + date) lived ONLY in `why`, which is
+            # hidden until the card is expanded (Neel, 2026-08-19, on a
+            # collapsed SPCX ROLL card showing 15% ITM and an unexplained
+            # "Earn ~$167" badge: "you must have that calculation... but
+            # you're not showing it" — right, roll_to_strike/roll_to_
+            # expiration were already computed and in `context`, just never
+            # surfaced in `detail`). Engine 5's ROLL cards already put their
+            # equivalent target directly in the collapsed line; these two
+            # didn't, which is exactly the kind of same-meaning,
+            # different-visibility gap this formatting pass exists to close.
+            # No dollar figure here — the Earn badge already shows that;
+            # repeating it would reintroduce the duplication fixed earlier.
+            roll_spec = spec + f" → roll to ${roll_strike:,.0f} {_fmt_exp(roll_exp)}"
             if dte <= 2:
                 add_item("urgent" if itm else "high", "ROLL", 4,
                          "Tested put at expiry",
                          f"{sym} put {'ITM' if itm else 'near ATM'}, expires in {dte}d",
-                         account, sym, spec,
+                         account, sym, roll_spec,
                          "1-2 days to expiry and still tested: roll out 1 week; if deeper ITM, roll down+out "
                          "at ~net-zero. Oscillating assumed — do not panic-close (AVGO lesson). Verify no "
                          "thesis-changing news." + roll_txt + (_roll_timing_note(dte) if itm else "") + rebalance_note,
@@ -686,7 +699,7 @@ def build_action_queue(db: Session) -> Dict:
             elif itm and depth >= 10 and exp and exp <= week_ending:
                 streak = _get_roll_streak_ctx(db, p_acct_id, sym, opt, strike, depth)
                 add_item("high", "ROLL", 4, "Deep tested put",
-                         f"{sym} put {depth:.0f}% ITM", account, sym, spec,
+                         f"{sym} put {depth:.0f}% ITM", account, sym, roll_spec,
                          "Roll down and out at net-zero-or-credit while the cycle exhausts; acceptable for multiple "
                          "weeks. Runaway (structural news) would instead mean evaluate closing."
                          + roll_txt + _roll_timing_note(dte) + _streak_text(streak) + rebalance_note,
