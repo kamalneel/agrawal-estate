@@ -948,7 +948,29 @@ def build_action_queue(db: Session) -> Dict:
                 # with which one it actually is, instead of the old single
                 # order.instruction applied uniformly to every leg.
                 roll = leg.get("instruction", "sell") == "roll"
-                verb = "roll" if roll else "sell"
+                # "Roll" alone doesn't say which of three different things
+                # is happening (Neel, 2026-08-25: "sometimes we were
+                # saying roll out... roll to the same expiration date or
+                # roll in... what is the best way to not have this
+                # confusion?"). This card's target expiration is always
+                # "the nearest upcoming Friday from today"
+                # (next_expiration in allocation_service), computed
+                # independent of what the position currently holds — so
+                # it can land later (the normal weekly case), on the SAME
+                # date (pure strike change, no calendar move — "roll"
+                # read as movement that isn't happening), or, if the
+                # position was rolled further out before, EARLIER than
+                # what's open now. The verb says which, so the sentence
+                # doesn't require checking Robinhood to know.
+                cur_exp, tgt_exp = leg.get("current_expiration"), order.get("expiration")
+                if not roll:
+                    verb = "sell"
+                elif cur_exp and tgt_exp and tgt_exp < cur_exp:
+                    verb = "roll in"
+                elif cur_exp and tgt_exp and tgt_exp == cur_exp:
+                    verb = "adjust"
+                else:
+                    verb = "roll out"
                 acct_name = acct_id_to_name.get(leg["account_id"], leg["account_id"])
                 lots = leg.get("lots") or []
                 lots_txt = "; ".join(f"{int(l['shares'])} sh @ ${l['cost_per_share']:,.2f}"

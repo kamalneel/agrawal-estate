@@ -204,8 +204,11 @@ def _open_call_strikes(db: Session) -> Dict[str, List[Tuple[float, int]]]:
     return out
 
 
-def _open_call_strikes_by_account(db: Session) -> Dict[Tuple[str, str], List[Tuple[float, int]]]:
-    """Same as _open_call_strikes but keyed by (symbol, account_id) too.
+def _open_call_strikes_by_account(db: Session) -> Dict[Tuple[str, str], List[Tuple[float, int, date]]]:
+    """Same as _open_call_strikes but keyed by (symbol, account_id) too,
+    and carrying each leg's own CURRENT expiration alongside strike/
+    contracts (2026-08-25, added for the roll-out/roll-in/adjust wording
+    below — see the comment where roll_legs is built).
 
     Needed because the aggregate "already near ATM" credit fixes the
     TOTAL contracts still needed for a trim/exit, but says nothing about
@@ -221,19 +224,19 @@ def _open_call_strikes_by_account(db: Session) -> Dict[Tuple[str, str], List[Tup
             SELECT account_name, MAX(snapshot_date) AS snap
             FROM sold_options_snapshots GROUP BY account_name
         )
-        SELECT o.symbol, ia.account_id, o.strike_price, o.contracts_sold
+        SELECT o.symbol, ia.account_id, o.strike_price, o.contracts_sold, o.expiration_date
         FROM sold_options o
         JOIN sold_options_snapshots s ON s.id = o.snapshot_id
         JOIN latest l ON l.account_name = s.account_name AND l.snap = s.snapshot_date
         LEFT JOIN investment_accounts ia ON ia.account_name = s.account_name
         WHERE o.expiration_date >= CURRENT_DATE AND LOWER(o.option_type) = 'call'
     """)).fetchall()
-    out: Dict[Tuple[str, str], List[Tuple[float, int]]] = {}
+    out: Dict[Tuple[str, str], List[Tuple[float, int, date]]] = {}
     for r in rows:
         if not r.account_id:
             continue
         out.setdefault((r.symbol, r.account_id), []).append(
-            (float(r.strike_price), int(r.contracts_sold or 0)))
+            (float(r.strike_price), int(r.contracts_sold or 0), r.expiration_date))
     return out
 
 
@@ -953,7 +956,7 @@ def get_allocation_plan(db: Session) -> Dict:
             roll_legs = []
             for a in accts:
                 aid = a["account_id"]
-                for st, c in call_strikes_by_acct.get((sym, aid), []):
+                for st, c, cur_exp in call_strikes_by_acct.get((sym, aid), []):
                     credited = _credited_call_contracts([(st, c)], px, atm_target, rolled)
                     uncredited = c - credited
                     if uncredited > 0:
@@ -962,6 +965,7 @@ def get_allocation_plan(db: Session) -> Dict:
                             "contracts": uncredited, "sheltered": a["sheltered"],
                             "cost_per_share": a["cost_per_share"], "realized_gain": None,
                             "lots": [], "instruction": "roll", "_dist": abs(st - atm_target),
+                            "current_expiration": str(cur_exp) if cur_exp else None,
                         })
             # A TRIM only needs enough contracts near ATM to reach the
             # target, not necessarily every currently-uncovered contract
@@ -998,6 +1002,12 @@ def get_allocation_plan(db: Session) -> Dict:
                 if aid in merged:
                     merged[aid]["contracts"] += leg["contracts"]
                     merged[aid]["shares"] += leg["shares"]
+                    # Soonest of the two if the account holds legs at
+                    # different expirations — the nearer one is the more
+                    # urgent comparison for the roll-out/in/same wording.
+                    a_exp, b_exp = merged[aid]["current_expiration"], leg["current_expiration"]
+                    if b_exp and (not a_exp or b_exp < a_exp):
+                        merged[aid]["current_expiration"] = b_exp
                 else:
                     merged[aid] = dict(leg)
             roll_legs = list(merged.values())
@@ -1006,7 +1016,7 @@ def get_allocation_plan(db: Session) -> Dict:
             if new_contracts > 0:
                 naked_accts = [
                     {**a, "shares": max(0.0, a["shares"] - SHARES_PER_CONTRACT * sum(
-                        c for _st, c in call_strikes_by_acct.get((sym, a["account_id"]), [])))}
+                        c for _st, c, _exp in call_strikes_by_acct.get((sym, a["account_id"]), [])))}
                     for a in accts
                 ]
                 sell_routing = _route_trim_lots(
