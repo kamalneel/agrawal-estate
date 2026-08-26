@@ -268,28 +268,63 @@ def _reconcile_pending(db: Session) -> Dict:
         WHERE transaction_type = 'OASGN' AND source = 'robinhood_mcp_inferred_pending_confirmation'
     """)).fetchall()
 
-    promoted, dismissed, still_pending = [], [], []
+    # Group by (account_id, symbol) — multiple contracts of the SAME
+    # symbol in the SAME account can assign the same day (2026-08-26:
+    # SOXL $195 + $200 both assigned 08-25 in Neel's Retirement, +300
+    # shares combined; checked individually against +100 and +200 each
+    # looked "wrong" against the true combined delta, and BOTH got
+    # deleted as false positives even though together they were exactly
+    # right — real, Robinhood-confirmed assignment losses silently
+    # erased from the ledger). _share_delta only sees the account+
+    # symbol's total change, never which specific contract explains
+    # which slice of it — only a group's SUM can be checked against it.
+    groups: Dict[Tuple[str, str], List] = {}
     for r in rows:
-        opt_type = _parse_option_type(r.description)
-        if opt_type is None:
-            still_pending.append(r.description)
+        groups.setdefault((r.account_id, r.symbol), []).append(r)
+
+    promoted, dismissed, still_pending = [], [], []
+    for (account_id, symbol), group_rows in groups.items():
+        parsed = []
+        for r in group_rows:
+            opt_type = _parse_option_type(r.description)
+            if opt_type is None:
+                still_pending.append(r.description)
+                continue
+            parsed.append((r, opt_type))
+        if not parsed:
             continue
-        since = r.transaction_date - timedelta(days=1)
-        delta = _share_delta(db, r.account_id, r.symbol, since, r.transaction_date)
-        expected = float(r.quantity) * 100 * (1 if opt_type == "put" else -1)
+
+        since = min(r.transaction_date for r, _ in parsed) - timedelta(days=1)
+        until = max(r.transaction_date for r, _ in parsed)
+        delta = _share_delta(db, account_id, symbol, since, until)
+        expected_total = sum(float(r.quantity) * 100 * (1 if opt_type == "put" else -1)
+                             for r, opt_type in parsed)
         if delta is None:
-            still_pending.append(r.description)
+            still_pending.extend(r.description for r, _ in parsed)
             continue
-        if abs(delta - expected) < 1.0:
-            db.execute(_text("""
-                UPDATE investment_transactions SET source = 'robinhood_mcp_inferred', updated_at = NOW()
-                WHERE id = :id
-            """), {"id": r.id})
-            promoted.append({"account_id": r.account_id, "symbol": r.symbol, "description": r.description})
+
+        matched = abs(delta - expected_total) < 1.0
+        # A single-row group can still be cleanly dismissed the original
+        # way (no ambiguity about which candidate a mismatch belongs to).
+        # A multi-row group that DOESN'T sum to the observed delta is
+        # ambiguous — could be one wrong detection amid several right
+        # ones — so it fails open (stays pending) rather than repeating
+        # the 2026-08-26 mistake of deleting every row in the group.
+        if matched or len(parsed) == 1:
+            for r, opt_type in parsed:
+                expected = float(r.quantity) * 100 * (1 if opt_type == "put" else -1)
+                if matched or abs(delta - expected) < 1.0:
+                    db.execute(_text("""
+                        UPDATE investment_transactions SET source = 'robinhood_mcp_inferred', updated_at = NOW()
+                        WHERE id = :id
+                    """), {"id": r.id})
+                    promoted.append({"account_id": r.account_id, "symbol": r.symbol, "description": r.description})
+                else:
+                    db.execute(_text("DELETE FROM investment_transactions WHERE id = :id"), {"id": r.id})
+                    dismissed.append({"account_id": r.account_id, "symbol": r.symbol, "description": r.description,
+                                      "share_delta_observed": delta, "share_delta_expected": expected})
         else:
-            db.execute(_text("DELETE FROM investment_transactions WHERE id = :id"), {"id": r.id})
-            dismissed.append({"account_id": r.account_id, "symbol": r.symbol, "description": r.description,
-                              "share_delta_observed": delta, "share_delta_expected": expected})
+            still_pending.extend(r.description for r, _ in parsed)
 
     db.commit()
     return {"promoted": promoted, "dismissed": dismissed, "still_pending": still_pending}
@@ -372,6 +407,17 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
             prev = _contracts_at_snapshot(db, prev_sid)
             curr = _contracts_at_snapshot(db, curr_sid)
 
+            # Collect every vanished contract for this day-pair FIRST,
+            # grouped by symbol, before checking signal 3 (2026-08-26):
+            # _share_delta can only see the ACCOUNT+SYMBOL's combined
+            # share change, not which strike explains which slice of it.
+            # SOXL $195 (1 contract) and $200 (2 contracts) assigned the
+            # SAME account on the SAME day — the real combined delta was
+            # +300 shares, but checked individually against +100 and +200
+            # each looked "wrong" on its own, so BOTH got silently
+            # dropped as apparent OTM expirations even though together
+            # they were exactly right.
+            candidates_by_symbol: Dict[str, List[Dict]] = {}
             for key, prev_contracts in prev.items():
                 curr_contracts = curr.get(key, 0)
                 if curr_contracts >= prev_contracts:
@@ -389,48 +435,61 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
                     continue  # a real close/roll already accounts for this
                 if _looks_like_roll(prev, curr, key):
                     continue  # same-type replacement at a nearby strike — a roll, not an assignment
+                candidates_by_symbol.setdefault(symbol, []).append({
+                    "strike": strike, "opt_type": opt_type, "exp": exp,
+                    "vanished": vanished, "description": description,
+                })
 
-                # Signals 1+2 hold. Signal 3 now decides what happens next:
-                # matches -> confirmed; unavailable -> genuinely ambiguous
-                # (email); present but WRONG (esp. 0 when shares should have
-                # moved) -> that's the actual signature of a plain OTM
-                # expiration, not an assignment, so skip it outright rather
-                # than recording or emailing about a non-event.
+            for symbol, cands in candidates_by_symbol.items():
+                # Signals 1+2 hold for every candidate here. Signal 3 now
+                # decides what happens next, checked against the whole
+                # group's combined expected effect, not each candidate
+                # alone: matches -> all confirmed; unavailable -> all
+                # genuinely ambiguous (email); present but WRONG with only
+                # ONE candidate in the group -> the actual signature of a
+                # plain OTM expiration, skipped outright. A wrong SUM with
+                # MULTIPLE candidates is ambiguous, not a clean signal any
+                # one of them didn't happen — fails open to
+                # pending_confirmation instead of guessing which to drop.
                 delta = _share_delta(db, account_id, symbol, prev_date, curr_date)
-                expected = vanished * 100 * (1 if opt_type == "put" else -1)
-                share_confirmed = delta is not None and abs(delta - expected) < 1.0
-                share_contradicted = delta is not None and not share_confirmed
+                expected_total = sum(
+                    c["vanished"] * 100 * (1 if c["opt_type"] == "put" else -1) for c in cands)
+                share_confirmed = delta is not None and abs(delta - expected_total) < 1.0
+                share_contradicted = (delta is not None and not share_confirmed and len(cands) == 1)
                 if share_contradicted:
-                    continue  # share count didn't move as assignment requires — looks like expiration
+                    continue  # single candidate, share count didn't move — looks like expiration
 
-                record = {
-                    "account_id": account_id, "account_name": account_name,
-                    "symbol": symbol, "strike": strike, "option_type": opt_type,
-                    "expiration_date": exp.isoformat(), "contracts": vanished,
-                    "description": description,
-                    "detected_between": [prev_date.isoformat(), curr_date.isoformat()],
-                    "share_delta_observed": delta, "share_delta_expected": expected,
-                    "share_confirmed": share_confirmed,
-                }
+                for c in cands:
+                    record = {
+                        "account_id": account_id, "account_name": account_name,
+                        "symbol": symbol, "strike": c["strike"], "option_type": c["opt_type"],
+                        "expiration_date": c["exp"].isoformat(), "contracts": c["vanished"],
+                        "description": c["description"],
+                        "detected_between": [prev_date.isoformat(), curr_date.isoformat()],
+                        "share_delta_observed": delta,
+                        "share_delta_expected": c["vanished"] * 100 * (1 if c["opt_type"] == "put" else -1),
+                        "share_confirmed": share_confirmed,
+                    }
 
-                source = "robinhood_mcp_inferred" if share_confirmed else "robinhood_mcp_inferred_pending_confirmation"
-                record_hash = hashlib.sha256(
-                    f"{source}|{account_id}|{curr_date.isoformat()}|{symbol}|{description}".encode()
-                ).hexdigest()
-                db.execute(_text("""
-                    INSERT INTO investment_transactions
-                        (source, account_id, transaction_date, symbol, description,
-                         transaction_type, quantity, price_per_share, amount, fees, record_hash,
-                         created_at, updated_at)
-                    VALUES (:source, :acct, :d, :sym, :desc, 'OASGN', :qty, 0.0, 0.0, 0.0, :hash,
-                            NOW(), NOW())
-                """), {"source": source, "acct": account_id, "d": curr_date, "sym": symbol,
-                       "desc": description, "qty": vanished, "hash": record_hash})
+                    source = ("robinhood_mcp_inferred" if share_confirmed
+                             else "robinhood_mcp_inferred_pending_confirmation")
+                    record_hash = hashlib.sha256(
+                        f"{source}|{account_id}|{curr_date.isoformat()}|{symbol}|{c['description']}".encode()
+                    ).hexdigest()
+                    db.execute(_text("""
+                        INSERT INTO investment_transactions
+                            (source, account_id, transaction_date, symbol, description,
+                             transaction_type, quantity, price_per_share, amount, fees, record_hash,
+                             created_at, updated_at)
+                        VALUES (:source, :acct, :d, :sym, :desc, 'OASGN', :qty, 0.0, 0.0, 0.0, :hash,
+                                NOW(), NOW())
+                    """), {"source": source, "acct": account_id, "d": curr_date, "sym": symbol,
+                           "desc": c["description"], "qty": c["vanished"], "hash": record_hash})
 
-                if share_confirmed:
-                    high_confidence.append(record)
-                else:
-                    pending_confirmation.append(record)
+                    if share_confirmed:
+                        high_confidence.append(record)
+                    else:
+                        pending_confirmation.append(record)
 
     db.commit()
     _send_confirmation_email(pending_confirmation)
