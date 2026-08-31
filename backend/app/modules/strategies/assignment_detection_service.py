@@ -68,6 +68,7 @@ from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
 from app.shared.services.notifications import get_notification_service
+from app.modules.strategies.technical_signals import _price_near, _parse_expiration
 
 _STRIKE_RE = re.compile(r"\$([\d,]+\.?\d*)\s*$")
 
@@ -300,7 +301,32 @@ def _reconcile_pending(db: Session) -> Dict:
         expected_total = sum(float(r.quantity) * 100 * (1 if opt_type == "put" else -1)
                              for r, opt_type in parsed)
         if delta is None:
-            still_pending.extend(r.description for r, _ in parsed)
+            # No share-count signal yet (2026-08-31) — but a clearly-OTM
+            # close near each row's OWN expiration is independent,
+            # earlier evidence, and unlike share-count it has no cross-
+            # contract ambiguity (each row's own strike is checked
+            # against its own expiration close, not a shared account+
+            # symbol total). Real case: AMD's $510 call and NVDA's $235
+            # call both expired 08-28 comfortably OTM, but
+            # investment_holdings_history hadn't posted a row past 08-28
+            # for those exact positions even by 08-31 — delta stayed
+            # None for days, so both sat "pending" and counted at full
+            # value in the loss total the whole time. This lets a clear
+            # miss resolve immediately instead of waiting on a sync that
+            # may lag for days.
+            for r, opt_type in parsed:
+                strike, exp = _parse_strike(r.description), _parse_expiration(r.description)
+                close_px = _price_near(db, account_id, symbol, exp)[0] if (strike and exp) else None
+                vetoed = close_px is not None and (
+                    (opt_type == "call" and close_px < strike * 0.98)
+                    or (opt_type == "put" and close_px > strike * 1.02))
+                if vetoed:
+                    db.execute(_text("DELETE FROM investment_transactions WHERE id = :id"), {"id": r.id})
+                    dismissed.append({"account_id": r.account_id, "symbol": r.symbol,
+                                      "description": r.description, "share_delta_observed": None,
+                                      "share_delta_expected": None})
+                else:
+                    still_pending.append(r.description)
             continue
 
         matched = abs(delta - expected_total) < 1.0
@@ -435,6 +461,34 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
                     continue  # a real close/roll already accounts for this
                 if _looks_like_roll(prev, curr, key):
                     continue  # same-type replacement at a nearby strike — a roll, not an assignment
+
+                # Signal 4 (2026-08-31): a clearly-OTM close near the
+                # contract's OWN expiration is near-definitive proof it
+                # wasn't assigned — stronger AND earlier evidence than
+                # signal 3, which depends on investment_holdings_history
+                # landing on time and can lag for days. Real case: AMD's
+                # $510 call and NVDA's $235 call both expired 08-28
+                # comfortably OTM (AMD closed $465.60, NVDA $217.54 that
+                # day — both >7% away from their strikes), but
+                # holdings-history for those exact positions hadn't
+                # posted a single row past 08-28 even by 08-31, so signal
+                # 3 came back unavailable and BOTH got recorded as
+                # "pending" and counted in the loss total at full value
+                # (a $22,634 swing) before anyone could catch it — the
+                # exact "168 historical OTM expirations" failure mode
+                # this module's own docstring already describes, just
+                # via a slow signal-3 sync instead of a missing one. Only
+                # vetoes a CLEAR (>2%) miss, not a close call — genuinely
+                # marginal cases still fall through to signal 3 / pending
+                # confirmation as before, since "close to the strike" is
+                # exactly where a human should decide, not this heuristic.
+                close_px, _px_src = _price_near(db, account_id, symbol, exp)
+                if close_px is not None:
+                    if opt_type == "call" and close_px < strike * 0.98:
+                        continue  # stock closed clearly below strike — a call can't have assigned
+                    if opt_type == "put" and close_px > strike * 1.02:
+                        continue  # stock closed clearly above strike — a put can't have assigned
+
                 candidates_by_symbol.setdefault(symbol, []).append({
                     "strike": strike, "opt_type": opt_type, "exp": exp,
                     "vanished": vanished, "description": description,
