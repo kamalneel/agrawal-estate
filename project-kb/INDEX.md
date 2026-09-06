@@ -17,9 +17,12 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 ### Finance
 - [Buy in Round Lots of 100 Shares](playbook/universal/finance/buy-in-round-lots-of-100.md) — every position a multiple of 100, floor 100, so covered calls can be sold against all of it
 - [Definition of Income](playbook/universal/finance/definition-of-income.md) — realized-only, all accounts, tax-independent; call assignment = income at sale, put assignment = strike-basis lot
+- [A Bookkeeping Category Is a Ledger, Not an Income Stream](playbook/universal/finance/category-is-a-ledger-not-a-stream.md) — define income by counterparty+direction+kind; never wire a Monarch category straight to an income card
+- [Attribute Income to the Period It Is For](playbook/universal/finance/attribute-income-to-its-stated-period.md) — count a payment in the month its memo names, not the day it cleared; reconcile to the contract
 
 ### Process
 - [Three Authoritative Data Sources](playbook/universal/process/three-authoritative-data-sources.md) — all data enters via PDF/CSV statements, activity CSVs, or Robinhood paste
+- [Check Data Freshness First, and Ask For What Is Missing](playbook/universal/process/check-freshness-and-ask-first.md) — stale data looks like a real number; check MAX(date) per stream up front and request the file or reconnect, don't wait to be corrected
 
 ### Technical
 - [No Direct DB Modifications](playbook/universal/technical/no-direct-db-modifications.md) — all data changes must come from authoritative sources
@@ -29,6 +32,8 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Cross-Source Dedup Type Normalization](playbook/universal/technical/cross-source-dedup-type-normalization.md) — normalize type codes before hashing; CSV vs MCP hash schemes let duplicates through (NFLX split incident)
 - [Assignment Rows Require CSV Freshness](playbook/universal/technical/assignment-rows-require-csv-freshness.md) — assignments only arrive via official CSV; stale CSV = lots drift from holdings
 - [Market Data Source Order](playbook/universal/technical/market-data-source-order.md) — Robinhood MCP first, Schwab second, Yahoo never on must-succeed paths (repeated rate-limit failures)
+- [Validate a Parser Against the Source Document's Own Totals](playbook/universal/technical/validate-parser-against-source-totals.md) — sum extracted rows against the statement's printed summary and abort on mismatch; a row regex fails silently
+- [Derived Tables Need an Explicit Rebuild Trigger](playbook/universal/technical/derived-tables-need-a-rebuild-trigger.md) — hook the rebuild to whoever actually writes the source rows; a manual script is not a trigger
 
 ## Playbook — Project-Specific
 
