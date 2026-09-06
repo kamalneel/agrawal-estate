@@ -356,6 +356,37 @@ def _reconcile_pending(db: Session) -> Dict:
     return {"promoted": promoted, "dismissed": dismissed, "still_pending": still_pending}
 
 
+def _rebuild_lots_after_assignments(n_detected: int) -> None:
+    """Replay the lot engine so a new assignment reaches income immediately.
+
+    stock_lot / stock_lot_sale are derived tables and nothing rebuilt them
+    automatically — not the scheduler, not the ingestion pipeline. They were
+    last written on 2026-06-18, so every assignment after that was invisible
+    to equity-sale income until someone happened to run the script by hand.
+    Assignments detected here bypass the ingestion pipeline entirely (they
+    are INSERTed directly), so hooking the rebuild to ingestion would not
+    have caught them; it has to hang off detection.
+
+    Runs in its own session, after the caller's commit: the rebuild clears
+    both tables before rewriting them, so if it fails its transaction rolls
+    back and the previous lots survive — while the assignment rows, already
+    committed, are safe either way. Never allowed to break detection.
+    """
+    if not n_detected:
+        return
+    from app.core.database import SessionLocal
+    from scripts.rebuild_stock_lots import rebuild
+    db = SessionLocal()
+    try:
+        rebuild(db, dry_run=False)
+    except Exception as e:            # noqa: BLE001 — detection must survive
+        print(f"Lot rebuild after assignment detection failed: {e}. "
+              f"Equity-sale income stays stale until "
+              f"scripts/rebuild_stock_lots.py is run by hand.")
+    finally:
+        db.close()
+
+
 def _send_confirmation_email(records: List[Dict]) -> None:
     """One consolidated email per run for every signal-3-unconfirmed
     detection (never one email per record — a historical backlog would
@@ -546,6 +577,7 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
                         pending_confirmation.append(record)
 
     db.commit()
+    _rebuild_lots_after_assignments(len(high_confidence) + len(pending_confirmation))
     _send_confirmation_email(pending_confirmation)
     return {
         "high_confidence": high_confidence,

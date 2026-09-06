@@ -31,6 +31,7 @@ previously-resolved basis. New resolutions must be added to that file.
 """
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
 from decimal import Decimal
@@ -44,6 +45,85 @@ from sqlalchemy import text
 
 SHARES_IN = ("BUY", "BOUGHT", "ACATI", "CONV", "SPL", "SPLIT")
 EPS = Decimal("0.00000001")
+
+#: An assignment detected from the MCP feed rather than read off the official
+#: activity CSV. assignment_detection_service writes ONLY the OASGN option
+#: leg for these — there is no accompanying share movement, because Robinhood
+#: exposes no such row until the CSV catches up. The official CSV, by
+#: contrast, delivers the share movement itself as a BUY or SELL at strike
+#: (see the module docstring), which is why this replay never needed to read
+#: OASGN before.
+#:
+#: So: synthesize the share leg for inferred assignments only. A
+#: 'robinhood'-sourced OASGN is left alone — its BUY/SELL is already in the
+#: ledger and synthesizing would double it.
+INFERRED_SOURCES = ("robinhood_mcp_inferred",
+                    "robinhood_mcp_inferred_pending_confirmation")
+
+#: "INTC 8/17/2026 Call $100.00" -> ("Call", 100.00)
+ASSIGNMENT_RE = re.compile(r"\b(Call|Put)\s+\$([\d,]+(?:\.\d+)?)\s*$", re.I)
+
+#: Once the official CSV lands it carries the real BUY/SELL for the same
+#: assignment, and the inferred OASGN would double-count it. A real share
+#: movement for the same account+symbol this close to the assignment is taken
+#: to BE that assignment.
+CONFIRMED_WINDOW_DAYS = 3
+
+
+class _Txn:
+    """Mutable stand-in for a DB row, so an OASGN can be rewritten as the
+    share movement it represents before the replay sees it."""
+
+    __slots__ = ("account_id", "source", "symbol", "transaction_date",
+                 "transaction_type", "quantity", "amount", "id")
+
+    def __init__(self, r):
+        for f in self.__slots__:
+            setattr(self, f, getattr(r, f))
+
+
+def expand_inferred_assignments(rows):
+    """Rewrite MCP-inferred OASGN rows as the share movement they imply.
+
+    A call assignment is a forced SELL at strike; a put assignment is a BUY
+    at strike (strike-price basis, per the definition-of-income rule — the
+    premium was already counted as options income when collected, so using
+    strike-minus-premium here would double-count it).
+
+    Returns the transaction list with OASGN rows either converted or dropped.
+    """
+    real_moves = defaultdict(list)
+    for r in rows:
+        if r.transaction_type in ("BUY", "BOUGHT", "SELL", "SOLD"):
+            real_moves[(r.account_id, r.symbol)].append(r.transaction_date)
+
+    out, converted, skipped = [], 0, 0
+    for r in rows:
+        if r.transaction_type != "OASGN":
+            out.append(_Txn(r))
+            continue
+        if r.source not in INFERRED_SOURCES:
+            continue  # official CSV already supplied the share movement
+        m = ASSIGNMENT_RE.search(r.description or "")
+        if not m or not r.quantity or r.quantity <= 0:
+            skipped += 1
+            continue
+        if any(abs((d - r.transaction_date).days) <= CONFIRMED_WINDOW_DAYS
+               for d in real_moves.get((r.account_id, r.symbol), ())):
+            skipped += 1
+            continue
+        strike = Decimal(m.group(2).replace(",", ""))
+        shares = Decimal(r.quantity) * 100
+        t = _Txn(r)
+        t.transaction_type = "SELL" if m.group(1).lower() == "call" else "BUY"
+        t.quantity = shares
+        t.amount = shares * strike
+        out.append(t)
+        converted += 1
+    if converted or skipped:
+        print(f"inferred assignments: {converted} converted to share moves, "
+              f"{skipped} skipped (already confirmed or unparseable)")
+    return out
 
 
 class Lot:
@@ -62,27 +142,40 @@ class Lot:
 
 
 def rebuild(db, dry_run: bool):
+    # Joined on account_id ALONE. Matching a.source = t.source as well drops
+    # every row whose source is not literally 'robinhood' — and since
+    # 2026-08-04 assignments arrive as 'robinhood_mcp_inferred*', which
+    # exists in no investment_accounts row. That silently excluded 13
+    # assignments, among them the 2026-08-18 INTC call that should have been
+    # an equity sale. account_id is unique in investment_accounts, so the
+    # source predicate bought nothing.
     rows = db.execute(text("""
         SELECT a.account_id, t.source, t.symbol, t.transaction_date,
-               t.transaction_type, t.quantity, t.amount, t.id
+               t.transaction_type, t.quantity, t.amount, t.description, t.id
         FROM investment_transactions t
-        JOIN investment_accounts a
-          ON a.account_id = t.account_id AND a.source = t.source
+        JOIN investment_accounts a ON a.account_id = t.account_id
         WHERE a.is_active = 'Y'
           AND t.transaction_type IN ('BUY','BOUGHT','SELL','SOLD','ACATI',
-                                     'ACATO','SPL','SPLIT','CONV','LIQ')
+                                     'ACATO','SPL','SPLIT','CONV','LIQ',
+                                     'OASGN')
           AND t.symbol IS NOT NULL AND t.symbol NOT IN ('', 'UNKNOWN')
         ORDER BY a.account_id, t.symbol, t.transaction_date, t.id
     """)).fetchall()
 
+    txns = expand_inferred_assignments(rows)
+
+    # Grouped by (account, symbol) — NOT by source. One position in one
+    # account is one FIFO book however its rows arrived; keying on source too
+    # would give a synthesized assignment its own empty book and consume no
+    # real lots.
     groups = defaultdict(list)
-    for r in rows:
-        groups[(r.account_id, r.source, r.symbol)].append(r)
+    for r in txns:
+        groups[(r.account_id, r.symbol)].append(r)
 
     all_lots, sales = [], []
     stats = defaultdict(int)
 
-    for (account_id, source, symbol), txns in groups.items():
+    for (account_id, symbol), txns in groups.items():
         # Same-day ordering: share credits before debits (transfer, then sell)
         txns.sort(key=lambda r: (r.transaction_date,
                                  0 if r.transaction_type in SHARES_IN else 1,
@@ -90,7 +183,7 @@ def rebuild(db, dry_run: bool):
         book: list[Lot] = []
 
         def add_lot(t, qty, cost, known, note=None):
-            lot = Lot(account_id, source, symbol, t.transaction_date,
+            lot = Lot(account_id, t.source, symbol, t.transaction_date,
                       qty, cost, known, t.id, note)
             book.append(lot)
             all_lots.append(lot)
@@ -137,7 +230,7 @@ def rebuild(db, dry_run: bool):
                     held = sum(l.qty for l in book)
                     if held + EPS < remaining:
                         shortfall = remaining - held
-                        lot = Lot(account_id, source, symbol,
+                        lot = Lot(account_id, t.source, symbol,
                                   t.transaction_date, shortfall, Decimal(0),
                                   False, None, "BASIS_UNKNOWN:SYNTHETIC_OPENING")
                         book.insert(0, lot)

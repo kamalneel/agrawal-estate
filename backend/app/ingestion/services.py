@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, date
 import hashlib
+import re
 
 from decimal import Decimal
 
@@ -621,22 +622,47 @@ def save_records(db: Session, records: list, ingestion_id: Optional[int] = None)
     }
 
 
+#: "INTC 8/17/2026 Call $100.00" / "SPCX 9/4/2026 Put $167.50" — the option
+#: type sits in the OASGN description, the only place that says which way the
+#: shares moved.
+_ASSIGNMENT_TYPE_RE = re.compile(r"\b(call|put)\s+\$[\d,]", re.I)
+
+
+def _assignment_direction(description: Optional[str]) -> Optional[int]:
+    """+1 if an assignment brings shares IN, -1 if it takes them away.
+
+    A PUT you sold is exercised against you: you buy the shares (+1).
+    A CALL you sold is exercised: the shares are called away (-1).
+
+    Returns None when the description does not say, because the two cases
+    move the position in opposite directions — assuming one is not a small
+    error but a wrong-signed one, off by twice the trade.
+    """
+    m = _ASSIGNMENT_TYPE_RE.search(description or "")
+    if not m:
+        return None
+    return 1 if m.group(1).lower() == "put" else -1
+
+
 def update_holding_from_transaction(
-    db: Session, 
-    account_id: str, 
+    db: Session,
+    account_id: str,
     source: str,
-    symbol: str, 
-    transaction_type: str, 
+    symbol: str,
+    transaction_type: str,
     quantity: Optional[float],
     price_per_share: Optional[float],
-    transaction_date
+    transaction_date,
+    description: Optional[str] = None,
 ) -> None:
     """
     Update holdings based on a transaction.
-    
+
     - BUY: Increase quantity
     - SELL: Decrease quantity
-    - OASGN (Option Assignment): Can result in buying/selling shares
+    - OASGN (Option Assignment): direction depends on the option type —
+      a PUT assignment buys shares in, a CALL assignment has them called
+      away. Requires `description` to tell which; see _assignment_direction.
     - Other types (dividends, transfers, options premiums): Don't affect share count
     
     This keeps holdings in sync with transactions throughout the month.
@@ -661,9 +687,13 @@ def update_holding_from_transaction(
         elif transaction_type == "SELL":
             quantity_change = -float(quantity)
         elif transaction_type == "OASGN":
-            # Option assignment - usually results in buying shares (put assignment)
-            # The quantity in the transaction should reflect shares, not contracts
-            quantity_change = float(quantity) * 100  # 1 contract = 100 shares
+            # Direction depends on the option type, and getting it wrong moves
+            # the position by TWICE the error. quantity is CONTRACTS here;
+            # 1 contract = 100 shares.
+            direction = _assignment_direction(description)
+            if direction is None:
+                return  # unparseable — leave holdings alone rather than guess
+            quantity_change = direction * float(quantity) * 100
         elif transaction_type == "SPLIT":
             # Stock splits change quantity but are handled differently
             # For now, we'll skip and let statement snapshots handle it
