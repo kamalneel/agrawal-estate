@@ -13,6 +13,7 @@ playbook rule and docs/INCOME-UNIFICATION-SPEC.md:
 Aggregation is query-time (no new tables), actual-receipt basis, weeks end
 on Friday (Sat-Fri). All accounts included, tax treatment irrelevant.
 """
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Dict, List, Optional
@@ -24,7 +25,17 @@ from app.modules.spending.models import AIRBNB_CATEGORY, HARTSTENE_CATEGORY
 from app.shared.services.cost_basis_service import get_realized_pnl_by_period
 
 FIXED_SOURCES = {"salary", "rental", "airbnb"}
-DYNAMIC_SOURCES = {"options", "dividends", "interest", "lending", "equity_sales"}
+
+#: No "lending" stream. Robinhood's Fully Paid Securities Lending (SLIP) paid
+#: $9.42 across 77 payments in two and a half years — 70 of them exactly
+#: $0.01 — while occupying a card the same size as options at $40K. Neel,
+#: 2026-09-06: "drop it". SLIP rows are still ingested and still carry their
+#: own transaction_type (they are taxable substitute payments, 1099-MISC, and
+#: not qualified-dividend eligible, so tax work must keep them separable);
+#: they simply land in `interest` here — the line for what cash and
+#: securities earn or cost while sitting there. If a hard-to-borrow name ever
+#: makes lending material, it shows up on its own without rebuilding this.
+DYNAMIC_SOURCES = {"options", "dividends", "interest", "equity_sales"}
 
 #: Monarch category -> income stream. Both sides of each category net into
 #: the stream (see the BUSINESS block in get_unified_income).
@@ -35,6 +46,101 @@ _BUSINESS_STREAMS = {
     HARTSTENE_CATEGORY: "rental",
     AIRBNB_CATEGORY: "airbnb",
 }
+
+#: Tenants who have rented 303 Hartstene, matched inside the Zelle memo.
+#: Namit/Anubhuti Jain held the lease through Feb 2025; Eric Morales from
+#: Apr 2025. Extend this when the tenant changes, or their rent silently
+#: stops counting.
+_HARTSTENE_TENANTS = (
+    "eric morales", "eric a morales",     # Apr 2025 -
+    "anubhuti jain", "namit jain",        # - Feb 2025
+)
+
+#: A tenant receipt that is NOT rent. Security deposits are a liability, not
+#: income (Eric's Mar 2025 "partial deposit #1" $2,000 and "deposit payment
+#: #2" $20), and the Namit deposit was refunded in full on 2025-05-19.
+_NON_RENT_TENANT_MEMOS = ("deposit",)
+
+
+def _is_hartstene_rent(amount, original_statement: str | None) -> bool:
+    """True only for rent actually received from the tenant.
+
+    The `303 Hartstene Dr` Monarch category is a PROPERTY ledger, not a rent
+    ledger: alongside the rent it carries HOA/ClickPay, county tax, Home
+    Depot, plumbing, security deposits in and out, and a long tail of rows
+    that simply landed in the wrong category (an Uber, a Great Wolf Lodge
+    Zelle, a $6,000 "Return of Posted Check", an $11 Zelle from a stranger).
+
+    Netting all of that produced a rent card that never once showed the rent
+    — August 2026 read $7,864 against a $6,400 lease. Neel, 2026-09-06:
+    "Show only rent on the card and use that in your sum."
+
+    So rent is defined narrowly and positively: money IN, from a known
+    tenant, not a deposit. Anything unrecognised is excluded rather than
+    guessed at — the same conservative direction the Spending page takes
+    with unexplained inflows (see spending/models.REFUND_STATEMENT_PREFIX).
+    """
+    if amount is None or float(amount) <= 0:
+        return False
+    memo = (original_statement or "").lower()
+    if not any(t in memo for t in _HARTSTENE_TENANTS):
+        return False
+    return not any(x in memo for x in _NON_RENT_TENANT_MEMOS)
+
+
+#: "July rent pt1", "Sept rent pt 2", "December rent #1" — Eric writes the
+#: month he is paying for into every Zelle memo. That memo, not the date the
+#: transfer cleared, is what the rent belongs to.
+_RENT_MONTH_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b")
+
+#: Memo-less rent transfers inherit the month of the nearest rent payment
+#: that does name one. Every such row in the ledger has a partner within 5
+#: days (the two halves of one month's rent), so the window is generous
+#: enough to pair them and tight enough not to reach the next month's rent.
+_RENT_PAIR_WINDOW_DAYS = 10
+
+
+def _rent_month(pay_date: date, original_statement: str | None) -> Optional[date]:
+    """The month a rent payment is FOR, from its memo. None if unstated.
+
+    The memo names a month but never a year, so the year is the one that puts
+    the named month closest to the payment date: "Jan rent pt2" paid
+    2025-12-29 is January 2026, three days out, not January 2025.
+    """
+    memo = (original_statement or "").lower().split("conf#")[0]
+    m = _RENT_MONTH_RE.search(memo)
+    if not m:
+        return None
+    month = ("jan", "feb", "mar", "apr", "may", "jun",
+             "jul", "aug", "sep", "oct", "nov", "dec").index(m.group(1)) + 1
+    return min((date(y, month, 1) for y in
+                (pay_date.year - 1, pay_date.year, pay_date.year + 1)),
+               key=lambda d: abs((d - pay_date).days))
+
+
+def _attribute_rent_months(rows: List) -> Dict[int, date]:
+    """Row id -> the month that row's rent is for.
+
+    Two passes: read the month straight off every memo that states one, then
+    give each memo-less row the month of its nearest dated neighbour. Rows
+    with neither keep their own month (the caller falls back to the receipt
+    date), which is the pre-attribution behaviour.
+    """
+    stated = {r.id: _rent_month(r.transaction_date, r.original_statement)
+              for r in rows}
+    resolved: Dict[int, date] = {}
+    dated = [(r.transaction_date, stated[r.id]) for r in rows if stated[r.id]]
+    for r in rows:
+        if stated[r.id]:
+            resolved[r.id] = stated[r.id]
+            continue
+        near = [(abs((d - r.transaction_date).days), m) for d, m in dated
+                if abs((d - r.transaction_date).days) <= _RENT_PAIR_WINDOW_DAYS]
+        if near:
+            resolved[r.id] = min(near)[1]
+    return resolved
+
 
 #: Monarch merchant -> person, for salary that actually landed in the bank.
 #: Matched on employer name rather than the "Paychecks"/"Jaya's Salary"
@@ -67,8 +173,8 @@ _TXN_SOURCE_CASE = """
       WHEN t.transaction_type IN ('STO','BTC','STC','BTO') THEN 'options'
       WHEN t.transaction_type IN ('DIVIDEND','CDIV','QUAL DIV REINVEST',
            'REINVEST DIVIDEND','CASH DIVIDEND','QUALIFIED DIVIDEND') THEN 'dividends'
-      WHEN t.transaction_type IN ('INTEREST','INT','BANK INTEREST','BOND INTEREST') THEN 'interest'
-      WHEN t.transaction_type = 'SLIP' THEN 'lending'
+      WHEN t.transaction_type IN ('INTEREST','INT','BANK INTEREST','BOND INTEREST',
+           'MARGIN_INTEREST','SLIP') THEN 'interest'
     END
 """
 
@@ -284,23 +390,42 @@ def get_unified_income(
     # --- businesses (fixed): income-producing assets whose two sides share
     # one Monarch category, so the category NETS to a single stream here.
     #
-    #   303 Hartstene — owned outright and let out. Rent received and
-    #     property costs (HOA, tax, repairs) net to +$65,108 (2025).
+    #   303 Hartstene — owned outright and let out. RENT RECEIPTS ONLY; see
+    #     _is_hartstene_rent for why the rest of the category is dropped.
     #   Airbnb — partial ownership, still being built out. Negative until
-    #     2027 revenue, then it behaves exactly like Hartstene above.
+    #     2027 revenue, and still nets both sides.
     #
     # These categories are CategoryKind.BUSINESS, hence excluded from the
     # Spending page — the exclusion there IS the inclusion here, so a row can
     # never be counted twice. Spending stores outflows negative, so amounts
     # carry through unchanged and the sign means what it says.
     for cat, src in _BUSINESS_STREAMS.items():
-        for r in db.execute(text("""
-            SELECT transaction_date, SUM(amount) AS amount
+        rent_only = cat == HARTSTENE_CATEGORY
+        rows = db.execute(text("""
+            SELECT id, transaction_date, amount, original_statement
             FROM spending_transactions
             WHERE category = :cat
-            GROUP BY 1
-        """), {"cat": cat}).fetchall():
-            d = r.transaction_date
+        """), {"cat": cat}).fetchall()
+        if rent_only:
+            rows = [r for r in rows
+                    if _is_hartstene_rent(r.amount, r.original_statement)]
+            # Rent is owed monthly but paid in two Zelle transfers that
+            # straddle month ends, and always a month ahead — so the receipt
+            # date puts a fragment in one month and one-and-a-half months in
+            # the next (Jul 2026 read $12,800, Feb 2026 read $1,220). Neel,
+            # 2026-09-06: "count each payment in the month its memo names".
+            # Every month then reads its lease rate exactly: $6,220 through
+            # Mar 2026, $6,400 from Apr 2026 (both signed leases, $5,800 and
+            # $5,980 plus $420 HOA).
+            #
+            # Only for month/year. A week is shorter than the thing being
+            # attributed, so weekly stays on the receipt date — that view
+            # answers "what landed this week", which is the cash question.
+            attributed = ({} if granularity == "week"
+                          else _attribute_rent_months(rows))
+        for r in rows:
+            d = attributed.get(r.id, r.transaction_date) if rent_only \
+                else r.transaction_date
             if in_range(d) and r.amount:
                 by_source[_bucket(d, granularity)][src] += float(r.amount)
 

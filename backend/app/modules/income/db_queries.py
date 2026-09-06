@@ -403,7 +403,7 @@ def get_interest_income_summary(
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']),
+        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST', 'MARGIN_INTEREST']),
     )
     
     if year:
@@ -440,7 +440,7 @@ def get_interest_income_monthly(
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']),
+        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST', 'MARGIN_INTEREST']),
     )
 
     if year:
@@ -580,7 +580,7 @@ def get_interest_transactions(
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']),
+        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST', 'MARGIN_INTEREST']),
     )
     
     if year:
@@ -731,7 +731,7 @@ def get_monthly_chart_data(
     type_map = {
         'options': ['STO', 'BTC', 'STC', 'BTO'],
         'dividends': ['DIVIDEND', 'CDIV', 'QUAL DIV REINVEST', 'REINVEST DIVIDEND', 'CASH DIVIDEND', 'QUALIFIED DIVIDEND'],
-        'interest': ['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']
+        'interest': ['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST', 'MARGIN_INTEREST']
     }
     
     transaction_types = type_map.get(income_type, [])
@@ -876,7 +876,7 @@ def get_taxable_interest_income(
             InvestmentTransaction.source == InvestmentAccount.source
         )
     ).filter(
-        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST']),
+        InvestmentTransaction.transaction_type.in_(['INTEREST', 'INT', 'BANK INTEREST', 'BOND INTEREST', 'MARGIN_INTEREST']),
         InvestmentAccount.is_active == 'Y',
         ~InvestmentAccount.account_type.in_(NON_TAXABLE_ACCOUNT_TYPES)
     )
