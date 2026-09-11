@@ -16,18 +16,21 @@ Three things a naive import gets wrong:
      the supersede window is cleared.
 
   2. **Monarch is not uniformly fresher.** Its per-account feeds stop at
-     different dates, and for the Robinhood accounts they lag the rh_csv
+     different dates, and for the Robinhood accounts they lagged the rh_csv
      gap-filler (card through 2026-06-26 vs rh_csv through 2026-07-08).
-     Clearing whole accounts would destroy fresher data. The supersede window
-     is therefore bounded per account at that account's own max date in the
-     export — rows after it survive.
+     Clearing whole accounts would destroy fresher data.
 
-  3. **Accounts absent from the export.** Monarch does not track Robinhood
-     Checking/Savings at all. Accounts the export never mentions are left
-     completely untouched.
+  3. **An export is not contiguous within its own date range.** After the
+     2026-08-26 reconnect, Monarch's July file carried the Robinhood card on
+     the 26th-31st and nothing from the 1st-25th. Superseding the whole span
+     would have deleted 44 real rh_csv rows for Jul 1-8 in exchange for
+     nothing, widening a 17-day hole to 25 days.
 
-Net rule: for each account in the CSV, delete existing rows in
-[--since, max(CSV date for that account)], then insert every CSV row.
+  4. **Accounts absent from the export** are left completely untouched.
+
+Net rule: for each account in the CSV, delete existing rows ONLY on the dates
+that account actually appears on in the CSV, then insert every CSV row. Days
+the export skips keep whatever is already there.
 
 Usage:
     python scripts/import_monarch_spending_csv.py <csv> [--since YYYY-MM-DD] [--save]
@@ -46,7 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.database import SessionLocal  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import bindparam, text  # noqa: E402
 
 # Historical DB account name -> name used by the current export. Extend this
 # whenever Monarch renames an account; without an entry the account silently
@@ -54,13 +57,68 @@ from sqlalchemy import text  # noqa: E402
 ACCOUNT_ALIASES = {
     "Robinhood Credit Card (...8154)": "Robinhood Credit Card **8154 (...8154)",
     "Robinhood Spending (...2623)": "Spending (...dabe)",
+    # 2026-08-26: after Neel reconnected the Robinhood accounts, Monarch began
+    # reporting the two cash accounts under fresh names. rh_csv had been their
+    # only source until now, so these map the gap-filler's names onto
+    # Monarch's. Identity confirmed by content, not by the identifier:
+    # Checking carries the same brokerage transfers, card payments and
+    # outgoing wires; Savings shows the same to/from-brokerage and
+    # "To Joint Checking With Jaya" movements.
+    "Robinhood Checking (Joint)": "Checking (...8935)",
+    "Robinhood Savings": "Savings (...7358)",
+    # NOT aliased: "Spending (...dabe)" (Monarch, through 2026-06-06). Three
+    # old names map onto two new ones, so which — if either — it became is
+    # ambiguous. Left alone rather than guessed; it simply stops there.
 }
+
+
+#: Since the 2026-08-26 reconnect, Monarch lists every brokerage transfer in
+#: the Robinhood cash accounts TWICE in the same export: once with the terse
+#: statement text Robinhood's own feed uses, and once with Monarch's long
+#: form ("Transfer from Robinhood Brokerage account ending in 1773 of
+#: $5000.00"). Same account, date and amount; different text, so different
+#: hashes, so both would import. Seen on 2026-07-04/06/07/31 and
+#: 2026-08-08/12/22. The terse one is dropped when a partner exists.
+#: Deliberately narrow — three identical Amazon rows on one day are three
+#: real orders and must survive.
+DUPLICATE_TERSE_STATEMENTS = {"from brokerage", "to brokerage"}
+DUPLICATE_ACCOUNTS_PREFIXES = ("Checking (", "Savings (")
+
+
+def collapse_monarch_duplicates(raw: list[dict]) -> tuple[list[dict], list[str]]:
+    """Drop the terse twin of a double-listed Robinhood cash-account transfer.
+    Returns (rows kept, human-readable notes on what was dropped)."""
+    by_key: dict[tuple, list[int]] = defaultdict(list)
+    for i, r in enumerate(raw):
+        acct = (r.get("Account") or "").strip()
+        if acct.startswith(DUPLICATE_ACCOUNTS_PREFIXES):
+            by_key[(r.get("Date"), acct, r.get("Amount"))].append(i)
+    drop: set[int] = set()
+    notes = []
+    for key, idxs in by_key.items():
+        if len(idxs) < 2:
+            continue
+        terse = [i for i in idxs
+                 if (raw[i].get("Original Statement") or "").strip().lower()
+                 in DUPLICATE_TERSE_STATEMENTS]
+        if terse and len(terse) < len(idxs):
+            for i in terse:
+                drop.add(i)
+                notes.append(f"{key[0]} {key[1][:20]} {key[2]:>10}  dropped "
+                             f"'{raw[i].get('Original Statement')}' (twin kept)")
+    return [r for i, r in enumerate(raw) if i not in drop], notes
 
 
 def parse_rows(path: Path) -> list[dict]:
     """Read the CSV and attach the record_hash used by MonarchParser."""
     with open(path, encoding="utf-8-sig") as f:
         raw = list(csv.DictReader(f))
+
+    raw, dup_notes = collapse_monarch_duplicates(raw)
+    if dup_notes:
+        print("\nDOUBLE-LISTED TRANSFERS collapsed (Monarch lists these twice):")
+        for n in dup_notes:
+            print(f"  {n}")
 
     instance: dict[str, int] = defaultdict(int)
     rows = []
@@ -119,12 +177,12 @@ def main() -> int:
     since = (datetime.strptime(args.since, "%Y-%m-%d").date()
              if args.since else min(dates))
 
-    # Per-account coverage end — the supersede window's upper bound.
-    coverage: dict[str, object] = {}
+    # Per-account set of dates the export actually covers. A max date alone
+    # is not enough — see the supersede block below.
+    covered_dates: dict[str, set] = {}
     for r in rows:
-        acct = r["account"]
-        if acct not in coverage or r["transaction_date"] > coverage[acct]:
-            coverage[acct] = r["transaction_date"]
+        covered_dates.setdefault(r["account"], set()).add(r["transaction_date"])
+    coverage = {a: max(d) for a, d in covered_dates.items()}
 
     print(f"\nCSV: {args.csv_path.name}")
     print(f"  {len(rows)} rows, {min(dates)} -> {max(dates)}")
@@ -147,34 +205,49 @@ def main() -> int:
                     {"o": old, "n": new},
                 )
 
-        # --- 2. Supersede: clear each covered account's window ----------------
-        print("\nSUPERSEDE (delete existing rows inside each account's coverage):")
+        # --- 2. Supersede, PER ACCOUNT PER DAY --------------------------------
+        # Delete only on dates the export actually carries rows for that
+        # account. An export is NOT contiguous within its date range: after
+        # Neel reconnected his accounts on 2026-08-26, Monarch's July file
+        # covered the Robinhood card on the 26th-31st only, with nothing from
+        # the 1st-25th. Clearing the whole [since, max] window would have
+        # deleted 44 real rh_csv rows for Jul 1-8 and replaced them with
+        # nothing, widening a 17-day hole to 25 days.
+        #
+        # Trade-off: if Monarch DELETES a transaction and it was the only one
+        # that day, the stale row survives here. That is much the lesser evil
+        # against silently destroying days the export simply doesn't cover.
+        print("\nSUPERSEDE (per account, only on dates the export covers):")
         total_deleted = 0
-        for acct in sorted(coverage):
-            through = coverage[acct]
+        for acct in sorted(covered_dates):
+            dates = sorted(covered_dates[acct])
             stats = db.execute(text("""
                 SELECT COUNT(*), COALESCE(SUM(amount), 0)
                 FROM spending_transactions
-                WHERE account = :a AND transaction_date BETWEEN :s AND :e
-            """), {"a": acct, "s": since, "e": through}).one()
+                WHERE account = :a AND transaction_date IN :dates
+            """).bindparams(bindparam("dates", expanding=True)),
+                {"a": acct, "dates": dates}).one()
 
-            kept = db.execute(text("""
-                SELECT COUNT(*), MIN(transaction_date), MAX(transaction_date)
-                FROM spending_transactions
-                WHERE account = :a AND transaction_date > :e
-            """), {"a": acct, "e": through}).one()
+            # Rows inside the export's span that it does NOT cover, and so are
+            # deliberately left alone — the holes worth seeing.
+            untouched = db.execute(text("""
+                SELECT COUNT(*) FROM spending_transactions
+                WHERE account = :a AND transaction_date BETWEEN :lo AND :hi
+                  AND transaction_date NOT IN :dates
+            """).bindparams(bindparam("dates", expanding=True)),
+                {"a": acct, "lo": dates[0], "hi": dates[-1], "dates": dates}).scalar()
 
-            note = ""
-            if kept[0]:
-                note = f"   [keeps {kept[0]} fresher rows {kept[1]}..{kept[2]}]"
-            print(f"  {acct[:40]:40s} <= {through}  del={stats[0]:5d} "
-                  f"({float(stats[1]):>12,.2f}){note}")
+            note = f"   [{untouched} kept in gaps]" if untouched else ""
+            print(f"  {acct[:38]:38s} {dates[0]}..{dates[-1]} "
+                  f"({len(dates):3d}d)  del={stats[0]:4d} "
+                  f"({float(stats[1]):>11,.2f}){note}")
             total_deleted += stats[0]
 
             db.execute(text("""
                 DELETE FROM spending_transactions
-                WHERE account = :a AND transaction_date BETWEEN :s AND :e
-            """), {"a": acct, "s": since, "e": through})
+                WHERE account = :a AND transaction_date IN :dates
+            """).bindparams(bindparam("dates", expanding=True)),
+                {"a": acct, "dates": dates})
 
         # --- 3. Insert ---------------------------------------------------------
         inserted = skipped = 0

@@ -21,6 +21,19 @@ nothing ("statements provide NO VALUE"); that judgement was made when the
 CSV was the assumed refresh path. It holds for holdings and portfolio value.
 It does not hold for these three streams.
 
+CASH MOVEMENTS (added 2026-09-06)
+---------------------------------
+Brokerage cash in/out (XENT, XENT_CC, XENT_CM, ACH, RTP -> CASH_MOVEMENT) is
+the Spending page's "how much" side, and it too had no automated path: the
+MCP feed never carries it and the activity CSV had last landed in early
+July, so outflows silently stopped at 07/20. The statement rows have no
+printed sign; it is read from the Debit/Credit column position and
+cross-checked against the description (see CASH_*_HINTS). Disagreement
+aborts. The printed "Total Funds Paid and Received" cannot validate these
+rows (it sums the whole activity table, including rows this regex does not
+parse), so the dry run also prints whether each brokerage->Checking/Savings
+transfer appears on the receiving side in Monarch.
+
 WHAT THIS DELIBERATELY DOES *NOT* IMPORT
 ----------------------------------------
 Options and equity rows, though the statement is full of them. They already
@@ -117,6 +130,30 @@ INCOME_TYPES = {
 #: Earned" line. See module docstring.
 MARGIN_TYPES = {"MINT": "MARGIN_INTEREST"}
 
+#: Cash leaving or entering the brokerage: the Spending page's "how much"
+#: side (docs/SPENDING-PAGE-SPEC.md). Added 2026-09-06: these rows had no
+#: refresh path at all — the MCP feed does not carry them and the activity
+#: CSV had last landed in early July, so brokerage outflows silently stopped
+#: on 07/20 while the page kept reporting them as current. Same dedup
+#: argument as margin: the MCP never emits CASH_MOVEMENT, so nothing
+#: collides. Codes mirror app/ingestion/parsers/robinhood.py; XENT_CM
+#: (brokerage <-> Checking/Savings) is new in 2026 statements.
+CASH_TYPES = {
+    "XENT": "CASH_MOVEMENT",
+    "XENT_CC": "CASH_MOVEMENT",
+    "XENT_CM": "CASH_MOVEMENT",
+    "ACH": "CASH_MOVEMENT",
+    "RTP": "CASH_MOVEMENT",
+}
+
+#: A cash row's sign comes from WHICH COLUMN its amount sits in (Debit or
+#: Credit) — the text has no sign, so the column is read from word x-positions
+#: against the "Debit"/"Credit" header of the activity table. The description
+#: is used as an independent cross-check, and a disagreement ABORTS the run:
+#: a mis-signed transfer would count a deposit as spending.
+CASH_DEBIT_HINTS = ("withdrawal", "reversal", "from brokerage to")
+CASH_CREDIT_HINTS = ("deposit", "cash back", "to brokerage")
+
 #: "<description> <SYM> <Margin|Cash> <TYPE> <MM/DD/YYYY> ... $<amount>"
 ROW_RE = re.compile(
     r"^(?P<desc>.*?)\s+(?P<sym>[A-Z][A-Z0-9.]{0,5})?\s*"
@@ -136,6 +173,83 @@ SUMMARY_RE = {
 
 def money(s):
     return Decimal(s.replace(",", ""))
+
+
+def _page_lines_with_positions(page):
+    """Rebuild the page's lines from positioned words, so a row's amount can
+    be placed in the Debit or Credit column. extract_text() loses that."""
+    lines = defaultdict(list)
+    for w in page.extract_words():
+        lines[round(w["top"])].append(w)
+    for top in sorted(lines):
+        words = sorted(lines[top], key=lambda w: w["x0"])
+        yield " ".join(w["text"] for w in words), words
+
+
+def parse_cash_rows(path):
+    """-> (cash rows, problems). Cash rows carry a signed amount.
+
+    Separate pass from parse_statement: income/margin parsing is validated
+    against the statement's printed summary and must not change; cash rows
+    need word positions, which that pass does not use.
+    """
+    rows, problems = [], []
+    acct = None
+    debit_x = credit_x = None
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            m = ACCT_RE.search(text)
+            if m:
+                acct = m.group(1)
+            if "Account Activity" not in text and debit_x is None:
+                continue
+            for line, words in _page_lines_with_positions(page):
+                if line.startswith("Description Symbol Acct Type"):
+                    for w in words:
+                        if w["text"] == "Debit":
+                            debit_x = w["x0"]
+                        elif w["text"] == "Credit":
+                            credit_x = w["x0"]
+                    continue
+                r = ROW_RE.match(line)
+                if not r or r.group("type") not in CASH_TYPES:
+                    continue
+                if debit_x is None or credit_x is None:
+                    problems.append(f"{path.name}: cash row before any "
+                                    f"Debit/Credit header: {line[:60]}")
+                    continue
+                amounts = [w for w in words
+                           if re.fullmatch(r"\$[\d,]+\.\d\d", w["text"])
+                           and w["x0"] > debit_x - 5]
+                if not amounts:
+                    continue
+                last = amounts[-1]
+                is_credit = (abs(last["x0"] - credit_x)
+                             < abs(last["x0"] - debit_x))
+                desc = r.group("desc").strip()
+                d = desc.lower()
+                hint_debit = any(h in d for h in CASH_DEBIT_HINTS)
+                hint_credit = any(h in d for h in CASH_CREDIT_HINTS)
+                if hint_debit == hint_credit:
+                    problems.append(f"{path.name}: no sign hint for cash row "
+                                    f"'{desc}' — add it to CASH_*_HINTS")
+                elif hint_credit != is_credit:
+                    problems.append(f"{path.name}: column says "
+                                    f"{'credit' if is_credit else 'debit'} but "
+                                    f"description '{desc}' says otherwise")
+                amount = money(last["text"][1:])
+                rows.append({
+                    "file": path.name,
+                    "statement_account": acct,
+                    "code": r.group("type"),
+                    "type": CASH_TYPES[r.group("type")],
+                    "date": datetime.strptime(r.group("date"), "%m/%d/%Y").date(),
+                    "symbol": "",
+                    "amount": amount if is_credit else -amount,
+                    "description": desc,
+                })
+    return rows, problems
 
 
 def parse_statement(path):
@@ -204,12 +318,17 @@ def main() -> int:
     # across files would compare one month's stated total against two months
     # of extracted rows — the same account appears in both the July and the
     # August statement.
-    income, expense, bad = [], [], 0
+    income, expense, cash, bad = [], [], [], 0
     print("\nVALIDATION (extracted vs each statement's own summary):")
     for f in files:
         rows, exp, stated = parse_statement(f)
         income += rows
         expense += exp
+        crows, problems = parse_cash_rows(f)
+        cash += crows
+        for p in problems:
+            bad += 1
+            print(f"      CASH SIGN PROBLEM: {p}")
         found = defaultdict(Decimal)
         for r in rows:
             found[(r["statement_account"], r["type"])] += r["amount"]
@@ -231,7 +350,8 @@ def main() -> int:
               f"The row regex is missing something; fix it before importing.")
         return 1
 
-    unmapped = {r["statement_account"] for r in income} - set(ACCOUNT_MAP)
+    unmapped = ({r["statement_account"] for r in income + expense + cash}
+                - set(ACCOUNT_MAP))
     if unmapped:
         print(f"\nABORT — unmapped statement accounts: {sorted(unmapped)}")
         print("Add them to ACCOUNT_MAP; guessing would file income to the "
@@ -255,6 +375,33 @@ def main() -> int:
         print(f"  {'':12}{'TOTAL':<16} {'':15} "
               f"{sum(r['amount'] for r in expense):>9,.2f}")
 
+    db = SessionLocal()
+    if cash:
+        print("\nCASH MOVEMENTS (sign from Debit/Credit column, checked "
+              "against the description):")
+        for r in sorted(cash, key=lambda r: (r["date"], r["statement_account"])):
+            print(f"  {r['date']}  {ACCOUNT_MAP[r['statement_account']]:<16} "
+                  f"{r['code']:<8} {r['amount']:>11,.2f}  {r['description'][:44]}")
+        # Cross-source check, informational: every brokerage -> Checking /
+        # Savings / Spending transfer should also appear on the receiving
+        # side in Monarch. A miss is not an abort (Monarch may simply not
+        # have been exported yet) but it is printed so a bad parse shows.
+        from sqlalchemy import text as _t
+        print("\n  Receiving side in Monarch (spending_transactions):")
+        for r in cash:
+            if not r["description"].lower().startswith("transfer from brokerage to"):
+                continue
+            hit = db.execute(_t("""
+                SELECT account FROM spending_transactions
+                WHERE amount = :amt
+                  AND transaction_date BETWEEN :d - 2 AND :d + 2
+                  AND (original_statement ILIKE '%brokerage%'
+                       OR merchant ILIKE '%brokerage%')
+                LIMIT 1
+            """), {"amt": -r["amount"], "d": r["date"]}).scalar()
+            print(f"    {r['date']}  {r['amount']:>11,.2f}  "
+                  f"{'matched: ' + hit if hit else 'NOT FOUND in Monarch'}")
+
     records = [
         ParsedRecord(
             record_type=(RecordType.DIVIDEND if r["type"] == "DIVIDEND"
@@ -273,11 +420,10 @@ def main() -> int:
             },
             source_row=i,
         )
-        for i, r in enumerate(sorted(income + expense,
+        for i, r in enumerate(sorted(income + expense + cash,
                                      key=lambda r: r["date"]))
     ]
 
-    db = SessionLocal()
     try:
         result = save_investment_transactions_hybrid(db, records)
         print(f"\ncreated={result['created']} updated={result['updated']} "

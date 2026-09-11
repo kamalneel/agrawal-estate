@@ -12,9 +12,21 @@ Rules:
     LEARNED from the existing Monarch-categorized history (case-insensitive
     exact merchant match, majority vote); unknown merchants → NULL
     (renders as Uncategorized).
-  - Per-account cutoff: only rows dated after the newest existing
+  - Per-account cutoff: rows dated after the newest existing
     spending_transactions row for that account are imported — Monarch
-    already covers the earlier span; no fuzzy cross-source dedup needed.
+    already covers the earlier span.
+  - HOLE FILL (2026-09-10): rows that fall inside a hole in the existing
+    coverage are imported too. A hole is a silence longer than HOLE_MIN_DAYS
+    between two existing transaction days for that account — the shape a
+    dropped-and-reconnected feed leaves (Monarch's 2026-08-26 reconnect left
+    the card empty Jul 9-25). Inside a hole a row is skipped if the DB
+    already has a row for that account with the same amount within
+    +/- FUZZY_DAYS (Monarch may date a purchase on its posting day), so a
+    partially covered hole does not double-count. Outside holes and before
+    the cutoff nothing is imported: Monarch is the categorization authority
+    there, and rh_csv rows would only duplicate it under a second hash.
+  - Card rows with Status 'Pending' are skipped; they arrive posted in the
+    next Monarch export.
   - Savings/Checking rows keep their sign (already negative=out) and get
     description-keyword categories (transfers/interest/payroll → excluded
     categories; wires & cash delivery left uncategorized = real spend).
@@ -41,10 +53,18 @@ from sqlalchemy import text  # noqa: E402
 # ("Robinhood Credit Card (...8154)" -> the value below); keep this in sync
 # with ACCOUNT_ALIASES in import_monarch_spending_csv.py.
 CARD_ACCOUNT = "Robinhood Credit Card **8154 (...8154)"
-# Monarch does not track these two — rh_csv is their only source, so these
-# names are ours to keep stable.
-SAVINGS_ACCOUNT = "Robinhood Savings"
-CHECKING_ACCOUNT = "Robinhood Checking (Joint)"
+# Since the 2026-08-26 reconnect Monarch tracks these two under the names
+# below (the old rh_csv-only names "Robinhood Savings" / "Robinhood Checking
+# (Joint)" were renamed in the DB via ACCOUNT_ALIASES). Using any other name
+# here splits the account in two and the cutoff finds no coverage.
+SAVINGS_ACCOUNT = "Savings (...7358)"
+CHECKING_ACCOUNT = "Checking (...8935)"
+
+#: Silence between two existing transaction days that counts as a hole.
+HOLE_MIN_DAYS = 12
+#: Inside a hole, a same-amount row this many days either side is the same
+#: transaction seen through Monarch on a different (posting) date.
+FUZZY_DAYS = 3
 
 DESC_CATEGORIES = [
     ("interest payment", "Interest"),
@@ -80,6 +100,15 @@ SEED_CATEGORIES = {
     # deliveries (incl. fee/tip rows) pay the home cleaners (~$250/mo).
     "outgoing wire transfer to eric chang": "Rent",
     "gifthealth": "Medical",
+    # Unambiguous chains first seen in the July 2026 hole fill.
+    "whole foods market": "Groceries",
+    "in n out san carlos": "Restaurants & Bars",
+    "mendocinofarms": "Restaurants & Bars",
+    "marufuku ramen palo alto": "Restaurants & Bars",
+    "palmetto superfood": "Restaurants & Bars",
+    "roost roast": "Coffee Shops",
+    "woof gang bakery grooming palo alto": "Pets",
+    "cloud 9 spa burlingame": "Personal",
     "cash delivery": "Home Improvement",
     "cash delivery fee": "Home Improvement",
     "cash delivery tip": "Home Improvement",
@@ -120,10 +149,33 @@ def account_cutoff(db, account: str):
     ), {"a": account}).scalar()
 
 
+def account_holes(db, account: str):
+    """[(first missing day, last missing day)] — every silence longer than
+    HOLE_MIN_DAYS between existing transaction days for this account."""
+    from datetime import timedelta
+    days = [r[0] for r in db.execute(text("""
+        SELECT DISTINCT transaction_date FROM spending_transactions
+        WHERE account = :a ORDER BY 1"""), {"a": account}).fetchall()]
+    holes = []
+    for a, b in zip(days, days[1:]):
+        if (b - a).days > HOLE_MIN_DAYS:
+            holes.append((a + timedelta(days=1), b - timedelta(days=1)))
+    return holes
+
+
+def fuzzy_exists(db, account: str, day, amount: float) -> bool:
+    return db.execute(text("""
+        SELECT 1 FROM spending_transactions
+        WHERE account = :a AND amount = :amt
+          AND transaction_date BETWEEN :d - :f AND :d + :f
+        LIMIT 1"""), {"a": account, "amt": round(amount, 2), "d": day,
+                      "f": FUZZY_DAYS}).first() is not None
+
+
 def parse_card(path: Path, cat_map):
     out = []
     for row in csv.DictReader(open(path, encoding="utf-8-sig")):
-        if row["Status"] == "Declined":
+        if row["Status"] in ("Declined", "Pending"):
             continue
         amt = -float(row["Amount"])  # charge → negative spend
         rtype = row["Type"]
@@ -131,7 +183,10 @@ def parse_card(path: Path, cat_map):
         if rtype == "Payment":
             category = "Credit Card Payment"
         else:
-            category = cat_map.get(_norm(merchant))
+            # A refund carries "Refund: <merchant>"; look the merchant up so
+            # it lands in the category it nets against.
+            lookup = merchant[len("refund: "):] if merchant.lower().startswith("refund: ") else merchant
+            category = cat_map.get(_norm(lookup))
         owner = (row.get("Cardholder") or "").split()[0] or None
         out.append({
             "date": row["Date"], "merchant": merchant, "category": category,
@@ -161,7 +216,23 @@ def detect(path: Path):
     if {"Cardholder", "Merchant", "Status"}.issubset(headers):
         return "card"
     if {"Date", "Description", "Amount"}.issubset(headers):
-        return "savings" if "saving" in path.name.lower() else "checking"
+        name = path.name.lower()
+        if "saving" in name:
+            return "savings"
+        if "checking" in name:
+            return "checking"
+        # Robinhood downloads are named by UUID; tell the two cash accounts
+        # apart by content. Each account names the OTHER in its internal
+        # transfers: Checking says "Joint Savings with Jaya", Savings says
+        # "Joint Checking with Jaya". (Both pay wires and cards, so those
+        # are no use as a tell — the Savings file has Eric Chang wires too.)
+        text_ = open(path, encoding="utf-8-sig").read().lower()
+        if "joint savings" in text_ and "joint checking" not in text_:
+            return "checking"
+        if "joint checking" in text_ and "joint savings" not in text_:
+            return "savings"
+        raise SystemExit(f"cannot tell checking from savings: {path} — "
+                         f"rename the file to include 'checking' or 'savings'")
     raise SystemExit(f"unrecognized CSV format: {path}")
 
 
@@ -182,10 +253,33 @@ def main():
             rows = parse_card(p, cat_map)
         else:
             rows = parse_simple(p, SAVINGS_ACCOUNT if kind == "savings" else CHECKING_ACCOUNT)
-        cutoff = account_cutoff(db, rows[0]["account"]) if rows else None
-        kept = [r for r in rows
-                if cutoff is None or datetime.strptime(r["date"], "%Y-%m-%d").date() > cutoff]
-        print(f"{p.name}: {kind}, {len(rows)} rows, cutoff {cutoff} → {len(kept)} to import")
+        if not rows:
+            print(f"{p.name}: {kind}, no rows")
+            continue
+        account = rows[0]["account"]
+        cutoff = account_cutoff(db, account)
+        holes = account_holes(db, account)
+        kept, after, in_hole, fuzzy_dups = [], 0, 0, 0
+        for r in rows:
+            day = datetime.strptime(r["date"], "%Y-%m-%d").date()
+            if cutoff is None or day > cutoff:
+                kept.append(r)
+                after += 1
+            elif any(lo <= day <= hi for lo, hi in holes):
+                if fuzzy_exists(db, account, day, r["amount"]):
+                    fuzzy_dups += 1
+                    continue
+                kept.append(r)
+                in_hole += 1
+        print(f"{p.name}: {kind} -> {account}")
+        print(f"   {len(rows)} rows in file; existing coverage through {cutoff}")
+        for lo, hi in holes:
+            n = sum(1 for r in kept if lo <= datetime.strptime(r['date'], '%Y-%m-%d').date() <= hi)
+            print(f"   hole {lo}..{hi}: {n} rows fill it")
+        print(f"   -> {after} after cutoff, {in_hole} inside holes, "
+              f"{fuzzy_dups} skipped as already present (same amount within "
+              f"±{FUZZY_DAYS} days), {len(rows) - len(kept) - fuzzy_dups} "
+              f"already covered by Monarch")
         records.extend(kept)
 
     # instance numbering for identical rows + dedup hash

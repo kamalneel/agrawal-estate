@@ -1,9 +1,59 @@
 # Spending Page — Spec
 
-Status: **stage 1 built** (L1 outflow band, 2026-07-08). Method per
-[PAGE-DESIGN-PLAYBOOK.md](PAGE-DESIGN-PLAYBOOK.md); serves Objective 4 in
-[OBJECTIVES.md](OBJECTIVES.md) ("high-level categorization, nothing
+Status: **stage 2 built** (2026-09-06, after
+[SPENDING-PAGE-AUDIT-2026-09.md](SPENDING-PAGE-AUDIT-2026-09.md)). Method
+per [PAGE-DESIGN-PLAYBOOK.md](PAGE-DESIGN-PLAYBOOK.md); serves Objective 4
+in [OBJECTIVES.md](OBJECTIVES.md) ("high-level categorization, nothing
 deeper").
+
+## The one definition (2026-09-06)
+
+Every number on the page, the outflow reconciliation and the BBD model come
+from `spending.services.spending_rows()`, which runs each Monarch row
+through `spending.models.classify()` **in this order**:
+
+1. **Counterparty rule** (`COUNTERPARTY_RULES`) — a row naming a listed
+   landlord is Home Rent, kind SPENDING, whatever Monarch filed it as.
+   Why: July/August 2026 rent wires arrived as `Transfer` and vanished.
+2. **Refund test** (`is_refund`) — a statement beginning "Refund:" or
+   "Refund from" nets against its category, whatever category it was
+   dropped into (spending or income kinds only). Why: two $3,455 refunds
+   filed as Business/Other Income made August read 30% high. A refund
+   filed as income adopts the label of the charge it reverses (same
+   merchant, same amount) or shows as "Refunds".
+3. **Kind** of the raw category (spending / income / transfer / business).
+4. **Display label** — the rulebook (`display_category`).
+
+Then: negative rows count if SPENDING; positive rows count only if refund.
+
+**Period attribution:** a bill in `EXPECTED_MONTHLY_LABELS` (rent only)
+paid on/after the 25th belongs to the following month (the 07-31 wire is
+August's rent). Everything else stays on its transaction date. The same
+list drives the **missing-recurring flag**: a complete month with no Home
+Rent row is flagged on the headline. School is deliberately not on the
+list — Stratford bills September–May.
+
+Aggregation is in Python (4K rows); SQL `GROUP BY category` was how the
+page came to disagree with itself. Endpoints: `/summary/{year}[?month]`,
+`/transactions`, `/filters`, `/years`, `/freshness`, `/outflows`. The
+`/cash-flow/*`, `/categories` and `/trends` endpoints were deleted (second
+and third definitions of the total).
+
+**Freshness** (`/freshness`) reports every account ever seen with its tail
+and a status (live / lagging >7d / dead >30d / retired), the outflow tail,
+and the last complete month — which is the page's default period. The
+headline stamps turn amber in either direction.
+
+**Brokerage outflows** now arrive from the monthly statement PDF
+(`scripts/import_robinhood_statement_pdf.py`, cash codes XENT / XENT_CC /
+XENT_CM / ACH / RTP; sign read from the Debit/Credit column position and
+cross-checked against the description). The card channel is "Transfer from
+Brokerage to Spending" through 2026-05 and "… to Checking / Savings"
+after the June reconnect.
+
+**Monarch importer** collapses the double-listed brokerage transfers
+Monarch has emitted in the Robinhood cash accounts since the 2026-08-26
+reconnect (terse "From Brokerage" twin dropped when the long form exists).
 
 ## Test question
 

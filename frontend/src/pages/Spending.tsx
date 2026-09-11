@@ -1,1062 +1,587 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { CreditCard, RefreshCw, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import {
-  CreditCard,
-  RefreshCw,
-  Calendar,
-  Search,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  ChevronDown,
-} from 'lucide-react';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell,
 } from 'recharts';
 import styles from './Spending.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
 
-/* ─── types ───────────────────────────────────────────────── */
+/* ─── types (mirror backend/app/modules/spending/services.py) ───── */
 
-interface MonthlySummary {
-  month: number;
-  month_name: string;
-  total: number;
-  count: number;
+interface MonthlyPoint {
+  month: number; month_name: string;
+  total: number; recurring: number; non_monthly: number; count: number;
 }
-
-interface CategorySummary {
-  category: string;
-  total: number;
-  count: number;
-  percent: number;
-  is_monthly: boolean;
+interface CategoryRow {
+  category: string; total: number; count: number; refunds: number;
+  percent: number; is_monthly: boolean;
 }
-
-interface AnnualExpense {
-  label: string;
-  type: 'trip' | 'category';
-  total: number;
+interface NonMonthlyRow { label: string; type: 'trip' | 'category'; total: number; count: number }
+interface MerchantRow { merchant: string; total: number; count: number; category: string }
+interface AccountRow { account: string; display: string; total: number; count: number }
+interface Summary {
+  year: number; month: number | null; period_complete: boolean;
+  monarch_through: string | null;
+  total_spending: number; recurring_spending: number; non_monthly_spending: number;
+  avg_monthly: number; months_with_data: number; transaction_count: number;
+  monthly: MonthlyPoint[]; categories: CategoryRow[];
+  non_monthly_breakdown: NonMonthlyRow[]; top_merchants: MerchantRow[];
+  by_account: AccountRow[];
+  flags: {
+    uncategorized: { count: number; total: number };
+    misfiled_refunds: { count: number; total: number };
+    missing_recurring: { month: number; month_name: string; label: string }[];
+    holes: { account: string; display: string; from: string; to: string; days: number; typical_gap_days: number }[];
+  };
 }
-
-interface SpendingSummary {
-  year: number;
-  total_spending: number;
-  recurring_spending: number;
-  non_monthly_spending: number;
-  avg_monthly: number;
-  months_with_data: number;
-  monthly: MonthlySummary[];
-  categories: CategorySummary[];
-  annual_expenses: AnnualExpense[];
+interface FreshAccount {
+  account: string; display: string; last_date: string | null; days_behind: number | null;
+  rows: number; status: 'live' | 'lagging' | 'dead' | 'retired'; note: string | null;
 }
-
-interface Transaction {
-  id: number;
-  date: string;
-  merchant: string;
-  category: string;
-  account: string;
-  original_statement: string;
-  notes: string;
-  amount: number;
-  tags: string;
-  owner: string;
+interface Freshness {
+  monarch_through: string | null; monarch_days_old: number | null;
+  data_through: string | null;
+  outflows_through: string | null; outflows_days_behind_monarch: number | null;
+  outflows_current: boolean; outflows_statement_month: string | null;
+  last_complete_month: { year: number; month: number } | null;
+  accounts: FreshAccount[]; problems: FreshAccount[];
 }
-
-interface TransactionsResponse {
-  transactions: Transaction[];
-  total: number;
-  page: number;
-  page_size: number;
-  total_pages: number;
+interface OutflowMonth {
+  month: string; card_spending: number; cashback: number; bank_out: number;
+  card_net: number; total: number; monarch_total: number | null;
 }
-
-interface Filters {
-  categories: string[];
-  accounts: string[];
-  merchants: string[];
+interface Outflows { as_of: string | null; monarch_through: string | null; months: OutflowMonth[] }
+interface Txn {
+  id: number; date: string; period: string; merchant: string; category: string;
+  raw_category: string | null; account: string; account_display: string;
+  original_statement: string; notes: string; amount: number;
+  is_refund: boolean; misfiled_refund: boolean; trip: string | null; is_non_monthly: boolean;
 }
+interface TxnPage { transactions: Txn[]; total: number; total_amount: number; page: number; total_pages: number }
+interface Filters { categories: string[]; accounts: { account: string; display: string }[]; merchants: string[] }
 
-interface CashFlowTransaction {
-  date: string;
-  account: string;
-  amount: number;
-  description: string;
-  type: string;
-  direction: 'in' | 'out';
-}
+/* ─── helpers ──────────────────────────────────────────────── */
 
-interface ExpectedExpense {
-  description: string;
-  amount: number;
-  day_of_month: number;
-  category: string;
-}
-
-interface CashFlowSummaryMonth {
-  month: number;
-  month_name: string;
-  total: number;
-  outflow: number;
-  inflow: number;
-}
-
-interface CashFlowSummary {
-  year: number;
-  monthly: CashFlowSummaryMonth[];
-  total: number;
-  avg_monthly: number;
-  outflow_total: number;
-  inflow_total: number;
-  recurring_total: number;
-  one_time_total: number;
-  one_time_expenses: CashFlowTransaction[];
-  expected_annual: number;
-  months_with_data: number;
-}
-
-interface CashFlowMonth {
-  year: number;
-  month: number;
-  transactions: CashFlowTransaction[];
-  outflow_total: number;
-  inflow_total: number;
-  net_total: number;
-  recurring_total: number;
-  expected_total: number;
-  expected_expenses: ExpectedExpense[];
-  one_time_expenses: CashFlowTransaction[];
-  one_time_total: number;
-}
-
-/* ─── colors ──────────────────────────────────────────────── */
-
-const CATEGORY_COLORS = [
-  '#8B5CF6', '#EF4444', '#F59E0B', '#10B981', '#3B82F6',
-  '#EC4899', '#14B8A6', '#F97316', '#6366F1', '#84CC16',
-  '#06B6D4', '#D946EF', '#FB923C', '#22D3EE', '#A855F7',
-  '#FBBF24', '#34D399', '#F472B6', '#60A5FA', '#A3E635',
-];
-
-const MONTH_NAMES_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/* ─── helpers ─────────────────────────────────────────────── */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const CHART_VARS = [1, 2, 3, 4, 5, 6, 7, 8].map(n => `var(--color-chart-${n})`);
+const chartColor = (i: number) => CHART_VARS[i % CHART_VARS.length];
 
 const fmt = (v: number) =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v);
-
 const fmtFull = (v: number) =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(v);
+const fmtDate = (iso: string, withYear = false) =>
+  new Date(iso + 'T00:00:00').toLocaleDateString('en-US',
+    withYear ? { month: 'short', day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric' });
 
 const API = '/api/v1/spending';
+const STALE_DAYS = 7;
 
-/* ─── component ───────────────────────────────────────────── */
+async function getJson<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url, { headers: getAuthHeaders() });
+    return res.ok ? (await res.json()) as T : null;
+  } catch { return null; }
+}
+
+const tooltipStyle = {
+  backgroundColor: 'var(--color-bg-elevated)',
+  border: '1px solid var(--color-border)',
+  borderRadius: '8px',
+  color: 'var(--color-text-primary)',
+};
+
+/* ─── component ────────────────────────────────────────────── */
 
 export default function Spending() {
   const [years, setYears] = useState<number[]>([]);
-  const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
-  const [selectedMonth, setSelectedMonth] = useState<number | null>(new Date().getMonth() + 1);
-  const [summary, setSummary] = useState<SpendingSummary | null>(null);
-  const [cashFlowMonth, setCashFlowMonth] = useState<CashFlowMonth | null>(null);
-  const [cashFlowYear, setCashFlowYear] = useState<CashFlowSummary | null>(null);
-  const [recurringTxn, setRecurringTxn] = useState<TransactionsResponse | null>(null);
-  const [nonMonthlyTxn, setNonMonthlyTxn] = useState<TransactionsResponse | null>(null);
+  const [freshness, setFreshness] = useState<Freshness | null>(null);
+  const [outflows, setOutflows] = useState<Outflows | null>(null);
+  // Period starts undefined until freshness says which month is the last
+  // COMPLETE one. Defaulting to the calendar month opened the page on an
+  // empty September with a $0 headline and no explanation.
+  const [year, setYear] = useState<number | null>(null);
+  const [month, setMonth] = useState<number | null>(null);
+
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [yearSummary, setYearSummary] = useState<Summary | null>(null);
   const [filters, setFilters] = useState<Filters | null>(null);
+  const [txns, setTxns] = useState<TxnPage | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Filter state
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterAccount, setFilterAccount] = useState('');
-  const [recurringPage, setRecurringPage] = useState(1);
-  const [nonMonthlyPage, setNonMonthlyPage] = useState(1);
+  const [filterType, setFilterType] = useState<'' | 'recurring' | 'non_monthly'>('');
+  const [page, setPage] = useState(1);
+  const txnRef = useRef<HTMLDivElement>(null);
 
-  const [outflows, setOutflows] = useState<{
-    as_of: string | null; monarch_through: string | null;
-    months: { month: string; card_spending: number; cashback: number; bank_out: number;
-              card_net: number; total: number; monarch_total: number | null;
-              by_account: Record<string, number> }[];
-  } | null>(null);
-  const [sortCol, setSortCol] = useState<'description' | 'account' | 'date' | 'amount'>('date');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
-
-  const isMonthView = selectedMonth !== null;
-
-  /* ── data fetching ── */
-
-  const fetchYears = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/years`, { headers: getAuthHeaders() });
-      if (!res.ok) return;
-      const data = await res.json();
-      const yrs: number[] = data.years ?? [];
+  /* ── bootstrap: years + freshness decide the initial period ── */
+  useEffect(() => {
+    (async () => {
+      const [y, f, o] = await Promise.all([
+        getJson<{ years: number[] }>(`${API}/years`),
+        getJson<Freshness>(`${API}/freshness`),
+        getJson<Outflows>(`${API}/outflows`),
+      ]);
+      const yrs = y?.years ?? [];
       setYears(yrs);
-      if (yrs.length && !yrs.includes(selectedYear)) setSelectedYear(yrs[0]);
-    } catch { /* ignore */ }
+      setFreshness(f);
+      setOutflows(o);
+      const lcm = f?.last_complete_month;
+      if (lcm && yrs.includes(lcm.year)) { setYear(lcm.year); setMonth(lcm.month); }
+      else if (yrs.length) { setYear(yrs[0]); setMonth(null); }
+    })();
   }, []);
 
-  // selectedMonth MUST stay in the dep list — with an empty array the closure
-  // captures the month at mount (null) and every summary fetch silently asks
-  // for the whole year, which is what made Categories show year-to-date
-  // totals beside June's transactions.
-  const fetchSummary = useCallback(async (yr: number) => {
-    try {
-      const mq = selectedMonth ? `?month=${selectedMonth}` : '';
-      const res = await fetch(`${API}/summary/${yr}${mq}`, { headers: getAuthHeaders() });
-      if (!res.ok) return;
-      setSummary(await res.json());
-    } catch { /* ignore */ }
-  }, [selectedMonth]);
-
-  const fetchFilters = useCallback(async (yr: number) => {
-    try {
-      const res = await fetch(`${API}/filters?year=${yr}`, { headers: getAuthHeaders() });
-      if (!res.ok) return;
-      setFilters(await res.json());
-    } catch { /* ignore */ }
-  }, []);
-
-  const fetchCashFlowYear = useCallback(async (yr: number) => {
-    try {
-      const res = await fetch(`${API}/cash-flow/${yr}`, { headers: getAuthHeaders() });
-      if (!res.ok) return;
-      setCashFlowYear(await res.json());
-    } catch { /* ignore */ }
-  }, []);
-
-  const fetchCashFlowMonth = useCallback(async (yr: number, mo: number) => {
-    try {
-      const res = await fetch(`${API}/cash-flow/${yr}/${mo}`, { headers: getAuthHeaders() });
-      if (!res.ok) return;
-      setCashFlowMonth(await res.json());
-    } catch { /* ignore */ }
-  }, []);
-
-  const buildParams = useCallback((spendingType: string, pg: number) => {
-    const params = new URLSearchParams();
-    params.set('year', String(selectedYear));
-    params.set('page', String(pg));
-    params.set('page_size', '50');
-    params.set('spending_type', spendingType);
-    if (search) params.set('search', search);
-    if (filterCategory) params.set('category', filterCategory);
-    if (filterAccount) params.set('account', filterAccount);
-    if (selectedMonth !== null) params.set('month', String(selectedMonth));
-    return params;
-  }, [selectedYear, search, filterCategory, filterAccount, selectedMonth]);
-
-  const fetchRecurring = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/transactions?${buildParams('recurring', recurringPage)}`, { headers: getAuthHeaders() });
-      if (!res.ok) return;
-      setRecurringTxn(await res.json());
-    } catch { /* ignore */ }
-  }, [buildParams, recurringPage]);
-
-  const fetchNonMonthly = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/transactions?${buildParams('non_monthly', nonMonthlyPage)}`, { headers: getAuthHeaders() });
-      if (!res.ok) return;
-      setNonMonthlyTxn(await res.json());
-    } catch { /* ignore */ }
-  }, [buildParams, nonMonthlyPage]);
-
-  /* ── effects ── */
-
+  /* ── period data ── */
   useEffect(() => {
-    fetch(`${API}/outflows`, { headers: getAuthHeaders() })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => d && setOutflows(d))
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => { fetchYears(); }, [fetchYears]);
-
-  useEffect(() => {
+    if (year === null) return;
     setLoading(true);
-    const fetches: Promise<void>[] = [fetchSummary(selectedYear), fetchFilters(selectedYear), fetchRecurring()];
-    if (isMonthView) {
-      fetches.push(fetchCashFlowMonth(selectedYear, selectedMonth!));
-    } else {
-      fetches.push(fetchNonMonthly(), fetchCashFlowYear(selectedYear));
-    }
-    Promise.all(fetches).finally(() => setLoading(false));
-  }, [selectedYear, selectedMonth, fetchSummary, fetchFilters, fetchRecurring, fetchNonMonthly, fetchCashFlowMonth, fetchCashFlowYear, isMonthView]);
+    const mq = month ? `?month=${month}` : '';
+    Promise.all([
+      getJson<Summary>(`${API}/summary/${year}${mq}`).then(setSummary),
+      getJson<Summary>(`${API}/summary/${year}`).then(setYearSummary),
+      getJson<Filters>(`${API}/filters?year=${year}`).then(setFilters),
+    ]).finally(() => setLoading(false));
+  }, [year, month]);
 
-  // Reset pages when filters change
-  useEffect(() => { setRecurringPage(1); setNonMonthlyPage(1); }, [search, filterCategory, filterAccount, selectedMonth, selectedYear]);
+  useEffect(() => { setPage(1); }, [search, filterCategory, filterAccount, filterType, year, month]);
 
-  // Refetch when pages change
-  useEffect(() => { fetchRecurring(); }, [recurringPage, fetchRecurring]);
-  useEffect(() => { if (!isMonthView) fetchNonMonthly(); }, [nonMonthlyPage, fetchNonMonthly, isMonthView]);
+  const fetchTxns = useCallback(async () => {
+    if (year === null) return;
+    const p = new URLSearchParams({ year: String(year), page: String(page), page_size: '50' });
+    if (month) p.set('month', String(month));
+    if (search) p.set('search', search);
+    if (filterCategory) p.set('category', filterCategory);
+    if (filterAccount) p.set('account', filterAccount);
+    if (filterType) p.set('spending_type', filterType);
+    setTxns(await getJson<TxnPage>(`${API}/transactions?${p}`));
+  }, [year, month, page, search, filterCategory, filterAccount, filterType]);
+  useEffect(() => { fetchTxns(); }, [fetchTxns]);
 
-  /* ── derived data ── */
+  /* ── derived ── */
+  const isMonth = month !== null;
+  const periodLabel = year === null ? '' : isMonth ? `${MONTHS[month! - 1]} ${year}` : `${year}`;
+  const monarchThrough = freshness?.monarch_through ?? null;
+  const dataThrough = freshness?.data_through ?? monarchThrough;
 
-  // For month view: filter categories to recurring only
-  const monthCategories = isMonthView
-    ? (summary?.categories.filter(c => c.is_monthly) ?? [])
-    : (summary?.categories ?? []);
+  const monthDisabled = (m: number) =>
+    year !== null && dataThrough !== null && `${year}-${String(m).padStart(2, '0')}-01` > dataThrough;
 
-  const donutData = monthCategories.slice(0, 10).map((c, i) => ({
-    name: c.category,
-    value: c.total,
-    color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-  }));
+  const monthlyCats = summary?.categories.filter(c => c.is_monthly) ?? [];
+  const nonMonthlyCats = summary?.categories.filter(c => !c.is_monthly) ?? [];
 
-  // Bar chart uses Robinhood cash flow data when available, falls back to Monarch
-  const barData = (cashFlowYear?.monthly ?? summary?.monthly ?? []).map(m => ({
-    name: m.month_name.substring(0, 3),
-    month: m.month,
-    total: m.total,
-    outflow: 'outflow' in m ? (m as CashFlowSummaryMonth).outflow : m.total,
-    inflow: 'inflow' in m ? (m as CashFlowSummaryMonth).inflow : 0,
-  }));
+  const donut = useMemo(() => {
+    const cats = summary?.categories ?? [];
+    const top = cats.slice(0, 8).map((c, i) => ({ name: c.category, value: c.total, color: chartColor(i) }));
+    const rest = cats.slice(8).reduce((s, c) => s + c.total, 0);
+    if (rest > 0) top.push({ name: `Other (${cats.length - 8})`, value: rest, color: 'var(--color-text-tertiary)' });
+    return top;
+  }, [summary]);
 
-  const handleBarClick = (data: { month: number }) => {
-    setSelectedMonth(prev => prev === data.month ? null : data.month);
+  const outflowPeriod = useMemo(() => {
+    if (!outflows || year === null) return null;
+    const rows = outflows.months.filter(m => m.month.startsWith(String(year)) &&
+      (!isMonth || m.month === `${year}-${String(month).padStart(2, '0')}-01`));
+    if (!rows.length) return null;
+    return {
+      total: rows.reduce((s, m) => s + m.total, 0),
+      card: rows.reduce((s, m) => s + m.card_net, 0),
+      bank: rows.reduce((s, m) => s + m.bank_out, 0),
+    };
+  }, [outflows, year, month, isMonth]);
+
+  // Baseline for the month view: this month's recurring vs the year's
+  // average recurring month (L2 seed — "is this month normal?").
+  const baseline = useMemo(() => {
+    if (!isMonth || !summary || !yearSummary || yearSummary.months_with_data < 2) return null;
+    const avg = yearSummary.avg_monthly;
+    if (!avg) return null;
+    return { avg, delta: (summary.recurring_spending - avg) / avg };
+  }, [isMonth, summary, yearSummary]);
+
+  // Outflows come from the monthly statement: stale means the last complete
+  // month's statement is not in, not that the newest row is a few days old.
+  const outflowsStale = freshness != null && !freshness.outflows_current;
+  const monarchStale = freshness?.monarch_days_old != null && freshness.monarch_days_old > STALE_DAYS;
+  const problemAccounts = freshness?.problems ?? [];
+
+  const pickCategory = (label: string) => {
+    setFilterCategory(prev => (prev === label ? '' : label));
+    txnRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const toggleSort = (col: typeof sortCol) => {
-    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortCol(col); setSortDir(col === 'amount' ? 'desc' : 'asc'); }
-  };
+  const clearFilters = () => { setSearch(''); setFilterCategory(''); setFilterAccount(''); setFilterType(''); };
 
-  // Set of one-time expense keys for fast lookup
-  const oneTimeKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const e of cashFlowMonth?.one_time_expenses ?? []) {
-      keys.add(`${e.date}|${e.amount}|${e.description}`);
-    }
-    return keys;
-  }, [cashFlowMonth?.one_time_expenses]);
-
-  const getTxnColor = (t: CashFlowTransaction): string => {
-    if (t.direction === 'in') return '#10B981';   // green — transfer in
-    if (oneTimeKeys.has(`${t.date}|${t.amount}|${t.description}`)) return '#3B82F6'; // blue — one-time
-    return '#EF4444'; // red — recurring outflow
-  };
-
-  const sortedActualTxns = useMemo(() => {
-    const txns = [...(cashFlowMonth?.transactions ?? [])];
-    const dir = sortDir === 'asc' ? 1 : -1;
-    txns.sort((a, b) => {
-      switch (sortCol) {
-        case 'description': return dir * a.description.localeCompare(b.description);
-        case 'account': {
-          const aa = a.account.includes('Neel') ? 'Neel' : 'Jaya';
-          const bb = b.account.includes('Neel') ? 'Neel' : 'Jaya';
-          return dir * aa.localeCompare(bb);
-        }
-        case 'date': return dir * a.date.localeCompare(b.date);
-        case 'amount': return dir * (a.amount - b.amount);
-        default: return 0;
-      }
-    });
-    return txns;
-  }, [cashFlowMonth?.transactions, sortCol, sortDir]);
-
-  const SortIcon = ({ col }: { col: typeof sortCol }) => {
-    if (sortCol !== col) return null;
-    return sortDir === 'asc' ? <ChevronUp size={14} style={{ marginLeft: 4, verticalAlign: 'middle' }} /> : <ChevronDown size={14} style={{ marginLeft: 4, verticalAlign: 'middle' }} />;
-  };
-
-  /* ── render ─────────────────────────────────────────────── */
+  /* ── render ────────────────────────────────────────────── */
 
   return (
     <div className={styles.container}>
-      {/* Header */}
       <header className={styles.header}>
         <div className={styles.headerContent}>
-          <div className={styles.headerIcon}>
-            <CreditCard size={32} />
-          </div>
+          <div className={styles.headerIcon}><CreditCard size={28} /></div>
           <div>
             <h1 className={styles.title}>Spending</h1>
-            <p className={styles.subtitle}>
-              Cash flow from Robinhood + categorized breakdown from Monarch Money
-            </p>
+            <p className={styles.subtitle}>What was bought, on what — categorized by Monarch; brokerage outflows as a cross-check</p>
           </div>
         </div>
       </header>
 
       <div className={styles.content}>
-        {/* Year Selector */}
-        <div className={styles.yearSelector}>
-          <Calendar size={18} />
-          <span className={styles.yearLabel}>Year:</span>
-          {years.map(yr => (
-            <button
-              key={yr}
-              className={`${styles.yearButton} ${selectedYear === yr ? styles.activeYear : ''}`}
-              onClick={() => setSelectedYear(yr)}
-            >
-              {yr}
-            </button>
+        {/* Period control — the page's only one */}
+        <div className={styles.periodRow}>
+          <span className={styles.periodLabel}>Year</span>
+          {years.map(y => (
+            <button key={y} className={`${styles.pill} ${year === y ? styles.active : ''}`}
+              onClick={() => setYear(y)}>{y}</button>
           ))}
         </div>
-
-        {/* Month Pill Selector */}
-        <div className={styles.monthSelectorRow}>
-          <button
-            className={`${styles.monthPill} ${selectedMonth === null ? styles.active : ''}`}
-            onClick={() => setSelectedMonth(null)}
-          >
-            Full Year
+        <div className={styles.periodRow}>
+          <span className={styles.periodLabel}>Month</span>
+          <button className={`${styles.pill} ${month === null ? styles.active : ''}`} onClick={() => setMonth(null)}>
+            Full year
           </button>
-          {MONTH_NAMES_SHORT.map((m, i) => (
-            <button
-              key={i + 1}
-              className={`${styles.monthPill} ${selectedMonth === i + 1 ? styles.active : ''}`}
-              onClick={() => setSelectedMonth(i + 1)}
-            >
-              {m}
-            </button>
+          {MONTHS.map((m, i) => (
+            <button key={m} disabled={monthDisabled(i + 1)}
+              className={`${styles.pill} ${month === i + 1 ? styles.active : ''}`}
+              onClick={() => setMonth(i + 1)}>{m}</button>
           ))}
         </div>
 
-        {/* L1 — total spend from investment-account outflows (fresh via
-            sync; Monarch below is composition only). Definition per Neel:
-            money leaving Neel's/Jaya's brokerage toward spending channels. */}
-        {outflows && (() => {
-          const inYear = outflows.months.filter(m => m.month.startsWith(String(selectedYear)));
-          const rows = selectedMonth === null
-            ? inYear
-            : inYear.filter(m => m.month === `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-01`);
-          const cardNet = rows.reduce((s, m) => s + m.card_net, 0);
-          const bankOut = rows.reduce((s, m) => s + m.bank_out, 0);
-          const total = rows.reduce((s, m) => s + m.total, 0);
-          const monarchCovered = rows.filter(m => m.monarch_total != null);
-          const monarchTotal = monarchCovered.reduce((s, m) => s + (m.monarch_total || 0), 0);
-          const periodLabel = selectedMonth === null
-            ? `${selectedYear}` : `${MONTH_NAMES_SHORT[selectedMonth - 1]} ${selectedYear}`;
-          return (
-            <div className={styles.outflowBand}>
-              <div>
-                {/* Headline is REAL SPENDING from Monarch — what was actually
-                    bought. Brokerage outflows measure money leaving the
-                    brokerage, which is lumpy pre-funding, not spend; they stay
-                    below as a reconciliation line. Putting the outflow number
-                    here is what made June read $1,777 against $17,750 spent. */}
-                <div className={styles.outflowLabel}>Total spend — {periodLabel}</div>
-                <div className={styles.outflowValue}>
-                  {fmt(summary?.total_spending ?? monarchTotal)}
-                </div>
-                <div className={styles.outflowSplit}>
-                  <span className={styles.outflowRecon}>
-                    brokerage outflows: {fmt(total)} ({fmt(cardNet)} card, {fmt(bankOut)} bank)
+        {/* L1 — headline */}
+        {summary && (
+          <div className={styles.headline}>
+            <div>
+              <div className={styles.headlineLabel}>
+                Total spend — {periodLabel}{!summary.period_complete && ' (partial)'}
+              </div>
+              <div className={styles.headlineValue}>{fmt(summary.total_spending)}</div>
+              <div className={styles.headlineSplit}>
+                <span>Recurring <strong>{fmt(summary.recurring_spending)}</strong></span>
+                <span>Non-monthly <strong>{fmt(summary.non_monthly_spending)}</strong></span>
+                {!isMonth && summary.months_with_data > 0 && (
+                  <span>Avg recurring <strong>{fmt(summary.avg_monthly)}</strong>/mo over {summary.months_with_data} months</span>
+                )}
+                {baseline && (
+                  <span>
+                    vs {fmt(baseline.avg)} avg recurring month{' '}
+                    <strong className={baseline.delta > 0.15 ? styles.negative : baseline.delta < -0.15 ? styles.positive : undefined}>
+                      {baseline.delta >= 0 ? '+' : ''}{Math.round(baseline.delta * 100)}%
+                    </strong>
                   </span>
-                  {summary && total > 0 && (
-                    <span className={styles.outflowRecon}>
-                      {Math.abs(summary.total_spending - total) / total < 0.05
-                        ? 'reconciles'
-                        : `Δ ${fmt(Math.abs(summary.total_spending - total))} — outflows are funding, not spend`}
+                )}
+                <span className={styles.muted}>{summary.transaction_count} transactions</span>
+              </div>
+              {outflowPeriod && (
+                <div className={styles.recon}>
+                  {isMonth
+                    ? `Brokerage funded ${fmt(outflowPeriod.total)} this month`
+                    : `Brokerage outflows ${fmt(outflowPeriod.total)} (${fmt(outflowPeriod.card)} card channel, ${fmt(outflowPeriod.bank)} bank) · Δ ${fmt(Math.abs(summary.total_spending - outflowPeriod.total))} vs categorized`}
+                </div>
+              )}
+              {(summary.flags.holes.length > 0 || summary.flags.missing_recurring.length > 0 || summary.flags.uncategorized.total >= 50 || summary.flags.misfiled_refunds.count > 0) && (
+                <div className={styles.flagRow}>
+                  {summary.flags.holes.map(h => (
+                    <span key={`${h.account}-${h.from}`} className={`${styles.flag} ${styles.flagCritical}`}
+                      title={`This account normally has a transaction every ${h.typical_gap_days} day(s); ${h.days} days with none means the feed dropped. Re-export this range from Monarch, or import the Robinhood card CSV.`}>
+                      {h.display}: no data {fmtDate(h.from)}–{fmtDate(h.to)} — total is understated
+                    </span>
+                  ))}
+                  {summary.flags.missing_recurring.map(f => (
+                    <span key={`${f.month}-${f.label}`} className={`${styles.flag} ${styles.flagCritical}`}>
+                      No {f.label} in {f.month_name}
+                    </span>
+                  ))}
+                  {summary.flags.uncategorized.total >= 50 && (
+                    <button className={`${styles.flag} ${styles.flagWarn} ${styles.rowClickable}`} onClick={() => pickCategory('Uncategorized')}>
+                      {summary.flags.uncategorized.count} uncategorized · {fmt(summary.flags.uncategorized.total)}
+                    </button>
+                  )}
+                  {summary.flags.misfiled_refunds.count > 0 && (
+                    <span className={`${styles.flag} ${styles.flagWarn}`} title="Refunds Monarch filed as income; netted here against the charge they reverse. Fix the category in Monarch.">
+                      {summary.flags.misfiled_refunds.count} refunds filed as income · {fmt(summary.flags.misfiled_refunds.total)} netted
                     </span>
                   )}
                 </div>
-              </div>
-              <div className={styles.outflowFreshness}>
-                <span>outflows through {outflows.as_of ? new Date(outflows.as_of + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}</span>
-                <span className={outflows.monarch_through && outflows.as_of && outflows.monarch_through < outflows.as_of ? styles.staleWarn : undefined}>
-                  categorized through {outflows.monarch_through ? new Date(outflows.monarch_through + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
-                </span>
-              </div>
+              )}
             </div>
-          );
-        })()}
 
-        {loading && (
-          <div className={styles.loadingState}>
-            <RefreshCw size={32} className={styles.spinner} />
-            <p>Loading spending data...</p>
+            <div className={styles.freshness}>
+              <span className={monarchStale ? styles.stale : undefined}>
+                Monarch through {monarchThrough ? fmtDate(monarchThrough, true) : '—'}
+                {dataThrough && monarchThrough && dataThrough > monarchThrough && ` · Robinhood card through ${fmtDate(dataThrough)}`}
+                {monarchStale && ` · ${freshness!.monarch_days_old} days old, export Monarch`}
+              </span>
+              <span className={outflowsStale ? styles.stale : undefined}>
+                {outflowsStale
+                  ? `Brokerage outflows: ${freshness?.outflows_statement_month ?? 'last month'} statement not imported`
+                  : `Brokerage outflows: ${freshness?.outflows_statement_month ?? ''} statement in, through ${freshness?.outflows_through ? fmtDate(freshness.outflows_through) : '—'}`}
+              </span>
+              {problemAccounts.map(a => (
+                <span key={a.account} className={a.status === 'dead' ? styles.dead : styles.stale}>
+                  {a.display}: {a.status} since {a.last_date ? fmtDate(a.last_date) : '—'}
+                </span>
+              ))}
+              {freshness && (
+                <details>
+                  <summary>All {freshness.accounts.length} accounts</summary>
+                  <ul className={styles.freshnessList}>
+                    {freshness.accounts.map(a => (
+                      <li key={a.account} className={a.status === 'dead' ? styles.dead : a.status === 'lagging' ? styles.stale : a.status === 'retired' ? styles.muted : undefined}>
+                        {a.display} · {a.last_date ? fmtDate(a.last_date) : '—'}{a.status === 'retired' ? ' · retired' : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
           </div>
         )}
 
+        {loading && !summary && (
+          <div className={styles.loadingState}><RefreshCw size={28} className={styles.spinner} /><p>Loading spending…</p></div>
+        )}
 
-        {!loading && summary && (
+        {summary && (
           <>
-            {/* ───── MONTH VIEW ───────────────────────────────────── */}
-            {isMonthView && (
-              <>
-
-                {/* Actual transactions — full width now that Expected is gone. */}
-                <div className={styles.twoColumn} style={{ gridTemplateColumns: '1fr' }}>
-                  {/* Actual Cash Flow Transactions — Robinhood */}
-                  <div className={styles.chartCard}>
-                    <h3 className={styles.chartTitle}>Actual</h3>
-                    <p className={styles.chartSubtitle}>
-                      {/* No net here — the total is already the headline. */}
-                      {cashFlowMonth ? `${cashFlowMonth.transactions.length} transactions` : ''}
-                    </p>
-                    <div className={styles.tableContainer}>
-                      <table className={styles.actualsTable}>
-                        <thead>
-                          <tr>
-                            <th style={{ textAlign: 'left', cursor: 'pointer' }} onClick={() => toggleSort('description')}>
-                              Description<SortIcon col="description" />
-                            </th>
-                            <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('account')}>
-                              Who<SortIcon col="account" />
-                            </th>
-                            <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('date')}>
-                              Date<SortIcon col="date" />
-                            </th>
-                            <th style={{ cursor: 'pointer' }} onClick={() => toggleSort('amount')}>
-                              Amount<SortIcon col="amount" />
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sortedActualTxns.map((t, i) => {
-                            const color = getTxnColor(t);
-                            const sign = t.direction === 'in' ? '+' : '-';
-                            return (
-                              <tr key={i} className={styles.transactionRow}>
-                                <td style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 500, color }}>{t.description}</td>
-                                <td style={{ fontFamily: 'inherit', fontSize: '0.85em', color: 'var(--color-text-tertiary)' }}>
-                                  {t.account.includes('Neel') ? 'Neel' : 'Jaya'}
-                                </td>
-                                <td style={{ whiteSpace: 'nowrap' }}>
-                                  {new Date(t.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                </td>
-                                <td style={{ color, fontWeight: 500 }}>{sign}{fmtFull(t.amount)}</td>
-                              </tr>
-                            );
-                          })}
-                          {cashFlowMonth && cashFlowMonth.transactions.length === 0 && (
-                            <tr>
-                              <td colSpan={4} style={{ textAlign: 'center', padding: '24px', color: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}>
-                                No cash flow transactions for this month
-                              </td>
-                            </tr>
-                          )}
-                          {cashFlowMonth && cashFlowMonth.transactions.length > 0 && (
-                            <tr style={{ borderTop: '1px solid var(--color-border)' }}>
-                              <td colSpan={3} style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 700 }}>Net</td>
-                              <td style={{ fontWeight: 700, color: cashFlowMonth.net_total > 0 ? '#EF4444' : '#10B981' }}>
-                                {cashFlowMonth.net_total > 0 ? '-' : '+'}{fmtFull(Math.abs(cashFlowMonth.net_total))}
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+            {/* L3 — trend (year view) */}
+            {!isMonth && summary.monthly.length > 0 && (
+              <div className={styles.card}>
+                <h3 className={styles.cardTitle}>By month</h3>
+                <p className={styles.cardSubtitle}>Click a month to drill in</p>
+                <div className={styles.legend}>
+                  <span><i className={styles.swatch} style={{ background: 'var(--color-chart-2)' }} />Recurring</span>
+                  <span><i className={styles.swatch} style={{ background: 'var(--color-chart-4)' }} />Non-monthly (taxes, insurance, trips, one-time)</span>
                 </div>
+                <div className={styles.chartContainer}>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={summary.monthly.map(m => ({ ...m, name: MONTHS[m.month - 1] }))}
+                      margin={{ top: 8, right: 16, left: 8, bottom: 8 }} style={{ cursor: 'pointer' }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
+                      <XAxis dataKey="name" stroke="var(--color-text-tertiary)" tick={{ fontSize: 12, fill: 'var(--color-text-tertiary)' }} />
+                      <YAxis stroke="var(--color-text-tertiary)" tick={{ fontSize: 12, fill: 'var(--color-text-tertiary)' }} tickFormatter={v => fmt(v)} />
+                      <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'var(--color-bg-hover)' }}
+                        formatter={(v: number, n: string) => [fmt(v), n === 'recurring' ? 'Recurring' : 'Non-monthly']} />
+                      <Bar dataKey="recurring" stackId="a" fill="var(--color-chart-2)"
+                        onClick={(d: MonthlyPoint) => setMonth(d.month)} />
+                      <Bar dataKey="non_monthly" stackId="a" fill="var(--color-chart-4)" radius={[4, 4, 0, 0]}
+                        onClick={(d: MonthlyPoint) => setMonth(d.month)} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className={styles.chartFooter}>
+                  <span>Recurring <strong>{fmt(summary.recurring_spending)}</strong></span>
+                  <span>Non-monthly <strong>{fmt(summary.non_monthly_spending)}</strong></span>
+                  <span>Total <strong className={styles.negative}>{fmt(summary.total_spending)}</strong></span>
+                </div>
+              </div>
+            )}
 
-                {/* Category Breakdown — Monarch (month view: recurring only) */}
-                {donutData.length > 0 && (
-                  <div className={styles.twoColumn}>
-                    <div className={styles.chartCard}>
-                      <h3 className={styles.chartTitle}>Category Breakdown &mdash; Monarch</h3>
-                      <div className={styles.chartContainer}>
-                        <ResponsiveContainer width="100%" height={300}>
-                          <PieChart>
-                            <Pie
-                              data={donutData}
-                              dataKey="value"
-                              nameKey="name"
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={60}
-                              outerRadius={110}
-                              paddingAngle={2}
-                            >
-                              {donutData.map((entry, i) => (
-                                <Cell key={i} fill={entry.color} />
-                              ))}
-                            </Pie>
-                            <Tooltip
-                              formatter={(value: number) => [fmt(value), 'Spent']}
-                              contentStyle={{
-                                backgroundColor: 'var(--color-bg-primary)',
-                                border: '1px solid var(--color-border)',
-                                borderRadius: '8px',
-                              }}
-                            />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
+            {/* L3 — composition */}
+            <div className={styles.twoColumn}>
+              <div className={styles.card}>
+                <h3 className={styles.cardTitle}>Where it went</h3>
+                <p className={styles.cardSubtitle}>Top 8 categories, rest grouped</p>
+                <div className={styles.chartContainer}>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <PieChart>
+                      <Pie data={donut} dataKey="value" nameKey="name" cx="50%" cy="50%"
+                        innerRadius={60} outerRadius={110} paddingAngle={2} stroke="var(--color-bg-secondary)">
+                        {donut.map((d, i) => <Cell key={i} fill={d.color} />)}
+                      </Pie>
+                      <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => [fmt(v), 'Spent']} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
 
-                    <div className={styles.chartCard}>
-                      <h3 className={styles.chartTitle}>Categories</h3>
-                      <div className={styles.tableContainer} style={{ maxHeight: 340, overflowY: 'auto' }}>
-                        <table className={styles.actualsTable}>
-                          <thead>
-                            <tr>
-                              <th>Category</th>
-                              <th>Amount</th>
-                              <th>%</th>
-                              <th style={{ width: '30%' }}></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {monthCategories.map((c, i) => (
-                              <tr
-                                key={c.category}
-                                className={styles.transactionRow}
-                                style={{ cursor: 'pointer' }}
-                                onClick={() => {
-                                  setFilterCategory(c.category);
-                                  setRecurringPage(1);
-                                }}
-                              >
-                                <td style={{ fontFamily: 'inherit', fontWeight: 500 }}>
-                                  <span
-                                    style={{
-                                      display: 'inline-block',
-                                      width: 10, height: 10,
-                                      borderRadius: '50%',
-                                      backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-                                      marginRight: 8,
-                                    }}
-                                  />
-                                  {c.category}
-                                </td>
-                                <td className={styles.negative}>{fmt(c.total)}</td>
-                                <td>{c.percent}%</td>
-                                <td>
-                                  <div className={styles.categoryBar}>
-                                    <div
-                                      className={styles.categoryBarFill}
-                                      style={{
-                                        width: `${c.percent}%`,
-                                        backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-                                      }}
-                                    />
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                )}
+              <div className={styles.card}>
+                <h3 className={styles.cardTitle}>Categories</h3>
+                <p className={styles.cardSubtitle}>Every category, ties to the headline · click to see its transactions</p>
+                <div className={`${styles.tableContainer} ${styles.scrollY}`}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr><th className={styles.left}>Category</th><th>Amount</th><th>%</th><th style={{ width: '28%' }}></th></tr>
+                    </thead>
+                    <tbody>
+                      {monthlyCats.map((c, i) => (
+                        <CategoryTr key={c.category} c={c} color={chartColor(summary.categories.indexOf(c))} selected={filterCategory === c.category} onClick={() => pickCategory(c.category)} idx={i} />
+                      ))}
+                      {nonMonthlyCats.length > 0 && (
+                        <tr className={styles.groupRow}><td className={styles.left} colSpan={4}>Non-monthly · {fmt(nonMonthlyCats.reduce((s, c) => s + c.total, 0))}</td></tr>
+                      )}
+                      {nonMonthlyCats.map((c, i) => (
+                        <CategoryTr key={c.category} c={c} color={chartColor(summary.categories.indexOf(c))} selected={filterCategory === c.category} onClick={() => pickCategory(c.category)} idx={i} />
+                      ))}
+                      <tr className={styles.totalRow}>
+                        <td className={styles.left}>Total</td>
+                        <td className={styles.negative}>{fmt(summary.total_spending)}</td>
+                        <td>100%</td><td></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
 
-                {/* Monthly Recurring Expenses — Monarch (filtered to month) */}
-                <div className={styles.chartCard}>
-                  <h3 className={styles.chartTitle}>Monthly Recurring Expenses &mdash; Monarch</h3>
-                  <p className={styles.chartSubtitle}>
-                    {recurringTxn ? `${recurringTxn.total} transactions` : ''}
-                  </p>
-
-                  {/* Filter Bar (inline) */}
-                  <div className={styles.filterBar}>
-                    <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
-                      <Search size={16} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-tertiary)' }} />
-                      <input
-                        type="text"
-                        placeholder="Search merchant, statement, category..."
-                        value={search}
-                        onChange={e => setSearch(e.target.value)}
-                        className={styles.searchInput}
-                        style={{ paddingLeft: 32 }}
-                      />
-                    </div>
-                    <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} className={styles.filterSelect}>
-                      <option value="">All Categories</option>
-                      {filters?.categories.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                    <select value={filterAccount} onChange={e => setFilterAccount(e.target.value)} className={styles.filterSelect}>
-                      <option value="">All Accounts</option>
-                      {filters?.accounts.map(a => <option key={a} value={a}>{a}</option>)}
-                    </select>
-                    {(search || filterCategory || filterAccount) && (
-                      <button className={styles.yearButton} onClick={() => { setSearch(''); setFilterCategory(''); setFilterAccount(''); }}>
-                        Clear
-                      </button>
-                    )}
-                  </div>
-
-                  <div className={styles.tableContainer}>
-                    <table className={styles.actualsTable}>
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th style={{ textAlign: 'left' }}>Merchant</th>
-                          <th style={{ textAlign: 'left' }}>Category</th>
-                          <th style={{ textAlign: 'left' }}>Account</th>
-                          <th>Amount</th>
+            {/* L4 — merchants and accounts */}
+            <div className={styles.twoColumn}>
+              <div className={styles.card}>
+                <h3 className={styles.cardTitle}>Top merchants</h3>
+                <p className={styles.cardSubtitle}>Where the money actually goes</p>
+                <div className={styles.tableContainer}>
+                  <table className={styles.table}>
+                    <thead><tr><th className={styles.left}>Merchant</th><th className={styles.left}>Category</th><th>#</th><th>Amount</th></tr></thead>
+                    <tbody>
+                      {summary.top_merchants.map(m => (
+                        <tr key={m.merchant} className={styles.rowClickable} onClick={() => { setSearch(m.merchant); txnRef.current?.scrollIntoView({ behavior: 'smooth' }); }}>
+                          <td className={styles.left}>{m.merchant}</td>
+                          <td className={styles.left}><span className={styles.badge}>{m.category}</span></td>
+                          <td className={styles.muted}>{m.count}</td>
+                          <td className={styles.negative}>{fmt(m.total)}</td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {recurringTxn?.transactions.map(t => (
-                          <tr key={t.id} className={styles.transactionRow}>
-                            <td style={{ whiteSpace: 'nowrap' }}>
-                              {new Date(t.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                            </td>
-                            <td style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 500 }}>{t.merchant}</td>
-                            <td style={{ textAlign: 'left', fontFamily: 'inherit' }}>
-                              <span className={styles.categoryBadge}>{t.category}</span>
-                            </td>
-                            <td style={{ textAlign: 'left', fontFamily: 'inherit', fontSize: '0.85em', color: 'var(--color-text-tertiary)' }}>{t.account}</td>
-                            <td className={styles.negative}>{fmtFull(Math.abs(t.amount))}</td>
-                          </tr>
-                        ))}
-                        {recurringTxn && recurringTxn.transactions.length === 0 && (
-                          <tr>
-                            <td colSpan={5} style={{ textAlign: 'center', padding: '24px', color: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}>
-                              No transactions found
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {recurringTxn && recurringTxn.total_pages > 1 && (
-                    <div className={styles.pagination}>
-                      <button className={styles.pageButton} onClick={() => setRecurringPage(p => Math.max(1, p - 1))} disabled={recurringPage <= 1}>
-                        <ChevronLeft size={16} />
-                      </button>
-                      <span className={styles.pageInfo}>Page {recurringTxn.page} of {recurringTxn.total_pages}</span>
-                      <button className={styles.pageButton} onClick={() => setRecurringPage(p => Math.min(recurringTxn.total_pages, p + 1))} disabled={recurringPage >= recurringTxn.total_pages}>
-                        <ChevronRight size={16} />
-                      </button>
-                    </div>
-                  )}
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              </>
-            )}
+              </div>
 
-            {/* ───── FULL YEAR VIEW ───────────────────────────────── */}
-            {!isMonthView && (
-              <>
-                {/* Summary Cards — 3 cards matching month view */}
-                <div className={styles.summaryGrid} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Recurring Outflows</span>
-                    <span className={`${styles.summaryValue}`} style={{ color: '#EF4444' }}>
-                      {fmt(cashFlowYear?.recurring_total ?? 0)}
-                    </span>
-                    <span className={styles.summaryNote}>
-                      {cashFlowYear?.months_with_data ?? 0} months &mdash; Avg {fmt((cashFlowYear?.recurring_total ?? 0) / (cashFlowYear?.months_with_data || 1))}/mo
-                    </span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>Transfers In</span>
-                    <span className={`${styles.summaryValue}`} style={{ color: '#10B981' }}>
-                      +{fmt(cashFlowYear?.inflow_total ?? 0)}
-                    </span>
-                    <span className={styles.summaryNote}>Deposits back into brokerage</span>
-                  </div>
-                  <div className={styles.summaryCard}>
-                    <span className={styles.summaryLabel}>One-Time Expenses</span>
-                    {cashFlowYear && cashFlowYear.one_time_expenses.length > 0 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', marginTop: 'var(--space-1)' }}>
-                        {cashFlowYear.one_time_expenses.map((e, i) => (
-                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 'var(--space-3)' }}>
-                            <span style={{ fontSize: 'var(--text-sm)', color: '#3B82F6', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                              {e.description}
-                            </span>
-                            <span className={styles.summaryValue} style={{ fontSize: 'var(--text-lg)', flexShrink: 0, color: '#3B82F6' }}>
-                              {fmt(e.amount)}
-                            </span>
-                          </div>
-                        ))}
-                        {cashFlowYear.one_time_expenses.length > 1 && (
-                          <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 'var(--space-1)', display: 'flex', justifyContent: 'space-between' }}>
-                            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-tertiary)' }}>Total</span>
-                            <span className={styles.summaryValue} style={{ fontSize: 'var(--text-lg)', color: '#3B82F6' }}>
-                              {fmt(cashFlowYear.one_time_total)}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <>
-                        <span className={styles.summaryValue} style={{ color: 'var(--color-text-tertiary)' }}>{fmt(0)}</span>
-                        <span className={styles.summaryNote}>No one-time expenses</span>
-                      </>
-                    )}
-                  </div>
+              <div className={styles.card}>
+                <h3 className={styles.cardTitle}>By account</h3>
+                <p className={styles.cardSubtitle}>Fixed order, never by amount</p>
+                <div className={styles.tableContainer}>
+                  <table className={styles.table}>
+                    <thead><tr><th className={styles.left}>Account</th><th>#</th><th>Amount</th></tr></thead>
+                    <tbody>
+                      {summary.by_account.map(a => (
+                        <tr key={a.account} className={`${styles.rowClickable} ${filterAccount === a.account ? styles.rowSelected : ''}`}
+                          onClick={() => setFilterAccount(prev => prev === a.account ? '' : a.account)}>
+                          <td className={styles.left}>{a.display}</td>
+                          <td className={styles.muted}>{a.count}</td>
+                          <td className={a.total > 0 ? styles.negative : styles.muted}>{a.total > 0 ? fmt(a.total) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-
-                {/* Monthly Cash Flow bar chart */}
-                <div className={styles.chartCard}>
-                  <h3 className={styles.chartTitle}>Monthly Cash Flow</h3>
-                  <p className={styles.chartSubtitle}>Click a bar to drill into that month</p>
-                  <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-3)', fontSize: 'var(--text-xs)' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#EF4444', display: 'inline-block' }} /> Outflows
-                    </span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#10B981', display: 'inline-block' }} /> Inflows
-                    </span>
-                  </div>
-                  <div className={styles.chartContainer}>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <BarChart data={barData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }} style={{ cursor: 'pointer' }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                        <XAxis dataKey="name" stroke="#888" tick={{ fontSize: 12 }} />
-                        <YAxis stroke="#888" tickFormatter={(v) => fmt(v)} />
-                        <Tooltip
-                          formatter={(value: number, name: string) => [fmt(value), name === 'outflow' ? 'Outflows' : name === 'inflow' ? 'Inflows' : 'Net']}
-                          contentStyle={{
-                            backgroundColor: 'var(--color-bg-primary)',
-                            border: '1px solid var(--color-border)',
-                            borderRadius: '8px',
-                          }}
-                        />
-                        <Bar dataKey="outflow" fill="#EF4444" radius={[4, 4, 0, 0]} onClick={(_d, idx) => handleBarClick(barData[idx])} />
-                        <Bar dataKey="inflow" fill="#10B981" radius={[4, 4, 0, 0]} onClick={(_d, idx) => handleBarClick(barData[idx])} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  {/* Year totals footer */}
-                  {cashFlowYear && (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-6)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--color-border)', marginTop: 'var(--space-3)', fontSize: 'var(--text-sm)' }}>
-                      <span style={{ color: '#EF4444', fontWeight: 600 }}>Recurring: -{fmt(cashFlowYear.recurring_total)}</span>
-                      {cashFlowYear.one_time_total > 0 && (
-                        <span style={{ color: '#3B82F6', fontWeight: 600 }}>One-Time: -{fmt(cashFlowYear.one_time_total)}</span>
-                      )}
-                      {cashFlowYear.inflow_total > 0 && (
-                        <span style={{ color: '#10B981', fontWeight: 600 }}>In: +{fmt(cashFlowYear.inflow_total)}</span>
-                      )}
-                      <span style={{ fontWeight: 700, color: 'var(--color-text-primary)' }}>Net: {fmt(cashFlowYear.total)}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Category Breakdown — Monarch */}
-                <div className={styles.twoColumn}>
-                  <div className={styles.chartCard}>
-                    <h3 className={styles.chartTitle}>Category Breakdown &mdash; Monarch</h3>
-                    <div className={styles.chartContainer}>
-                      <ResponsiveContainer width="100%" height={300}>
-                        <PieChart>
-                          <Pie
-                            data={donutData}
-                            dataKey="value"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={60}
-                            outerRadius={110}
-                            paddingAngle={2}
-                          >
-                            {donutData.map((entry, i) => (
-                              <Cell key={i} fill={entry.color} />
-                            ))}
-                          </Pie>
-                          <Tooltip
-                            formatter={(value: number) => [fmt(value), 'Spent']}
-                            contentStyle={{
-                              backgroundColor: 'var(--color-bg-primary)',
-                              border: '1px solid var(--color-border)',
-                              borderRadius: '8px',
-                            }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-
-                  <div className={styles.chartCard}>
-                    <h3 className={styles.chartTitle}>Categories</h3>
-                    <div className={styles.tableContainer} style={{ maxHeight: 340, overflowY: 'auto' }}>
-                      <table className={styles.actualsTable}>
-                        <thead>
-                          <tr>
-                            <th>Category</th>
-                            <th>Amount</th>
-                            <th>%</th>
-                            <th style={{ width: '30%' }}></th>
-                          </tr>
-                        </thead>
+                {summary.non_monthly_breakdown.length > 0 && (
+                  <>
+                    <h3 className={styles.cardTitle} style={{ marginTop: 'var(--space-5)' }}>Non-monthly detail</h3>
+                    <p className={styles.cardSubtitle}>Trips (all spend inside the dates) and one-off categories</p>
+                    <div className={styles.tableContainer}>
+                      <table className={styles.table}>
                         <tbody>
-                          {summary.categories.map((c, i) => (
-                            <tr
-                              key={c.category}
-                              className={styles.transactionRow}
-                              style={{ cursor: 'pointer' }}
-                              onClick={() => {
-                                setFilterCategory(c.category);
-                                setRecurringPage(1);
-                                setNonMonthlyPage(1);
-                              }}
-                            >
-                              <td style={{ fontFamily: 'inherit', fontWeight: 500 }}>
-                                <span
-                                  style={{
-                                    display: 'inline-block',
-                                    width: 10, height: 10,
-                                    borderRadius: '50%',
-                                    backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-                                    marginRight: 8,
-                                  }}
-                                />
-                                {c.category}
-                              </td>
-                              <td className={styles.negative}>{fmt(c.total)}</td>
-                              <td>{c.percent}%</td>
-                              <td>
-                                <div className={styles.categoryBar}>
-                                  <div
-                                    className={styles.categoryBarFill}
-                                    style={{
-                                      width: `${c.percent}%`,
-                                      backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
-                                    }}
-                                  />
-                                </div>
-                              </td>
+                          {summary.non_monthly_breakdown.map(n => (
+                            <tr key={n.label}>
+                              <td className={styles.left}>{n.label}{n.type === 'trip' && <span className={styles.badge} style={{ marginLeft: 'var(--space-2)' }}>trip</span>}</td>
+                              <td className={styles.muted}>{n.count}</td>
+                              <td className={styles.negative}>{fmt(n.total)}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-                  </div>
-                </div>
+                  </>
+                )}
+              </div>
+            </div>
 
-                {/* Monarch Transaction Tables */}
-                <div className={styles.chartCard} style={{ paddingBottom: 'var(--space-3)' }}>
-                  <h3 className={styles.chartTitle}>Monarch Transactions</h3>
-                  <div className={styles.filterBar} style={{ marginTop: 'var(--space-3)' }}>
-                    <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
-                      <Search size={16} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-tertiary)' }} />
-                      <input
-                        type="text"
-                        placeholder="Search merchant, statement, category..."
-                        value={search}
-                        onChange={e => setSearch(e.target.value)}
-                        className={styles.searchInput}
-                        style={{ paddingLeft: 32 }}
-                      />
-                    </div>
-                    <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} className={styles.filterSelect}>
-                      <option value="">All Categories</option>
-                      {filters?.categories.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                    <select value={filterAccount} onChange={e => setFilterAccount(e.target.value)} className={styles.filterSelect}>
-                      <option value="">All Accounts</option>
-                      {filters?.accounts.map(a => <option key={a} value={a}>{a}</option>)}
-                    </select>
-                    {(search || filterCategory || filterAccount) && (
-                      <button className={styles.yearButton} onClick={() => { setSearch(''); setFilterCategory(''); setFilterAccount(''); }}>
-                        Clear
-                      </button>
-                    )}
-                  </div>
+            {/* L5 — transactions */}
+            <div className={styles.card} ref={txnRef}>
+              <h3 className={styles.cardTitle}>Transactions — {periodLabel}</h3>
+              <p className={styles.cardSubtitle}>
+                {txns ? `${txns.total} rows · ${fmt(txns.total_amount)}` : ''}
+                {filterCategory && ` · ${filterCategory}`}
+                {filterAccount && ` · ${filters?.accounts.find(a => a.account === filterAccount)?.display ?? filterAccount}`}
+              </p>
+              <div className={styles.filterBar}>
+                <div className={styles.searchWrap}>
+                  <Search size={16} className={styles.searchIcon} />
+                  <input className={styles.input} placeholder="Search merchant, statement, category…" value={search} onChange={e => setSearch(e.target.value)} />
                 </div>
-
-                <div className={styles.twoColumn} style={{ gridTemplateColumns: '1fr 1fr' }}>
-                  {/* Recurring */}
-                  <div className={styles.chartCard}>
-                    <h3 className={styles.chartTitle}>Recurring</h3>
-                    <p className={styles.chartSubtitle}>{recurringTxn ? `${recurringTxn.total} transactions` : ''}</p>
-                    <div className={styles.tableContainer} style={{ maxHeight: 500, overflowY: 'auto' }}>
-                      <table className={styles.actualsTable}>
-                        <thead>
-                          <tr>
-                            <th>Date</th>
-                            <th style={{ textAlign: 'left' }}>Merchant</th>
-                            <th style={{ textAlign: 'left' }}>Category</th>
-                            <th>Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {recurringTxn?.transactions.map(t => (
-                            <tr key={t.id} className={styles.transactionRow}>
-                              <td style={{ whiteSpace: 'nowrap' }}>
-                                {new Date(t.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                              </td>
-                              <td style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 500 }}>{t.merchant}</td>
-                              <td style={{ textAlign: 'left', fontFamily: 'inherit' }}>
-                                <span className={styles.categoryBadge}>{t.category}</span>
-                              </td>
-                              <td className={styles.negative}>{fmtFull(Math.abs(t.amount))}</td>
-                            </tr>
-                          ))}
-                          {recurringTxn && recurringTxn.transactions.length === 0 && (
-                            <tr>
-                              <td colSpan={4} style={{ textAlign: 'center', padding: '24px', color: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}>
-                                No transactions found
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                    {recurringTxn && recurringTxn.total_pages > 1 && (
-                      <div className={styles.pagination}>
-                        <button className={styles.pageButton} onClick={() => setRecurringPage(p => Math.max(1, p - 1))} disabled={recurringPage <= 1}>
-                          <ChevronLeft size={16} />
-                        </button>
-                        <span className={styles.pageInfo}>Page {recurringTxn.page} of {recurringTxn.total_pages}</span>
-                        <button className={styles.pageButton} onClick={() => setRecurringPage(p => Math.min(recurringTxn.total_pages, p + 1))} disabled={recurringPage >= recurringTxn.total_pages}>
-                          <ChevronRight size={16} />
-                        </button>
-                      </div>
+                <select className={styles.select} value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
+                  <option value="">All categories</option>
+                  {filters?.categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select className={styles.select} value={filterAccount} onChange={e => setFilterAccount(e.target.value)}>
+                  <option value="">All accounts</option>
+                  {filters?.accounts.map(a => <option key={a.account} value={a.account}>{a.display}</option>)}
+                </select>
+                <select className={styles.select} value={filterType} onChange={e => setFilterType(e.target.value as typeof filterType)}>
+                  <option value="">Recurring + non-monthly</option>
+                  <option value="recurring">Recurring only</option>
+                  <option value="non_monthly">Non-monthly only</option>
+                </select>
+                {(search || filterCategory || filterAccount || filterType) && (
+                  <button className={styles.pill} onClick={clearFilters}>Clear</button>
+                )}
+              </div>
+              <div className={styles.tableContainer}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th className={styles.left}>Date</th>
+                      <th className={styles.left}>Merchant</th>
+                      <th className={styles.left}>Category</th>
+                      <th className={styles.left}>Account</th>
+                      <th>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {txns?.transactions.map(t => (
+                      <tr key={t.id} title={t.original_statement || undefined}>
+                        <td className={styles.left} style={{ whiteSpace: 'nowrap' }}>
+                          {fmtDate(t.date)}
+                          {t.period !== t.date.slice(0, 7) && <span className={`${styles.badge} ${styles.small}`} style={{ marginLeft: 'var(--space-1)' }} title="Paid early; counted in the month it is for">→ {MONTHS[Number(t.period.slice(5)) - 1]}</span>}
+                        </td>
+                        <td className={styles.left}>{t.merchant}</td>
+                        <td className={styles.left}>
+                          <span className={styles.badge} title={t.raw_category && t.raw_category !== t.category ? `Monarch: ${t.raw_category}` : undefined}>{t.category}</span>
+                          {t.misfiled_refund && <span className={`${styles.badge} ${styles.badgeWarn}`} style={{ marginLeft: 'var(--space-1)' }}>refund filed as income</span>}
+                          {t.trip && <span className={styles.badge} style={{ marginLeft: 'var(--space-1)' }}>{t.trip}</span>}
+                        </td>
+                        <td className={`${styles.left} ${styles.muted} ${styles.small}`}>{t.account_display}</td>
+                        <td className={t.amount > 0 ? styles.positive : styles.negative}>
+                          {t.amount > 0 ? '+' : ''}{fmtFull(Math.abs(t.amount))}
+                        </td>
+                      </tr>
+                    ))}
+                    {txns && txns.transactions.length === 0 && (
+                      <tr><td colSpan={5} className={styles.empty}>No transactions match</td></tr>
                     )}
-                  </div>
-
-                  {/* Non-Monthly */}
-                  <div className={styles.chartCard}>
-                    <h3 className={styles.chartTitle}>Non-Monthly</h3>
-                    <p className={styles.chartSubtitle}>Taxes, insurance, trips &mdash; {nonMonthlyTxn ? `${nonMonthlyTxn.total} transactions` : ''}</p>
-                    <div className={styles.tableContainer} style={{ maxHeight: 500, overflowY: 'auto' }}>
-                      <table className={styles.actualsTable}>
-                        <thead>
-                          <tr>
-                            <th>Date</th>
-                            <th style={{ textAlign: 'left' }}>Merchant</th>
-                            <th style={{ textAlign: 'left' }}>Category</th>
-                            <th>Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {nonMonthlyTxn?.transactions.map(t => (
-                            <tr key={t.id} className={styles.transactionRow}>
-                              <td style={{ whiteSpace: 'nowrap' }}>
-                                {new Date(t.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                              </td>
-                              <td style={{ textAlign: 'left', fontFamily: 'inherit', fontWeight: 500 }}>{t.merchant}</td>
-                              <td style={{ textAlign: 'left', fontFamily: 'inherit' }}>
-                                <span className={styles.categoryBadge}>{t.category}</span>
-                              </td>
-                              <td className={styles.negative}>{fmtFull(Math.abs(t.amount))}</td>
-                            </tr>
-                          ))}
-                          {nonMonthlyTxn && nonMonthlyTxn.transactions.length === 0 && (
-                            <tr>
-                              <td colSpan={4} style={{ textAlign: 'center', padding: '24px', color: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}>
-                                No non-monthly transactions found
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                    {nonMonthlyTxn && nonMonthlyTxn.total_pages > 1 && (
-                      <div className={styles.pagination}>
-                        <button className={styles.pageButton} onClick={() => setNonMonthlyPage(p => Math.max(1, p - 1))} disabled={nonMonthlyPage <= 1}>
-                          <ChevronLeft size={16} />
-                        </button>
-                        <span className={styles.pageInfo}>Page {nonMonthlyTxn.page} of {nonMonthlyTxn.total_pages}</span>
-                        <button className={styles.pageButton} onClick={() => setNonMonthlyPage(p => Math.min(nonMonthlyTxn.total_pages, p + 1))} disabled={nonMonthlyPage >= nonMonthlyTxn.total_pages}>
-                          <ChevronRight size={16} />
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  </tbody>
+                </table>
+              </div>
+              {txns && txns.total_pages > 1 && (
+                <div className={styles.pagination}>
+                  <button className={styles.pageButton} onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}><ChevronLeft size={16} /></button>
+                  <span className={styles.pageInfo}>Page {txns.page} of {txns.total_pages}</span>
+                  <button className={styles.pageButton} onClick={() => setPage(p => Math.min(txns.total_pages, p + 1))} disabled={page >= txns.total_pages}><ChevronRight size={16} /></button>
                 </div>
-              </>
-            )}
+              )}
+            </div>
           </>
         )}
       </div>
     </div>
+  );
+}
+
+function CategoryTr({ c, color, selected, onClick, idx }: {
+  c: CategoryRow; color: string; selected: boolean; onClick: () => void; idx: number;
+}) {
+  return (
+    <tr className={`${styles.rowClickable} ${selected ? styles.rowSelected : ''}`} onClick={onClick} data-idx={idx}>
+      <td className={styles.left}>
+        <span className={styles.dot} style={{ background: color }} />
+        {c.category}
+        {c.refunds > 0 && <span className={`${styles.muted} ${styles.small}`}> · {fmt(c.refunds)} refunded</span>}
+      </td>
+      <td className={styles.negative}>{fmt(c.total)}</td>
+      <td className={styles.muted}>{c.percent}%</td>
+      <td><div className={styles.bar}><div className={styles.barFill} style={{ width: `${Math.min(100, c.percent)}%`, background: color }} /></div></td>
+    </tr>
   );
 }

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.strategies.models import BbdPerformanceMetric, MarginMonthlyBalance, BbdSettings
 from app.modules.investments.models import InvestmentTransaction, InvestmentAccount, PortfolioSnapshot
-from app.modules.spending.models import SpendingTransaction, EXCLUDED_CATEGORIES
+from app.modules.spending.models import SpendingTransaction
 from app.modules.income.models import RentalMonthlyIncome, W2Record, SalaryProjection
 
 
@@ -1060,19 +1060,13 @@ class BbdPerformanceService:
         return result
 
     def _get_monthly_spending(self) -> Dict[str, float]:
-        """Get monthly spending totals from spending_transactions (Monarch Money).
-        Returns {YYYY-MM: spending_amount} where values are positive (absolute spend).
-        Spending amounts are stored as negative in DB, so we negate."""
-        rows = self.db.query(
-            func.to_char(SpendingTransaction.transaction_date, 'YYYY-MM').label('month'),
-            func.sum(SpendingTransaction.amount).label('total')
-        ).filter(
-            ~SpendingTransaction.category.in_(EXCLUDED_CATEGORIES),
-            SpendingTransaction.amount < 0,
-            SpendingTransaction.transaction_date >= self.DATA_CUTOFF_DATE,
-        ).group_by('month').order_by('month').all()
-
-        return {row.month: -float(row.total or 0) for row in rows}
+        """Monthly spending {YYYY-MM: positive spend}, from the Spending
+        page's own definition (spending.services.spending_rows) so this
+        model and the page can never disagree. Previously this was a third
+        definition — no refund netting, no rulebook — see
+        docs/SPENDING-PAGE-AUDIT-2026-09.md D8."""
+        from app.modules.spending.services import monthly_spending_totals
+        return monthly_spending_totals(self.db, since=self.DATA_CUTOFF_DATE)
 
     def _get_account_month_values(self) -> Dict[str, Dict[str, float]]:
         """Get per-account, per-month portfolio values.

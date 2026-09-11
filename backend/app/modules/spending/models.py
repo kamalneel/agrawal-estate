@@ -105,14 +105,28 @@ HARTSTENE_CATEGORY = "303 Hartstene Dr"
 #: purchases is not.
 REFUND_STATEMENT_PREFIX = "refund:"
 
+#: Every spelling Monarch has used for a returned purchase. "Refund from
+#: <person>" is how a PayPal reversal arrives (Denise Hall, 2026-08-31).
+REFUND_STATEMENT_PREFIXES = ("refund:", "refund from")
 
-def is_refund(amount, original_statement: str | None) -> bool:
-    """True for a returned purchase that should net against its category."""
-    return bool(
-        amount is not None and amount > 0
-        and (original_statement or "").strip().lower().startswith(
-            REFUND_STATEMENT_PREFIX)
-    )
+
+def is_refund(amount, original_statement: str | None,
+              merchant: str | None = None) -> bool:
+    """True for a returned purchase that should net against its category.
+
+    Tested BEFORE the category's kind (see `classify`). On 2026-08-28 two
+    $3,455 charges were refunded within three days, and Monarch filed the
+    refunds under "Business Income" and "Other Income". With the kind filter
+    first, the charges counted and the refunds vanished: August read
+    $6,910 (30%) too high. A row that says "Refund" is a refund whatever
+    category it was dropped into.
+    """
+    if amount is None or amount <= 0:
+        return False
+    stmt = (original_statement or "").strip().lower()
+    merch = (merchant or "").strip().lower()
+    return stmt.startswith(REFUND_STATEMENT_PREFIXES) or \
+        merch.startswith(REFUND_STATEMENT_PREFIXES)
 
 
 def kind_of(category: str | None) -> CategoryKind:
@@ -195,6 +209,84 @@ RENT_SPLIT_RULES: list[tuple[str, tuple[str, ...]]] = [
 
 RENT_CATEGORY = "Rent"
 
+# Counterparty rules: category-INDEPENDENT. A row whose statement or merchant
+# names one of these counterparties is spending under the given label, no
+# matter what Monarch filed it as.
+#
+# Why this exists: on 2026-07-06 and 2026-07-31 the $9,000 rent wires to the
+# new landlord arrived as category "Transfer". Transfer is an excluded kind,
+# and the kind check ran on the raw category before any rulebook rule could
+# see the row — so both months' rent silently vanished from the page (July
+# read $9,461 against ~$18,500 real). Every month of 2025 had carried rent.
+#
+# The rule from project-kb (category-is-a-ledger-not-a-stream): identify a
+# stream by counterparty + direction + kind, never by category membership.
+# The landlord list is explicit so that a change of landlord fails loudly
+# (rent goes missing and the missing-recurring flag fires) rather than
+# silently re-filing under whatever Monarch guessed.
+#
+# Keep needles specific: "lee" alone would match half the merchants in the
+# Bay Area; "; lee" and "chk 3210" are the exact forms BofA's statement uses.
+COUNTERPARTY_RULES: list[tuple[str, CategoryKind, tuple[str, ...]]] = [
+    # Current home, from 2026-06. Landlord Eric Chang.
+    ("Home Rent", CategoryKind.SPENDING, ("eric chang",)),
+    # Previous home, through 2026-05. Landlord Yuan Lee.
+    ("Home Rent", CategoryKind.SPENDING, ("yuan lee", "; lee", "chk 3210")),
+    # A card autopay that the bank bounced (ACH return R01, insufficient
+    # funds). The card issuer reverses the payment, which appears on the card
+    # as a charge for the payment amount alongside the +payment it undoes.
+    # It is a transfer that failed, not consumption — but Monarch guesses a
+    # category from the merchant string: "Insurance" on 2026-08-22 ($1,256,
+    # Costco Citi), "Auto Payment" on 2025-12-22 ($2,414, same card).
+    ("Returned card payment", CategoryKind.TRANSFER,
+     ("autopay rtn", "insufficient fun")),
+]
+
+#: Labels a counterparty rule can produce.
+COUNTERPARTY_LABELS = {label for label, _, _ in COUNTERPARTY_RULES}
+
+#: Monarch account name -> (display name, fixed position). Accounts are
+#: always shown in THIS order, never sorted by amount (project-kb:
+#: canonical-account-hierarchy). Monarch's own names are opaque —
+#: "CREDIT CARD (...2417)" is the Amazon card (403 Amazon rows) — so the
+#: display name says what the account is for. Unknown accounts sort last,
+#: alphabetically, under their raw name.
+ACCOUNT_DISPLAY: list[tuple[str, str]] = [
+    ("Robinhood Credit Card **8154 (...8154)", "Robinhood card"),
+    ("Checking (...8935)", "Robinhood checking"),
+    ("Savings (...7358)", "Robinhood savings"),
+    ("Spending (...dabe)", "Robinhood spending (retired 2026-06)"),
+    ("Home Expense 9486 (...9486)", "BofA home expense 9486"),
+    ("Neel Salary 9487 (...9487)", "BofA salary 9487"),
+    ("Neel Business Expense 9485 (...9485)", "BofA business 9485"),
+    ("PREMIER SAVINGS (...3059)", "Chase savings 3059"),
+    ("PREMIER PLUS CKG (...5973)", "Chase checking 5973"),
+    ("Costco Anywhere Visa Card by Citi (...1453)", "Costco Citi card"),
+    ("CREDIT CARD (...2417)", "Amazon card 2417"),
+    ("CREDIT CARD (...5149)", "Card 5149"),
+    ("PayPal", "PayPal"),
+]
+ACCOUNT_ORDER = {name: i for i, (name, _) in enumerate(ACCOUNT_DISPLAY)}
+ACCOUNT_NAMES = dict(ACCOUNT_DISPLAY)
+
+#: Accounts that stopped on purpose. A retired account's dead tail is not a
+#: freshness problem; every other account that stops is.
+RETIRED_ACCOUNTS: dict[str, str] = {
+    "Spending (...dabe)": "superseded by Checking (...8935) and Savings "
+                          "(...7358) after the 2026-06 Robinhood reconnect",
+}
+
+#: Lines that have appeared every month for 20 months. A month without one is
+#: a data defect until proven otherwise (the July/August 2026 rent incident
+#: above), so the summary flags it rather than quietly reporting a low total.
+#: Checked against DISPLAY labels for complete months only. Also the lines
+#: whose early payment (on/after the 25th) is attributed to the next month.
+#:
+#: NOT school: Stratford bills September through May and nothing over the
+#: summer, so "Education" flagged June–August every year. Only add a line
+#: here if it is genuinely due every calendar month.
+EXPECTED_MONTHLY_LABELS = ("Home Rent",)
+
 # Merchant -> category corrections applied on top of whatever Monarch says.
 #
 # Use this when a merchant is reliably miscategorised, or is split across
@@ -247,10 +339,83 @@ CATEGORY_RENAMES: dict[str, str] = {
 }
 
 
+def counterparty_rule(merchant: str | None,
+                      original_statement: str | None
+                      ) -> tuple[str, CategoryKind] | None:
+    """(label, kind) from COUNTERPARTY_RULES, or None if nothing matches."""
+    haystack = f"{original_statement or ''} {merchant or ''}".lower()
+    for label, kind, needles in COUNTERPARTY_RULES:
+        if any(n in haystack for n in needles):
+            return label, kind
+    return None
+
+
+class RowClass:
+    """How one Monarch row is treated by the Spending page.
+
+    kind      what kind of money event it is (after the rulebook)
+    label     the category it displays under
+    is_refund a returned purchase that nets against its category
+    counted   whether the Spending page includes it at all
+    """
+    __slots__ = ("kind", "label", "is_refund", "counted")
+
+    def __init__(self, kind: CategoryKind, label: str, is_refund: bool,
+                 counted: bool):
+        self.kind = kind
+        self.label = label
+        self.is_refund = is_refund
+        self.counted = counted
+
+
+def classify(category: str | None, merchant: str | None,
+             original_statement: str | None, amount) -> RowClass:
+    """The ONE decision about a row, made in this order:
+
+    1. Counterparty rule  -> the rule's kind and label, whatever Monarch's
+                             category says (rent is spending even when filed
+                             as Transfer; a bounced autopay is a transfer
+                             even when filed as Insurance)
+    2. Refund test        -> nets, whatever Monarch's category says
+                             (only for rows Monarch filed as spending or
+                             income; a refund inside a business or transfer
+                             ledger stays with that ledger)
+    3. Category kind      -> spending / income / transfer / business
+    4. Display label      -> the rulebook (display_category)
+
+    Steps 1 and 2 running BEFORE step 3 is the whole point. With the kind
+    check first, a rent wire filed as "Transfer" and a refund filed as
+    "Other Income" were both silently dropped — see COUNTERPARTY_RULES and
+    is_refund for the two incidents. Every consumer of spending rows must go
+    through this function so the page, the outflow reconciliation and the
+    BBD model can never disagree about what a row is.
+    """
+    amt = float(amount) if amount is not None else 0.0
+    cp = counterparty_rule(merchant, original_statement)
+    if cp is not None:
+        label, kind = cp
+    else:
+        kind = kind_of(category)
+        label = display_category(category, merchant, original_statement)
+
+    refund = is_refund(amt, original_statement, merchant) and \
+        kind in (CategoryKind.SPENDING, CategoryKind.INCOME)
+
+    if amt < 0:
+        counted = kind == CategoryKind.SPENDING
+    else:
+        # Any other inflow — a deposit, a returned security deposit, a tax
+        # refund — is excluded outright, never netted.
+        counted = refund
+
+    return RowClass(kind, label, refund, counted)
+
+
 def display_category(category: str | None, merchant: str | None,
                      original_statement: str | None) -> str:
     """The category a row is shown under — the whole rulebook, in order.
 
+    0. Counterparty rule      category-independent (see COUNTERPARTY_RULES)
     1. Merchant override      most specific, always wins
     2. Rent split             by counterparty, within the Rent category
     3. Category rename        whole-category remap
