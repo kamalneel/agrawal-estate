@@ -976,6 +976,31 @@ async def get_unified_income_endpoint(
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@router.get("/performance")
+async def get_income_performance(
+    start: Optional[str] = Query(default=None, description="YYYY-MM-DD (clamped to 2026-02-16, when holdings history begins)"),
+    end: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    db: Session = Depends(get_db)
+):
+    """Income as a YIELD on the capital that earned it, across all accounts.
+
+    Three views of one number (income / average capital deployed): by symbol
+    with a per-account split, by account, and by cash securing puts. See
+    performance_service for why the denominator is average capital rather
+    than current value, and why symbols keep their account split instead of
+    collapsing into one "All Accounts" total.
+    """
+    from datetime import date as _date
+    from app.modules.income.performance_service import get_portfolio_performance
+    try:
+        return get_portfolio_performance(
+            db,
+            start=_date.fromisoformat(start) if start else None,
+            end=_date.fromisoformat(end) if end else None)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @router.get("/goal-settings")
 async def get_goal_settings():
     """Yield-tracker goal settings (see data/goal_settings.json).
