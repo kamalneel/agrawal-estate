@@ -177,8 +177,10 @@ def build_activity_csv(account: dict) -> tuple[str, int]:
     since = account.get("activity_since", "1900-01-01")
     rows = []
     for order in account.get("option_orders", []):
-        if order.get("state") != "filled":
-            continue
+        # Gate on executions, not order state: a partially-filled order that
+        # was later cancelled has state="cancelled" but its executed legs are
+        # real fills (seen 2026-08-21, Jaya's IRA INTC 1-of-3). Executions
+        # only exist for actual fills, so their presence is the right test.
         for leg in order.get("legs", []):
             code = TRANS_CODE[(leg["side"], leg["position_effect"])]
             desc = (f"{order['chain_symbol']} {fmt_exp(leg['expiration_date'])} "
@@ -203,8 +205,7 @@ def build_activity_csv(account: dict) -> tuple[str, int]:
                     "Amount": money(total) if credit else f"({money(total)})",
                 })
     for order in account.get("equity_orders", []):
-        if order.get("state") != "filled":
-            continue
+        # same rationale as the option loop above — executions, not state
         code = order["side"].upper()  # BUY / SELL
         for ex in order.get("executions", []):
             # equity executions carry a timestamp, not trade/settle dates
@@ -271,15 +272,22 @@ def sync_account(api: str, account: dict, bundle: dict, save: bool) -> None:
     if preview["stocks_count"] != n_stk or preview["options_count"] != n_opt:
         raise SystemExit("  parse-count mismatch — paste format drifted, aborting")
     # guard: parser must reconstruct the broker's exact average credit
+    # key MUST include expiration: one account can hold the same
+    # symbol/strike/type at two expirations at once (a partially-filled roll
+    # leaves both legs open — Jaya's TSLA $340C 9/4 and 9/11, 2026-09-02).
+    # Without it the later entry overwrote the earlier and the guard compared
+    # a correctly-parsed leg against the other leg's premium, aborting the sync.
     expected = {}
     for pos in account.get("option_positions", []):
         if pos.get("type") != "short":
             continue
         inst = instruments[pos["option_id"]]
-        key = (inst["chain_symbol"], float(inst["strike_price"]), inst["type"])
+        key = (inst["chain_symbol"], float(inst["strike_price"]), inst["type"],
+               fmt_exp(inst["expiration_date"]))
         expected[key] = abs(float(pos["average_price"])) / 100.0
     for opt in preview["options"]:
-        key = (opt["symbol"], float(opt["strike_price"]), opt["option_type"])
+        key = (opt["symbol"], float(opt["strike_price"]), opt["option_type"],
+               opt["expiration_date"])
         want = expected.get(key)
         got = opt.get("original_premium")
         if want and got and abs(got - want) / want > 0.005:

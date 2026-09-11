@@ -8,6 +8,7 @@ We ack immediately (200) and do the work in a background task.
 """
 
 import os
+import re
 import logging
 import hmac
 import hashlib
@@ -64,6 +65,54 @@ def _fetch_email_body(email_id: str) -> Optional[dict]:
     return None
 
 
+_ADDR_RE = re.compile(r"[\w.+\-]+@[\w.\-]+")
+
+
+def _recipients(*sources) -> list:
+    """Every recipient address findable in the payload / fetched email."""
+    found = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("to", "recipient", "recipients", "envelope_to"):
+            value = source.get(key)
+            if isinstance(value, str):
+                found.append(value)
+            elif isinstance(value, list):
+                found.extend(str(v) for v in value)
+    return [m.group(0).lower() for item in found for m in _ADDR_RE.finditer(item)]
+
+
+def _addressed_to_us(data: dict, full: Optional[dict]) -> bool:
+    """Is this email actually for the estate planner assistant?
+
+    neellab.info is shared with the JLS agent (jls@neellab.info), and Resend
+    delivers inbound mail as a domain-wide `email.received` webhook — there is
+    no per-address routing. Without this check, both assistants answer every
+    email sent to the domain.
+
+    Fails *open* when no recipient can be found, so an unexpected payload shape
+    degrades to a duplicate reply rather than silent total failure.
+    """
+    inbox = os.getenv("AGENT_INBOX_ADDRESS", "").strip().lower()
+    if not inbox:
+        return True
+
+    recipients = _recipients(full, data)
+    if not recipients:
+        logger.warning(
+            "No recipient field in inbound payload — processing anyway. "
+            "If another service shares this domain, check the payload shape."
+        )
+        return True
+
+    if inbox in recipients:
+        return True
+
+    logger.info(f"Email addressed to {recipients}, not {inbox} — ignoring")
+    return False
+
+
 def _strip_html_tags(html: str) -> str:
     """Very simple HTML → plain text for when only HTML body is available."""
     import re
@@ -89,9 +138,16 @@ def _process_inbound(payload: dict):
             logger.warning("Inbound webhook missing email_id — cannot fetch body")
             return
 
+        # Cheap check before spending a Resend API call on the full body.
+        if data.get("to") and not _addressed_to_us(data, None):
+            return
+
         full = _fetch_email_body(email_id)
         if not full:
             logger.warning(f"Could not fetch email body for id={email_id}")
+            return
+
+        if not _addressed_to_us(data, full):
             return
 
         from_addr = full.get("from") or from_addr

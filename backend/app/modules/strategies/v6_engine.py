@@ -30,6 +30,16 @@ from app.shared.services.option_premium import (
     RATE_ATM_WEEKLY, RATE_TIER1_WEEKLY, strike_for, weekly_premium,
 )
 
+_POLICY_PATH = Path(__file__).resolve().parents[4] / "data" / "investment_policy.json"
+
+# Fallback ONLY — the real list is investment_policy.json's "core". This
+# copy is what the module used to hardcode; it stays as the failure mode
+# because failing OPEN here (empty set) is not safe the way it is for
+# _load_wanted_symbols: an empty TIER1 silently downgrades every durable
+# to Tier-2 wheel treatment, i.e. ATM assignment-friendly calls on names
+# that are explicitly never to be sold. Wrong-but-conservative beats
+# empty-and-catastrophic.
+#
 # GOOG (Class C) and GOOGL (Class A) are the same company (Alphabet) —
 # both get Core/Tier-1 treatment. Caught 2026-07-22: GOOG was falling
 # through to Tier-2 wheel logic (ATM strike, assignment-friendly) purely
@@ -37,7 +47,37 @@ from app.shared.services.option_premium import (
 # AMD moved here 2026-07-23 on Neel's explicit override (was classified
 # Inventory 2026-07-22 based on market cap/trading history — his call to
 # move it back, not a correction of that analysis).
-TIER1 = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "GOOG", "AMZN", "META", "LLY", "AMD"}
+_TIER1_FALLBACK = {"AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "GOOG", "AMZN", "META", "LLY", "AMD"}
+
+
+def _load_tier1() -> set:
+    """Tier-1 (Core) symbols — read from investment_policy.json's "core"
+    list, which is the declared source of truth for the two-book model.
+
+    This used to be a second hardcoded copy of that list living here, and
+    the two had already drifted: TSM was added to "core" on 2026-08-08
+    under the $1T+ rule but never added to this set, so Engine 1 would
+    have written ATM wheel calls against a name policy says is a durable
+    never to be sold. Nothing surfaced it because TSM is a buy target that
+    isn't held yet — the bug was latent, waiting on the first assignment.
+    TSLA is in "core" too and now reads as Tier-1 here, which is a no-op:
+    every branch tests `sym == "TSLA"` BEFORE `tier1` (its carve-out is
+    narrower than Tier-1, delta 10-12 gated on RSI > 75), and the two
+    remaining `tier1 or sym == "TSLA"` tests are simply now redundant
+    rather than changed.
+
+    One list, one edit. Adding a symbol to "core" is the whole change.
+    """
+    try:
+        with open(_POLICY_PATH) as f:
+            core = json.load(f).get("core")
+        return set(core) if core else _TIER1_FALLBACK
+    except Exception:
+        logger.warning("[V6] investment_policy.json unreadable — Tier-1 falling back to the built-in list")
+        return _TIER1_FALLBACK
+
+
+TIER1 = _load_tier1()
 NON_TAXABLE_TYPES = {"ira", "roth_ira", "traditional_ira", "401k", "hsa", "retirement"}
 CANONICAL_ORDER = ["Neel's Brokerage", "Neel's Retirement", "Neel's Roth IRA",
                    "Jaya's Brokerage", "Jaya's IRA", "Jaya's Roth IRA",
@@ -100,7 +140,6 @@ def _order_line(verb: str, n: int, unit: str, strike, exp, price_txt: str) -> st
 
 
 _EARNINGS_PATH = Path(__file__).resolve().parents[4] / "data" / "earnings_calendar.json"
-_POLICY_PATH = Path(__file__).resolve().parents[4] / "data" / "investment_policy.json"
 
 
 def _get_roll_streak_ctx(db: Session, account_id: Optional[str], symbol: str,
@@ -227,6 +266,35 @@ def _load_symbol_aliases() -> Dict[str, str]:
         return {}
 
 
+def _emit_share_buy(add_item, acct_id_to_name, rb, sym, n, order, short, sb) -> None:
+    """Engine 5's "buy the shares outright" card.
+
+    Extracted 2026-09-11 so it can fire from BOTH the unfunded path and the
+    new unplaceable-put suppression path. allocation_service already vetted
+    this (RSI < 50, spare cash not already claimed by another funded
+    rebalance target) — see its module docstring for the rule. Neel,
+    2026-08-11: "no point waiting to acquire the money because I have some
+    money."
+    """
+    sb_acct = acct_id_to_name.get(sb["account_id"],
+                                  MARGIN_ID_TO_NAME.get(sb["account_id"], sb["account_id"]))
+    add_item(
+        "medium", "BUY", 5, "Rebalancing — buy shares (put unfunded)",
+        f"{sym}: buy {sb['shares']} shares outright — put needs ${short:,.0f} more than any account has",
+        sb_acct or "—", sym,
+        f"buy {sb['shares']} shares at ${rb['price']:,.2f} ≈ ${sb['cash_used']:,.0f}"
+        + (f" in {sb_acct}" if sb_acct else "") + ".",
+        (f"RSI {sb['rsi']:.0f} — genuinely cheap, not just idle cash chasing a name. "
+         f"The full {n}-put position (${order['strike'] * 100 * n:,.0f} collateral) is "
+         f"still the target once exit/trim proceeds land; this is real progress now "
+         f"instead of waiting on that."
+         + (f" Consolidates into the account that already holds {sym}." if sb.get("consolidates") else "")),
+        context={"symbol": sym, "current_price": rb.get("price"),
+                 "share_buy": sb,
+                 "rebalance": {"action": "buy", "target_shares": rb.get("target_shares"),
+                               "gap_shares": rb.get("gap_shares"), "funded": False}})
+
+
 def _acct_rank(name: str) -> int:
     try:
         return CANONICAL_ORDER.index(name)
@@ -283,6 +351,10 @@ def _rebalance_lookup(db: Session) -> Dict[str, Dict]:
         logger.warning(f"[V6] allocation plan unavailable, rebalance overlay off: {e}")
         return {}
     out: Dict[str, Dict] = {}
+    # The single largest put any ONE account can actually secure. Collateral
+    # cannot be pooled across accounts, so this — not total cash — is the
+    # ceiling a put card has to clear to be placeable at all.
+    ceiling = float((plan.get("feasibility") or {}).get("largest_single_put_affordable") or 0)
     rows = [r for b in plan.get("buckets", []) for r in b.get("rows", [])]
     rows += plan.get("exit_rows", [])
     for r in rows:
@@ -297,6 +369,7 @@ def _rebalance_lookup(db: Session) -> Dict[str, Dict]:
                 "order": r.get("order") or {},
                 "price": r.get("price"),
                 "share_buy": r.get("share_buy"),
+                "affordable_ceiling": ceiling,
             }
     return out
 
@@ -392,6 +465,13 @@ def build_action_queue(db: Session) -> Dict:
             est = strike - mark if opt == "put" else strike + mark
             return max(est, 0.01), True
         return None, False
+
+    # account_id -> display name. Engine 5 builds the same map for its own
+    # cards; hoisted here because Engine 1's rebalance suppression now needs
+    # it too, and one query beats two.
+    acct_name_by_id: Dict[str, str] = {
+        r.account_id: r.account_name for r in db.execute(text(
+            "SELECT account_id, account_name FROM investment_accounts")).fetchall()}
 
     items: List[Dict] = []
     board: List[Dict] = []
@@ -764,15 +844,30 @@ def build_action_queue(db: Session) -> Dict:
         rb = rebalance.get(symbol_aliases.get(sym, sym))
         rebalancing = bool(rb and rb["action"] in ("trim", "exit"))
         if rebalancing:
-            # Engine 5 owns this symbol entirely. Emitting a Tier-1 card here
-            # too would put "sell delta-15 calls to KEEP the stock" in the
-            # same email as "roll to ATM and let it go" — the exact
-            # contradiction this overlay exists to remove. Engine 1 also
-            # cannot express the real instruction: NVDA's 1,761 shares are
-            # already covered by 16 calls, so Engine 1 sees only the HSA's
-            # 161 uncovered and would recommend one new call while the actual
-            # trade is rolling seven existing ones down.
-            continue
+            # Engine 5 owns this symbol IN THE ACCOUNTS IT IS ACTUALLY
+            # TRIMMING. Emitting a Tier-1 card for one of those would put
+            # "sell delta-15 calls to KEEP the stock" in the same email as
+            # "roll to ATM and let it go" — the exact contradiction this
+            # overlay exists to remove. Engine 1 also cannot express the real
+            # instruction there: NVDA's 1,761 shares are already covered by
+            # 16 calls, so Engine 1 sees only the HSA's 161 uncovered and
+            # would recommend one new call while the actual trade is rolling
+            # seven existing ones down.
+            #
+            # Scoped to the routed accounts, not the whole symbol (Neel,
+            # 2026-09-11 audit). Symbol-wide suppression silently deleted
+            # income from accounts the trim never touches: NVDA's 7 contracts
+            # route entirely to Jaya's IRA and Neel's Retirement, yet the HSA
+            # 161 and Jaya's IRA GOOGL 100 were both sitting uncovered with
+            # no card at all, because their symbol was being trimmed
+            # somewhere else. Empty/unknown routing keeps the old
+            # symbol-wide behaviour — the conservative direction, since the
+            # contradiction it prevents is worse than the income it costs.
+            legs = (rb.get("routing") or {}).get("legs") or []
+            routed_ids = {l.get("account_id") for l in legs}
+            routed_names = {acct_name_by_id.get(i, i) for i in routed_ids}
+            if not routed_names or account in routed_names:
+                continue
 
         if sym == "TSLA":
             delta, otm = "10-12", OTM_TSLA
@@ -923,8 +1018,7 @@ def build_action_queue(db: Session) -> Dict:
     # shares produce nothing, no matter how large the gap. Acquiring is
     # expressed as short ATM puts: assignment delivers the stock at the
     # strike and pays premium for the wait.
-    acct_id_to_name = {r.account_id: r.account_name for r in db.execute(text(
-        "SELECT account_id, account_name FROM investment_accounts")).fetchall()}
+    acct_id_to_name = acct_name_by_id
 
     for sym, rb in sorted(rebalance.items(), key=lambda kv: -(kv[1].get("order") or {}).get("est_premium", 0)):
         # ---- sell side: one card per account leg, because the account is
@@ -1051,6 +1145,30 @@ def build_action_queue(db: Session) -> Dict:
         # always a real number) and current stock price stated
         # separately, not implied by "ATM ~$X" (2026-08-11).
         price_txt = f" Current stock price: ${rb['price']:,.0f}." if rb.get("price") else ""
+
+        # Don't emit a put card no account can secure (Neel, 2026-09-11
+        # audit). Collateral is per-account — it cannot be pooled — so a
+        # card asking for more than the largest single affordable put is
+        # not "low priority," it is unplaceable, and the audit found five
+        # such cards crowding the queue for 16 days while the plan moved
+        # 2.3%. The share-buy fallback below is the genuinely actionable
+        # alternative and still fires, so nothing actionable is lost.
+        #
+        # Guarded on a real ceiling: a 0/missing value means feasibility
+        # didn't compute, and suppressing everything on missing data would
+        # silently delete the buy program. Fails OPEN, like every other
+        # config read in this module.
+        ceiling = rb.get("affordable_ceiling") or 0
+        collateral = float(order["strike"]) * 100 * n
+        if not funded and ceiling > 0 and collateral > ceiling:
+            logger.info(
+                f"[V6] suppressing unplaceable {sym} put card: needs "
+                f"${collateral:,.0f} collateral vs ${ceiling:,.0f} affordable")
+            sb = rb.get("share_buy")
+            if sb:
+                _emit_share_buy(add_item, acct_id_to_name, rb, sym, n, order, short, sb)
+            continue
+
         add_item(
             "medium" if funded else "low", "SELL", 5, "Rebalancing",
             f"{sym}: {n} put{'s' if n > 1 else ''} to acquire toward {rb.get('target_shares'):,} target"
@@ -1083,22 +1201,7 @@ def build_action_queue(db: Session) -> Dict:
         # allocation_service.py module docstring for the full rule.
         sb = rb.get("share_buy")
         if not funded and sb:
-            sb_acct = acct_id_to_name.get(sb["account_id"], MARGIN_ID_TO_NAME.get(sb["account_id"], sb["account_id"]))
-            add_item(
-                "medium", "BUY", 5, "Rebalancing — buy shares (put unfunded)",
-                f"{sym}: buy {sb['shares']} shares outright — put needs ${short:,.0f} more than any account has",
-                sb_acct or "—", sym,
-                f"buy {sb['shares']} shares at ${rb['price']:,.2f} ≈ ${sb['cash_used']:,.0f}"
-                + (f" in {sb_acct}" if sb_acct else "") + ".",
-                (f"RSI {sb['rsi']:.0f} — genuinely cheap, not just idle cash chasing a name. "
-                 f"The full {n}-put position (${order['strike'] * 100 * n:,.0f} collateral) is "
-                 f"still the target once exit/trim proceeds land; this is real progress now "
-                 f"instead of waiting on that."
-                 + (f" Consolidates into the account that already holds {sym}." if sb.get("consolidates") else "")),
-                context={"symbol": sym, "current_price": rb.get("price"),
-                         "share_buy": sb,
-                         "rebalance": {"action": "buy", "target_shares": rb.get("target_shares"),
-                                       "gap_shares": rb.get("gap_shares"), "funded": False}})
+            _emit_share_buy(add_item, acct_id_to_name, rb, sym, n, order, short, sb)
 
     # ---- available cash per account (unsold puts — symmetric to uncovered
     # calls above, but on the cash side). Not tied to a symbol: this is

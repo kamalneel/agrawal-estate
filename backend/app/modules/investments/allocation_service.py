@@ -24,6 +24,7 @@ actually cheap; buying more of an overbought name just because cash sits
 idle would be timing, not patience.
 """
 import json
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -34,6 +35,8 @@ from sqlalchemy.orm import Session
 from app.shared.services.cost_basis_service import get_pure_performance
 from app.shared.services.option_premium import atm_order, next_expiration, strike_for, OTM_ATM
 from app.modules.strategies.technical_signals import get_entry_timing, _price_near
+
+logger = logging.getLogger(__name__)
 
 # A rolled call already sitting within this band of the LIVE ATM target
 # doesn't need re-rolling just because spot drifted a little since the
@@ -782,12 +785,38 @@ def get_allocation_plan(db: Session) -> Dict:
     pending = _pending_assignments(db, live, alias)
     lots_by_acct = _lots_by_account(db, exclude, alias)
 
+    # Second live tier: real quotes for symbols with no owned shares, which
+    # the MCP bridge upserts on every sync from the same equity_marks it
+    # already fetches. _fresh_prices only covers HELD symbols, so without
+    # this a target like MRVL fell through to a config reference even though
+    # a real, same-day quote existed in the database (2026-09-11 audit).
+    # v6_engine.py has carried the identical fallback since 2026-07-30.
+    hist_prices: Dict[str, float] = {
+        r.symbol: float(r.close_price) for r in db.execute(_text("""
+            SELECT DISTINCT ON (symbol) symbol, close_price
+            FROM symbol_price_history ORDER BY symbol, price_date DESC
+        """)).fetchall()
+    }
+
+    # How stale a config reference price may be before it can still describe
+    # a position but may no longer PRICE AN ORDER. Reference prices are hand
+    # captured and never refresh themselves.
+    REFERENCE_MAX_AGE_DAYS = 30
+    ref_age_days = None
+    if ref_as_of:
+        try:
+            ref_age_days = (date.today() - date.fromisoformat(str(ref_as_of))).days
+        except ValueError:
+            ref_age_days = None
+    ref_is_stale = ref_age_days is not None and ref_age_days > REFERENCE_MAX_AGE_DAYS
+
     def price_of(sym: str):
-        """(price, source). Live always wins; config reference is the
-        fallback for target names not yet held, where the app has no quote
-        source at all."""
+        """(price, source). Live always wins, then a real stored quote, then
+        the config reference for target names the app has no quote for."""
         if sym in live:
             return live[sym], "live"
+        if sym in hist_prices:
+            return hist_prices[sym], "live"
         if sym in ref_prices:
             return float(ref_prices[sym]), "reference"
         return None, "none"
@@ -879,8 +908,21 @@ def get_allocation_plan(db: Session) -> Dict:
             roll_contracts = min(remaining_trim, still_open_not_done)
         net = new_contracts if option_type == "put" else new_contracts
 
+        # Never price a placeable order off a stale reference (Neel,
+        # 2026-09-11 audit). The reference block was captured 2026-08-08 and
+        # had AMZN at $274.48 against a real $251.63 — 9% out — so the engine
+        # emitted "sell a $272 put" on a $251 stock, which is not a merely
+        # noisy card but an instantly deep-ITM assignment. The ROW still
+        # renders (the position and the gap are real, and the UI already
+        # stamps it "ref MM/DD"); only the order is withheld, because a
+        # strike is a number you act on.
+        stale_ref = (px_source == "reference") and ref_is_stale
         order = None
-        if optionable and px is not None and option_type and (new_contracts or roll_contracts):
+        if stale_ref and option_type and (new_contracts or roll_contracts):
+            logger.warning(
+                "[allocation] %s order suppressed: reference price $%.2f is %s days old "
+                "(as_of %s, max %s)", sym, px, ref_age_days, ref_as_of, REFERENCE_MAX_AGE_DAYS)
+        if optionable and px is not None and not stale_ref and option_type and (new_contracts or roll_contracts):
             o = atm_order(new_contracts or roll_contracts, px)
             order = {
                 "option_type": option_type,
@@ -978,7 +1020,38 @@ def get_allocation_plan(db: Session) -> Dict:
             # EXIT (target 0) has no such ceiling since every share is
             # meant to leave regardless (roll_contracts there already
             # equals every uncredited contract, so the cap is a no-op).
-            roll_legs.sort(key=lambda l: l["_dist"])
+            # Order the cap TAX FIRST, distance second (Neel, 2026-09-11
+            # audit). Rolling an existing call down to ATM is a decision to
+            # deliver those specific shares, so it is exactly as much a tax
+            # event as a fresh sale — but this path used to sort on _dist
+            # alone while only the naked-share path (_route_trim_lots) was
+            # tax-aware. With the book fully covered, new_contracts is 0 and
+            # EVERY leg comes through here, so the tax-aware router was
+            # effectively dead code for the case that actually matters.
+            #
+            # Live example that prompted this: NVDA's 761-share trim. There
+            # are 961 sheltered shares available (Jaya's IRA 600, Neel's
+            # Retirement 200, HSA 161) — more than the whole trim — yet the
+            # plan routed a contract to Jaya's Brokerage because that call
+            # happened to sit nearest ATM. Those shares carry an $18.93
+            # basis against a ~$218 price: ~$19,900 of gain per contract,
+            # chosen over a zero-tax alternative purely on strike distance.
+            #
+            # Sheltered sorts at 0.0, same scoring as _route_trim_lots, so a
+            # harvestable LOSS in a taxable account still outranks a
+            # sheltered sale and the two paths cannot disagree. Within equal
+            # tax, closest-to-ATM still wins — it finishes with least work.
+            for leg in roll_legs:
+                if leg["sheltered"]:
+                    leg["_tax"] = 0.0
+                else:
+                    g, _t = _hifo_gain(lots_by_acct.get((sym, leg["account_id"]), []),
+                                       leg["contracts"] * SHARES_PER_CONTRACT, sale_px)
+                    # No lots ingested for this account is NOT evidence of no
+                    # gain. Rank unknown basis just behind a known-zero so it
+                    # is never preferred over a genuinely sheltered sale.
+                    leg["_tax"] = g if lots_by_acct.get((sym, leg["account_id"])) else 0.01
+            roll_legs.sort(key=lambda l: (l["_tax"], l["_dist"]))
             capped, cap_left = [], roll_contracts
             for leg in roll_legs:
                 if cap_left <= 0:
@@ -986,6 +1059,7 @@ def get_allocation_plan(db: Session) -> Dict:
                 take = min(leg["contracts"], cap_left)
                 leg = {**leg, "contracts": take, "shares": take * SHARES_PER_CONTRACT}
                 del leg["_dist"]
+                leg.pop("_tax", None)
                 capped.append(leg)
                 cap_left -= take
             # One account can hold call_strikes_by_acct entries at MULTIPLE
@@ -1073,28 +1147,56 @@ def get_allocation_plan(db: Session) -> Dict:
             "non_optionable_reason": non_optionable.get(sym),
             "price": round(px, 2) if px is not None else None,
             "price_source": px_source,
+            # True when the row is described by a reference price too old to
+            # price an order from — the gap is still real, the strike isn't.
+            "price_stale": stale_ref,
             "price_as_of": ref_as_of if px_source == "reference" else None,
         }
 
     buckets: List[Dict] = []
     for key, b in (cfg.get("buckets") or {}).items():
         rows = [build_row(s, n, "target") for s, n in (b.get("targets") or {}).items()]
+        # A DEFERRED bucket is "still wanted, not being pursued right now"
+        # (Neel, 2026-09-11 audit). The target is preserved so the intent
+        # and the history stay readable, but the row is flattened to a
+        # hold: no action, no contracts, no order. That is what actually
+        # silences it downstream — _rebalance_lookup in v6_engine.py only
+        # picks up rows whose action is buy/trim/exit AND contracts > 0, so
+        # a deferred row emits no Engine 5 card and, just as importantly,
+        # stops suppressing Engine 1 on that symbol.
+        #
+        # Deliberately NOT deletion. Deleting the symbols would drop them
+        # out of _load_wanted_symbols, and MU is actually held (~57 sh) —
+        # an unlisted symbol reads as off-thesis, so Engine 6 would start
+        # telling Neel to close MU puts as "collateral to free." Deferring
+        # keeps them wanted and merely stops the ordering.
+        if b.get("deferred"):
+            for r in rows:
+                r["action"] = "hold"
+                r["deferred"] = True
+                r["contracts"] = 0
+                r["order"] = None
         rows.sort(key=lambda r: -(r["target_value"] or 0))
         cur_sum = sum(r["current_value"] for r in rows)
         tgt_sum = sum(r["target_value"] or 0 for r in rows)
         # Bucket progress is summed in ABSOLUTE shares needed vs moved —
         # signed sums would let a NVDA trim cancel an MU buy and report
-        # progress where none happened.
-        need = sum(abs(r["target_shares"] - r["baseline_shares"])
-                   for r in rows if r["baseline_shares"] is not None)
+        # progress where none happened. Deferred rows are excluded from the
+        # denominator entirely: counting work nobody is attempting would
+        # permanently depress gap_closed_pct and make the progression
+        # readout useless for judging whether the ACTIVE plan is moving.
+        gap_rows = [r for r in rows
+                    if r["baseline_shares"] is not None and not r.get("deferred")]
+        need = sum(abs(r["target_shares"] - r["baseline_shares"]) for r in gap_rows)
         did = sum(min(abs(r["shares_moved"] or 0),
                       abs(r["target_shares"] - r["baseline_shares"]))
-                  for r in rows if r["baseline_shares"] is not None
-                  and (r["shares_moved"] or 0) * (r["target_shares"] - r["baseline_shares"]) > 0)
+                  for r in gap_rows
+                  if (r["shares_moved"] or 0) * (r["target_shares"] - r["baseline_shares"]) > 0)
         buckets.append({
             "key": key,
             "label": b.get("label", key),
             "note": b.get("note"),
+            "deferred": bool(b.get("deferred")),
             "target_pct": b.get("target_pct"),
             "rows": rows,
             "current_value": round(cur_sum, 2),
