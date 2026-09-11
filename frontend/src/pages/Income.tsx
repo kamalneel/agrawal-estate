@@ -1402,18 +1402,36 @@ interface PerfAccount {
   account_id: string
   account_name: string
   income: number
+  calls?: number
+  puts?: number
+  put_collateral?: number
+  put_yield_monthly?: number | null
   avg_capital: number
   yield_monthly: number | null
+  current_value?: number
+  current_shares?: number
+  is_held?: boolean
+  held_days?: number
   symbols?: number
   legs?: number
 }
 interface PerfSymbol {
   symbol: string
   income: number
-  options: number
+  calls: number
+  puts: number
+  equity_income: number
+  put_collateral: number
+  put_collateral_now: number
+  put_yield_monthly: number | null
+  current_shares: number
+  callable: boolean
   dividends: number
   avg_capital: number
   yield_monthly: number | null
+  current_value: number
+  is_held: boolean
+  held_days: number
   accounts: PerfAccount[]
 }
 interface PerfCash {
@@ -1423,6 +1441,7 @@ interface PerfCash {
   avg_collateral: number
   avg_cash_pool: number | null
   avg_margin_used: number | null
+  collateral_recorded?: number
   cash_backed: boolean
   utilization_pct: number | null
   idle_cash: number | null
@@ -1435,20 +1454,32 @@ interface PerfData {
   by_symbol: PerfSymbol[]
   by_account: PerfAccount[]
   cash: PerfCash[]
+  targets: { call_monthly_pct: number; put_monthly_pct: number }
   totals: { income: number; avg_capital: number }
+  collateral_parse: { compared: number; exact: number; match_rate: number | null }
 }
 
-/** A monthly yield, coloured against the 1%/month target. */
-function YieldCell({ value }: { value: number | null }) {
+/** A monthly yield, coloured against ITS OWN target — calls and puts are
+ *  held to different bars (1%/mo vs 2%/mo), so one shared threshold would
+ *  mark a put doing 1.5% as a success when it is a miss. */
+function YieldCell({ value, target }: { value: number | null; target: number }) {
   if (value === null) return <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>
-  const color = value < 0 ? '#FF5A5A' : value < 1 ? '#F59E0B' : '#00D632'
-  return <strong style={{ color }}>{value.toFixed(2)}%</strong>
+  const color = value < 0 ? '#FF5A5A' : value < target ? '#F59E0B' : '#00D632'
+  return <strong style={{ color }} title={`target ${target}%/mo`}>{value.toFixed(2)}%</strong>
 }
 
 function PerformanceDetail({ onBack }: { onBack: () => void }) {
   const [data, setData] = useState<PerfData | null>(null)
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState<Set<string>>(new Set())
+  // Default to live positions: this view answers "what do I fix next", and an
+  // exited position cannot be acted on. Exited stays one click away.
+  // Default each table to what is ACTIONABLE, not to everything on record.
+  // Calls: you need 100 shares to write one contract, so anything smaller
+  // cannot participate however much it once earned. Puts: only names you
+  // still have collateral against. "Show all" restores the full history.
+  const [showAllCalls, setShowAllCalls] = useState(false)
+  const [showAllPuts, setShowAllPuts] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -1473,6 +1504,25 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
   if (loading) return <div className={styles.page}>Loading performance…</div>
   if (!data) return <div className={styles.page}>Could not load performance.</div>
 
+  const callTarget = data.targets.call_monthly_pct
+  const putTarget = data.targets.put_monthly_pct
+
+  // Two businesses, two denominators, two hurdle rates — so two tables.
+  // Calls rent out shares already held; puts rent out cash. Merging them put
+  // ten columns side by side and made neither question answerable.
+  const callAll = data.by_symbol.filter(s => s.calls !== 0 || s.dividends !== 0)
+  const callRows = (showAllCalls ? callAll : callAll.filter(s => s.callable))
+    .sort((a, b) => (a.yield_monthly ?? 99) - (b.yield_monthly ?? 99))
+  const callHidden = callAll.length - callAll.filter(s => s.callable).length
+
+  const putAll = data.by_symbol.filter(s => s.puts !== 0 || s.put_collateral_now > 0)
+  const putRows = (showAllPuts ? putAll : putAll.filter(s => s.put_collateral_now > 0))
+    .sort((a, b) => (a.put_yield_monthly ?? 99) - (b.put_yield_monthly ?? 99))
+  const putHidden = putAll.length - putAll.filter(s => s.put_collateral_now > 0).length
+
+  const sum = (rows: PerfSymbol[], f: (s: PerfSymbol) => number) =>
+    rows.reduce((t, s) => t + f(s), 0)
+
   return (
     <>
       <button className={styles.backButton} onClick={onBack}>
@@ -1484,32 +1534,215 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
         <div>
           <h1>Performance</h1>
           <p style={{ color: 'var(--color-text-tertiary)' }}>
-            {formatFullCurrency(data.totals.income)} earned on{' '}
-            {formatFullCurrency(data.totals.avg_capital)} of average capital ·{' '}
-            {data.period.start} → {data.period.end} ({data.period.days} days)
+            {data.period.start} → {data.period.end} ({data.period.days} days) ·
+            targets {callTarget}%/mo on calls, {putTarget}%/mo on puts
           </p>
         </div>
       </div>
 
-      {/* 2 — which account is performing. First because it is the shortest
-          answer and frames the symbol table below it. */}
+      {/* ---- 1. COVERED CALLS: income on shares held ---- */}
+      <section className={styles.transactionsSection}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          <span>Covered Calls — income on shares you hold</span>
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-tertiary)', fontWeight: 400 }}>
+            target {callTarget}%/mo
+          </span>
+          <button
+            className={styles.backButton}
+            style={{ margin: 0, fontSize: 'var(--text-sm)' }}
+            onClick={() => setShowAllCalls(v => !v)}
+            title="Hidden by default: positions under 100 shares, which cannot write a contract, and positions no longer held"
+          >
+            {showAllCalls ? 'Callable only' : `Show all (+${callHidden})`}
+          </button>
+        </h2>
+        <div className={styles.earningsTableContainer}>
+          <table className={styles.earningsTable}>
+            <thead>
+              <tr>
+                <th>Symbol</th><th>Shares</th><th>Calls</th><th>Dividends</th>
+                <th>Equity Value Now</th><th>Days</th>
+                <th title="(calls + dividends) divided by the average value of the shares over the days held, expressed per month">Yield / mo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {callRows.map(s => {
+                const isOpen = open.has(`c-${s.symbol}`)
+                const splittable = s.accounts.length > 1
+                return [
+                  <tr key={s.symbol}
+                      onClick={() => splittable && toggle(`c-${s.symbol}`)}
+                      style={{ cursor: splittable ? 'pointer' : 'default' }}>
+                    <td>
+                      <strong>{s.symbol}</strong>
+                      {splittable && (
+                        <span style={{ color: 'var(--color-text-tertiary)', marginLeft: 6 }}>
+                          {isOpen ? '▾' : '▸'} {s.accounts.length}
+                        </span>
+                      )}
+                    </td>
+                    <td title={s.callable ? undefined : 'Under 100 shares — cannot write a covered call'}>
+                      {s.current_shares
+                        ? s.current_shares.toLocaleString('en-US', { maximumFractionDigits: 0 })
+                        : '—'}
+                    </td>
+                    <td>{formatFullCurrency(s.calls)}</td>
+                    <td>{s.dividends ? formatFullCurrency(s.dividends) : '—'}</td>
+                    <td>
+                      {s.is_held ? formatFullCurrency(s.current_value)
+                        : <span style={{ color: 'var(--color-text-tertiary)' }}>exited</span>}
+                    </td>
+                    <td title="Days held — the yield annualises over this, not the reporting period">{s.held_days}</td>
+                    <td><YieldCell value={s.yield_monthly} target={callTarget} /></td>
+                  </tr>,
+                  ...(isOpen ? s.accounts.filter(a => (a.calls ?? 0) !== 0).map(a => (
+                    <tr key={`c-${s.symbol}-${a.account_id}`} style={{ opacity: 0.75 }}>
+                      <td style={{ paddingLeft: 28 }}>{a.account_name}</td>
+                      <td>{a.current_shares
+                        ? a.current_shares.toLocaleString('en-US', { maximumFractionDigits: 0 })
+                        : '—'}</td>
+                      <td>{formatFullCurrency(a.calls ?? 0)}</td>
+                      <td />
+                      <td>
+                        {a.is_held
+                          ? formatFullCurrency(a.current_value ?? 0)
+                          : <span style={{ color: 'var(--color-text-tertiary)' }}>exited</span>}
+                      </td>
+                      {/* Each account holds for its own span, so the days
+                          behind its yield are its own, not the symbol's. */}
+                      <td title="Days this account held it — its yield annualises over this">
+                        {a.held_days ?? '—'}
+                      </td>
+                      <td><YieldCell value={a.yield_monthly} target={callTarget} /></td>
+                    </tr>
+                  )) : []),
+                ]
+              })}
+              <tr className={styles.totalsRow ?? ''} style={{ fontWeight: 700 }}>
+                <td>TOTAL</td>
+                <td />
+                <td>{formatFullCurrency(sum(callRows, s => s.calls))}</td>
+                <td>{formatFullCurrency(sum(callRows, s => s.dividends))}</td>
+                <td>{formatFullCurrency(sum(callRows, s => s.current_value))}</td>
+                <td colSpan={2} />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ---- 2. CASH-SECURED PUTS: income on cash ---- */}
+      <section className={styles.transactionsSection}>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          <span>Cash-Secured Puts — income on cash</span>
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-tertiary)', fontWeight: 400 }}>
+            target {putTarget}%/mo
+          </span>
+          <button
+            className={styles.backButton}
+            style={{ margin: 0, fontSize: 'var(--text-sm)' }}
+            onClick={() => setShowAllPuts(v => !v)}
+            title="Hidden by default: names with no put collateral open right now"
+          >
+            {showAllPuts ? 'Open only' : `Show all (+${putHidden})`}
+          </button>
+        </h2>
+        <div className={styles.earningsTableContainer}>
+          <table className={styles.earningsTable}>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th title="Cash tied up on an AVERAGE day in this period. A put open 12 of 207 days at $10,000 averages ~$1,519 — that is the denominator the period yield divides by.">Avg Cash Utilized</th>
+                <th title="Cash tied up right now: strike × 100 × contracts on the latest snapshot">Cash Utilized Now</th>
+                <th>Put Premium</th><th>Yield / mo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {putRows.map(s => {
+                const isOpen = open.has(`p-${s.symbol}`)
+                const accts = s.accounts.filter(a => (a.puts ?? 0) !== 0)
+                const splittable = accts.length > 1
+                return [
+                  <tr key={s.symbol}
+                      onClick={() => splittable && toggle(`p-${s.symbol}`)}
+                      style={{ cursor: splittable ? 'pointer' : 'default' }}>
+                    <td>
+                      <strong>{s.symbol}</strong>
+                      {splittable && (
+                        <span style={{ color: 'var(--color-text-tertiary)', marginLeft: 6 }}>
+                          {isOpen ? '▾' : '▸'} {accts.length}
+                        </span>
+                      )}
+                    </td>
+                    <td>{s.put_collateral ? formatFullCurrency(s.put_collateral) : '—'}</td>
+                    <td>{s.put_collateral_now
+                      ? formatFullCurrency(s.put_collateral_now)
+                      : <span style={{ color: 'var(--color-text-tertiary)' }}>closed</span>}</td>
+                    <td>{formatFullCurrency(s.puts)}</td>
+                    <td><YieldCell value={s.put_yield_monthly} target={putTarget} /></td>
+                  </tr>,
+                  ...(isOpen ? accts.map(a => (
+                    <tr key={`p-${s.symbol}-${a.account_id}`} style={{ opacity: 0.75 }}>
+                      <td style={{ paddingLeft: 28 }}>{a.account_name}</td>
+                      <td>{a.put_collateral ? formatFullCurrency(a.put_collateral) : '—'}</td>
+                      <td />
+                      <td>{formatFullCurrency(a.puts ?? 0)}</td>
+                      <td><YieldCell value={a.put_yield_monthly ?? null} target={putTarget} /></td>
+                    </tr>
+                  )) : []),
+                ]
+              })}
+              <tr style={{ fontWeight: 700 }}>
+                <td>TOTAL</td>
+                <td>{formatFullCurrency(sum(putRows, s => s.put_collateral))}</td>
+                <td>{formatFullCurrency(sum(putRows, s => s.put_collateral_now))}</td>
+                <td>{formatFullCurrency(sum(putRows, s => s.puts))}</td>
+                <td />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className={styles.earningsTableNote}>
+          <p>
+            <strong>Avg Cash Utilized</strong> is cash tied up on an average
+            day of the period — collateral-days ÷ days observed — so a put
+            open for only part of the window averages down. It is what the
+            monthly yield divides by. <strong>Cash Utilized Now</strong> is
+            the position as it stands today: strike × 100 × contracts. ZM, for
+            instance, is $10,000 open today but averages $1,519 because the
+            put has existed for 12 of {data.period.days} days.
+          </p>
+          <p>
+            Both are parsed per symbol from the position snapshots and
+            reconciled against the collateral totals Robinhood records
+            ({data.collateral_parse.exact}/{data.collateral_parse.compared} account-days exact).
+          </p>
+        </div>
+      </section>
+
+      {/* ---- 3. BY ACCOUNT: both businesses, side by side ---- */}
       <section className={styles.transactionsSection}>
         <h2>By Account</h2>
         <div className={styles.earningsTableContainer}>
           <table className={styles.earningsTable}>
             <thead>
               <tr>
-                <th>Account</th><th>Income</th><th>Avg Capital</th>
-                <th>Yield / mo</th><th>Symbols</th><th>Legs</th>
+                <th>Account</th>
+                <th>Share Capital</th><th>Calls</th><th>Calls / mo</th>
+                <th>Collateral</th><th>Puts</th><th>Puts / mo</th>
+                <th>Symbols</th><th>Legs</th>
               </tr>
             </thead>
             <tbody>
               {data.by_account.map(a => (
                 <tr key={a.account_id}>
                   <td><strong>{a.account_name}</strong></td>
-                  <td>{formatFullCurrency(a.income)}</td>
                   <td>{formatFullCurrency(a.avg_capital)}</td>
-                  <td><YieldCell value={a.yield_monthly} /></td>
+                  <td>{formatFullCurrency(a.calls ?? 0)}</td>
+                  <td><YieldCell value={a.yield_monthly} target={callTarget} /></td>
+                  <td>{a.put_collateral ? formatFullCurrency(a.put_collateral) : '—'}</td>
+                  <td>{formatFullCurrency(a.puts ?? 0)}</td>
+                  <td><YieldCell value={a.put_yield_monthly ?? null} target={putTarget} /></td>
                   <td>{a.symbols}</td>
                   <td>{a.legs}</td>
                 </tr>
@@ -1519,73 +1752,17 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
         </div>
       </section>
 
-      {/* 1 — which equity is not performing. Worst first: the point of the
-          view is to surface dead capital, not to celebrate the winners. */}
+      {/* ---- 4. CASH: how much of it is working ---- */}
       <section className={styles.transactionsSection}>
-        <h2>By Symbol — worst first</h2>
+        <h2>Cash — how much is actually working</h2>
         <div className={styles.earningsTableContainer}>
           <table className={styles.earningsTable}>
             <thead>
               <tr>
-                <th>Symbol</th><th>Income</th><th>Options</th><th>Dividends</th>
-                <th>Avg Capital</th><th>Yield / mo</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.by_symbol.map(s => {
-                const isOpen = open.has(s.symbol)
-                const splittable = s.accounts.length > 1
-                return [
-                  <tr
-                    key={s.symbol}
-                    onClick={() => splittable && toggle(s.symbol)}
-                    style={{ cursor: splittable ? 'pointer' : 'default' }}
-                    title={splittable ? 'Show per-account split' : undefined}
-                  >
-                    <td>
-                      <strong>{s.symbol}</strong>
-                      {splittable && (
-                        <span style={{ color: 'var(--color-text-tertiary)', marginLeft: 6 }}>
-                          {isOpen ? '▾' : '▸'} {s.accounts.length}
-                        </span>
-                      )}
-                    </td>
-                    <td>{formatFullCurrency(s.income)}</td>
-                    <td>{formatFullCurrency(s.options)}</td>
-                    <td>{s.dividends ? formatFullCurrency(s.dividends) : '—'}</td>
-                    <td>{formatFullCurrency(s.avg_capital)}</td>
-                    <td><YieldCell value={s.yield_monthly} /></td>
-                  </tr>,
-                  ...(isOpen
-                    ? s.accounts.map(a => (
-                        <tr key={`${s.symbol}-${a.account_id}`} style={{ opacity: 0.75 }}>
-                          <td style={{ paddingLeft: 28 }}>{a.account_name}</td>
-                          <td>{formatFullCurrency(a.income)}</td>
-                          <td colSpan={2} />
-                          <td>{formatFullCurrency(a.avg_capital)}</td>
-                          <td><YieldCell value={a.yield_monthly} /></td>
-                        </tr>
-                      ))
-                    : []),
-                ]
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* 3 — cash. Collateral yield is the common metric; the cash-pool
-          columns only mean something where cash is real, so the margin
-          accounts show "margin" rather than a ratio against borrowing. */}
-      <section className={styles.transactionsSection}>
-        <h2>Cash — put premium vs the cash securing it</h2>
-        <div className={styles.earningsTableContainer}>
-          <table className={styles.earningsTable}>
-            <thead>
-              <tr>
-                <th>Account</th><th>Put Premium</th><th>Avg Collateral</th>
+                <th>Account</th><th>Put Premium</th>
+                <th title="Cash committed to puts — the denominator for put yield">Collateral Used</th>
                 <th>Cash Pool</th><th>Utilization</th><th>Idle Cash</th>
-                <th>Yield / mo on Collateral</th><th>on Cash</th>
+                <th>Yield / mo on Collateral</th><th>on Whole Pool</th>
               </tr>
             </thead>
             <tbody>
@@ -1595,14 +1772,13 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
                   <td>{formatFullCurrency(c.put_premium)}</td>
                   <td>{formatFullCurrency(c.avg_collateral)}</td>
                   <td>
-                    {c.cash_backed
-                      ? formatFullCurrency(c.avg_cash_pool ?? 0)
+                    {c.cash_backed ? formatFullCurrency(c.avg_cash_pool ?? 0)
                       : <span style={{ color: 'var(--color-text-tertiary)' }} title="Puts here are secured by margin, not cash">margin</span>}
                   </td>
                   <td>{c.utilization_pct !== null ? `${c.utilization_pct.toFixed(0)}%` : '—'}</td>
                   <td>{c.idle_cash !== null ? formatFullCurrency(c.idle_cash) : '—'}</td>
-                  <td><YieldCell value={c.yield_on_collateral_monthly} /></td>
-                  <td><YieldCell value={c.yield_on_cash_monthly} /></td>
+                  <td><YieldCell value={c.yield_on_collateral_monthly} target={putTarget} /></td>
+                  <td><YieldCell value={c.yield_on_cash_monthly} target={putTarget} /></td>
                 </tr>
               ))}
             </tbody>
