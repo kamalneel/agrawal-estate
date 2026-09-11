@@ -990,18 +990,89 @@ function InterestDetail({ data, chartData, onBack, initialYear }: InterestDetail
 }
 
 // Income holdings table columns - factory to allow dynamic headers
+// The period rides in `headerSub` — the small second line the table header
+// already renders — not appended to the header text. Inlined as
+// "Prem. Sold (August 2026)" it more than doubled four of the ten headers,
+// and the period is identical on every one of them, so repeating it across
+// the row cost width without telling the reader anything new.
+/**
+ * Rows for the "Income by Holding" table: every symbol you HOLD, plus every
+ * symbol that EARNED in the period.
+ *
+ * Building rows from current holdings alone and looking income up per symbol
+ * silently dropped any position closed during the period — and with it, all
+ * the premium it had earned. Over a month that rarely showed. Over 2026 it
+ * hid $85,158 of real options income across the accounts, because the
+ * dropped rows are systematically the winners: you sell what worked and keep
+ * what didn't, so a holdings-filtered table keeps the losses and discards the
+ * gains. Jaya's Brokerage read $6,361 next to NVDA at -$19,314 — a year that
+ * actually made $26,437 looked like a loss.
+ *
+ * Closed positions come back with zero shares and zero value, so the income
+ * columns and the TOTAL footer are whole. `% Yield` already renders "—" when
+ * value is 0 (income ÷ no shares means nothing), and the subtitle marks them
+ * so a zero-share row does not read as a data error.
+ */
+function buildIncomeRows(
+  holdings: any[],
+  divBySymbol: Record<string, number>,
+  optBySymbol: Record<string, number>,
+  soldBySymbol: Record<string, number>,
+  boughtBySymbol: Record<string, number>,
+): HoldingsRow[] {
+  const income = (s: string) => ({
+    dividendIncome: divBySymbol[s] ?? 0,
+    optionsIncome: optBySymbol[s] ?? 0,
+    optionsSold: soldBySymbol[s] ?? 0,
+    optionsBought: boughtBySymbol[s] ?? 0,
+    totalIncome: (divBySymbol[s] ?? 0) + (optBySymbol[s] ?? 0),
+  })
+
+  const held = holdings.filter(h => h.symbol !== 'CASH')
+  const heldSymbols = new Set<string>(held.map(h => h.symbol))
+
+  const rows: HoldingsRow[] = held.map(h => ({
+    symbol: h.symbol,
+    shares: h.shares || 0,
+    currentPrice: h.currentPrice || 0,
+    value: (h.shares || 0) * (h.currentPrice || 0),
+    isCash: false,
+    ...income(h.symbol),
+  }))
+
+  // Earned in the period, no longer held.
+  const closed = new Set<string>([...Object.keys(optBySymbol), ...Object.keys(divBySymbol)])
+  for (const symbol of closed) {
+    if (symbol === 'CASH' || heldSymbols.has(symbol)) continue
+    const r = income(symbol)
+    if (!r.totalIncome && !r.optionsSold && !r.optionsBought) continue
+    rows.push({
+      symbol,
+      shares: 0,
+      currentPrice: 0,
+      value: 0,
+      isCash: false,
+      subtitle: 'Closed',
+      ...r,
+    })
+  }
+  return rows
+}
+
 function makeIncomeColumns(periodLabel?: string): ColumnDef[] {
-  const suffix = periodLabel ? ` (${periodLabel})` : ''
+  const sub = periodLabel || undefined
   return [
-    symbolColumn(),
+    // showSubtitle surfaces the "Closed" marker buildIncomeRows sets on
+    // positions that earned in the period but are no longer held.
+    symbolColumn({ showSubtitle: true }),
     sharesColumn(),
     priceColumn('Price (Live)'),
     valueColumn(),
-    { ...dividendIncomeColumn(), header: `Dividends${suffix}` },
-    { ...optionsSoldColumn(), header: `Prem. Sold${suffix}` },
-    { ...optionsBoughtColumn(), header: `Bought Back${suffix}` },
-    { ...optionsIncomeColumn(), header: `Options Net${suffix}` },
-    { ...totalIncomeColumn(), header: `Total Income${suffix}` },
+    { ...dividendIncomeColumn(), header: 'Dividends', headerSub: sub },
+    { ...optionsSoldColumn(), header: 'Prem. Sold', headerSub: sub },
+    { ...optionsBoughtColumn(), header: 'Bought Back', headerSub: sub },
+    { ...optionsIncomeColumn(), header: 'Options Net', headerSub: sub },
+    { ...totalIncomeColumn(), header: 'Total Income', headerSub: sub },
     totalYieldColumn(),
   ]
 }
@@ -1100,27 +1171,8 @@ function AccountOptionsDetail({ accountName, onBack }: AccountOptionsDetailProps
         // Find the matching account
         const acct = (holdingsData.accounts || []).find((a: any) => a.name === accountName)
         if (acct) {
-          const rows: HoldingsRow[] = (acct.holdings || [])
-            .filter((h: any) => h.symbol !== 'CASH')
-            .map((h: any) => {
-              const div = divBySymbol[h.symbol] ?? 0
-              const opt = optBySymbol[h.symbol] ?? 0
-              const optSold = soldBySymbol[h.symbol] ?? 0
-              const optBought = boughtBySymbol[h.symbol] ?? 0
-              return {
-                symbol: h.symbol,
-                shares: h.shares || 0,
-                currentPrice: h.currentPrice || 0,
-                value: (h.shares || 0) * (h.currentPrice || 0),
-                isCash: false,
-                dividendIncome: div,
-                optionsIncome: opt,
-                optionsSold: optSold,
-                optionsBought: optBought,
-                totalIncome: div + opt,
-              }
-            })
-          setHoldingsRows(rows)
+          setHoldingsRows(buildIncomeRows(
+            acct.holdings || [], divBySymbol, optBySymbol, soldBySymbol, boughtBySymbol))
         }
       } catch (err) {
         console.error('Error fetching filtered income:', err)
@@ -1333,6 +1385,235 @@ interface RentalDetailProps {
   data: RentalData
   chartData: MonthlyData[]
   onBack: () => void
+}
+
+// ---------------------------------------------------------------------------
+// Performance — income as a YIELD on the capital that earned it.
+//
+// Answers the three questions the per-account drill-down cannot: which equity
+// is not performing, which account is not performing, and how the cash
+// securing puts is performing. All three are income / average capital; only
+// the grouping differs. See backend performance_service for why the
+// denominator is average deployed capital rather than current value, and why
+// symbols keep a per-account split instead of collapsing into one total.
+// ---------------------------------------------------------------------------
+
+interface PerfAccount {
+  account_id: string
+  account_name: string
+  income: number
+  avg_capital: number
+  yield_monthly: number | null
+  symbols?: number
+  legs?: number
+}
+interface PerfSymbol {
+  symbol: string
+  income: number
+  options: number
+  dividends: number
+  avg_capital: number
+  yield_monthly: number | null
+  accounts: PerfAccount[]
+}
+interface PerfCash {
+  account_name: string
+  put_premium: number
+  put_legs: number
+  avg_collateral: number
+  avg_cash_pool: number | null
+  avg_margin_used: number | null
+  cash_backed: boolean
+  utilization_pct: number | null
+  idle_cash: number | null
+  yield_on_collateral_monthly: number | null
+  yield_on_cash_monthly: number | null
+}
+interface PerfData {
+  period: { start: string; end: string; days: number }
+  coverage: { history_start: string; note: string }
+  by_symbol: PerfSymbol[]
+  by_account: PerfAccount[]
+  cash: PerfCash[]
+  totals: { income: number; avg_capital: number }
+}
+
+/** A monthly yield, coloured against the 1%/month target. */
+function YieldCell({ value }: { value: number | null }) {
+  if (value === null) return <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>
+  const color = value < 0 ? '#FF5A5A' : value < 1 ? '#F59E0B' : '#00D632'
+  return <strong style={{ color }}>{value.toFixed(2)}%</strong>
+}
+
+function PerformanceDetail({ onBack }: { onBack: () => void }) {
+  const [data, setData] = useState<PerfData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [open, setOpen] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/income/performance`, { headers: getAuthHeaders() })
+        if (res.ok) setData(await res.json())
+      } catch (err) {
+        console.error('Error fetching performance:', err)
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [])
+
+  const toggle = (s: string) =>
+    setOpen(prev => {
+      const next = new Set(prev)
+      next.has(s) ? next.delete(s) : next.add(s)
+      return next
+    })
+
+  if (loading) return <div className={styles.page}>Loading performance…</div>
+  if (!data) return <div className={styles.page}>Could not load performance.</div>
+
+  return (
+    <>
+      <button className={styles.backButton} onClick={onBack}>
+        <ArrowLeft size={18} />
+        Back to Income
+      </button>
+
+      <div className={styles.detailHeader}>
+        <div>
+          <h1>Performance</h1>
+          <p style={{ color: 'var(--color-text-tertiary)' }}>
+            {formatFullCurrency(data.totals.income)} earned on{' '}
+            {formatFullCurrency(data.totals.avg_capital)} of average capital ·{' '}
+            {data.period.start} → {data.period.end} ({data.period.days} days)
+          </p>
+        </div>
+      </div>
+
+      {/* 2 — which account is performing. First because it is the shortest
+          answer and frames the symbol table below it. */}
+      <section className={styles.transactionsSection}>
+        <h2>By Account</h2>
+        <div className={styles.earningsTableContainer}>
+          <table className={styles.earningsTable}>
+            <thead>
+              <tr>
+                <th>Account</th><th>Income</th><th>Avg Capital</th>
+                <th>Yield / mo</th><th>Symbols</th><th>Legs</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.by_account.map(a => (
+                <tr key={a.account_id}>
+                  <td><strong>{a.account_name}</strong></td>
+                  <td>{formatFullCurrency(a.income)}</td>
+                  <td>{formatFullCurrency(a.avg_capital)}</td>
+                  <td><YieldCell value={a.yield_monthly} /></td>
+                  <td>{a.symbols}</td>
+                  <td>{a.legs}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* 1 — which equity is not performing. Worst first: the point of the
+          view is to surface dead capital, not to celebrate the winners. */}
+      <section className={styles.transactionsSection}>
+        <h2>By Symbol — worst first</h2>
+        <div className={styles.earningsTableContainer}>
+          <table className={styles.earningsTable}>
+            <thead>
+              <tr>
+                <th>Symbol</th><th>Income</th><th>Options</th><th>Dividends</th>
+                <th>Avg Capital</th><th>Yield / mo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.by_symbol.map(s => {
+                const isOpen = open.has(s.symbol)
+                const splittable = s.accounts.length > 1
+                return [
+                  <tr
+                    key={s.symbol}
+                    onClick={() => splittable && toggle(s.symbol)}
+                    style={{ cursor: splittable ? 'pointer' : 'default' }}
+                    title={splittable ? 'Show per-account split' : undefined}
+                  >
+                    <td>
+                      <strong>{s.symbol}</strong>
+                      {splittable && (
+                        <span style={{ color: 'var(--color-text-tertiary)', marginLeft: 6 }}>
+                          {isOpen ? '▾' : '▸'} {s.accounts.length}
+                        </span>
+                      )}
+                    </td>
+                    <td>{formatFullCurrency(s.income)}</td>
+                    <td>{formatFullCurrency(s.options)}</td>
+                    <td>{s.dividends ? formatFullCurrency(s.dividends) : '—'}</td>
+                    <td>{formatFullCurrency(s.avg_capital)}</td>
+                    <td><YieldCell value={s.yield_monthly} /></td>
+                  </tr>,
+                  ...(isOpen
+                    ? s.accounts.map(a => (
+                        <tr key={`${s.symbol}-${a.account_id}`} style={{ opacity: 0.75 }}>
+                          <td style={{ paddingLeft: 28 }}>{a.account_name}</td>
+                          <td>{formatFullCurrency(a.income)}</td>
+                          <td colSpan={2} />
+                          <td>{formatFullCurrency(a.avg_capital)}</td>
+                          <td><YieldCell value={a.yield_monthly} /></td>
+                        </tr>
+                      ))
+                    : []),
+                ]
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* 3 — cash. Collateral yield is the common metric; the cash-pool
+          columns only mean something where cash is real, so the margin
+          accounts show "margin" rather than a ratio against borrowing. */}
+      <section className={styles.transactionsSection}>
+        <h2>Cash — put premium vs the cash securing it</h2>
+        <div className={styles.earningsTableContainer}>
+          <table className={styles.earningsTable}>
+            <thead>
+              <tr>
+                <th>Account</th><th>Put Premium</th><th>Avg Collateral</th>
+                <th>Cash Pool</th><th>Utilization</th><th>Idle Cash</th>
+                <th>Yield / mo on Collateral</th><th>on Cash</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.cash.map(c => (
+                <tr key={c.account_name}>
+                  <td><strong>{c.account_name}</strong></td>
+                  <td>{formatFullCurrency(c.put_premium)}</td>
+                  <td>{formatFullCurrency(c.avg_collateral)}</td>
+                  <td>
+                    {c.cash_backed
+                      ? formatFullCurrency(c.avg_cash_pool ?? 0)
+                      : <span style={{ color: 'var(--color-text-tertiary)' }} title="Puts here are secured by margin, not cash">margin</span>}
+                  </td>
+                  <td>{c.utilization_pct !== null ? `${c.utilization_pct.toFixed(0)}%` : '—'}</td>
+                  <td>{c.idle_cash !== null ? formatFullCurrency(c.idle_cash) : '—'}</td>
+                  <td><YieldCell value={c.yield_on_collateral_monthly} /></td>
+                  <td><YieldCell value={c.yield_on_cash_monthly} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className={styles.earningsTableNote}>
+          <p>{data.coverage.note}</p>
+        </div>
+      </section>
+    </>
+  )
 }
 
 function RentalDetail({ data, chartData, onBack }: RentalDetailProps) {
@@ -1653,27 +1934,8 @@ function AccountDetail({ accountName, optionsData, dividendData, interestData, o
         // Find the matching account
         const acct = (holdingsData.accounts || []).find((a: any) => a.name === accountName)
         if (acct) {
-          const rows: HoldingsRow[] = (acct.holdings || [])
-            .filter((h: any) => h.symbol !== 'CASH')
-            .map((h: any) => {
-              const div = divBySymbol[h.symbol] ?? 0
-              const opt = optBySymbol[h.symbol] ?? 0
-              const optSold = soldBySymbol[h.symbol] ?? 0
-              const optBought = boughtBySymbol[h.symbol] ?? 0
-              return {
-                symbol: h.symbol,
-                shares: h.shares || 0,
-                currentPrice: h.currentPrice || 0,
-                value: (h.shares || 0) * (h.currentPrice || 0),
-                isCash: false,
-                dividendIncome: div,
-                optionsIncome: opt,
-                optionsSold: optSold,
-                optionsBought: optBought,
-                totalIncome: div + opt,
-              }
-            })
-          setHoldingsRows(rows)
+          setHoldingsRows(buildIncomeRows(
+            acct.holdings || [], divBySymbol, optBySymbol, soldBySymbol, boughtBySymbol))
         }
       } catch (err) {
         console.error('Error fetching filtered income:', err)
@@ -2396,7 +2658,7 @@ export function Income() {
 
   const initialView = (sectionParam === 'options' || sectionParam === 'dividends' || sectionParam === 'interest' || sectionParam === 'rental')
     ? sectionParam : 'main'
-  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail' | 'equity_sales' | 'salary_pick' | 'goal_holdings' | 'goal_cash'>(initialView)
+  const [view, setView] = useState<'main' | 'options' | 'dividends' | 'interest' | 'rental' | 'account' | 'salary_detail' | 'equity_sales' | 'salary_pick' | 'goal_holdings' | 'goal_cash' | 'performance'>(initialView)
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -3324,6 +3586,14 @@ export function Income() {
   }
 
   // Account detail view
+  if (view === 'performance') {
+    return (
+      <div className={styles.page}>
+        <PerformanceDetail onBack={() => setView('main')} />
+      </div>
+    )
+  }
+
   if (view === 'account' && selectedAccount) {
     return (
       <div className={styles.page}>
@@ -3797,11 +4067,23 @@ export function Income() {
       {/* Account Breakdown — ranked by income, hierarchy-first columns */}
       {accountRows.length > 0 && (
         <section className={styles.accountsSection}>
-          <h2>By Account {mainSelectedYear === 'all'
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <span>By Account {mainSelectedYear === 'all'
             ? '(All Time)'
             : mainSelectedMonth !== null
               ? `(${new Date(typeof mainSelectedYear === 'number' ? mainSelectedYear : currentYear, mainSelectedMonth - 1).toLocaleString('default', { month: 'long' })} ${mainSelectedYear})`
-              : `(${mainSelectedYear})`}</h2>
+              : `(${mainSelectedYear})`}</span>
+            {/* Cross-account view: the per-account cards below answer "how
+                much", this answers "on how much capital". */}
+            <button
+              className={styles.backButton}
+              style={{ margin: 0, fontSize: 'var(--text-sm)' }}
+              onClick={() => setView('performance')}
+              title="Income as a yield on capital, across all accounts"
+            >
+              All Accounts — Performance
+            </button>
+          </h2>
           <div className={styles.accountsGrid}>
             {accountRows.map(r => (
               <button

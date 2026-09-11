@@ -6,11 +6,23 @@
   padding: 0 var(--space-4);
 }
 
+/* `table-layout: fixed` + `width: 100%` split the width EQUALLY across
+   columns, because no column declares one. At ten columns that is ~10% each,
+   and since `th` is `white-space: nowrap` a header wider than its share could
+   neither wrap nor widen its column — it overflowed and printed on top of its
+   neighbour. `.tableContainer` already asks for `overflow-x: auto`, but a
+   fixed table pinned to 100% never exceeds the container, so the scrollbar
+   never appeared to rescue it.
+
+   `auto` sizes each column to its content; `min-width: 100%` still fills the
+   container when there is room, and lets the table exceed it when there is
+   not, which is what finally engages that horizontal scroll. */
 .table {
-  width: 100%;
+  width: auto;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: var(--text-base);
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 /* Header */
