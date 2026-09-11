@@ -23,9 +23,15 @@ from sqlalchemy.orm import Session
 from app.modules.spending.models import (
     ACCOUNT_NAMES,
     ACCOUNT_ORDER,
+    CANCELLED_SUBSCRIPTIONS,
     EXPECTED_MONTHLY_LABELS,
     NON_MONTHLY_CATEGORIES,
+    REGULAR_MERCHANT_MIN_DAYS,
     RETIRED_ACCOUNTS,
+    SPLIT_ROWS,
+    TRIP_LABELS,
+    TRIP_POSTING_SLACK_DAYS,
+    TRIP_SLACK_LABELS,
     TRIPS,
     CategoryKind,
     SpendingTransaction,
@@ -49,10 +55,51 @@ FRESHNESS_DEAD_DAYS = 30
 
 # ── The one definition ──────────────────────────────────────────────────
 
-def _trip_for(d: date) -> Optional[str]:
+def _merchant_key(merchant: Optional[str]) -> str:
+    """First word of the merchant, letters and digits only — the part that
+    survives Monarch's varying spellings."""
+    s = "".join(ch if ch.isalnum() or ch == " " else "" for ch in (merchant or "").lower())
+    return s.split()[0] if s.split() else ""
+
+
+def regular_merchants(db: Session) -> set[str]:
+    """Merchant keys seen on REGULAR_MERCHANT_MIN_DAYS+ distinct days in the
+    last year — the household's rotation. They never join a trip through
+    the posting-slack days (a Blue Bottle two days before a trip is just
+    Tuesday)."""
+    rows = db.execute(text("""
+        SELECT merchant, transaction_date FROM spending_transactions
+        WHERE merchant IS NOT NULL AND transaction_date >= CURRENT_DATE - 365
+        GROUP BY 1, 2
+    """)).fetchall()
+    days: dict[str, set] = defaultdict(set)
+    for m, d in rows:
+        days[_merchant_key(m)].add(d)
+    return {k for k, ds in days.items() if len(ds) >= REGULAR_MERCHANT_MIN_DAYS}
+
+
+def _trip_for(d: date, merchant: Optional[str] = None, label: str = "",
+              regular: Optional[set] = None) -> Optional[str]:
+    m = (merchant or "").lower()
+    key = _merchant_key(merchant)
+    slack = timedelta(days=TRIP_POSTING_SLACK_DAYS)
+    # 1. An explicit booking beats every window (the India flight bought on
+    #    Jan 22 fell inside Yosemite's slack days).
     for t in TRIPS:
-        if t["start"] <= d <= t["end"]:
-            return t["name"]
+        for bd, needle in t.get("bookings", ()):
+            if d == bd and needle in m:
+                return t["name"]
+    # 2. Inside the window: trip-shaped spend only (TRIP_LABELS).
+    if label in TRIP_LABELS:
+        for t in TRIPS:
+            if t["start"] <= d <= t["end"]:
+                return t["name"]
+    # 3. Posting lag: food, rides, fuel from a merchant that is not part of
+    #    the regular rotation, within the slack either side of the window.
+    if label in TRIP_SLACK_LABELS and regular is not None and key not in regular:
+        for t in TRIPS:
+            if t["start"] - slack <= d <= t["end"] + slack:
+                return t["name"]
     return None
 
 
@@ -106,52 +153,98 @@ def spending_rows(db: Session, year: Optional[int] = None,
     """Every row the Spending page counts, newest first, already classified
     and stamped with the (year, month) period it belongs to."""
     q = db.query(SpendingTransaction)
-    # Load a week of the previous month too, so an early-paid bill can be
-    # attributed into the requested period; the period filter below is exact.
+    # Load the whole previous month too, so an early-paid bill (rent on the
+    # 31st) or a split part with an explicit period (the May 20 wire that
+    # carried June's rent) can be attributed into the requested period; the
+    # period filter below is exact.
     if year and month:
-        lo = date(year, month, 1) - timedelta(days=7)
-        hi = (date(year, month, 1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        first = date(year, month, 1)
+        lo = (first - timedelta(days=1)).replace(day=1)
+        hi = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
         q = q.filter(SpendingTransaction.transaction_date.between(lo, hi))
     elif year:
         q = q.filter(SpendingTransaction.transaction_date.between(
-            date(year, 1, 1) - timedelta(days=7), date(year, 12, 31)))
+            date(year - 1, 12, 1), date(year, 12, 31)))
     if since:
         q = q.filter(SpendingTransaction.transaction_date >= since)
     q = q.order_by(SpendingTransaction.transaction_date.desc(),
                    SpendingTransaction.id.desc())
 
+    regular = regular_merchants(db)
     out = []
     for r in q.all():
-        c = classify(r.category, r.merchant, r.original_statement, r.amount)
-        if not c.counted:
-            continue
-        period = _period_of(c.label, r.transaction_date)
-        if year and period[0] != year:
-            continue
-        if month and period[1] != month:
-            continue
-        trip = _trip_for(r.transaction_date)
-        out.append({
-            "id": r.id,
-            "date": r.transaction_date,
-            "period": period,
-            "merchant": r.merchant,
-            "raw_category": r.category,
-            "label": c.label,
-            "account": r.account,
-            "original_statement": r.original_statement,
-            "notes": r.notes,
-            "amount": float(r.amount),
-            "tags": r.tags,
-            "owner": r.owner,
-            "kind": c.kind.value,
-            "is_refund": c.is_refund,
-            "misfiled_refund": False,
-            "trip": trip,
-            "is_non_monthly": trip is not None or c.label in NON_MONTHLY_CATEGORIES,
-        })
+        for part in _parts_of(r):
+            c, amount, period_override, sub = part
+            if not c.counted:
+                continue
+            period = period_override or _period_of(c.label, r.transaction_date)
+            if year and period[0] != year:
+                continue
+            if month and period[1] != month:
+                continue
+            # Outflows join a trip by date (or claimed booking). An inflow
+            # joins only if it refunds a charge that is in the trip — see
+            # _attach_refunds_to_trips. Otherwise the Woodside weekend
+            # absorbed an unrelated $3,455 refund that landed on 08-30.
+            trip = (_trip_for(r.transaction_date, r.merchant, c.label, regular)
+                    if amount < 0 else None)
+            out.append({
+                "id": r.id if sub is None else f"{r.id}.{sub}",
+                "date": r.transaction_date,
+                "period": period,
+                "merchant": r.merchant,
+                "raw_category": r.category,
+                "label": c.label,
+                "account": r.account,
+                "original_statement": r.original_statement,
+                "notes": r.notes,
+                "amount": amount,
+                "tags": r.tags,
+                "owner": r.owner,
+                "kind": c.kind.value,
+                "is_refund": c.is_refund,
+                "misfiled_refund": False,
+                "trip": trip,
+                "is_non_monthly": trip is not None or c.label in NON_MONTHLY_CATEGORIES,
+            })
     _pair_misfiled_refunds(out)
+    _attach_refunds_to_trips(out)
     return out
+
+
+def _attach_refunds_to_trips(rows: list[dict]) -> None:
+    """A refund inherits the trip of the charge it reverses (same merchant,
+    same amount), and nothing else about a trip window touches inflows."""
+    charge_trip: dict[tuple, str] = {}
+    for r in rows:
+        if r["amount"] < 0 and r["trip"]:
+            charge_trip.setdefault((_norm_merchant(r["merchant"]),
+                                    round(-r["amount"], 2)), r["trip"])
+    for r in rows:
+        if r["amount"] > 0:
+            r["trip"] = charge_trip.get((_norm_merchant(r["merchant"]),
+                                         round(r["amount"], 2)))
+            r["is_non_monthly"] = r["trip"] is not None or \
+                r["label"] in NON_MONTHLY_CATEGORIES
+
+
+def _parts_of(r):
+    """(RowClass, signed amount, period override, sub-index) for each part
+    of a row. Almost every row is one part; SPLIT_ROWS name the exceptions
+    (a wire that was rent plus a deposit)."""
+    from app.modules.spending.models import RowClass
+    amt = float(r.amount)
+    stmt = (r.original_statement or "").lower()
+    for rule in SPLIT_ROWS:
+        if rule["needle"] in stmt and abs(abs(amt) - rule["amount"]) < 0.005:
+            sign = -1 if amt < 0 else 1
+            return [
+                (RowClass(kind, label, False, kind == CategoryKind.SPENDING),
+                 sign * part_amt, period, i)
+                for i, (part_amt, label, kind, period) in enumerate(rule["parts"])
+            ]
+    return [(classify(r.category, r.merchant, r.original_statement, r.amount),
+             amt, None, None)]
 
 
 def monthly_spending_totals(db: Session, since: Optional[date] = None) -> dict[str, float]:
@@ -542,6 +635,15 @@ def get_spending_summary(db: Session, year: int, month: Optional[int] = None) ->
                              "total": round(sum(r["amount"] for r in misfiled), 2)},
         "missing_recurring": [],
         "holes": find_holes(db, year, month),
+        # A merchant Neel said he cancelled, still charging after that date.
+        "cancelled_but_charged": [
+            {"date": r["date"].isoformat(), "merchant": r["merchant"],
+             "amount": round(-r["amount"], 2)}
+            for r in rows
+            if r["amount"] < 0 and any(
+                k in (r["merchant"] or "").lower() and r["date"] > since
+                for k, since in CANCELLED_SUBSCRIPTIONS.items())
+        ],
     }
     # Missing-recurring detector, complete months only: a month without rent
     # or school is a data defect until proven otherwise (Jul/Aug 2026).

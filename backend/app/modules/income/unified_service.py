@@ -21,7 +21,9 @@ from typing import Dict, List, Optional
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
-from app.modules.spending.models import AIRBNB_CATEGORY, HARTSTENE_CATEGORY
+from app.modules.spending.models import (
+    AIRBNB_CATEGORY, HARTSTENE_CATEGORY, CategoryKind, classify,
+)
 from app.shared.services.cost_basis_service import get_realized_pnl_by_period
 
 FIXED_SOURCES = {"salary", "rental", "airbnb"}
@@ -402,10 +404,18 @@ def get_unified_income(
     for cat, src in _BUSINESS_STREAMS.items():
         rent_only = cat == HARTSTENE_CATEGORY
         rows = db.execute(text("""
-            SELECT id, transaction_date, amount, original_statement
+            SELECT id, transaction_date, amount, original_statement, merchant
             FROM spending_transactions
             WHERE category = :cat
         """), {"cat": cat}).fetchall()
+        # The Spending rulebook can re-route a row out of a business
+        # category (a vacation booked on Airbnb that Monarch filed under
+        # the Worldmark investment ledger, 2026-09-11). Honour the same
+        # decision here, so the exclusion there and the inclusion here stay
+        # one rule.
+        rows = [r for r in rows
+                if classify(cat, r.merchant, r.original_statement,
+                            r.amount).kind == CategoryKind.BUSINESS]
         if rent_only:
             rows = [r for r in rows
                     if _is_hartstene_rent(r.amount, r.original_statement)]

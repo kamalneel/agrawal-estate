@@ -94,7 +94,10 @@ SEED_CATEGORIES = {
     "china airlines": "Travel & Vacation",
     "air india": "Travel & Vacation",
     "expedia": "Travel & Vacation",
-    "worldmark the club": "Travel & Vacation",
+    # Neel, 2026-09-11: Worldmark IS the Airbnb investment (the ownership
+    # that will earn Airbnb revenue); bookings on Airbnb are vacations.
+    "worldmark the club": "Investment - AirBnb Business",
+    "airbnb": "Travel & Vacation",
     # Neel, 2026-07-09: wires to Eric Chang = monthly rent ($9K/mo from
     # Jun 1 + one month deposit); Gifthealth = Neel's medication; cash
     # deliveries (incl. fee/tip rows) pay the home cleaners (~$250/mo).

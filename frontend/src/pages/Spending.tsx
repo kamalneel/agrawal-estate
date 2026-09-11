@@ -33,6 +33,7 @@ interface Summary {
     misfiled_refunds: { count: number; total: number };
     missing_recurring: { month: number; month_name: string; label: string }[];
     holes: { account: string; display: string; from: string; to: string; days: number; typical_gap_days: number }[];
+    cancelled_but_charged: { date: string; merchant: string; amount: number }[];
   };
 }
 interface FreshAccount {
@@ -281,8 +282,13 @@ export default function Spending() {
                     : `Brokerage outflows ${fmt(outflowPeriod.total)} (${fmt(outflowPeriod.card)} card channel, ${fmt(outflowPeriod.bank)} bank) · Δ ${fmt(Math.abs(summary.total_spending - outflowPeriod.total))} vs categorized`}
                 </div>
               )}
-              {(summary.flags.holes.length > 0 || summary.flags.missing_recurring.length > 0 || summary.flags.uncategorized.total >= 50 || summary.flags.misfiled_refunds.count > 0) && (
+              {(summary.flags.holes.length > 0 || summary.flags.cancelled_but_charged.length > 0 || summary.flags.missing_recurring.length > 0 || summary.flags.uncategorized.total >= 50 || summary.flags.misfiled_refunds.count > 0) && (
                 <div className={styles.flagRow}>
+                  {summary.flags.cancelled_but_charged.map(c => (
+                    <span key={`${c.merchant}-${c.date}`} className={`${styles.flag} ${styles.flagCritical}`} title="You said this subscription was cancelled; it charged again.">
+                      {c.merchant} charged {fmt(c.amount)} on {fmtDate(c.date)} after cancellation
+                    </span>
+                  ))}
                   {summary.flags.holes.map(h => (
                     <span key={`${h.account}-${h.from}`} className={`${styles.flag} ${styles.flagCritical}`}
                       title={`This account normally has a transaction every ${h.typical_gap_days} day(s); ${h.days} days with none means the feed dropped. Re-export this range from Monarch, or import the Robinhood card CSV.`}>

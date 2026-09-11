@@ -63,6 +63,10 @@ CATEGORY_KINDS: dict[str, CategoryKind] = {
     "Loan from Neel’s Investment": CategoryKind.TRANSFER,
     "Tesla's loan payment": CategoryKind.TRANSFER,
     "Tesla’s loan payment": CategoryKind.TRANSFER,
+    # NOT listed (so SPENDING): "Adamx" and "AdamX Work Trip - Vegas" — work
+    # expenses Neel paid personally. AdamX (his employer) reimburses them,
+    # and the reimbursements NET against spending as one visible negative
+    # line; see COUNTERPARTY_RULES "Work expenses (reimbursed)".
     # --- earnings ----------------------------------------------------------
     "Paychecks": CategoryKind.INCOME,
     "Jaya's Salary": CategoryKind.INCOME,
@@ -75,9 +79,13 @@ CATEGORY_KINDS: dict[str, CategoryKind] = {
     # costs (HOA, tax, repairs) share one category, so it nets to +$65,108
     # (2025) rather than reading as a $13,921 expense.
     "303 Hartstene Dr": CategoryKind.BUSINESS,
-    # Airbnb: partial ownership, build-out only. Negative until 2027 revenue,
-    # at which point it behaves exactly like 303 Hartstene above — same
-    # machinery, no new decision needed.
+    # The Worldmark ownership — an investment made for future revenue in the
+    # form of Airbnb (Neel, 2026-09-11). Nothing from Airbnb itself appears
+    # here yet; the ledger is Worldmark charges, negative until the unit
+    # earns (2027), at which point it behaves exactly like 303 Hartstene
+    # above — same machinery, no new decision needed. Bookings ON Airbnb
+    # for the family's own trips are vacations, re-routed by
+    # COUNTERPARTY_RULES.
     "Investment - AirBnb Business": CategoryKind.BUSINESS,
 }
 
@@ -227,7 +235,9 @@ RENT_CATEGORY = "Rent"
 #
 # Keep needles specific: "lee" alone would match half the merchants in the
 # Bay Area; "; lee" and "chk 3210" are the exact forms BofA's statement uses.
-COUNTERPARTY_RULES: list[tuple[str, CategoryKind, tuple[str, ...]]] = [
+#: (label, kind, needles[, direction]) — direction "out" / "in" limits the
+#: rule to outflows / inflows; omitted means both.
+COUNTERPARTY_RULES: list[tuple] = [
     # Current home, from 2026-06. Landlord Eric Chang.
     ("Home Rent", CategoryKind.SPENDING, ("eric chang",)),
     # Previous home, through 2026-05. Landlord Yuan Lee.
@@ -240,10 +250,78 @@ COUNTERPARTY_RULES: list[tuple[str, CategoryKind, tuple[str, ...]]] = [
     # Costco Citi), "Auto Payment" on 2025-12-22 ($2,414, same card).
     ("Returned card payment", CategoryKind.TRANSFER,
      ("autopay rtn", "insufficient fun")),
+    # Bookings ON Airbnb are vacations — consumption, Travel & Vacation.
+    # Monarch files some of them under "Investment - AirBnb Business", the
+    # ledger for the Worldmark ownership, purely on the word (2026-06-16,
+    # $464). Neel, 2026-09-11: "Airbnb is something I sometimes book for
+    # vacation. Worldmark is an investment for future revenue in the form
+    # of Airbnb." Outflows only: when the unit starts earning (2027), payouts
+    # will arrive from the same merchant as INFLOWS and belong to the
+    # investment ledger, not here.
+    ("Travel & Vacation", CategoryKind.SPENDING, ("airbnb",), "out"),
+    # The Worldmark ownership itself, and Onalani LLC, a pass-through payee
+    # for Worldmark (Neel, 2026-09-11). Pinned here so a Monarch guess
+    # ("Travel & Vacation", Uncategorized — both have happened) can never
+    # move them out of the investment ledger.
+    ("Investment - AirBnb Business", CategoryKind.BUSINESS,
+     ("worldmark", "onalani")),
+    # Chase's own savings <-> checking transfers are stamped "ODP TRANSFER"
+    # (overdraft protection). Monarch reads "ODP" as Office Depot and filed
+    # a $2,313 transfer as Shopping on 2026-04-10.
+    ("Transfer", CategoryKind.TRANSFER, ("odp transfer",)),
+    # Employer reimbursements. Neel, 2026-09-11: "AdamX deposits are all
+    # reimbursements from my work, not a salary ... we won't know which
+    # [purchases] are reimbursed, those are small amounts, so just
+    # wholesale deduct it from my credit card expense." So the deposit is
+    # a SPENDING-kind inflow that nets (NETTING_LABELS) — one visible
+    # negative line in the month it lands — and never income.
+    ("Work expenses (reimbursed)", CategoryKind.SPENDING,
+     ("adamxai", "adamx inc"), "in"),
+    # A friend: money to or from him settles shared dinners and activities
+    # (Neel, 2026-09-11). Outflows are spending; inflows NET against it
+    # (see NETTING_LABELS) — he is paying his half back, not paying Neel.
+    ("Split bills", CategoryKind.SPENDING, ("ankur richhariya",)),
+    # Zelle has two recurring payees that are spending, not transfers
+    # (Neel, 2026-09-11). Fariba is the dog sitter (Monarch: Pets, once
+    # Charity, once Transfer). Lianxiang Liu is the masseuse — the ~$25
+    # weekly tip, which Monarch filed as Transfer and so never counted.
+    ("Dog sitter", CategoryKind.SPENDING, ("fariba",), "out"),
+    ("Massage", CategoryKind.SPENDING, ("lianxiang",), "out"),
 ]
 
+#: One transaction that is really two. Matched by statement needle AND exact
+#: amount, so it can only ever hit the one row it describes. Each part
+#: carries its own label, kind and (optionally) the (year, month) it is for.
+#: The DB row is never touched; the split happens at query time.
+SPLIT_ROWS: list[dict] = [
+    # 2026-05-20, $19,580 wire to the new landlord. Neel, 2026-09-11: "the
+    # $19,580 was the deposit plus June rent." Rent is $9,000; the rest is
+    # the security deposit — an asset held by the landlord, not spend.
+    {
+        "needle": "outgoing wire transfer to eric chang",
+        "amount": 19580.00,
+        "parts": [
+            (9000.00, "Home Rent", CategoryKind.SPENDING, (2026, 6)),
+            (10580.00, "Security deposit", CategoryKind.TRANSFER, None),
+        ],
+    },
+]
+
+#: Spending labels whose INFLOWS net against their outflows even without a
+#: "Refund" statement: a friend settling a shared bill, an employer
+#: reimbursing an expense filed as spending.
+NETTING_LABELS = {"Split bills", "Work expenses (reimbursed)"}
+
+#: Subscriptions Neel has said he cancelled, with the date he said so. Any
+#: charge from the merchant after that date is flagged on the headline —
+#: this is the "$10 to Yahoo" case, which he had spotted once and which
+#: kept billing for a year under five different categories.
+CANCELLED_SUBSCRIPTIONS: dict[str, date] = {
+    "finance bronze": date(2026, 9, 11),   # Yahoo Finance Bronze, $9.95/mo
+}
+
 #: Labels a counterparty rule can produce.
-COUNTERPARTY_LABELS = {label for label, _, _ in COUNTERPARTY_RULES}
+COUNTERPARTY_LABELS = {rule[0] for rule in COUNTERPARTY_RULES}
 
 #: Monarch account name -> (display name, fixed position). Accounts are
 #: always shown in THIS order, never sorted by amount (project-kb:
@@ -263,7 +341,7 @@ ACCOUNT_DISPLAY: list[tuple[str, str]] = [
     ("PREMIER PLUS CKG (...5973)", "Chase checking 5973"),
     ("Costco Anywhere Visa Card by Citi (...1453)", "Costco Citi card"),
     ("CREDIT CARD (...2417)", "Amazon card 2417"),
-    ("CREDIT CARD (...5149)", "Card 5149"),
+    ("CREDIT CARD (...5149)", "Card 5149 (deprecated)"),
     ("PayPal", "PayPal"),
 ]
 ACCOUNT_ORDER = {name: i for i, (name, _) in enumerate(ACCOUNT_DISPLAY)}
@@ -274,6 +352,8 @@ ACCOUNT_NAMES = dict(ACCOUNT_DISPLAY)
 RETIRED_ACCOUNTS: dict[str, str] = {
     "Spending (...dabe)": "superseded by Checking (...8935) and Savings "
                           "(...7358) after the 2026-06 Robinhood reconnect",
+    "CREDIT CARD (...5149)": "deprecated — Neel, 2026-09-11 (last row "
+                             "2026-06-19)",
 }
 
 #: Lines that have appeared every month for 20 months. A month without one is
@@ -325,6 +405,57 @@ MERCHANT_CATEGORY_OVERRIDES: list[tuple[str, str]] = [
     # spellings ("Blue Bottle Coffee" and "…, Inc") both match. What's left
     # in Coffee Shops is every other cafe.
     ("blue bottle", "Blue Bottle"),
+    # --- Neel, 2026-09-11 -------------------------------------------------
+    # Costco is groceries (Monarch had split it Groceries 65 / Shopping 49).
+    ("costco", "Groceries"),
+    # People. Joann Riggio was a counselor Neel used; Denise Hall is Alisha's
+    # English tutor (Monarch filed her under "Joann Riggio" and then under
+    # "Dipti salary" — both person-named categories it invented).
+    ("joann riggio", "Counseling"),
+    ("denise hall", "Alisha's Education"),
+    # "Yanghall" is Denise Hall's PayPal handle as it appears on the
+    # Robinhood card. 2026-08-28: paid via PayPal-on-card with the wrong
+    # PayPal option, she refunded (08-30), paid again from PayPal (08-28,
+    # refunded 08-31), and finally on 09-01. One tutoring payment, three
+    # attempts; the two refunds pair to zero here (Neel, 2026-09-11).
+    ("yanghall", "Alisha's Education"),
+    # Health, the three recurring lines Neel wants to see by name: the gym
+    # (YMCA), massage (Cloud 9 Spa, both spouses), and medication
+    # (Gifthealth). Doctors and dentists stay in Medical / Dentist.
+    ("ymca", "Gym"),
+    ("cloud 9 spa", "Massage"),
+    ("cloud spa burlingame", "Massage"),
+    ("gifthealth", "Medication"),
+    # Streaming — "Netflix, Hulu and others, those are the easy ones to
+    # miss." Their own line, so every month shows what is still billing.
+    ("netflix", "Streaming"),
+    ("hulu", "Streaming"),
+    ("spotify", "Streaming"),
+    ("youtube", "Streaming"),
+    ("audible", "Streaming"),
+    ("disney", "Streaming"),
+    # Paid reading. Yahoo Finance Bronze ("Finance Bronze", $9.95/mo) had
+    # been filed under five categories; see CANCELLED_SUBSCRIPTIONS.
+    ("finance bronze", "News"),
+    ("stratechery", "News"),
+    # AI tools (Monarch splits Anthropic between AI Tools and Software).
+    ("anthropic", "AI Tools"),
+    ("cursor", "AI Tools"),
+    # Everything Tesla — charging, service, subscription — is the car.
+    ("tesla", "Auto"),
+    # Isha (yoga / Inner Engineering / Yatra) is Jaya's. Needles are the
+    # program names, never bare "isha": "Alisha" contains it.
+    ("isha inner", "Jaya Personal Expense"),
+    ("isha child", "Jaya Personal Expense"),
+    ("isha yoga", "Jaya Personal Expense"),
+    ("isha life", "Jaya Personal Expense"),
+    ("isha yatra", "Jaya Personal Expense"),
+    ("isha jal", "Jaya Personal Expense"),
+    ("isha pancha", "Jaya Personal Expense"),
+    ("isha soak", "Jaya Personal Expense"),
+    ("isha foundation", "Jaya Personal Expense"),
+    # Jaya's executive coach for job interviews (Neel, 2026-09-11).
+    ("talent sherpas", "Jaya's Education"),
 ]
 
 
@@ -335,16 +466,38 @@ CATEGORY_RENAMES: dict[str, str] = {
     # than in a category of its own (Neel, 2026-07-28: "all things auto").
     # Deliberately NOT merged: "Auto Payment" (a loan, debt service rather
     # than a running cost) and "Parking & Tolls".
-    "Gas": "Auto Maintenance",
+    "Gas": "Auto",
+    # Neel, 2026-09-11: one "Auto" line for the running cost of the cars.
+    # Still separate: "Auto Payment" (the loan — debt service) and
+    # "Parking & Tolls".
+    "Auto Maintenance": "Auto",
+    # Keep the per-person lines (Jaya Personal Expense, Jaya's Education,
+    # Child Incentive) — Neel, 2026-09-11.
+    # Person-named categories Monarch invented (Neel, 2026-09-11). Dipti was
+    # the family's domestic help; Joann Riggio a counselor. Rows for other
+    # people that landed in these are re-homed by merchant override first.
+    "Dipti salary": "Household Help",
+    "Joann Riggio": "Counseling",
+    # Work spend Neel tagged for reimbursement, on the same line as the
+    # reimbursements that net against it.
+    "Adamx": "Work expenses (reimbursed)",
+    "AdamX Work Trip - Vegas": "Work expenses (reimbursed)",
 }
 
 
 def counterparty_rule(merchant: str | None,
-                      original_statement: str | None
-                      ) -> tuple[str, CategoryKind] | None:
+                      original_statement: str | None,
+                      amount=None) -> tuple[str, CategoryKind] | None:
     """(label, kind) from COUNTERPARTY_RULES, or None if nothing matches."""
     haystack = f"{original_statement or ''} {merchant or ''}".lower()
-    for label, kind, needles in COUNTERPARTY_RULES:
+    amt = float(amount) if amount is not None else 0.0
+    for rule in COUNTERPARTY_RULES:
+        label, kind, needles = rule[0], rule[1], rule[2]
+        direction = rule[3] if len(rule) > 3 else None
+        if direction == "out" and amt >= 0:
+            continue
+        if direction == "in" and amt <= 0:
+            continue
         if any(n in haystack for n in needles):
             return label, kind
     return None
@@ -391,15 +544,16 @@ def classify(category: str | None, merchant: str | None,
     BBD model can never disagree about what a row is.
     """
     amt = float(amount) if amount is not None else 0.0
-    cp = counterparty_rule(merchant, original_statement)
+    cp = counterparty_rule(merchant, original_statement, amt)
     if cp is not None:
         label, kind = cp
     else:
         kind = kind_of(category)
         label = display_category(category, merchant, original_statement)
 
-    refund = is_refund(amt, original_statement, merchant) and \
-        kind in (CategoryKind.SPENDING, CategoryKind.INCOME)
+    refund = (is_refund(amt, original_statement, merchant)
+              and kind in (CategoryKind.SPENDING, CategoryKind.INCOME)) \
+        or (amt > 0 and label in NETTING_LABELS)
 
     if amt < 0:
         counted = kind == CategoryKind.SPENDING
@@ -448,11 +602,64 @@ def split_rent_label(merchant: str | None, original_statement: str | None) -> st
     return RENT_CATEGORY
 
 
-# Trips: date-range-based classification. ALL spending within a trip's date range
-# is treated as non-monthly (restaurants, dog sitter, etc.), regardless of category.
-# To add a new trip: {"name": "Trip Name", "start": date(YYYY, M, D), "end": date(YYYY, M, D)}
+# Trips: date-range-based classification. ALL spending within a trip's date
+# range is treated as non-monthly (restaurants, rides, hotels, dog sitter),
+# regardless of category. Windows are STAY dates, never booking dates.
+# Lodging is usually booked days earlier, so a trip may also claim specific
+# bookings by (date, merchant needle) — those rows join the trip too.
+#
+# Posting lag: "sometimes the food bills post earlier or after the trip,
+# plus or minus 2 days" (Neel, 2026-09-11). So each window gets
+# TRIP_POSTING_SLACK_DAYS of slack either side — but only for the kinds of
+# spend a trip produces (TRIP_SLACK_LABELS), and only from merchants that are
+# NOT part of the household's regular rotation (services.regular_merchants:
+# seen on 6+ days in the last year). Inside the window itself everything
+# counts, as before. Without both limits the slack days pulled in Blue
+# Bottle, Cloud 9 and a $3,455 tutoring payment.
+TRIP_POSTING_SLACK_DAYS = 2
+TRIP_SLACK_LABELS = {
+    "Restaurants & Bars", "Coffee Shops", "Groceries", "Taxi & Ride Shares",
+    "Parking & Tolls", "Auto", "Travel & Vacation", "Entertainment & Recreation",
+}
+#: What a trip window may claim INSIDE the window: the spend a trip
+#: produces. Fixed bills that merely fall on those dates — rent, tuition,
+#: insurance, utilities, subscriptions, medical, fees, taxes — stay where
+#: they are. Without this the three-week India window took March's rent
+#: and read $21.9K; the Yosemite weekend took a tuition payment.
+TRIP_LABELS = TRIP_SLACK_LABELS | {
+    "Shopping", "Clothing", "Personal", "Massage", "Dog sitter", "Pets",
+    "Electronics", "Gifts", "Miscellaneous", "Uncategorized", "Cash & ATM",
+    "Split bills",
+}
+#: Keyed by the merchant's FIRST WORD, because Monarch spells one place
+#: several ways ("Zareen's" / "Zareen's Restaurant & Catering"). Three
+#: distinct days in a year is enough to be "the rotation".
+REGULAR_MERCHANT_MIN_DAYS = 3
+
+# Neel names vacations as they happen (2026-09-11); add the window then.
+# To add: {"name": ..., "start": date(...), "end": date(...),
+#          "bookings": [(date(...), "merchant needle"), ...]}
 TRIPS = [
     {"name": "Vegas NYE 2025", "start": date(2025, 12, 28), "end": date(2026, 1, 1)},
+    # Neel, 2026-09-11 (windows confirmed from the card's away-days).
+    {"name": "Wedding anniversary — Yosemite",
+     "start": date(2026, 1, 16), "end": date(2026, 1, 20)},
+    {"name": "India 2026",
+     "start": date(2026, 2, 23), "end": date(2026, 3, 18),
+     "bookings": [(date(2026, 1, 22), "saudi arabian"), (date(2026, 1, 22), "expedia"),
+                  (date(2026, 1, 24), "expedia"), (date(2026, 2, 25), "air india"),
+                  (date(2026, 2, 27), "expedia")]},
+    {"name": "Great Wolf Lodge",
+     "start": date(2026, 4, 9), "end": date(2026, 4, 10)},
+    # Neel, 2026-09-11. The Airbnb booked 08-11 ($1,051) is taken as the
+    # Santa Cruz stay and the one booked 08-12 ($744) as Woodside — the
+    # two bookings, two weekends; swap if wrong.
+    {"name": "Jaya's birthday weekend — Santa Cruz",
+     "start": date(2026, 8, 15), "end": date(2026, 8, 16),
+     "bookings": [(date(2026, 8, 11), "airbnb")]},
+    {"name": "Rakhi celebration — Woodside",
+     "start": date(2026, 8, 29), "end": date(2026, 8, 30),
+     "bookings": [(date(2026, 8, 12), "airbnb")]},
 ]
 
 
