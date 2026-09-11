@@ -657,9 +657,12 @@ TRIPS = [
     {"name": "Jaya's birthday weekend — Santa Cruz",
      "start": date(2026, 8, 15), "end": date(2026, 8, 16),
      "bookings": [(date(2026, 8, 11), "airbnb")]},
+    # Airbnb split the Woodside payment: $744 on 08-12 and $744 on 08-14,
+    # same reservation (HMCCR4MMYE). Monarch delivered only the first;
+    # the second came from the Robinhood card download.
     {"name": "Rakhi celebration — Woodside",
      "start": date(2026, 8, 29), "end": date(2026, 8, 30),
-     "bookings": [(date(2026, 8, 12), "airbnb")]},
+     "bookings": [(date(2026, 8, 12), "airbnb"), (date(2026, 8, 14), "airbnb")]},
 ]
 
 

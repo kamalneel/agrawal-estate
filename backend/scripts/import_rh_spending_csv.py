@@ -33,7 +33,15 @@ Rules:
   - record_hash includes an instance counter so genuinely identical rows
     (two same-price coffees same day) survive while re-imports dedupe.
 
+  - MISSING ROWS (2026-09-11): Monarch can drop a repeat charge as a
+    duplicate — Airbnb split a $744 booking into two $744 charges two days
+    apart and Monarch delivered one. `--only-dates D[,D...]` imports the
+    rows on those dates that have no exact same-date same-amount row in
+    the DB, ignoring cutoff, holes and the fuzzy check. Use it after the
+    exact-match comparison has shown which rows are missing; never blind.
+
 Usage: python scripts/import_rh_spending_csv.py <csv...> [--save]
+       [--only-dates YYYY-MM-DD[,YYYY-MM-DD...]]
 """
 import csv
 import hashlib
@@ -239,9 +247,32 @@ def detect(path: Path):
     raise SystemExit(f"unrecognized CSV format: {path}")
 
 
+def db_count_window(db, account: str, day, amount: float) -> int:
+    """DB rows for this account with this amount within +/- FUZZY_DAYS.
+    Monarch dates a card purchase on its posting day, usually one day after
+    Robinhood's, so an exact-date test would call half the file missing."""
+    return db.execute(text("""
+        SELECT COUNT(*) FROM spending_transactions
+        WHERE account = :a AND amount = :amt
+          AND transaction_date BETWEEN :d - :f AND :d + :f"""),
+        {"a": account, "amt": round(amount, 2), "d": day, "f": FUZZY_DAYS}).scalar()
+
+
 def main():
     save = "--save" in sys.argv
-    paths = [Path(a) for a in sys.argv[1:] if not a.startswith("--")]
+    only_dates = set()
+    args = sys.argv[1:]
+    consumed = set()
+    for i, a in enumerate(args):
+        if a.startswith("--only-dates"):
+            if "=" in a:
+                val = a.split("=", 1)[1]
+            else:
+                val = args[i + 1]
+                consumed.add(i + 1)
+            only_dates = {datetime.strptime(x, "%Y-%m-%d").date() for x in val.split(",")}
+    paths = [Path(a) for i, a in enumerate(args)
+             if not a.startswith("--") and i not in consumed]
     if not paths:
         raise SystemExit(__doc__)
 
@@ -263,6 +294,29 @@ def main():
         cutoff = account_cutoff(db, account)
         holes = account_holes(db, account)
         kept, after, in_hole, fuzzy_dups = [], 0, 0, 0
+        if only_dates:
+            # A row is missing when the FILE has more rows of that amount
+            # within +/- FUZZY_DAYS than the DB does — the multiset test,
+            # which is what separates Airbnb's second $744 (file 2, DB 1)
+            # from a Domino's Monarch merely dated a day later (1 and 1).
+            from datetime import timedelta
+            for r in rows:
+                day = datetime.strptime(r["date"], "%Y-%m-%d").date()
+                if day not in only_dates:
+                    continue
+                lo, hi = day - timedelta(days=FUZZY_DAYS), day + timedelta(days=FUZZY_DAYS)
+                in_file = sum(1 for x in rows
+                              if abs(x["amount"] - r["amount"]) < 0.005
+                              and lo <= datetime.strptime(x["date"], "%Y-%m-%d").date() <= hi)
+                if in_file > db_count_window(db, account, day, r["amount"]):
+                    kept.append(r)
+            print(f"{p.name}: {kind} -> {account}: --only-dates "
+                  f"{sorted(str(d) for d in only_dates)} -> {len(kept)} rows "
+                  f"the DB is short of (same amount within ±{FUZZY_DAYS} days)")
+            for r in kept:
+                print(f"   {r['date']} {r['amount']:9,.2f}  {r['merchant']}")
+            records.extend(kept)
+            continue
         for r in rows:
             day = datetime.strptime(r["date"], "%Y-%m-%d").date()
             if cutoff is None or day > cutoff:

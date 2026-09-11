@@ -157,6 +157,20 @@ Kaur, Baltazar Arroyo, Yomara Lopez de Morales, Anoop Kohli, Jay Prakash.
 The $463.68 Airbnb of 06-16 (cancelled Iceland trip) shows no refund. Zelle payees filed as Transfer: Dena Baez, Manjit
 Kaur, Baltazar Arroyo, Yomara Lopez de Morales, Anoop Kohli, Jay Prakash.
 
+## Monarch drops repeat charges — check the card download
+
+Monarch de-duplicates identical charges that land close together and
+delivers only one: Airbnb's split payment ($744 on 08-12 and $744 on
+08-14, one reservation) arrived as a single row, and five $6.50 Blue
+Bottles, a $25 Starbucks and two June items vanished the same way in
+2026. When Neel provides a Robinhood card download, run the multiset
+comparison (same account, same amount, ±3 days; the file must not have
+more rows than the DB) and import what is short with
+`import_rh_spending_csv.py <csv> --only-dates <the dates>`. Ignore
+Payment rows in that comparison (sign convention differs; they are
+transfers anyway). Ask for a fresh card download whenever a booking's
+total on the page disagrees with the receipt.
+
 ## Gap fill from Robinhood's own downloads
 
 When Monarch has a hole (a dropped feed: the card empty for a stretch
