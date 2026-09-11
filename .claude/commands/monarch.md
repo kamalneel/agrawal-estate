@@ -144,7 +144,7 @@ then in code.
   Hulu, YouTube, Spotify, Audible, Disney), News (Stratechery, Yahoo
   Finance).
 - **Health, three recurring lines by name:** Gym (YMCA), Massage (Cloud 9
-  Spa, both spouses), Medication (Gifthealth). Doctors/dentists stay in
+  Spa, both spouses), Neel's Medication (Gifthealth). Doctors/dentists stay in
   Medical / Dentist.
 - **Cancelled subscriptions** go in `CANCELLED_SUBSCRIPTIONS` with the
   date; any later charge is a red flag on the headline. Yahoo Finance

@@ -421,11 +421,11 @@ MERCHANT_CATEGORY_OVERRIDES: list[tuple[str, str]] = [
     ("yanghall", "Alisha's Education"),
     # Health, the three recurring lines Neel wants to see by name: the gym
     # (YMCA), massage (Cloud 9 Spa, both spouses), and medication
-    # (Gifthealth). Doctors and dentists stay in Medical / Dentist.
+    # (Gifthealth — Neel's). Doctors and dentists stay in Medical / Dentist.
     ("ymca", "Gym"),
     ("cloud 9 spa", "Massage"),
     ("cloud spa burlingame", "Massage"),
-    ("gifthealth", "Medication"),
+    ("gifthealth", "Neel's Medication"),
     # Streaming — "Netflix, Hulu and others, those are the easy ones to
     # miss." Their own line, so every month shows what is still billing.
     ("netflix", "Streaming"),
