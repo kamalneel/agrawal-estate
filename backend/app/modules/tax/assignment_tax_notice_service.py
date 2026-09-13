@@ -72,6 +72,16 @@ ROUGH_RATE_ST = 0.481
 DISPOSAL_PATH = "Account → Menu → Investing → Tax lots disposal method → Edit disposal method"
 
 
+def account_method(account_id: str, on: date) -> str:
+    """The broker-side disposal method for this account on this date, from
+    data/goal_settings.json (same reader the lot engine uses)."""
+    try:
+        from scripts.rebuild_stock_lots import load_disposal_methods, disposal_method
+        return disposal_method(load_disposal_methods(), account_id, on)
+    except Exception:  # noqa: BLE001
+        return "fifo"
+
+
 def _us_holidays() -> set:
     try:
         from scripts.backfill_holdings_history import US_HOLIDAYS
@@ -263,28 +273,43 @@ def build_notice(c: Dict, sc: Dict) -> Tuple[str, str]:
     fifo, high = sc["fifo"], sc["highest_cost"]
     swing = sc["swing"]
     ev = c["event_date"]
+    method_set = account_method(c["account_id"], ev) == "highest_cost"
     if c["kind"] == "pending":
-        subject = (f"{sym} ${strike:,.0f} call assignment likely {ev:%a %-m/%-d} in {acct} — "
-                   f"set the lots before 8 PM ET (FIFO {_money(fifo['gain'])} vs Highest Cost {_money(high['gain'])})")
         head = (f"*{c['contracts']} × {sym} ${strike:,.2f} call{'s' if c['contracts'] > 1 else ''} in {acct} "
                 f"expire {ev:%A %b %-d} and are in the money* ({sym} ${c['spot']:,.2f}). "
                 f"Barring a drop below ${strike:,.2f}, {shares:,} shares are sold at ${strike:,.2f} that night.\n\n")
-        action = (f"*Do this before 8 PM ET on {ev:%A}:* open Robinhood → {DISPOSAL_PATH} → choose *Highest Cost* "
-                  f"for {acct}. Robinhood: \"any update to your default tax lot disposal method before 8 PM ET applies "
-                  f"to all trades executed on the same trading day and any trades moving forward\" — and the default "
-                  f"\"applies to … shares resulting from options exercise or assignment.\"\n\n"
-                  f"If it assigns on FIFO anyway, you can still fix it until *9 PM ET on "
-                  f"{settlement_deadline(ev):%A %b %-d}* (the settlement date) — see the support message below.")
+        if method_set:
+            subject = (f"{sym} ${strike:,.0f} call assignment likely {ev:%a %-m/%-d} in {acct} — "
+                       f"Highest Cost is set, expect {_money(high['gain'])} (FIFO would be {_money(fifo['gain'])})")
+            action = (f"*{acct} is set to Highest Cost* (per data/goal_settings.json), so the assignment should "
+                      f"deliver the lots listed under Highest Cost above — nothing to do unless the trade "
+                      f"confirmation shows otherwise. If it does, you can still fix it until *9 PM ET on "
+                      f"{settlement_deadline(ev):%A %b %-d}* (the settlement date) with the support message below.")
+        else:
+            subject = (f"{sym} ${strike:,.0f} call assignment likely {ev:%a %-m/%-d} in {acct} — "
+                       f"set the lots before 8 PM ET (FIFO {_money(fifo['gain'])} vs Highest Cost {_money(high['gain'])})")
+            action = (f"*Do this before 8 PM ET on {ev:%A}:* open Robinhood → {DISPOSAL_PATH} → choose *Highest Cost* "
+                      f"for {acct}. Robinhood: \"any update to your default tax lot disposal method before 8 PM ET applies "
+                      f"to all trades executed on the same trading day and any trades moving forward\" — and the default "
+                      f"\"applies to … shares resulting from options exercise or assignment.\"\n\n"
+                      f"If it assigns on FIFO anyway, you can still fix it until *9 PM ET on "
+                      f"{settlement_deadline(ev):%A %b %-d}* (the settlement date) — see the support message below.")
     else:
         dl = settlement_deadline(ev)
         subject = (f"{sym} ${strike:,.0f} call ASSIGNED {ev:%-m/%-d} in {acct} — fix the lots before "
                    f"{dl:%a %-m/%-d} 9 PM ET (FIFO {_money(fifo['gain'])} vs Highest Cost {_money(high['gain'])})")
         head = (f"*{c['contracts']} × {sym} ${strike:,.2f} call{'s' if c['contracts'] > 1 else ''} in {acct} "
                 f"were assigned on {ev:%A %b %-d}:* {shares:,} shares sold at ${strike:,.2f}.\n\n")
-        action = (f"*Deadline: {dl:%A %b %-d}, 9 PM ET* — Robinhood corrects the lots on an executed order only "
-                  f"\"before 9 PM ET on the settlement date.\" Unless {acct}'s default was already Highest Cost, "
-                  f"the sale went FIFO. Send the support message below now (in-app: Account → Help → Contact us, "
-                  f"or robinhood.com/contact — 24/7 chat; there is no support email).")
+        if method_set:
+            action = (f"*{acct} is set to Highest Cost*, so the sale should already show the Highest Cost lots "
+                      f"above. Check the trade confirmation. If it went FIFO anyway, the fix window is "
+                      f"*{dl:%A %b %-d}, 9 PM ET* (the settlement date) — send the support message below "
+                      f"(in-app: Account → Help → Contact us, or robinhood.com/contact — 24/7 chat).")
+        else:
+            action = (f"*Deadline: {dl:%A %b %-d}, 9 PM ET* — Robinhood corrects the lots on an executed order only "
+                      f"\"before 9 PM ET on the settlement date.\" {acct}'s default is FIFO, so the sale went FIFO. "
+                      f"Send the support message below now (in-app: Account → Help → Contact us, "
+                      f"or robinhood.com/contact — 24/7 chat; there is no support email).")
 
     support_msg = (
         f"Hello — on {ev:%B %-d, %Y}, {c['contracts']} {sym} ${strike:,.2f} call contract"
@@ -311,8 +336,8 @@ def build_notice(c: Dict, sc: Dict) -> Tuple[str, str]:
           f"(federal + NIIT + CA at marginal rates; the tax module has the exact figure).\n\n"
         + action + "\n\n"
         + "*Support message — paste as-is:*\n`" + support_msg.replace("\n", "` \n`") + "`\n\n"
-        + "_Rule: call-assignment-tax-lot-notice (project-kb). The lot engine is FIFO; if this account's "
-          "default is now Highest Cost, tell the assistant so realised P/L follows the same method._"
+        + "_Rule: call-assignment-tax-lot-notice (project-kb). The lot engine follows each account's "
+          "configured method from its effective date (data/goal_settings.json)._"
     )
     return subject, body
 

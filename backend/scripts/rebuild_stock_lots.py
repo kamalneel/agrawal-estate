@@ -33,6 +33,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import date
 from collections import defaultdict
 from decimal import Decimal
 from pathlib import Path
@@ -44,6 +45,53 @@ from app.modules.tax.models import StockLot, StockLotSale
 from sqlalchemy import text
 
 SHARES_IN = ("BUY", "BOUGHT", "ACATI", "CONV", "SPL", "SPLIT")
+
+#: Robinhood's per-account default disposal method, from
+#: data/goal_settings.json "lot_disposal_method". It governs which lots a
+#: SELL (including a call assignment) consumes. FIFO until the effective
+#: date, the named method from it — the broker applied FIFO to everything
+#: before the switch and the 1099-Bs to date say so. Neel switched both
+#: taxable brokerages to Highest Cost on 2026-09-13 (effective 2026-09-14).
+_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "goal_settings.json"
+
+
+def load_disposal_methods() -> dict:
+    """account_id -> (method, effective date). Missing file/key = all FIFO."""
+    try:
+        cfg = json.load(open(_SETTINGS_PATH)).get("lot_disposal_method", {})
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    for acct, v in cfg.items():
+        if acct.startswith("_") or not isinstance(v, dict):
+            continue
+        try:
+            out[acct] = (v["method"], date.fromisoformat(v["effective"]))
+        except (KeyError, ValueError):
+            continue
+    return out
+
+
+def disposal_method(methods: dict, account_id: str, on: date) -> str:
+    m = methods.get(account_id)
+    if m and on >= m[1]:
+        return m[0]
+    return "fifo"
+
+
+def pick_lot_index(book, method: str) -> int:
+    """Which lot a sale consumes next. FIFO: the oldest (book is in date
+    order). Highest Cost: the highest cost per share, oldest first on ties.
+    Unknown-basis lots carry cost 0 and so go last under Highest Cost —
+    the broker knows their real basis; we do not."""
+    if method == "highest_cost":
+        best, best_cps = 0, None
+        for i, l in enumerate(book):
+            cps = (l.orig_cost / l.orig_qty) if l.orig_qty else Decimal(0)
+            if best_cps is None or cps > best_cps:
+                best, best_cps = i, cps
+        return best
+    return 0
 EPS = Decimal("0.00000001")
 
 #: An assignment detected from the MCP feed rather than read off the official
@@ -174,6 +222,9 @@ def rebuild(db, dry_run: bool):
 
     all_lots, sales = [], []
     stats = defaultdict(int)
+    methods = load_disposal_methods()
+    if methods:
+        print("disposal methods:", {a: f"{m} from {d}" for a, (m, d) in methods.items()})
 
     for (account_id, symbol), txns in groups.items():
         # Same-day ordering: share credits before debits (transfer, then sell)
@@ -238,8 +289,12 @@ def rebuild(db, dry_run: bool):
                         stats["synthetic_lots"] += 1
                     proceeds_ps = abs(t.amount or 0) / remaining
 
+                # ACATO/LIQ take the whole position, so order is moot; a
+                # SELL follows the account's disposal method on that date.
+                method = disposal_method(methods, account_id, t.transaction_date) if is_sale else "fifo"
                 while remaining > EPS and book:
-                    lot = book[0]
+                    idx = pick_lot_index(book, method)
+                    lot = book[idx]
                     take = min(lot.qty, remaining)
                     cost_portion = (lot.cost * take / lot.qty
                                     if lot.qty else Decimal(0))
@@ -248,7 +303,10 @@ def rebuild(db, dry_run: bool):
                                       "txid": t.id, "qty": take,
                                       "proceeds_ps": proceeds_ps,
                                       "cost": cost_portion,
-                                      "known": lot.known})
+                                      "known": lot.known, "method": method})
+                        if method != "fifo":
+                            lot.method = method.upper()
+                            stats["sale_rows_" + method] += 1
                         stats["sale_rows"] += 1
                         if not lot.known:
                             stats["sale_rows_unknown_basis"] += 1
@@ -256,7 +314,7 @@ def rebuild(db, dry_run: bool):
                     lot.cost -= cost_portion
                     remaining -= take
                     if lot.qty <= EPS:
-                        book.pop(0)
+                        book.pop(idx)
 
     print(dict(stats))
     print(f"lots: {len(all_lots)}, sale rows: {len(sales)}")
@@ -280,7 +338,7 @@ def rebuild(db, dry_run: bool):
             quantity_remaining=remaining,
             status=("closed" if remaining == 0
                     else "partial" if remaining < l.orig_qty else "open"),
-            lot_method="FIFO", notes=l.note,
+            lot_method=getattr(l, "method", "FIFO"), notes=l.note,
         )
         db.add(row)
         lot_rows[id(l)] = row

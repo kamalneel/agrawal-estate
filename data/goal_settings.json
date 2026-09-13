@@ -18,5 +18,16 @@
   "margin_limits": {
     "neel_brokerage": 250000,
     "jaya_brokerage": 150000
+  },
+  "lot_disposal_method": {
+    "_note": "Robinhood's per-account default tax-lot disposal method, as set in the app (Account -> Menu -> Investing -> Tax lots disposal method). It governs sells AND shares delivered by option assignment. Neel switched both taxable brokerages from FIFO to Highest Cost on 2026-09-13 (a Sunday; first trading day it applies to is 2026-09-14). scripts/rebuild_stock_lots.py reads this so the lot engine consumes lots the same way the broker does from the effective date -- before it, FIFO, which is what the 1099-Bs to date reflect. Playbook: call-assignment-tax-lot-notice. Accounts not listed are FIFO.",
+    "neel_brokerage": {
+      "method": "highest_cost",
+      "effective": "2026-09-14"
+    },
+    "jaya_brokerage": {
+      "method": "highest_cost",
+      "effective": "2026-09-14"
+    }
   }
 }

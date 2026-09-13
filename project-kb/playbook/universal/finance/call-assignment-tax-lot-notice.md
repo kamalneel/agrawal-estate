@@ -48,11 +48,13 @@ by a setting nobody had looked at.
   held, and it carries the deadline and the message for when it did not.
 - Put-assignment lots are the usual highest-cost lots (assigned above
   market by definition); they are what a call assignment should deliver.
-- **The lot engine must use the same method as the broker.**
-  `scripts/rebuild_stock_lots.py` is FIFO. When an account's default is
-  changed, record the method and effective date per account and make the
-  rebuild honour it, or realised P/L in the app diverges from the 1099-B.
-  Open item as of 2026-09-13.
+- **The lot engine uses the same method as the broker.** The per-account
+  method and effective date live in `data/goal_settings.json`
+  (`lot_disposal_method`); `scripts/rebuild_stock_lots.py` consumes lots
+  FIFO before the effective date and by the named method from it, so
+  realised P/L matches what the 1099-B will say. Neel set Neel's and
+  Jaya's brokerages to Highest Cost on 2026-09-13 (effective 2026-09-14).
+  **When a method is changed at the broker, change it there the same day.**
 - Sheltered accounts (IRA, Roth, HSA) are out of scope — no tax on lots.
 - Related: [[definition-of-income]] (assignment = income at sale),
   [[buy-in-round-lots-of-100]], [[lot-quantities-are-post-split-units]].
