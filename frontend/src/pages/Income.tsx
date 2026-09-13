@@ -4093,6 +4093,61 @@ export function Income() {
         }}
       />
 
+      {/* Taxes — separate from the income cards by design. Only meaningful
+          against taxable income, so only on the Taxable Only yearly view. */}
+      {showTaxPanel && !taxReturn && (
+        <section className={styles.accountsSection}>
+          <h2>Taxes ({mainSelectedYear})</h2>
+          <div className={styles.chartEmpty}>
+            No return on record for {mainSelectedYear}
+            {typeof mainSelectedYear === 'number' && mainSelectedYear >= new Date().getFullYear()
+              ? ' — the year is still open; an estimate can be shown here once you decide what it should be based on.'
+              : '.'}
+          </div>
+        </section>
+      )}
+      {showTaxPanel && taxReturn && (() => {
+        const calculated = /not filed/i.test(taxReturn.details?.note ?? '')
+        const rate = taxReturn.agi > 0 ? (taxReturn.total_tax / taxReturn.agi) * 100 : null
+        return (
+          <section className={styles.accountsSection}>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <span>Taxes ({mainSelectedYear})</span>
+              <span
+                title={calculated
+                  ? 'Computed from ledger data — the return has not been parsed'
+                  : 'From the filed return'}
+                style={{ fontSize: 'var(--text-xs)', fontWeight: 600, padding: '1px 8px',
+                         borderRadius: 'var(--radius-full)',
+                         color: calculated ? '#F59E0B' : '#00D632',
+                         border: `1px solid ${calculated ? '#F59E0B' : '#00D632'}` }}>
+                {calculated ? 'calculated' : 'filed return'}
+              </span>
+              {taxReturn.filing_status && (
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-tertiary)', fontWeight: 400 }}>
+                  {taxReturn.filing_status}
+                </span>
+              )}
+            </h2>
+            <div className={styles.earningsTableContainer}>
+              <table className={styles.earningsTable}>
+                <thead><tr><th>Federal</th><th>State</th><th>Other</th><th>Total Tax</th><th>AGI</th><th>Effective Rate</th></tr></thead>
+                <tbody>
+                  <tr style={{ fontWeight: 600 }}>
+                    <td>{formatFullCurrency(taxReturn.federal_tax)}</td>
+                    <td>{formatFullCurrency(taxReturn.state_tax)}</td>
+                    <td>{taxReturn.other_tax ? formatFullCurrency(taxReturn.other_tax) : '—'}</td>
+                    <td><strong>{formatFullCurrency(taxReturn.total_tax)}</strong></td>
+                    <td>{formatFullCurrency(taxReturn.agi)}</td>
+                    <td>{rate !== null ? `${rate.toFixed(2)}%` : '—'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )
+      })()}
+
       {/* Goals — actuals vs targets (yield tracker, Objective 2).
           Deliberately NOT scoped by Taxable Only: the 1%/2% goals are
           defined across all accounts (goal_settings.json, Neel 2026-07-05),
@@ -4365,61 +4420,6 @@ export function Income() {
           )}
         </div>
       </section>
-
-      {/* Taxes — separate from the income cards by design. Only meaningful
-          against taxable income, so only on the Taxable Only yearly view. */}
-      {showTaxPanel && !taxReturn && (
-        <section className={styles.accountsSection}>
-          <h2>Taxes ({mainSelectedYear})</h2>
-          <div className={styles.chartEmpty}>
-            No return on record for {mainSelectedYear}
-            {typeof mainSelectedYear === 'number' && mainSelectedYear >= new Date().getFullYear()
-              ? ' — the year is still open; an estimate can be shown here once you decide what it should be based on.'
-              : '.'}
-          </div>
-        </section>
-      )}
-      {showTaxPanel && taxReturn && (() => {
-        const calculated = /not filed/i.test(taxReturn.details?.note ?? '')
-        const rate = taxReturn.agi > 0 ? (taxReturn.total_tax / taxReturn.agi) * 100 : null
-        return (
-          <section className={styles.accountsSection}>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-              <span>Taxes ({mainSelectedYear})</span>
-              <span
-                title={calculated
-                  ? 'Computed from ledger data — the return has not been parsed'
-                  : 'From the filed return'}
-                style={{ fontSize: 'var(--text-xs)', fontWeight: 600, padding: '1px 8px',
-                         borderRadius: 'var(--radius-full)',
-                         color: calculated ? '#F59E0B' : '#00D632',
-                         border: `1px solid ${calculated ? '#F59E0B' : '#00D632'}` }}>
-                {calculated ? 'calculated' : 'filed return'}
-              </span>
-              {taxReturn.filing_status && (
-                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-tertiary)', fontWeight: 400 }}>
-                  {taxReturn.filing_status}
-                </span>
-              )}
-            </h2>
-            <div className={styles.earningsTableContainer}>
-              <table className={styles.earningsTable}>
-                <thead><tr><th>Federal</th><th>State</th><th>Other</th><th>Total Tax</th><th>AGI</th><th>Effective Rate</th></tr></thead>
-                <tbody>
-                  <tr style={{ fontWeight: 600 }}>
-                    <td>{formatFullCurrency(taxReturn.federal_tax)}</td>
-                    <td>{formatFullCurrency(taxReturn.state_tax)}</td>
-                    <td>{taxReturn.other_tax ? formatFullCurrency(taxReturn.other_tax) : '—'}</td>
-                    <td><strong>{formatFullCurrency(taxReturn.total_tax)}</strong></td>
-                    <td>{formatFullCurrency(taxReturn.agi)}</td>
-                    <td>{rate !== null ? `${rate.toFixed(2)}%` : '—'}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )
-      })()}
 
       {/* Account Breakdown — ranked by income, hierarchy-first columns */}
       {accountRows.length > 0 && (
