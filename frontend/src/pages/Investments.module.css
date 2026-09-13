@@ -430,6 +430,29 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* taxable (amber) / sheltered (gray) on every account mention — the
+   user's first grouping question (playbook, non-negotiable display rules) */
+.taxBadge {
+  margin-left: var(--space-2);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  vertical-align: middle;
+}
+
+.taxBadgeTaxable {
+  color: var(--color-warning);
+  background: var(--color-warning-muted);
+}
+
+.taxBadgeSheltered {
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+}
+
 .trueStrip {
   display: flex;
   align-items: center;
@@ -645,113 +668,6 @@
 }
 
 /* Accounts Section */
-.accountsSection {
-  margin-bottom: var(--space-8);
-}
-
-.accountsSection h2 {
-  font-size: var(--text-xl);
-  margin-bottom: var(--space-6);
-}
-
-.accountsGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--space-4);
-}
-
-/* Account Card */
-.accountCard {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-6);
-  text-align: left;
-  transition: all var(--duration-normal) var(--ease-default);
-  animation: slideUp var(--duration-slow) var(--ease-out) both;
-  cursor: pointer;
-}
-
-@keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.accountCard:hover {
-  border-color: var(--color-border-hover);
-  background: var(--color-bg-tertiary);
-  transform: translateY(-2px);
-}
-
-.accountHeader {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
-}
-
-.accountIcon {
-  width: 48px;
-  height: 48px;
-  border-radius: var(--radius-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.accountInfo {
-  flex: 1;
-  min-width: 0;
-}
-
-.accountName {
-  font-size: var(--text-lg);
-  font-weight: var(--font-semibold);
-  margin-bottom: var(--space-1);
-}
-
-.accountType {
-  font-size: var(--text-sm);
-  color: var(--color-text-tertiary);
-}
-
-.accountValue {
-  font-family: var(--font-mono);
-  font-size: var(--text-2xl);
-  font-weight: var(--font-bold);
-  margin-bottom: var(--space-2);
-}
-
-.accountChange {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  margin-bottom: var(--space-4);
-}
-
-.accountChange.positive { color: var(--color-positive); }
-.accountChange.negative { color: var(--color-negative); }
-
-.changePercent {
-  opacity: 0.8;
-}
-
-.viewDetails {
-  font-size: var(--text-sm);
-  color: var(--color-accent);
-  font-weight: var(--font-medium);
-}
-
 /* Back Button */
 .backButton {
   display: flex;
@@ -1434,10 +1350,6 @@
 
   .detailChange {
     justify-content: center;
-  }
-
-  .accountsGrid {
-    grid-template-columns: 1fr;
   }
 
   .table {

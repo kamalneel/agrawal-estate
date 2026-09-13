@@ -121,6 +121,9 @@ const sh = (v: number) => Number.isInteger(v)
   ? v.toLocaleString()
   : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+/** "+$1,234" / "-$1,234" — the sign comes from the value, never hardcoded in front of it. */
+const signed = (v: number) => `${v < 0 ? '-' : '+'}${formatCurrency(Math.abs(v))}`
+
 const OPEN_SORT_VALUES: Record<string, (p: PurePosition) => number | string | null | undefined> = {
   symbol: p => p.symbol,
   shares: p => p.shares,
@@ -432,6 +435,9 @@ const getAccountIcon = (type: string) => {
 }
 
 // Account type display names
+/** Brokerage = taxable; every retirement wrapper and the HSA is sheltered. */
+const isTaxableAccount = (type: string) => type === 'brokerage' || type === 'individual'
+
 const getAccountTypeDisplay = (type: string) => {
   switch (type) {
     case 'brokerage':
@@ -457,65 +463,6 @@ interface CashAccountData {
   options_collateral: number
   margin_used: number
   pending_orders: number
-}
-
-interface AccountCardProps {
-  account: Account
-  onClick: () => void
-  delay: number
-  cashData?: CashAccountData
-}
-
-function AccountCard({ account, onClick, delay, cashData }: AccountCardProps) {
-  const Icon = account.icon
-  const isPositive = account.change >= 0
-  const trueValue = cashData ? account.value + cashData.true_cash : null
-
-  return (
-    <button
-      className={styles.accountCard}
-      onClick={onClick}
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <div className={styles.accountHeader}>
-        <div
-          className={styles.accountIcon}
-          style={{ background: `${account.color}20`, color: account.color }}
-        >
-          <Icon size={24} />
-        </div>
-        <div className={styles.accountInfo}>
-          <h3 className={styles.accountName}>{account.name}</h3>
-          <span className={styles.accountType}>
-            {getAccountTypeDisplay(account.type)}
-          </span>
-        </div>
-      </div>
-      {trueValue !== null ? (
-        <>
-          <div className={styles.accountValue}>{formatCurrency(trueValue)}</div>
-          <div style={{ fontSize: '0.78rem', color: 'var(--color-text-tertiary)', display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 2, marginBottom: 4 }}>
-            <span>{formatCurrency(account.value)} stocks</span>
-            <span style={{ color: 'var(--color-text-secondary)' }}>+{formatCurrency(cashData!.true_cash)} cash</span>
-            {cashData!.margin_used > 0 && (
-              <span style={{ color: 'var(--color-negative, #FF5A5A)' }}>−{formatCurrency(cashData!.margin_used)} margin</span>
-            )}
-          </div>
-        </>
-      ) : (
-        <div className={styles.accountValue}>{formatCurrency(account.value)}</div>
-      )}
-      <div className={clsx(styles.accountChange, isPositive ? styles.positive : styles.negative)}>
-        {isPositive ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-        <span>{formatCurrency(Math.abs(account.change))}</span>
-        <span className={styles.changePercent}>{formatPercent(account.changePercent)}</span>
-        <span style={{ opacity: 0.6, fontSize: '0.8em', marginLeft: 4 }}>Today</span>
-      </div>
-      <div className={styles.viewDetails}>
-        View Holdings →
-      </div>
-    </button>
-  )
 }
 
 // Mapper: convert Holding[] to HoldingsRow[], merging growth data
@@ -806,7 +753,6 @@ export function Investments() {
 
   const totalEquity = accounts.reduce((sum, acc) => sum + acc.value, 0)
   const totalChange = accounts.reduce((sum, acc) => sum + acc.change, 0)
-  const totalChangePercent = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : 0
 
   // Period options for the pure chart: rolling windows, then one button per
   // calendar year the history covers (Neel 2026-09-12: "2026, 2025, 2024"),
@@ -874,19 +820,6 @@ export function Investments() {
     () => filterByPeriod(acctTruePortHistory, acctTruePortPeriod),
     [acctTruePortHistory, acctTruePortPeriod],
   )
-
-  // Build current price lookup from holdings for Capital Flow table
-  const currentPriceMap = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const acc of accounts) {
-      for (const h of acc.holdings) {
-        if (h.symbol !== 'CASH' && h.currentPrice > 0) {
-          map[h.symbol] = h.currentPrice
-        }
-      }
-    }
-    return map
-  }, [accounts])
 
   // Loading state
   if (loading) {
@@ -1773,9 +1706,13 @@ export function Investments() {
         )
       })()}
 
-      <section className={styles.accountsSection}>
-        {/* Cash-inclusive total lives here because it IS the sum of these
-            cards — not a competing page headline (that's pure performance). */}
+      {/* L4 — by account. A table in the same idiom as Winners & Losers
+          (Neel, 2026-09-13: the old icon-tile card grid was the one
+          section still in the 2024 design — mono digits, entrance
+          animation, hover lift, a "View Holdings" link — and read as a
+          different app). Cash-inclusive total lives in the header because
+          it IS the sum of these rows, not a competing page headline. */}
+      <section className={styles.betsSection}>
         <div className={styles.accountsHeader}>
           <h2>Brokerage Accounts ({accounts.length})</h2>
           <div className={styles.trueStripBody}>
@@ -1787,7 +1724,7 @@ export function Investments() {
                 <>
                   <span className={styles.trueStripValue}>{formatCurrency(truePortfolio)}</span>
                   <span className={styles.trueStripDetail}>{formatCurrency(totalEquity)} stocks</span>
-                  {trueCash !== 0 && <span className={styles.trueStripDetail}>+{formatCurrency(trueCash)} cash &amp; collateral</span>}
+                  {trueCash !== 0 && <span className={styles.trueStripDetail}>{signed(trueCash)} cash &amp; collateral</span>}
                   {(cashBreakdown?.total_margin_used ?? 0) > 0 && (
                     <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }}>
                       −{formatCurrency(cashBreakdown!.total_margin_used)} margin
@@ -1803,21 +1740,55 @@ export function Investments() {
             })()}
           </div>
         </div>
-        <div className={styles.accountsGrid}>
-          {accounts.map((account, index) => {
-            const cashData = cashBreakdown?.accounts?.find(
-              (a: any) => a.account_name.toLowerCase() === account.name.toLowerCase()
-            )
-            return (
-            <AccountCard
-              key={account.id}
-              account={account}
-              onClick={() => handleAccountSelect(account)}
-              delay={index * 50}
-              cashData={cashData ?? undefined}
-            />
-            )
-          })}
+        <div className={styles.betsTableWrap}>
+          <table className={styles.betsTable}>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th className={styles.num}>Value</th>
+                <th className={styles.num}>Stocks</th>
+                <th className={styles.num}>Cash</th>
+                <th className={styles.num}>Margin</th>
+                <th className={styles.num}>Today</th>
+                <th className={styles.num}>Today %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map(account => {
+                const cashData = cashBreakdown?.accounts?.find(
+                  (a: any) => a.account_name.toLowerCase() === account.name.toLowerCase()
+                )
+                const trueCash = cashData?.true_cash ?? null
+                const margin = cashData?.margin_used ?? 0
+                const value = trueCash != null ? account.value + trueCash : account.value
+                const up = account.change >= 0
+                const changeColor = up ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)'
+                const taxable = isTaxableAccount(account.type)
+                return (
+                  <tr key={account.id} className={styles.betRow} onClick={() => handleAccountSelect(account)}>
+                    <td className={styles.betSym}>
+                      {account.name}
+                      <span className={clsx(styles.taxBadge, taxable ? styles.taxBadgeTaxable : styles.taxBadgeSheltered)}
+                            title={getAccountTypeDisplay(account.type)}>
+                        {taxable ? 'taxable' : 'sheltered'}
+                      </span>
+                      <ChevronRight size={12} className={styles.betChevron} />
+                    </td>
+                    <td className={styles.num}>{formatCurrency(value)}</td>
+                    <td className={styles.num}>{formatCurrency(account.value)}</td>
+                    <td className={styles.num}>{trueCash != null ? signed(trueCash) : '—'}</td>
+                    <td className={styles.num} style={{ color: margin > 0 ? 'var(--color-negative, #FF5A5A)' : undefined }}>
+                      {margin > 0 ? `−${formatCurrency(margin)}` : '—'}
+                    </td>
+                    <td className={styles.num} style={{ color: changeColor }}>
+                      {up ? '+' : '-'}{formatCurrency(Math.abs(account.change))}
+                    </td>
+                    <td className={styles.num} style={{ color: changeColor }}>{formatPercent(account.changePercent)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       </section>
 

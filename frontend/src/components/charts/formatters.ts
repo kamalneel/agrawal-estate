@@ -22,9 +22,13 @@ export const formatCurrencyPrecise = (value: number): string =>
 
 /** Short currency for Y-axis labels: $12K, $1.5M */
 export const formatCurrencyShort = (value: number): string => {
-  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `$${(value / 1_000).toFixed(0)}K`
-  return `$${value}`
+  // sign in front of the $, and abbreviated the same way as positives —
+  // a -$70K axis tick used to print "$-70000" (vs. Buy & Hold chart)
+  const sign = value < 0 ? '-' : ''
+  const abs = Math.abs(value)
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(0)}K`
+  return `${sign}$${abs}`
 }
 
 /** Format as percentage with sign: +2.50% or -1.30% */

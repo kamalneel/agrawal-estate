@@ -1,28 +1,29 @@
-.card {
-  background: var(--color-bg-secondary, #141414);
-  border: 1px solid var(--color-border, #2a2a2a);
-  border-radius: var(--radius-lg, 12px);
-  padding: 20px 24px;
-  margin-bottom: var(--space-6, 24px);
+/* Investments-page section (this card is only mounted there). Heading
+   and definition outside the box, numbers inside — the page's idiom. */
+.section {
+  margin-bottom: var(--space-8);
 }
 
-.header {
-  margin-bottom: 14px;
+.card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6);
 }
 
 .title {
-  margin: 0 0 4px;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--color-text-primary, #fff);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
 }
 
 .subtitle {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-secondary, #a3a3a3);
-  max-width: 800px;
-  line-height: 1.5;
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  max-width: 900px;
+  line-height: var(--leading-relaxed, 1.5);
 }
 
 .statRow {
@@ -33,15 +34,19 @@
 }
 
 .statValue {
-  font-family: var(--font-mono, monospace);
-  font-size: 22px;
-  font-weight: 700;
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  font-variant-numeric: tabular-nums;
 }
 
+.pos { color: var(--color-positive); }
+.neg { color: var(--color-negative); }
+.muted { color: var(--color-text-tertiary); }
+
 .statLabel {
-  font-size: 11px;
-  color: var(--color-text-secondary, #a3a3a3);
-  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  margin-top: var(--space-1);
 }
 
 .toggle {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
+import clsx from 'clsx'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
@@ -153,33 +154,34 @@ export function AssignmentLossCard() {
     : data.events
 
   return (
-    <section id="assignment-loss" className={styles.card}>
-      <div className={styles.header}>
-        <div>
-          <h3 className={styles.title}>Assignment Loss</h3>
-          <p className={styles.subtitle}>
-            Puts: strike vs. market price at the moment of forced assignment (a put creates a new lot, so market-that-moment
-            is the real comparison). Calls: cost basis vs. strike — what the shares cost vs. what they sold for, signed
-            (a call assigned above cost is a real gain, shown as one). Both exclude premium, already counted in Cash Goal above.
-          </p>
-        </div>
-      </div>
+    <section id="assignment-loss" className={styles.section}>
+      {/* Heading and definition sit OUTSIDE the box, like every other
+          section on the Investments page (Allocation, vs. Buy & Hold,
+          Winners & Losers); the numbers, chart and event table sit inside. */}
+      <h2 className={styles.title}>Assignment Loss</h2>
+      <p className={styles.subtitle}>
+        Puts: strike vs. market price at the moment of forced assignment (a put creates a new lot, so market-that-moment
+        is the real comparison). Calls: cost basis vs. strike — what the shares cost vs. what they sold for, signed
+        (a call assigned above cost is a real gain, shown as one). Both exclude premium — that is already counted as
+        options income on the Income page, and netting it here would count the same dollars twice.
+      </p>
 
+      <div className={styles.card}>
       <div className={styles.statRow}>
         <div>
-          <div className={styles.statValue} style={{ color: data.this_month_loss === 0 ? '#6b7280' : data.this_month_loss > 0 ? '#FF5A5A' : '#00D632' }}>
+          <div className={clsx(styles.statValue, data.this_month_loss === 0 ? styles.muted : data.this_month_loss > 0 ? styles.neg : styles.pos)}>
             {data.this_month_loss === 0 ? '$0' : `${data.this_month_loss > 0 ? '-' : '+'}${fmt(data.this_month_loss)}`}
           </div>
           <div className={styles.statLabel}>this month</div>
         </div>
         <div>
-          <div className={styles.statValue} style={{ color: data.total_loss >= 0 ? '#FF5A5A' : '#00D632' }}>
+          <div className={clsx(styles.statValue, data.total_loss >= 0 ? styles.neg : styles.pos)}>
             {data.total_loss >= 0 ? '-' : '+'}{fmt(data.total_loss)}
           </div>
           <div className={styles.statLabel}>all-time</div>
         </div>
         <div>
-          <div className={styles.statValue} style={{ color: '#00D632' }}>{fmt(data.total_premium_on_assigned_contracts)}</div>
+          <div className={clsx(styles.statValue, styles.pos)}>{fmt(data.total_premium_on_assigned_contracts)}</div>
           <div className={styles.statLabel}>net premium collected across every roll of these positions</div>
         </div>
       </div>
@@ -279,6 +281,7 @@ export function AssignmentLossCard() {
           </table>
         </div>
       )}
+      </div>
     </section>
   )
 }

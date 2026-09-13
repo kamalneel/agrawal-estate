@@ -5,7 +5,7 @@
     "physical_ai": {
       "label": "Physical AI",
       "target_pct": 50,
-      "note": "Held for their own reasons, not part of the AI value-chain thesis.",
+      "note": "The core half of the thesis: AI in the physical world — Apple (devices), Tesla (autonomy, robotics), SpaceX (launch, Starlink). Held as durables, never sold; trims are concentration calls, not exits. (Note corrected 2026-09-13 — it had hold_other's text pasted in.)",
       "targets": {
         "AAPL": 1500,
         "TSLA": 1600,
