@@ -4141,6 +4141,16 @@ export function Income() {
               </table>
               <div className={styles.earningsTableNote}>
                 <p>Estimate on income booked so far this year — not a projection to year end. Payroll taxes withheld are not part of this total.</p>
+                {f.w2_withholding?.total > 0 && (
+                  <p>
+                    Withheld so far: {formatFullCurrency(f.w2_withholding.total)}
+                    {f.w2_withholding.through ? ` (${f.w2_withholding.source} through ${f.w2_withholding.through})` : ''}
+                    {' · '}remaining on this estimate: {formatFullCurrency(Math.max(0, f.total_tax - f.w2_withholding.total))}
+                  </p>
+                )}
+                {Array.isArray(f.data_gaps) && f.data_gaps.map((g: any, i: number) => (
+                  <p key={i} style={{ color: '#F59E0B' }}>Gap — {g.person}: {g.detail}</p>
+                ))}
               </div>
             </div>
           </section>
