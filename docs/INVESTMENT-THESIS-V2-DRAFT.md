@@ -193,3 +193,30 @@ Recovery set (fires on a deviation, thinks differently from the three):
   cannot prevent that. Question asked: what is the rule if it does *not*
   come down — a level at which to pay to roll up, or take assignment and
   re-enter with puts (his own long-term-put exception)?
+
+## Round 6 (2026-09-13, night) — stuck-call rule for the long-term book, settled
+
+Operating assumption (Neel, reaffirmed after challenge): **what goes up
+comes down.** The system does not plan for a stock that runs from $330
+to $350 to $370 without a dip. When the dip comes, use it.
+
+The rule for an ITM call on a long-term name:
+1. **Roll weekly, same strike, for a credit. Never pay intrinsic to get
+   out** (a close at $17.90 × 1,500 = $26,850 is the panic-close; not
+   done). Weekly cadence so a short dip can be used the week it happens.
+2. **Buy back on the dip — time value is not penalty.** If the stock
+   drops under the strike mid-week and the call is mostly time value
+   (e.g. $1.50 with AAPL at $312), pay it, close, and sell fresh calls
+   on the bounce. Do not wait for Friday and risk the bounce first.
+3. **Ex-dividend exception:** the roll immediately before an ex-dividend
+   date goes **3–4 weeks out** instead of 1, same strike, credit — so the
+   call's time value on the day before ex-div exceeds the dividend and
+   early exercise does not take the shares. (AAPL: ~Nov 10, $0.26. A
+   weekly $17 ITM carries $0.67 today; $20 ITM in November would carry
+   ~$0.20 → exercised. A 4-week carries $2–3 → safe.) The dip buy-back
+   still applies afterwards, at a little more time value.
+
+Spec note: V6 Engine 4's intrinsic-% table already says "wait" above 80%
+(AAPL is at 96%). Its "prefer a small debit" line applies to the 40–60%
+crossover — for long-term names that line is superseded by rule 1;
+Neel's stop is the dip, not a debit.
