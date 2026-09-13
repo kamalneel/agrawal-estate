@@ -36,6 +36,8 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Market Data Source Order](playbook/universal/technical/market-data-source-order.md) — Robinhood MCP first, Schwab second, Yahoo never on must-succeed paths (repeated rate-limit failures)
 - [Validate a Parser Against the Source Document's Own Totals](playbook/universal/technical/validate-parser-against-source-totals.md) — sum extracted rows against the statement's printed summary and abort on mismatch; a row regex fails silently
 - [Derived Tables Need an Explicit Rebuild Trigger](playbook/universal/technical/derived-tables-need-a-rebuild-trigger.md) — hook the rebuild to whoever actually writes the source rows; a manual script is not a trigger
+- [A Synthesised Series Needs a Control Total Inside the Period](playbook/universal/technical/synthesised-series-need-in-period-control-totals.md) — a backfill that reconciled only at the seam was $217K–$458K high for ten months; check every in-period statement and abort on a miss
+- [Lot Quantities Are Post-Split Units](playbook/universal/technical/lot-quantities-are-post-split-units.md) — stock_lot scales open lots at a split; replay transactions for as-of-day share counts and price them raw
 
 ## Playbook — Project-Specific
 
