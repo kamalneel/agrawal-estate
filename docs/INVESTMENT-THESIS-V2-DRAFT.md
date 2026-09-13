@@ -220,3 +220,31 @@ Spec note: V6 Engine 4's intrinsic-% table already says "wait" above 80%
 (AAPL is at 96%). Its "prefer a small debit" line applies to the 40–60%
 crossover — for long-term names that line is superseded by rule 1;
 Neel's stop is the dip, not a debit.
+
+## Rounds 7–9 (2026-09-13, late) — short-term calls and margin recovery, settled
+
+- **Buy program (decision 1, taken as settled):** buy gaps in the
+  long-term book are filled by buying shares from trim proceeds, never
+  by selling puts. The only put on a trillion-dollar name is re-entry
+  after a call assignment.
+- **Short-term calls: delta 20–40, the technicals pick the number.** Low
+  RSI → nearer 20 (the bounce is coming; a 40-delta call "blows up").
+  Never at the money. **No distinction** between shares that arrived by
+  assignment and shares bought outright — "a short-term call is a
+  short-term call." Example: INTC assigned at $90; delta 10 ≈ $100 (the
+  long-term treatment), delta 20 ≈ $98, Neel would go ≈ $95, not $92–93.
+  → Retires V6 Tier-2 "delta 80, assignment is the plan" and Round 3's
+  "go aggressive to free the margin."
+- **Layer 4 / margin recovery: a notice, not a recommendation.** When
+  margin is drawn beyond what puts are using, the note and the UI say
+  *"Margin overdrawn by $X — sell $X of stock to get back to normal"* and
+  stop there; which position to sell is Neel's call (he may take more
+  risk than the 20–40 window on that one). No urgency: the only cost of
+  the abnormal state is lower income — puts earn ~2%/month, calls ~1%,
+  so an overdrawn $100K earns call income instead of put income until
+  cleared. And a put assignment means the stock dipped, which means it
+  comes back.
+
+Remaining open: which names are the short-term book (a list or a rule),
+what "softer on non-income producers" means concretely (LLY, IBIT), and
+whether the long-term bucket targets change.
