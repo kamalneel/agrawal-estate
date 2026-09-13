@@ -119,7 +119,14 @@ TARGET_ACCOUNT_MONTHLY_PCT = 1.0
 SHARES_PER_CONTRACT = 100
 
 OPTION_TYPES = ("STO", "BTC", "STC", "BTO")
-INCOME_TYPES = OPTION_TYPES + ("DIVIDEND",)
+#: Must match unified_service._TXN_SOURCE_CASE. Older rows carry the raw
+#: broker code (CDIV, QUALIFIED DIVIDEND ...) rather than the normalised
+#: DIVIDEND; counting only the latter left $4,3xx of 2025 dividends out of
+#: Performance while the Yearly tab counted them — the whole unexplained
+#: part of the 2025 reconciliation gap.
+DIVIDEND_TYPES = ("DIVIDEND", "CDIV", "QUAL DIV REINVEST", "REINVEST DIVIDEND",
+                  "CASH DIVIDEND", "QUALIFIED DIVIDEND")
+INCOME_TYPES = OPTION_TYPES + DIVIDEND_TYPES
 
 #: investment_accounts.account_id -> account_cash_balance_history.account_name
 _CASH_ACCOUNT_NAME = {
@@ -179,7 +186,7 @@ def get_portfolio_performance(
                -- this period begins — so every put in range has one.
                SUM(t.amount) FILTER (WHERE t.transaction_type IN {OPTION_TYPES}
                                      AND t.description ILIKE '%%put%%') AS puts,
-               SUM(t.amount) FILTER (WHERE t.transaction_type = 'DIVIDEND'
+               SUM(t.amount) FILTER (WHERE t.transaction_type IN {DIVIDEND_TYPES}
                                      AND t.transaction_date >= COALESCE(fc.f, :start)) AS dividends,
                COUNT(*) AS legs
         FROM investment_transactions t

@@ -1489,11 +1489,23 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
   // still have collateral against. "Show all" restores the full history.
   const [showAllCalls, setShowAllCalls] = useState(false)
   const [showAllPuts, setShowAllPuts] = useState(false)
+  // Capital history now runs from 2025-01-02, so an undated request would
+  // blend two years into one twenty-month yield. One year at a time.
+  const currentYear = new Date().getFullYear()
+  const [perfYear, setPerfYear] = useState<number>(currentYear)
+  const perfYears = [2025, 2026].filter(y => y <= currentYear)
 
   useEffect(() => {
+    setLoading(true)
     ;(async () => {
       try {
-        const res = await fetch(`${API_BASE}/income/performance`, { headers: getAuthHeaders() })
+        const start = `${perfYear}-01-02`
+        const end = perfYear === currentYear
+          ? new Date().toISOString().slice(0, 10)
+          : `${perfYear}-12-31`
+        const res = await fetch(
+          `${API_BASE}/income/performance?start=${start}&end=${end}`,
+          { headers: getAuthHeaders() })
         if (res.ok) setData(await res.json())
       } catch (err) {
         console.error('Error fetching performance:', err)
@@ -1501,7 +1513,7 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
         setLoading(false)
       }
     })()
-  }, [])
+  }, [perfYear])
 
   const toggle = (s: string) =>
     setOpen(prev => {
@@ -1542,10 +1554,25 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
 
       <div className={styles.detailHeader}>
         <div>
-          <h1>Performance</h1>
+          <h1 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <span>Performance</span>
+            <span style={{ display: 'inline-flex', gap: 4 }}>
+              {perfYears.map(y => (
+                <button key={y}
+                  className={styles.backButton}
+                  style={{ margin: 0, fontSize: 'var(--text-sm)',
+                           fontWeight: y === perfYear ? 700 : 400,
+                           opacity: y === perfYear ? 1 : 0.6 }}
+                  onClick={() => setPerfYear(y)}>{y}</button>
+              ))}
+            </span>
+          </h1>
           <p style={{ color: 'var(--color-text-tertiary)' }}>
             {data.period.start} → {data.period.end} ({data.period.days} days) ·
             targets {callTarget}%/mo on calls, {putTarget}%/mo on puts
+            {perfYear < 2026 && (
+              <> · <em>2025 idle cash unknown — cash-pool history begins Feb 2026, so cash = put collateral</em></>
+            )}
           </p>
         </div>
       </div>
