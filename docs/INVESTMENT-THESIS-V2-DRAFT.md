@@ -170,3 +170,26 @@ Recovery set (fires on a deviation, thinks differently from the three):
 - "Maximise option income" as the put objective selects the most
   volatile names; the 20% cap, not judgement per name, is what bounds
   the risk to the long-term shares that secure the margin.
+
+## Round 5 (2026-09-13, night) — AAPL and the "never pay to get out" principle
+
+- The 15 × $315 = 1,500 AAPL are long-term and **never sold**. Friday:
+  the 2 × $322.50 assign (200 sh, ≈$64.5K, Neel's margin → ≈0); the 15
+  **roll to next week at $315**, and again, and again.
+- General principle (Neel): **never get out of an ITM call by paying a
+  debit.** Roll one week at a time, same strike, for a credit, until the
+  stock dips below the strike at an expiration and the call expires —
+  then resume. One-week granularity so a temporary dip can be used the
+  week it happens. Operating assumption: "it will temporarily come down."
+- Conflicts with V6 spec Engine 4 ("prefer paying a small debit over
+  getting trapped for 3+ months at no cost", "don't fall into the
+  12-week trap") — for long-term names the spec must change to Neel's
+  principle, or the principle needs a stop condition. To decide.
+- Claude's challenge: the penalty is not zero, it is paid as foregone
+  upside — every $1 AAPL rises adds $1,500 to the call's intrinsic; at
+  $332 that is already $25.5K owed against $315. And early assignment
+  around AAPL's ex-dividend (~Nov 10, $0.26/sh) can force the sale when
+  a deep-ITM weekly's time value drops below the dividend — rolling
+  cannot prevent that. Question asked: what is the rule if it does *not*
+  come down — a level at which to pay to roll up, or take assignment and
+  re-enter with puts (his own long-term-put exception)?
