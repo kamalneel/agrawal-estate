@@ -519,7 +519,7 @@ class TaxReturnParser(BaseParser):
         return data
     
     def _parse_cover_summary_format(self, summary_text: str, pdf) -> Dict[str, Any]:
-        """Preparer cover-letter summary (Diwakar Taxes, TY2025):
+        r"""Preparer cover-letter summary (Diwakar Taxes, TY2025):
 
             FEDERAL
             TOTAL TAX                     $ 41,287
