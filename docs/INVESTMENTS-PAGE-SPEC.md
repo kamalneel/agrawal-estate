@@ -59,7 +59,12 @@ Investments will agree by construction, not by coincidence.
   plotted against **capital invested over time** (reconstructed from
   lot purchase/sale dates — not a snapshot, a real trajectory). The gap
   between the two lines is the pure investment return, visually, over
-  time.
+  time. History runs from **2024-03-28** — the day the Schwab ACATS landed
+  and the Robinhood book became the whole book — synthesised by
+  `backend/scripts/backfill_holdings_history.py` (transactions replayed
+  in as-of-day share units × raw daily closes, gated against the monthly
+  statements) up to 2026-02-13, live snapshots after. The period buttons
+  offer one calendar year per year the history covers.
 - **L1.5 — Allocation targets (added 2026-08-08).** Two tables, Physical
   AI and Infrastructure AI, showing current vs. target holding (%, $, and
   shares) per symbol with the gap and the option order that closes it.
@@ -68,12 +73,18 @@ Investments will agree by construction, not by coincidence.
   "Allocation targets & execution" below.
 - **L2 — Winners & Losers.** Every symbol aggregated across accounts
   (a bet is "AAPL," not "AAPL in three different accounts"), ranked by
-  return %, weight-in-portfolio shown alongside. Closed positions listed
-  separately below, tagged, using realized $ and % vs. total cost basis.
-- **L3 — Holdings table.** Existing per-symbol table; basis/return
-  sourced from the lot engine (same as W&L — one definition), withheld
-  with a footnote when lots cover <98% of live shares. Trillion-club
-  badge column deliberately omitted per decision 3.
+  return %, shares and weight-in-portfolio shown alongside. Closed
+  positions listed separately below, tagged, using realized $ and % vs.
+  total cost basis. Where lots cover <98% of the live shares a footnote
+  under the table names the symbol and the tracked/live counts — every
+  number in the table is on tracked shares only.
+- **L3 — Holdings table. Deleted 2026-09-13 (Neel).** The aggregate
+  "Total Portfolio Holdings" table repeated W&L's value/basis/return
+  columns; its only unique content was total shares (now a W&L column),
+  live price (Robinhood), the <98% coverage footnote (moved to W&L), and
+  YTD/1Y/5Y *stock* growth — which describes the ticker, not the bet,
+  and still lives on the per-account tables. Trillion-club badge column
+  deliberately omitted per decision 3.
 - **L4 — Context, not history.** One-line True Portfolio strip
   (cash-inclusive total, day change) + accounts grid. **Deleted from the
   page (2026-07-08, Neel):** the Capital Flow table and the True
@@ -87,9 +98,9 @@ Investments will agree by construction, not by coincidence.
 
 ## Known data gaps (2026-07-08 audit — pending fresh source files)
 
-One cost-basis source: the lot engine feeds BOTH Winners & Losers and the
-Total Portfolio Holdings table. Where lots cover <98% of live shares the
-UI withholds basis/return with a footnote instead of fabricating a
+One cost-basis source: the lot engine feeds Winners & Losers (and, until
+2026-09-13, the Total Portfolio Holdings table). Where lots cover <98% of
+live shares the UI says so in a footnote instead of fabricating a
 number (the old table summed `investment_holdings.cost_basis`, which is
 NULL for some accounts — TSLA showed +810% because Jaya's basis silently
 dropped out of the denominator while her shares stayed in the value).

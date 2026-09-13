@@ -24,3 +24,8 @@
   color: var(--color-accent);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
+
+/* calendar-year buttons sit as their own group after the rolling windows */
+.periodButtonGap {
+  margin-left: var(--space-3);
+}

@@ -39,6 +39,9 @@ import {
   ChartWrapper,
   PeriodSelector,
   PERIOD_PRESETS,
+  periodBounds,
+  filterByPeriod,
+  yearPeriodOptions,
   GRID_PROPS,
   X_AXIS_PROPS,
   Y_AXIS_PROPS,
@@ -112,8 +115,15 @@ function formatHeld(days: number): string {
 type SortDir = 'asc' | 'desc' | null
 
 /** Sort value per column; null/undefined always sinks to the bottom */
+// Fractional shares are real (MU is 41.873) but 3 decimals in a share
+// column is noise — show 2 only when the position actually is partial.
+const sh = (v: number) => Number.isInteger(v)
+  ? v.toLocaleString()
+  : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
 const OPEN_SORT_VALUES: Record<string, (p: PurePosition) => number | string | null | undefined> = {
   symbol: p => p.symbol,
+  shares: p => p.shares,
   weight: p => p.weight_pct,
   value: p => p.value,
   cost_basis: p => p.cost_basis,
@@ -798,30 +808,25 @@ export function Investments() {
   const totalChange = accounts.reduce((sum, acc) => sum + acc.change, 0)
   const totalChangePercent = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : 0
 
-  // Period options for the pure chart: drop 1D (meaningless at daily
-  // resolution — a weekend click left <2 points and silently fell back
-  // to all-time, Neel 2026-07-18) and hide presets whose cutoff predates
-  // the data (they'd duplicate ALL exactly; YTD/1Y reappear once the
-  // history reaches back that far).
+  // Period options for the pure chart: rolling windows, then one button per
+  // calendar year the history covers (Neel 2026-09-12: "2026, 2025, 2024"),
+  // then ALL. Drop 1D (meaningless at daily resolution — a weekend click
+  // left <2 points and silently fell back to all-time, Neel 2026-07-18) and
+  // YTD (identical to the current-year button). Rolling windows whose cutoff
+  // predates the data are hidden — they'd duplicate ALL exactly — and
+  // reappear once the history reaches back that far; year buttons only
+  // exist for years that have snapshots.
   const pureChartPeriodOptions = useMemo(() => {
-    const first = purePerf?.chart?.[0]?.date
-    const today = new Date()
-    const cutoffISO = (key: string | null): string | null => {
-      switch (key) {
-        case '1w': return new Date(today.getTime() - 7 * 86400000).toISOString().slice(0, 10)
-        case '30d': return new Date(today.getTime() - 30 * 86400000).toISOString().slice(0, 10)
-        case '90d': return new Date(today.getTime() - 90 * 86400000).toISOString().slice(0, 10)
-        case 'ytd': return `${today.getFullYear()}-01-01`
-        case '1y': return new Date(today.getTime() - 365 * 86400000).toISOString().slice(0, 10)
-        default: return null
-      }
-    }
-    return PERIOD_PRESETS.EXTENDED.filter(o => {
-      if (o.key === '1d') return false
-      if (o.key === null || !first) return true
-      const c = cutoffISO(o.key)
-      return c !== null && c >= first
+    const chart = purePerf?.chart ?? []
+    const first = chart[0]?.date
+    const last = chart[chart.length - 1]?.date
+    const rolling = PERIOD_PRESETS.EXTENDED.filter(o => {
+      if (o.key === '1d' || o.key === 'ytd' || o.key === null) return false
+      if (!first) return true
+      const b = periodBounds(o.key)
+      return b !== null && b.from >= first
     })
+    return [...rolling, ...yearPeriodOptions(first, last), { key: null, label: 'ALL' }]
   }, [purePerf])
 
   // if the selected period's button disappeared, fall back to ALL
@@ -831,24 +836,11 @@ export function Investments() {
     }
   }, [pureChartPeriodOptions, pureChartPeriod])
 
-  // Same period-filter pattern, applied to the pure-performance chart
-  const filteredPureChart = useMemo(() => {
-    const chart = purePerf?.chart ?? []
-    if (!chart.length || !pureChartPeriod) return chart
-    const today = new Date()
-    let cutoff: Date
-    switch (pureChartPeriod) {
-      case '1d': cutoff = new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000); break
-      case '1w': cutoff = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000); break
-      case '30d': cutoff = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000); break
-      case '90d': cutoff = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000); break
-      case 'ytd': cutoff = new Date(today.getFullYear(), 0, 1); break
-      case '1y': cutoff = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000); break
-      default: return chart
-    }
-    const cutoffStr = cutoff.toISOString().split('T')[0]
-    return chart.filter(d => d.date >= cutoffStr)
-  }, [purePerf, pureChartPeriod])
+  // Rolling windows and calendar years share one filter (charts/PeriodSelector)
+  const filteredPureChart = useMemo(
+    () => filterByPeriod(purePerf?.chart ?? [], pureChartPeriod),
+    [purePerf, pureChartPeriod],
+  )
 
   // Headline follows the chart's period selector: ALL shows the exact
   // since-inception figures from the API; any other window derives
@@ -878,20 +870,10 @@ export function Investments() {
   }, [purePerf, pureChartPeriod, filteredPureChart])
 
   // Filter per-account True Portfolio history by period (client-side)
-  const filteredAcctTruePortHistory = useMemo(() => {
-    if (!acctTruePortHistory.length || !acctTruePortPeriod) return acctTruePortHistory
-    const today = new Date()
-    let cutoff: Date
-    switch (acctTruePortPeriod) {
-      case '30d':  cutoff = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000); break
-      case '90d':  cutoff = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000); break
-      case 'ytd':  cutoff = new Date(today.getFullYear(), 0, 1); break
-      case '1y':   cutoff = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000); break
-      default: return acctTruePortHistory
-    }
-    const cutoffStr = cutoff.toISOString().split('T')[0]
-    return acctTruePortHistory.filter(d => d.date >= cutoffStr)
-  }, [acctTruePortHistory, acctTruePortPeriod])
+  const filteredAcctTruePortHistory = useMemo(
+    () => filterByPeriod(acctTruePortHistory, acctTruePortPeriod),
+    [acctTruePortHistory, acctTruePortPeriod],
+  )
 
   // Build current price lookup from holdings for Capital Flow table
   const currentPriceMap = useMemo(() => {
@@ -1137,12 +1119,19 @@ export function Investments() {
           <div className={styles.pureHeroContent}>
             <div className={styles.heroLabel}>
               Investment Performance
-              {pureHeadline.scoped && (
-                <span className={styles.pureHeroWindow}>
-                  {' '}— {new Date(pureHeadline.startDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  {' '}to {new Date(pureHeadline.endDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </span>
-              )}
+              {pureHeadline.scoped && (() => {
+                // a past calendar year reads "Jan 2, 2025 to Dec 31, 2025";
+                // a window inside the current year keeps the short form
+                const thisYear = String(new Date().getFullYear())
+                const showYear = !pureHeadline.startDate.startsWith(thisYear) || !pureHeadline.endDate.startsWith(thisYear)
+                const fmt = (iso: string) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US',
+                  { month: 'short', day: 'numeric', ...(showYear ? { year: 'numeric' } : {}) })
+                return (
+                  <span className={styles.pureHeroWindow}>
+                    {' '}— {fmt(pureHeadline.startDate)} to {fmt(pureHeadline.endDate)}
+                  </span>
+                )
+              })()}
             </div>
             <div
               className={styles.pureHeroValue}
@@ -1157,7 +1146,7 @@ export function Investments() {
             </div>
             <div className={styles.pureHeroSub}>
               {pureHeadline.scoped ? (
-                <>{formatCurrency(pureHeadline.value)} value now vs. {formatCurrency(pureHeadline.cost_basis)} invested as of the window end
+                <>{formatCurrency(pureHeadline.value)} value vs. {formatCurrency(pureHeadline.cost_basis)} invested, both as of the window end
                   — price movement only during this window, no options premium or dividends counted in.</>
               ) : (
                 <>{formatCurrency(pureHeadline.value)} value vs. {formatCurrency(pureHeadline.cost_basis)} invested
@@ -1187,11 +1176,6 @@ export function Investments() {
           Spec: "Allocation targets & execution". */}
       {allocation && allocation.buckets.length > 0 && (() => {
         const pct = (v: number | null) => v == null ? '—' : `${v.toFixed(1)}%`
-        // Fractional shares are real (MU is 41.873) but 3 decimals in a share
-        // column is noise — show 2 only when the position actually is partial.
-        const sh = (v: number) => Number.isInteger(v)
-          ? v.toLocaleString()
-          : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
         const actionChip = (r: AllocRow) => {
           if (r.action === 'hold' || r.action === 'done') return null
           const cls = r.action === 'buy' ? styles.allocBuy
@@ -1616,6 +1600,27 @@ export function Investments() {
         const sortOpenBy = (key: string) => cycleSort(key, openSortKey, setOpenSortKey, setOpenSortDir)
         const sortClosedBy = (key: string) => cycleSort(key, closedSortKey, setClosedSortKey, setClosedSortDir)
 
+        // Every number in this table is computed on the shares the lot
+        // engine knows about. Where that is <98% of the LIVE position the
+        // value, gain and weight above are light by the untracked shares —
+        // say so, rather than let a partial number read as a whole one.
+        // (Lived under the old Total Portfolio Holdings table until
+        // 2026-09-13; that table is gone, the signal stays with the numbers
+        // it qualifies.) Live-only symbols — held, no lots at all — are
+        // flagged the same way: they are absent from this table entirely.
+        const liveShares = new Map<string, number>()
+        for (const account of accounts) {
+          for (const h of account.holdings) {
+            if (h.symbol === 'CASH') continue
+            liveShares.set(h.symbol, (liveShares.get(h.symbol) ?? 0) + h.shares)
+          }
+        }
+        const lotShares = new Map(purePerf.open_positions.map(p => [p.symbol, p.shares ?? 0]))
+        const underTracked = Array.from(liveShares.entries())
+          .filter(([sym, live]) => live > 0 && (lotShares.get(sym) ?? 0) / live < 0.98)
+          .map(([sym, live]) => ({ symbol: sym, liveShares: live, lotShares: lotShares.get(sym) ?? 0 }))
+          .sort((a, b) => (b.liveShares - b.lotShares) - (a.liveShares - a.lotShares))
+
         const openRow = (p: PurePosition) => (
           <React.Fragment key={p.symbol}>
             <tr className={styles.betRow} onClick={() => toggleBetDrill(p.symbol)}>
@@ -1623,6 +1628,7 @@ export function Investments() {
                 {p.symbol}
                 <ChevronRight size={12} className={clsx(styles.betChevron, expandedBet === p.symbol && styles.betChevronOpen)} />
               </td>
+              <td className={styles.num}>{p.shares != null ? sh(p.shares) : '—'}</td>
               <td className={styles.num}>{p.weight_pct != null ? `${p.weight_pct.toFixed(1)}%` : '—'}</td>
               <td className={styles.num}>{p.value != null ? formatCurrency(p.value) : '—'}</td>
               <td className={styles.num}>{formatCurrency(p.cost_basis)}</td>
@@ -1643,7 +1649,7 @@ export function Investments() {
             </tr>
             {expandedBet === p.symbol && (
               <tr>
-                <td colSpan={8} className={styles.betDrillCell}>
+                <td colSpan={9} className={styles.betDrillCell}>
                   <BetTradeHistory symbol={p.symbol} trades={betTrades} />
                 </td>
               </tr>
@@ -1678,9 +1684,9 @@ export function Investments() {
           </React.Fragment>
         )
 
-        const foldRow = (count: number, net: number, open: boolean, toggle: () => void, extraCols = 0) => (
+        const foldRow = (count: number, net: number, open: boolean, toggle: () => void, extraCols = 0, labelCols = 4) => (
           <tr className={styles.betRow} onClick={toggle}>
-            <td colSpan={4} className={styles.smallFoldLabel}>
+            <td colSpan={labelCols} className={styles.smallFoldLabel}>
               <ChevronRight size={12} className={clsx(styles.betChevron, open && styles.betChevronOpen)} />
               {count} small position{count === 1 ? '' : 's'} (&lt;$5K)
             </td>
@@ -1701,6 +1707,7 @@ export function Investments() {
                 <tr>
                   {([
                     ['Symbol', 'symbol', false],
+                    ['Shares', 'shares', true],
                     ['Weight', 'weight', true],
                     ['Value', 'value', true],
                     ['Cost Basis', 'cost_basis', true],
@@ -1716,11 +1723,18 @@ export function Investments() {
               </thead>
               <tbody>
                 {mainOpen.map(openRow)}
-                {smallOpen.length > 0 && foldRow(smallOpen.length, smallOpenNet, showSmallOpen, () => setShowSmallOpen(v => !v), 2)}
+                {smallOpen.length > 0 && foldRow(smallOpen.length, smallOpenNet, showSmallOpen, () => setShowSmallOpen(v => !v), 2, 5)}
                 {showSmallOpen && smallOpen.map(openRow)}
               </tbody>
             </table>
           </div>
+          {underTracked.length > 0 && (
+            <p className={styles.basisFootnote}>
+              Purchase records cover &lt;98% of live shares for{' '}
+              {underTracked.map(f => `${f.symbol} (${Math.round(f.lotShares).toLocaleString()} of ${Math.round(f.liveShares).toLocaleString()} sh tracked)`).join(', ')}
+              {' '}— value, gain and weight above count only the tracked shares. Untracked shares are in the HSA (Fidelity history pending) or awaiting fresh activity CSVs — see INVESTMENTS-PAGE-SPEC.
+            </p>
+          )}
 
           {purePerf.closed_positions.length > 0 && (
             <div className={styles.closedBetsToggle}>
@@ -1806,79 +1820,6 @@ export function Investments() {
           })}
         </div>
       </section>
-
-      {/* Total Portfolio Holdings */}
-      {accounts.length > 0 && (() => {
-        // Aggregate holdings across all accounts by symbol
-        const holdingsMap = new Map<string, Holding>()
-        for (const account of accounts) {
-          for (const h of account.holdings) {
-            if (h.symbol === 'CASH') continue
-            const existing = holdingsMap.get(h.symbol)
-            if (existing) {
-              existing.shares += h.shares
-              existing.totalValue = existing.shares * existing.currentPrice
-            } else {
-              holdingsMap.set(h.symbol, {
-                ...h,
-                totalValue: h.shares * h.currentPrice,
-              })
-            }
-          }
-        }
-
-        // Cost basis + return come from the lot engine (same source as
-        // Winners & Losers above — one definition, no per-panel drift).
-        // The synced investment_holdings.cost_basis field is NULL for some
-        // accounts and silently understated returns' denominators (TSLA
-        // showed +810% from exactly this). If the lot engine covers <98%
-        // of the live shares (HSA not yet ingested, missing activity CSV
-        // rows), show no number at all and flag it below the table rather
-        // than fabricate one from partial basis.
-        const lotBySymbol = new Map((purePerf?.open_positions ?? []).map(p => [p.symbol, p]))
-        const flagged: { symbol: string; liveShares: number; lotShares: number }[] = []
-        for (const h of holdingsMap.values()) {
-          const lot = lotBySymbol.get(h.symbol)
-          const coverage = lot?.shares ? lot.shares / h.shares : 0
-          if (lot && coverage >= 0.98) {
-            h.costBasis = lot.cost_basis
-          } else {
-            h.costBasis = null
-            flagged.push({ symbol: h.symbol, liveShares: h.shares, lotShares: lot?.shares ?? 0 })
-          }
-        }
-
-        const aggregated = Array.from(holdingsMap.values())
-          .sort((a, b) => (b.shares * b.currentPrice) - (a.shares * a.currentPrice))
-
-        const totalValue = aggregated.reduce((sum, h) => sum + (h.shares * h.currentPrice), 0)
-        // Recalculate percentOfPortfolio against entire portfolio
-        for (const h of aggregated) {
-          const hValue = h.shares * h.currentPrice
-          h.percentOfPortfolio = totalValue > 0 ? (hValue / totalValue) * 100 : 0
-        }
-
-        return (
-          <section className={styles.holdingsSection}>
-            <h2>Total Portfolio Holdings ({aggregated.length})</h2>
-            {aggregated.length > 0 ? (
-              <>
-                <HoldingsTable rows={toHoldingsRows(aggregated, stockGrowthData ?? undefined)} columns={investmentColumns} />
-                {flagged.length > 0 && (
-                  <p className={styles.basisFootnote}>
-                    Cost basis / return withheld where purchase records cover &lt;98% of live shares:{' '}
-                    {flagged.map(f => `${f.symbol} (${Math.round(f.lotShares).toLocaleString()} of ${Math.round(f.liveShares).toLocaleString()} sh tracked)`).join(', ')}.
-                    {' '}Untracked shares are in the HSA (Fidelity history pending) or awaiting fresh activity CSVs — see INVESTMENTS-PAGE-SPEC.
-                  </p>
-                )}
-              </>
-            ) : (
-              <p className={styles.noHoldings}>No holdings across accounts.</p>
-            )}
-          </section>
-        )
-      })()}
-
 
       {/* Archive — Strategy Deviations. Demoted from above Winners &
           Losers 2026-08-08 (Neel: "this is not helping me in any way").
