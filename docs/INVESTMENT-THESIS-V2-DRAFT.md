@@ -103,3 +103,21 @@ The model as stated:
   AAPL trim is 300 shares. Decision needed before Friday: roll them, or
   accept it. Also Neel's TSLA $335 ×1 (swing $35K on lots) and IBIT
   $39 ×15 (a loss either way, 1,400 of 1,500 covered by lots).
+
+## Round 4 (2026-09-13, evening)
+
+- AAPL 9/18 calls in Neel's Brokerage: Neel intends to let the **2 ×
+  $322.50** assign (200 sh → ~$64.5K proceeds, ~$43K long-term gain,
+  every AAPL lot is ~$108 so lot choice is moot) and use the proceeds to
+  take Neel's drawn margin (~$74K) to ≈ zero, then use the line for
+  short-term puts. The **15 × $315** — "sell the 15 contract" — read by
+  Claude as *roll* (re-sell further out), NOT let 1,500 shares go;
+  **confirmation asked**, because the alternative is $311K of gain and
+  1,500 of 1,800 AAPL leaving the long-term book.
+- Long-term book, puts: **the only reason to sell a put on a
+  trillion-dollar name is re-entry after a call assignment.** If such a
+  put is assigned, no aggressive calls — the shares are held.
+  Consequence Claude flagged: the allocation plan's buy program (MSFT
+  +100, TSM, AMZN acquired via ATM puts) is not allowed under this rule;
+  buy gaps in the long-term book would be filled by share purchases from
+  trim proceeds. To confirm.
