@@ -29,7 +29,9 @@ const SOURCES: Array<{ key: string; label: string; kind: 'fixed' | 'dynamic'; dr
   { key: 'equity_sales', label: 'Equity Sales', kind: 'dynamic', drill: 'equity_sales' },
   { key: 'dividends', label: 'Dividends', kind: 'dynamic', drill: 'dividends' },
   { key: 'interest', label: 'Interest', kind: 'dynamic', drill: 'interest' },
-  { key: 'lending', label: 'Lending', kind: 'dynamic' },
+  // 'lending' dropped 2026-09-06 (Neel: "drop it" — $9.42 lifetime); SLIP
+  // rows still ingest and now land in 'interest'. Backend no longer emits
+  // the key, so a card here only ever read $0.
 ]
 
 function fmt(v: number): string {

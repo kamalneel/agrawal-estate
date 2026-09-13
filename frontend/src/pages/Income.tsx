@@ -4368,6 +4368,17 @@ export function Income() {
 
       {/* Taxes — separate from the income cards by design. Only meaningful
           against taxable income, so only on the Taxable Only yearly view. */}
+      {showTaxPanel && !taxReturn && (
+        <section className={styles.accountsSection}>
+          <h2>Taxes ({mainSelectedYear})</h2>
+          <div className={styles.chartEmpty}>
+            No return on record for {mainSelectedYear}
+            {typeof mainSelectedYear === 'number' && mainSelectedYear >= new Date().getFullYear()
+              ? ' — the year is still open; an estimate can be shown here once you decide what it should be based on.'
+              : '.'}
+          </div>
+        </section>
+      )}
       {showTaxPanel && taxReturn && (() => {
         const calculated = /not filed/i.test(taxReturn.details?.note ?? '')
         const rate = taxReturn.agi > 0 ? (taxReturn.total_tax / taxReturn.agi) * 100 : null
