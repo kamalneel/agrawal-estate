@@ -3004,6 +3004,20 @@ export function Income() {
   const [earningsSummary, setEarningsSummary] = useState<any>(null)
   const [earningsView, setEarningsView] = useState<'all' | 'options' | 'equity_sales' | 'salary' | 'rental' | 'div_int'>('all')
   const [taxableOnly, setTaxableOnly] = useState(false)
+  // Total tax for the selected year, from the tax module's return records.
+  // Shown ONLY on the taxable-only yearly view, and as its own panel — it is
+  // not income and does not belong among the eight source cards.
+  const [taxReturn, setTaxReturn] = useState<any>(null)
+  const showTaxPanel = taxableOnly && typeof mainSelectedYear === 'number' && mainSelectedMonth === null
+  useEffect(() => {
+    if (!showTaxPanel) { setTaxReturn(null); return }
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/tax/returns/${mainSelectedYear}`, { headers: getAuthHeaders() })
+        setTaxReturn(res.ok ? await res.json() : null)   // 404 = no return on record (e.g. 2026)
+      } catch { setTaxReturn(null) }
+    })()
+  }, [showTaxPanel, mainSelectedYear])
   // BBD metrics for options expected values (1% of portfolio/month)
   const [optionsExpectedByMonth, setOptionsExpectedByMonth] = useState<Record<string, number>>({})
   const [capitalByMonth, setCapitalByMonth] = useState<Record<string, number>>({})
@@ -4351,6 +4365,50 @@ export function Income() {
           )}
         </div>
       </section>
+
+      {/* Taxes — separate from the income cards by design. Only meaningful
+          against taxable income, so only on the Taxable Only yearly view. */}
+      {showTaxPanel && taxReturn && (() => {
+        const calculated = /not filed/i.test(taxReturn.details?.note ?? '')
+        const rate = taxReturn.agi > 0 ? (taxReturn.total_tax / taxReturn.agi) * 100 : null
+        return (
+          <section className={styles.accountsSection}>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <span>Taxes ({mainSelectedYear})</span>
+              <span
+                title={calculated
+                  ? 'Computed from ledger data — the return has not been parsed'
+                  : 'From the filed return'}
+                style={{ fontSize: 'var(--text-xs)', fontWeight: 600, padding: '1px 8px',
+                         borderRadius: 'var(--radius-full)',
+                         color: calculated ? '#F59E0B' : '#00D632',
+                         border: `1px solid ${calculated ? '#F59E0B' : '#00D632'}` }}>
+                {calculated ? 'calculated' : 'filed return'}
+              </span>
+              {taxReturn.filing_status && (
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-tertiary)', fontWeight: 400 }}>
+                  {taxReturn.filing_status}
+                </span>
+              )}
+            </h2>
+            <div className={styles.earningsTableContainer}>
+              <table className={styles.earningsTable}>
+                <thead><tr><th>Federal</th><th>State</th><th>Other</th><th>Total Tax</th><th>AGI</th><th>Effective Rate</th></tr></thead>
+                <tbody>
+                  <tr style={{ fontWeight: 600 }}>
+                    <td>{formatFullCurrency(taxReturn.federal_tax)}</td>
+                    <td>{formatFullCurrency(taxReturn.state_tax)}</td>
+                    <td>{taxReturn.other_tax ? formatFullCurrency(taxReturn.other_tax) : '—'}</td>
+                    <td><strong>{formatFullCurrency(taxReturn.total_tax)}</strong></td>
+                    <td>{formatFullCurrency(taxReturn.agi)}</td>
+                    <td>{rate !== null ? `${rate.toFixed(2)}%` : '—'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )
+      })()}
 
       {/* Account Breakdown — ranked by income, hierarchy-first columns */}
       {accountRows.length > 0 && (
