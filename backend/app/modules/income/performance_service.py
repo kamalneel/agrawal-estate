@@ -88,8 +88,9 @@ from sqlalchemy.orm import Session
 
 #: First date in investment_holdings_history. Income before this cannot be
 #: put over a denominator, so periods are clamped here.
-HISTORY_START = date(2026, 1, 2)   # first trading day; Jan 2 - Feb 13 is
-                                    # backfilled (source='backfill_lot_engine'),
+HISTORY_START = date(2025, 1, 2)   # 2025-01-02 .. 2026-02-13 is backfilled
+                                    # (source='backfill_lot_engine', see
+                                    # scripts/backfill_holdings_history.py);
                                     # live snapshots begin 2026-02-16
 
 #: Shortest span worth extrapolating to a monthly rate. CBRS, assigned nine

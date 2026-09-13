@@ -122,20 +122,24 @@ def replay_positions(db, days):
     pos = defaultdict(float)
     for pair, plots in by_pair.items():
         plots.sort(key=lambda l: (l["purchase_date"], l["lot_id"]))
+        # A NULL-quantity ACATO transfers out the ENTIRE position as of that
+        # date — i.e. every lot bought on/before it. Lots bought afterwards
+        # are new capital and must survive; the first version of this zeroed
+        # the pair permanently and dropped a real $38K NVDA position.
+        full_outs = sorted(ad for ad, q in acato.get(pair, ()) if q is None)
         for d in days:
-            # remaining per lot on day d, before ACATO
             rem = []
             for l in plots:
                 if l["purchase_date"] > d:
                     continue
+                # wiped by a whole-position transfer between purchase and d?
+                if any(l["purchase_date"] <= ad <= d for ad in full_outs):
+                    continue
                 q = float(l["quantity"]) - sum(qs for sd, qs in sales[l["lot_id"]] if sd <= d)
                 if q > 1e-6:
                     rem.append(q)
-            outs = [q for ad, q in acato.get(pair, ()) if ad <= d]
-            if any(q is None for q in outs):
-                held = 0.0                       # whole position transferred out
-            else:
-                held = sum(rem) - sum(outs)
+            partial_out = sum(q for ad, q in acato.get(pair, ()) if q is not None and ad <= d)
+            held = sum(rem) - partial_out
             if held > 1e-6:
                 pos[(d,) + pair] = held
     return pos
