@@ -692,12 +692,17 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
             entry = by_person.setdefault(r["person"], {"wages": 0.0, "sources": set()})
             entry["wages"] += float(r["amount"])
             entry["sources"].add(r["source"])
+        # Latest stub's YTD columns, not SUM over rows: some rows are
+        # gross-only (no PDF), so a sum undercounts. The stub's own YTD is
+        # the authoritative figure.
         slips = db.execute(text("""
-            SELECT person, SUM(federal_withheld) AS fed, SUM(state_withheld) AS st,
-                   SUM(social_security) AS ss, SUM(medicare) AS med
+            SELECT DISTINCT ON (person) person,
+                   federal_withheld_ytd AS fed, state_withheld_ytd AS st,
+                   social_security_ytd AS ss, medicare_ytd AS med
             FROM salary_payslips
             WHERE EXTRACT(YEAR FROM pay_date) = :y
-            GROUP BY person
+              AND federal_withheld_ytd IS NOT NULL
+            ORDER BY person, pay_date DESC
         """), {"y": year}).mappings().all()
         slip_by_person = {(r["person"] or "").split()[0].lower(): r for r in slips}
         for person, entry in by_person.items():
