@@ -121,3 +121,52 @@ The model as stated:
   +100, TSM, AMZN acquired via ATM puts) is not allowed under this rule;
   buy gaps in the long-term book would be filled by share purchases from
   trim proceeds. To confirm.
+
+## Notifications v2 — Neel's proposed layering (2026-09-13, captured, not built)
+
+Neel: after the thesis is settled, reorganise the notifications into a
+**healthy set** that always runs and a **recovery set** that fires when
+something goes wrong.
+
+Healthy set (always on):
+1. **Calls on the long-term book** — consistently, on all of them; timing
+   (when to sell, when to buy back) from technical analysis as today.
+2. **Calls on the short-term book, slightly aggressive — delta 20.**
+   Goal is option income; *not* proactively seeking assignment, but
+   taking more risk for more premium. These names are chosen for the
+   short-term bucket precisely because their volatility pays.
+3. **Puts on the short-term book** against cash — cash-secured, or
+   margin cash — to maximise option income.
+
+Recovery set (fires on a deviation, thinks differently from the three):
+4. Something went wrong — e.g. a call was assigned. How to get back to
+   the normal state: **80% long-term / 20% short-term, margin reserved
+   for puts.** Steps to return to healthy.
+
+### How this maps onto V6 today (docs/OPTIONS-STRATEGY-V6-ENGINES.md)
+
+| Layer | V6 today | What changes |
+|---|---|---|
+| 1 Long-term calls | Engine 1, Tier 1: delta 10–15 (TSLA 10–12, RSI>75 gate) | Same. Tier 1 list = `investment_policy.json` core. |
+| 2 Short-term calls | Engine 1, Tier 2: **delta 80**, "getting called away is the plan" | **Delta 80 → 20.** The short-term book becomes hold-and-harvest, not a wheel-out. |
+| 3 Short-term puts | Engine 2, Tier 2: delta 80, RSI<50, 80/20 throttle | Broadly same. **Engine 2 Tier 1 (mega-cap puts) is removed** except re-entry after a call assignment. |
+| 4 Recovery | Engine 4 (stuck positions), Engine 5/6 (rebalance, off-thesis collateral) | New concept: a named "deviation → path back to 80/20 + margin ≈ 0" notice, not just per-position stuck handling. |
+
+### Tensions to resolve before building
+
+- **Layer 2 vs Round 3.** Round 3 said: on a short-term put assignment,
+  "go aggressive on calls and target an assignment — free the margin."
+  Layer 2 says short-term calls are delta 20 and assignment is not
+  sought. Both hold only if they apply to different states: **healthy**
+  (short-term shares held against cash — e.g. INTC in the IRAs) → delta
+  20; **recovery** (shares that arrived by assignment on drawn margin) →
+  aggressive calls until the margin is back to ≈ 0. Proposed reading; to
+  confirm.
+- **Flow imbalance.** Delta-80 puts assign ~80% of the time; delta-20
+  calls assign ~20%. The short-term book fills faster than it empties,
+  so it will drift past 20% and margin stays drawn. V6's 80/20 throttle
+  (no new Tier-2 put once Tier 2 ≥ 20%) is the brake; layer 4 is the
+  release. Both need to be real for the system to be stable.
+- "Maximise option income" as the put objective selects the most
+  volatile names; the 20% cap, not judgement per name, is what bounds
+  the risk to the long-term shares that secure the margin.
