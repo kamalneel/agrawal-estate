@@ -587,7 +587,9 @@ export function Investments() {
   const [closedSortKey, setClosedSortKey] = useState('gain')
   const [closedSortDir, setClosedSortDir] = useState<SortDir>(null)
   const [betTrades, setBetTrades] = useState<CapitalEvent[] | null>(null)
-  const [pureChartPeriod, setPureChartPeriod] = useState<string | null>(null)
+  // Opens on the current calendar year (Neel, 2026-09-13), not ALL — the
+  // year-to-date read is the one asked for first.
+  const [pureChartPeriod, setPureChartPeriod] = useState<string | null>(`y${new Date().getFullYear()}`)
   const [deviations, setDeviations] = useState<PolicyDeviations | null>(null)
   const [allocation, setAllocation] = useState<AllocationPlan | null>(null)
   const [showArchive, setShowArchive] = useState(false)
@@ -775,12 +777,15 @@ export function Investments() {
     return [...rolling, ...yearPeriodOptions(first, last), { key: null, label: 'ALL' }]
   }, [purePerf])
 
-  // if the selected period's button disappeared, fall back to ALL
+  // if the selected period's button disappeared, fall back to ALL — but
+  // only once the data is in: before purePerf loads there are no year
+  // buttons at all, and this would wipe the current-year default.
   useEffect(() => {
+    if (!purePerf?.chart?.length) return
     if (pureChartPeriod && !pureChartPeriodOptions.some(o => o.key === pureChartPeriod)) {
       setPureChartPeriod(null)
     }
-  }, [pureChartPeriodOptions, pureChartPeriod])
+  }, [purePerf, pureChartPeriodOptions, pureChartPeriod])
 
   // Rolling windows and calendar years share one filter (charts/PeriodSelector)
   const filteredPureChart = useMemo(
