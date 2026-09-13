@@ -215,6 +215,207 @@ NON_TAXABLE_ACCOUNT_TYPES = ('ira', 'roth_ira', 'traditional_ira', '401k',
                              'hsa', 'retirement')
 
 
+#: Every salary credit, tagged with WHERE it came from. One code path feeds
+#: both the income totals and the drill-down's source labels, so the label
+#: can never disagree with the number. Precedence, highest first:
+#:   stub           dated gross from a real paystub (salary_payslips)
+#:   w2_spread      W-2 gross less one-time pay, spread over months worked
+#:   gross_rate     stated gross monthly rate (salary_projections.monthly_gross)
+#:   net_deposit    Monarch take-home deposit — WRONG BASIS, fallback only
+#:   net_projection salary_projections.monthly_net — fallback only
+#: Neel, 2026-09-12 (E7): "add the label for stub / rate / W-2 spread".
+SALARY_SOURCES = ("stub", "w2_spread", "gross_rate", "net_deposit", "net_projection")
+
+
+def _salary_rows(db: Session, start: Optional[date], end: Optional[date],
+                 granularity: str) -> List[Dict]:
+    """[{date, person, amount, source}] — see SALARY_SOURCES."""
+    rows: List[Dict] = []
+
+    def in_range(d: date) -> bool:
+        return (start is None or d >= start) and (end is None or d <= end)
+
+    # --- salary (fixed): payslip receipts; W-2 yearly totals at year level
+    from app.modules.income.salary_service import get_salary_service
+    try:
+        salaries = get_salary_service(db).load_all_payslips()
+    except Exception:
+        salaries = {}
+    # months (YYYY-MM) covered by payslips / years covered by W-2s, per person
+    payslip_months: dict = {}
+    w2_years: dict = {}
+    for name, inc in salaries.items():
+        key = name.split()[0].lower()
+        w2_years.setdefault(key, set()).update(
+            int(y) for y, g in (inc.yearly_gross or {}).items() if g)
+        for slip in inc.payslips or []:
+            d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
+            if slip.gross_pay_period:
+                payslip_months.setdefault(key, set()).add(f"{d.year}-{d.month:02d}")
+        for slip in inc.payslips or []:
+            d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
+            if in_range(d) and slip.gross_pay_period:
+                rows.append({"date": d, "person": key, "amount": float(slip.gross_pay_period), "source": "stub"})
+
+    # --- W-2 spread: ONE gross basis at every granularity.
+    #
+    # A W-2 is one number for the year. Used only at year granularity it
+    # made 2025 read $177,281 on the Yearly tab and $77,014 (net deposits)
+    # on the Monthly tab — same year, two bases. Neel, 2026-09-12: "spread
+    # the W2 across months". So W-2 gross, less one-time payments, is spread
+    # evenly across the months that person had a payroll deposit (all twelve
+    # if the deposit feed does not reach that year), and the yearly figure
+    # is the sum of those months. Where the spread covers a (person, month),
+    # deposits and projections below stand down.
+    w2_spread: Dict[tuple, float] = {}   # (person, 'YYYY-MM') -> gross
+    deposit_months: Dict[tuple, set] = {}  # (person, year) -> {month}
+    for r in db.execute(text("""
+        SELECT DISTINCT merchant, EXTRACT(YEAR FROM transaction_date)::int AS y,
+               EXTRACT(MONTH FROM transaction_date)::int AS m
+        FROM spending_transactions WHERE amount > 0 AND merchant IN :merchants
+    """).bindparams(bindparam("merchants", expanding=True)),
+        {"merchants": list(_SALARY_EMPLOYERS)}).fetchall():
+        deposit_months.setdefault((_SALARY_EMPLOYERS[r.merchant], r.y), set()).add(r.m)
+    for name, inc in salaries.items():
+        key = name.split()[0].lower()
+        for yr, gross in (inc.yearly_gross or {}).items():
+            yr = int(yr)
+            if not gross:
+                continue
+            # Payslips are dated facts and outrank a spread for their year.
+            if any(mk.startswith(f"{yr}-") for mk in payslip_months.get(key, set())):
+                continue
+            net_of_onetime = float(gross) - _ONE_TIME_W2_GROSS.get((key, yr), 0.0)
+            months = sorted(deposit_months.get((key, yr), set())) or list(range(1, 13))
+            for m in months:
+                w2_spread[(key, f"{yr}-{m:02d}")] = net_of_onetime / len(months)
+    for (key, mk), amt in w2_spread.items():
+        y, m = map(int, mk.split("-"))
+        p = date(y, m, 1)   # a modelled monthly figure; dated the 1st
+        if in_range(p):
+            rows.append({"date": p, "person": key, "amount": amt, "source": "w2_spread"})
+
+    # --- salary ACTUALS from the Monarch bank feed (net deposits).
+    #
+    # These are the paychecks that actually landed, so they own every month
+    # they cover; salary_projections below fills only the gaps. Same
+    # ownership split as rental further down — modelled figures supply the
+    # months the feed doesn't reach, actuals take over from there.
+    #
+    # Added 2026-08-14: the salary line was previously driven entirely by
+    # salary_projections and never consulted this feed, so it drew a flat
+    # monthly line through a year that actually ranged from $740.95 to
+    # $43,068.63 and billed months (Nov-Dec 2025) with no paycheck at all.
+    # salary_actual records WHICH (person, month) pairs the feed covers, so
+    # the projection loop below can skip them. The amounts themselves are
+    # bucketed from each deposit's own date — bucketing from the month key
+    # would collapse a month of paychecks onto the 1st and put them all in
+    # one week at week granularity.
+    # Months a GROSS projection covers (person, 'YYYY-MM'). Salary is reported
+    # gross, so where a stated gross rate exists the net deposit stands down —
+    # it is the same pay on the wrong basis. Neel, 2026-09-12: "we want
+    # consistency and number prior to tax"; rates confirmed from the AdamX
+    # paystubs ($5,000 x2 Jun-Jul, $15,000 x2 from Aug) and Jaya's $150K.
+    gross_months: set = set()
+    today_ = date.today()
+    for r in db.execute(text(
+        "SELECT person, monthly_gross, effective_from, effective_to FROM salary_projections "
+        "WHERE monthly_gross IS NOT NULL AND monthly_gross > 0")).fetchall():
+        key = (r.person or "").split()[0].lower()
+        fy, fm = map(int, r.effective_from.split("-"))
+        ty, tm = map(int, r.effective_to.split("-")) if r.effective_to else (today_.year, today_.month)
+        ty, tm = min((ty, tm), (today_.year, today_.month))
+        y, m = fy, fm
+        while (y, m) <= (ty, tm):
+            gross_months.add((key, f"{y}-{m:02d}"))
+            m += 1
+            if m > 12:
+                y, m = y + 1, 1
+
+    salary_actual: Dict[tuple, float] = {}   # (person, 'YYYY-MM') -> net
+    for r in db.execute(text("""
+        SELECT transaction_date, merchant, SUM(amount) AS amount
+        FROM spending_transactions
+        WHERE amount > 0 AND merchant IN :merchants
+        GROUP BY 1, 2
+    """).bindparams(bindparam("merchants", expanding=True)),
+        {"merchants": list(_SALARY_EMPLOYERS)}).fetchall():
+        if (r.transaction_date, r.merchant, float(r.amount)) in _NON_SALARY_PAYROLL_RECEIPTS:
+            continue
+        person = _SALARY_EMPLOYERS[r.merchant]
+        d = r.transaction_date
+        mk = f"{d.year}-{d.month:02d}"
+        salary_actual[(person, mk)] = salary_actual.get((person, mk), 0.0) + float(r.amount)
+        # The W-2 spread already carries this month as GROSS; the net deposit
+        # would double-count it (and on the wrong basis).
+        if (person, mk) in w2_spread or (person, mk) in gross_months:
+            continue
+        if in_range(d):
+            rows.append({"date": d, "person": person, "amount": float(r.amount), "source": "net_deposit"})
+
+    # --- recurring salary (salary_projections): counted as ACTUAL take-home
+    # for ELAPSED months a person has no payslip/W-2 coverage (user-confirmed;
+    # amounts are net until payslips are ingested). Not applied to weekly
+    # granularity — recurring rows carry no pay dates.
+    if granularity in ("month", "year"):
+        today = date.today()
+        for r in db.execute(text(
+            "SELECT person, monthly_net, monthly_gross, effective_from, effective_to FROM salary_projections"
+        )).fetchall():
+            key = (r.person or "").split()[0].lower()
+            fy, fm = map(int, r.effective_from.split("-"))
+            if r.effective_to:
+                ty, tm = map(int, r.effective_to.split("-"))
+            else:
+                ty, tm = today.year, today.month
+            ty, tm = min((ty, tm), (today.year, today.month))
+            y, m = fy, fm
+            while (y, m) <= (ty, tm):
+                month_key = f"{y}-{m:02d}"
+                # A GROSS projection is the salary itself — it outranks the net
+                # bank deposit for the same month (see gross_months below).
+                # A NET projection is only a gap-filler.
+                if r.monthly_gross:
+                    covered = ((key, month_key) in w2_spread
+                               or month_key in payslip_months.get(key, set()))
+                    amt = float(r.monthly_gross)
+                else:
+                    covered = (month_key in payslip_months.get(key, set())
+                               or (key, month_key) in salary_actual
+                               or (key, month_key) in w2_spread
+                               or (key, month_key) in gross_months)
+                    amt = float(r.monthly_net or 0)
+                if not covered and amt:
+                    p = date(y, m, 1)
+                    if in_range(p):
+                        rows.append({"date": p, "person": key, "amount": amt,
+                                     "source": "gross_rate" if r.monthly_gross else "net_projection"})
+                m += 1
+                if m > 12:
+                    y, m = y + 1, 1
+
+    return rows
+
+
+def get_salary_breakdown(db: Session, year: int) -> Dict:
+    """Month x person salary with its source, for the drill-down labels."""
+    months: Dict[str, Dict[str, Dict]] = {}
+    for r in _salary_rows(db, date(year, 1, 1), date(year, 12, 31), "month"):
+        mk = f"{r['date'].year}-{r['date'].month:02d}"
+        cell = months.setdefault(mk, {}).setdefault(r["person"], {"amount": 0.0, "sources": {}})
+        cell["amount"] = round(cell["amount"] + r["amount"], 2)
+        cell["sources"][r["source"]] = round(cell["sources"].get(r["source"], 0.0) + r["amount"], 2)
+    out = []
+    for mk in sorted(months):
+        for person, cell in sorted(months[mk].items()):
+            # the label is the dominant source for that person-month
+            src = max(cell["sources"].items(), key=lambda kv: abs(kv[1]))[0]
+            out.append({"month": mk, "person": person, "amount": cell["amount"],
+                        "source": src, "sources": cell["sources"]})
+    return {"year": year, "rows": out, "sources": list(SALARY_SOURCES)}
+
+
+
 def get_unified_income(
     db: Session,
     granularity: str = "month",
@@ -274,163 +475,9 @@ def get_unified_income(
         by_account[p][acct] += r["realized_pnl"]
         unresolved[p] += r["unresolved_count"]
 
-    # --- salary (fixed): payslip receipts; W-2 yearly totals at year level
-    from app.modules.income.salary_service import get_salary_service
-    try:
-        salaries = get_salary_service(db).load_all_payslips()
-    except Exception:
-        salaries = {}
-    # months (YYYY-MM) covered by payslips / years covered by W-2s, per person
-    payslip_months: dict = {}
-    w2_years: dict = {}
-    for name, inc in salaries.items():
-        key = name.split()[0].lower()
-        w2_years.setdefault(key, set()).update(
-            int(y) for y, g in (inc.yearly_gross or {}).items() if g)
-        for slip in inc.payslips or []:
-            d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
-            if slip.gross_pay_period:
-                payslip_months.setdefault(key, set()).add(f"{d.year}-{d.month:02d}")
-        for slip in inc.payslips or []:
-            d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
-            if in_range(d) and slip.gross_pay_period:
-                by_source[_bucket(d, granularity)]["salary"] += float(slip.gross_pay_period)
-
-    # --- W-2 spread: ONE gross basis at every granularity.
-    #
-    # A W-2 is one number for the year. Used only at year granularity it
-    # made 2025 read $177,281 on the Yearly tab and $77,014 (net deposits)
-    # on the Monthly tab — same year, two bases. Neel, 2026-09-12: "spread
-    # the W2 across months". So W-2 gross, less one-time payments, is spread
-    # evenly across the months that person had a payroll deposit (all twelve
-    # if the deposit feed does not reach that year), and the yearly figure
-    # is the sum of those months. Where the spread covers a (person, month),
-    # deposits and projections below stand down.
-    w2_spread: Dict[tuple, float] = {}   # (person, 'YYYY-MM') -> gross
-    deposit_months: Dict[tuple, set] = {}  # (person, year) -> {month}
-    for r in db.execute(text("""
-        SELECT DISTINCT merchant, EXTRACT(YEAR FROM transaction_date)::int AS y,
-               EXTRACT(MONTH FROM transaction_date)::int AS m
-        FROM spending_transactions WHERE amount > 0 AND merchant IN :merchants
-    """).bindparams(bindparam("merchants", expanding=True)),
-        {"merchants": list(_SALARY_EMPLOYERS)}).fetchall():
-        deposit_months.setdefault((_SALARY_EMPLOYERS[r.merchant], r.y), set()).add(r.m)
-    for name, inc in salaries.items():
-        key = name.split()[0].lower()
-        for yr, gross in (inc.yearly_gross or {}).items():
-            yr = int(yr)
-            if not gross:
-                continue
-            # Payslips are dated facts and outrank a spread for their year.
-            if any(mk.startswith(f"{yr}-") for mk in payslip_months.get(key, set())):
-                continue
-            net_of_onetime = float(gross) - _ONE_TIME_W2_GROSS.get((key, yr), 0.0)
-            months = sorted(deposit_months.get((key, yr), set())) or list(range(1, 13))
-            for m in months:
-                w2_spread[(key, f"{yr}-{m:02d}")] = net_of_onetime / len(months)
-    for (key, mk), amt in w2_spread.items():
-        y, m = map(int, mk.split("-"))
-        p = date(y, m, 1)   # a modelled monthly figure; dated the 1st
-        if in_range(p):
-            by_source[_bucket(p, granularity)]["salary"] += amt
-
-    # --- salary ACTUALS from the Monarch bank feed (net deposits).
-    #
-    # These are the paychecks that actually landed, so they own every month
-    # they cover; salary_projections below fills only the gaps. Same
-    # ownership split as rental further down — modelled figures supply the
-    # months the feed doesn't reach, actuals take over from there.
-    #
-    # Added 2026-08-14: the salary line was previously driven entirely by
-    # salary_projections and never consulted this feed, so it drew a flat
-    # monthly line through a year that actually ranged from $740.95 to
-    # $43,068.63 and billed months (Nov-Dec 2025) with no paycheck at all.
-    # salary_actual records WHICH (person, month) pairs the feed covers, so
-    # the projection loop below can skip them. The amounts themselves are
-    # bucketed from each deposit's own date — bucketing from the month key
-    # would collapse a month of paychecks onto the 1st and put them all in
-    # one week at week granularity.
-    # Months a GROSS projection covers (person, 'YYYY-MM'). Salary is reported
-    # gross, so where a stated gross rate exists the net deposit stands down —
-    # it is the same pay on the wrong basis. Neel, 2026-09-12: "we want
-    # consistency and number prior to tax"; rates confirmed from the AdamX
-    # paystubs ($5,000 x2 Jun-Jul, $15,000 x2 from Aug) and Jaya's $150K.
-    gross_months: set = set()
-    today_ = date.today()
-    for r in db.execute(text(
-        "SELECT person, monthly_gross, effective_from, effective_to FROM salary_projections "
-        "WHERE monthly_gross IS NOT NULL AND monthly_gross > 0")).fetchall():
-        key = (r.person or "").split()[0].lower()
-        fy, fm = map(int, r.effective_from.split("-"))
-        ty, tm = map(int, r.effective_to.split("-")) if r.effective_to else (today_.year, today_.month)
-        ty, tm = min((ty, tm), (today_.year, today_.month))
-        y, m = fy, fm
-        while (y, m) <= (ty, tm):
-            gross_months.add((key, f"{y}-{m:02d}"))
-            m += 1
-            if m > 12:
-                y, m = y + 1, 1
-
-    salary_actual: Dict[tuple, float] = {}   # (person, 'YYYY-MM') -> net
-    for r in db.execute(text("""
-        SELECT transaction_date, merchant, SUM(amount) AS amount
-        FROM spending_transactions
-        WHERE amount > 0 AND merchant IN :merchants
-        GROUP BY 1, 2
-    """).bindparams(bindparam("merchants", expanding=True)),
-        {"merchants": list(_SALARY_EMPLOYERS)}).fetchall():
-        if (r.transaction_date, r.merchant, float(r.amount)) in _NON_SALARY_PAYROLL_RECEIPTS:
-            continue
-        person = _SALARY_EMPLOYERS[r.merchant]
-        d = r.transaction_date
-        mk = f"{d.year}-{d.month:02d}"
-        salary_actual[(person, mk)] = salary_actual.get((person, mk), 0.0) + float(r.amount)
-        # The W-2 spread already carries this month as GROSS; the net deposit
-        # would double-count it (and on the wrong basis).
-        if (person, mk) in w2_spread or (person, mk) in gross_months:
-            continue
-        if in_range(d):
-            by_source[_bucket(d, granularity)]["salary"] += float(r.amount)
-
-    # --- recurring salary (salary_projections): counted as ACTUAL take-home
-    # for ELAPSED months a person has no payslip/W-2 coverage (user-confirmed;
-    # amounts are net until payslips are ingested). Not applied to weekly
-    # granularity — recurring rows carry no pay dates.
-    if granularity in ("month", "year"):
-        today = date.today()
-        for r in db.execute(text(
-            "SELECT person, monthly_net, monthly_gross, effective_from, effective_to FROM salary_projections"
-        )).fetchall():
-            key = (r.person or "").split()[0].lower()
-            fy, fm = map(int, r.effective_from.split("-"))
-            if r.effective_to:
-                ty, tm = map(int, r.effective_to.split("-"))
-            else:
-                ty, tm = today.year, today.month
-            ty, tm = min((ty, tm), (today.year, today.month))
-            y, m = fy, fm
-            while (y, m) <= (ty, tm):
-                month_key = f"{y}-{m:02d}"
-                # A GROSS projection is the salary itself — it outranks the net
-                # bank deposit for the same month (see gross_months below).
-                # A NET projection is only a gap-filler.
-                if r.monthly_gross:
-                    covered = ((key, month_key) in w2_spread
-                               or month_key in payslip_months.get(key, set()))
-                    amt = float(r.monthly_gross)
-                else:
-                    covered = (month_key in payslip_months.get(key, set())
-                               or (key, month_key) in salary_actual
-                               or (key, month_key) in w2_spread
-                               or (key, month_key) in gross_months)
-                    amt = float(r.monthly_net or 0)
-                if not covered and amt:
-                    p = date(y, m, 1)
-                    if in_range(p):
-                        by_source[_bucket(p, granularity)]["salary"] += amt
-                m += 1
-                if m > 12:
-                    y, m = y + 1, 1
+    # --- salary (fixed): one tagged code path — see _salary_rows / SALARY_SOURCES
+    for row in _salary_rows(db, start, end, granularity):
+        by_source[_bucket(row["date"], granularity)]["salary"] += row["amount"]
 
     # --- rental (fixed), pre-Monarch history only.
     #

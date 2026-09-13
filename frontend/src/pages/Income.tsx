@@ -2670,6 +2670,9 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
   // a year whose W-2 does not exist until the following January, so every
   // tile read $0 and the table was empty (Neel, 2026-08-14).
   const [selectedYear, setSelectedYear] = useState<number | 'all' | null>(null)
+  // Month x person salary with its SOURCE, from the same code path as the
+  // totals. This is what the stub / W-2 spread / rate labels are drawn from.
+  const [breakdown, setBreakdown] = useState<Array<{ month: string; person: string; amount: number; source: string }>>([])
 
   useEffect(() => {
     const fetchData = async () => {
@@ -2691,6 +2694,18 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
     }
     fetchData()
   }, [employeeName])
+
+  const breakdownYear = selectedYear === 'all' || selectedYear === null ? new Date().getFullYear() : selectedYear
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/income/salary/breakdown?year=${breakdownYear}`, { headers: getAuthHeaders() })
+        if (res.ok) setBreakdown((await res.json()).rows || [])
+      } catch (err) {
+        console.error('Error fetching salary breakdown:', err)
+      }
+    })()
+  }, [breakdownYear])
 
   if (loading) {
     return (
@@ -2801,6 +2816,53 @@ function SalaryDetail({ employeeName, onBack }: SalaryDetailProps) {
 
       {/* W-2 Records Table */}
       <section className={styles.accountsSection}>
+        <h2>Monthly — by source ({breakdownYear})</h2>
+        {(() => {
+          const first = employeeName.split(/[\s']/)[0].toLowerCase()
+          const mine = breakdown.filter(r => r.person === first)
+          const LABEL: Record<string, [string, string, string]> = {
+            stub:           ['stub',        '#00D632', 'Dated gross from a real paystub'],
+            w2_spread:      ['W-2 spread',  '#60A5FA', 'W-2 gross, less one-time pay, spread evenly over months worked'],
+            gross_rate:     ['rate',        '#F59E0B', 'Stated gross monthly rate — an assumption until a stub replaces it'],
+            net_deposit:    ['net deposit', '#FF5A5A', 'Bank take-home deposit — wrong basis, fallback only'],
+            net_projection: ['net rate',    '#FF5A5A', 'Net monthly projection — wrong basis, fallback only'],
+          }
+          if (!mine.length) return <div className={styles.chartEmpty}>No salary rows for {breakdownYear}</div>
+          return (
+            <div className={styles.earningsTableContainer}>
+              <table className={styles.earningsTable}>
+                <thead><tr><th>Month</th><th>Gross</th><th>Source</th></tr></thead>
+                <tbody>
+                  {mine.map(r => {
+                    const [text, color, title] = LABEL[r.source] ?? [r.source, '#888', '']
+                    return (
+                      <tr key={r.month}>
+                        <td>{r.month}</td>
+                        <td>{formatFullCurrency(r.amount)}</td>
+                        <td>
+                          <span title={title} style={{ color, fontWeight: 600, border: `1px solid ${color}`,
+                            borderRadius: 'var(--radius-full)', padding: '1px 8px', fontSize: 'var(--text-xs)' }}>
+                            {text}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  <tr style={{ fontWeight: 700 }}>
+                    <td>TOTAL</td>
+                    <td>{formatFullCurrency(mine.reduce((t, r) => t + r.amount, 0))}</td>
+                    <td />
+                  </tr>
+                </tbody>
+              </table>
+              <div className={styles.earningsTableNote}>
+                <p><strong>stub</strong> is a fact; <strong>W-2 spread</strong> is allocated; <strong>rate</strong> is assumed.
+                Anything in red is a net figure standing in where no gross source exists.</p>
+              </div>
+            </div>
+          )
+        })()}
+
         <h2>W-2 Records {activeYear !== 'all' ? `(${activeYear})` : '(All Years)'}</h2>
         <div className={styles.w2Table}>
           <div className={styles.w2Header}>

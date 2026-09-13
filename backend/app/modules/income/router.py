@@ -625,6 +625,18 @@ async def delete_salary_projection(projection_id: int, db: Session = Depends(get
     return {'status': 'deleted', 'id': projection_id}
 
 
+@router.get("/salary/breakdown")
+async def get_salary_breakdown_endpoint(
+    year: int = Query(..., description="Calendar year"),
+    db: Session = Depends(get_db)
+):
+    """Salary per (month, person) with its SOURCE — stub / w2_spread /
+    gross_rate / net_deposit / net_projection — from the same code path the
+    income totals use, so a label can never disagree with a number."""
+    from app.modules.income.unified_service import get_salary_breakdown
+    return get_salary_breakdown(db, year)
+
+
 @router.get("/salary/{year}")
 async def get_salary_income_by_year(year: int, db: Session = Depends(get_db)):
     """
