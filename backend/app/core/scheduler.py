@@ -178,6 +178,24 @@ class RecommendationScheduler:
         logger.info("Expense notifications configured: daily check at 6:00 AM PT (7 days/week)")
 
         # =================================================================
+        # CALL-ASSIGNMENT TAX-LOT NOTICES (Neel, 2026-09-13)
+        # =================================================================
+        # Robinhood disposes assigned shares by the account's default lot
+        # method (FIFO unless changed) and corrects them only until 9 PM ET
+        # on the settlement date. Daily at 6:30 AM PT: warn about ITM short
+        # calls in taxable accounts expiring within 2 days (set Highest Cost
+        # before 8 PM ET), and about assignments that already landed (support
+        # message + deadline). Each notice goes out exactly once. Also runs
+        # after MCP assignment detection; this is the safety net.
+        self.scheduler.add_job(
+            self.send_assignment_tax_notices,
+            trigger=CronTrigger(hour=6, minute=30, timezone=PT),
+            id='assignment_tax_notices_daily',
+            name='Call-assignment tax-lot notices (6:30 AM PT Daily)',
+            replace_existing=True
+        )
+
+        # =================================================================
         # PRICE ALERT CHECKER: Every 5 minutes during market hours
         # =================================================================
         # Purpose: Check user-created price alerts and send email when triggered
@@ -1419,6 +1437,22 @@ class RecommendationScheduler:
 
         except Exception as e:
             logger.error(f"Error in check_price_alerts: {e}", exc_info=True)
+
+    def send_assignment_tax_notices(self):
+        """Call-assignment tax-lot notices for taxable accounts — see
+        app/modules/tax/assignment_tax_notice_service.py."""
+        db: Session = SessionLocal()
+        try:
+            from app.modules.tax.assignment_tax_notice_service import run_assignment_tax_notices
+            result = run_assignment_tax_notices(db, lookahead_days=2)
+            logger.info(f"[tax-lots] {len(result['sent'])} notice(s) sent, {result['skipped']} already sent, "
+                        f"{len(result['errors'])} error(s)")
+            for e in result["errors"]:
+                logger.warning(f"[tax-lots] {e}")
+        except Exception as e:
+            logger.error(f"[tax-lots] notice run failed: {e}")
+        finally:
+            db.close()
 
     def send_expense_notifications(self):
         """

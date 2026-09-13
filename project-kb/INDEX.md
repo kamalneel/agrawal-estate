@@ -20,6 +20,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [A Bookkeeping Category Is a Ledger, Not an Income Stream](playbook/universal/finance/category-is-a-ledger-not-a-stream.md) — define income by counterparty+direction+kind; never wire a Monarch category straight to an income card
 - [Attribute Income to the Period It Is For](playbook/universal/finance/attribute-income-to-its-stated-period.md) — count a payment in the month its memo names, not the day it cleared; reconcile to the contract
 - [Run Counterparty and Refund Rules Before the Category-Kind Filter](playbook/universal/finance/classify-by-rule-before-category-kind.md) — a kind filter on the raw category silently deleted $18K of rent and $13K of refunds; one classify() for every consumer
+- [Every Call Assignment in a Taxable Account Gets a Tax-Lot Notice](playbook/universal/finance/call-assignment-tax-lot-notice.md) — Robinhood assigns on the account default (FIFO) and corrects lots only until 9 PM ET on settlement; set Highest Cost, notice every time, lot engine must match
 
 ### Process
 - [Three Authoritative Data Sources](playbook/universal/process/three-authoritative-data-sources.md) — all data enters via PDF/CSV statements, activity CSVs, or Robinhood paste

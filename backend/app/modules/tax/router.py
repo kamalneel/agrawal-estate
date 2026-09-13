@@ -1491,3 +1491,16 @@ async def verify_document(
         "document_id": doc_id,
         "status": updated.status
     }
+
+
+@router.post("/assignment-lot-notices")
+async def run_assignment_lot_notices(dry_run: bool = True, lookahead_days: int = 2,
+                                     db: Session = Depends(get_db)):
+    """Call-assignment tax-lot notices (see assignment_tax_notice_service).
+
+    dry_run=true (default) builds the notices and returns them without
+    emailing or recording; dry_run=false sends and records each exactly once.
+    """
+    from app.modules.tax.assignment_tax_notice_service import run_assignment_tax_notices
+    return run_assignment_tax_notices(db, lookahead_days=lookahead_days,
+                                      send=not dry_run, record=not dry_run)

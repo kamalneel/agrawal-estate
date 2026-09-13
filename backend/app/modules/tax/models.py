@@ -352,3 +352,33 @@ class ActualTaxItem(BaseModel):
         Index('idx_actual_tax_form_line', 'form_line'),
     )
 
+
+
+class AssignmentTaxNotice(Base):
+    """One row per call-assignment tax-lot notice sent (dedup ledger).
+
+    Robinhood disposes shares delivered by a call assignment using the
+    account's default tax-lot method — FIFO unless changed — and corrects
+    the lots only until 9 PM ET on the settlement date. So each notice has
+    a deadline and must be sent exactly once. See
+    assignment_tax_notice_service.py and the playbook rule
+    call-assignment-tax-lot-notice.
+    """
+
+    __tablename__ = "assignment_tax_notices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    notice_key = Column(String(200), nullable=False, unique=True)
+    kind = Column(String(20), nullable=False)            # 'pending' | 'assigned'
+    account_id = Column(String(100), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    event_date = Column(Date, nullable=False)
+    strike = Column(Numeric(12, 2), nullable=False)
+    shares = Column(Numeric(18, 4), nullable=False)
+    fifo_gain = Column(Numeric(14, 2), nullable=True)
+    highest_cost_gain = Column(Numeric(14, 2), nullable=True)
+    deadline = Column(DateTime, nullable=True)
+    email_sent = Column(Boolean, nullable=False, default=False)
+    email_id = Column(String(100), nullable=True)
+    body = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

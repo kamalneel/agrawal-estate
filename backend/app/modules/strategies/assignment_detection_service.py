@@ -387,6 +387,24 @@ def _rebuild_lots_after_assignments(n_detected: int) -> None:
         db.close()
 
 
+def _send_tax_lot_notices(n_detected: int) -> None:
+    """A call assignment in a taxable account has a tax-lot deadline (9 PM
+    ET on the settlement date, Robinhood). Send the notice the moment the
+    assignment is known rather than waiting for the daily job. Own session,
+    after the rebuild, never allowed to break detection."""
+    if not n_detected:
+        return
+    from app.core.database import SessionLocal
+    from app.modules.tax.assignment_tax_notice_service import run_assignment_tax_notices
+    db = SessionLocal()
+    try:
+        run_assignment_tax_notices(db, lookahead_days=2)
+    except Exception as e:            # noqa: BLE001
+        print(f"Tax-lot notices after assignment detection failed: {e}")
+    finally:
+        db.close()
+
+
 def _send_confirmation_email(records: List[Dict]) -> None:
     """One consolidated email per run for every signal-3-unconfirmed
     detection (never one email per record — a historical backlog would
@@ -579,6 +597,7 @@ def detect_and_record_assignments(db: Session, lookback_days: int = 10) -> Dict:
     db.commit()
     _rebuild_lots_after_assignments(len(high_confidence) + len(pending_confirmation))
     _send_confirmation_email(pending_confirmation)
+    _send_tax_lot_notices(len(high_confidence) + len(pending_confirmation))
     return {
         "high_confidence": high_confidence,
         "pending_confirmation": pending_confirmation,
