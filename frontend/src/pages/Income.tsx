@@ -1414,6 +1414,15 @@ interface PerfAccount {
   held_days?: number
   symbols?: number
   legs?: number
+  dividends?: number
+  cash_at_work?: number
+  cash_pool?: number | null
+  idle_cash?: number | null
+  cash_backed?: boolean
+  utilization_pct?: number | null
+  total_capital?: number
+  total_income?: number
+  total_yield_monthly?: number | null
 }
 interface PerfSymbol {
   symbol: string
@@ -1454,7 +1463,7 @@ interface PerfData {
   by_symbol: PerfSymbol[]
   by_account: PerfAccount[]
   cash: PerfCash[]
-  targets: { call_monthly_pct: number; put_monthly_pct: number }
+  targets: { call_monthly_pct: number; put_monthly_pct: number; account_monthly_pct: number }
   totals: { income: number; avg_capital: number }
   collateral_parse: { compared: number; exact: number; match_rate: number | null }
 }
@@ -1506,6 +1515,7 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
 
   const callTarget = data.targets.call_monthly_pct
   const putTarget = data.targets.put_monthly_pct
+  const acctTarget = data.targets.account_monthly_pct
 
   // Two businesses, two denominators, two hurdle rates — so two tables.
   // Calls rent out shares already held; puts rent out cash. Merging them put
@@ -1720,17 +1730,30 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
         </div>
       </section>
 
-      {/* ---- 3. BY ACCOUNT: both businesses, side by side ---- */}
+      {/* ---- 3. BY ACCOUNT: both businesses and the blended answer, one row
+              per account. Previously two tables, which made the obvious
+              question — what did this ACCOUNT return — unanswerable without
+              reading across both. ---- */}
       <section className={styles.transactionsSection}>
-        <h2>By Account</h2>
+        <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          <span>By Account</span>
+          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-tertiary)', fontWeight: 400 }}>
+            target {acctTarget}%/mo on equity + cash
+          </span>
+        </h2>
         <div className={styles.earningsTableContainer}>
           <table className={styles.earningsTable}>
             <thead>
               <tr>
                 <th>Account</th>
-                <th>Share Capital</th><th>Calls</th><th>Calls / mo</th>
-                <th>Collateral</th><th>Puts</th><th>Puts / mo</th>
-                <th>Symbols</th><th>Legs</th>
+                <th title="Average value of the shares held over the period">Equity</th>
+                <th title="Cash the account had at work: the whole pool where cash is real, the collateral itself in margin accounts">Cash</th>
+                <th title="Cash sitting unused — counted in the denominator, so dry powder drags the yield">Idle</th>
+                <th>Equity + Cash</th>
+                <th>Call Income</th>
+                <th>Put Income</th>
+                <th>Total Income</th>
+                <th title="Total income / (equity + cash), per month">Yield / mo</th>
               </tr>
             </thead>
             <tbody>
@@ -1738,49 +1761,39 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
                 <tr key={a.account_id}>
                   <td><strong>{a.account_name}</strong></td>
                   <td>{formatFullCurrency(a.avg_capital)}</td>
-                  <td>{formatFullCurrency(a.calls ?? 0)}</td>
-                  <td><YieldCell value={a.yield_monthly} target={callTarget} /></td>
-                  <td>{a.put_collateral ? formatFullCurrency(a.put_collateral) : '—'}</td>
-                  <td>{formatFullCurrency(a.puts ?? 0)}</td>
-                  <td><YieldCell value={a.put_yield_monthly ?? null} target={putTarget} /></td>
-                  <td>{a.symbols}</td>
-                  <td>{a.legs}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* ---- 4. CASH: how much of it is working ---- */}
-      <section className={styles.transactionsSection}>
-        <h2>Cash — how much is actually working</h2>
-        <div className={styles.earningsTableContainer}>
-          <table className={styles.earningsTable}>
-            <thead>
-              <tr>
-                <th>Account</th><th>Put Premium</th>
-                <th title="Cash committed to puts — the denominator for put yield">Collateral Used</th>
-                <th>Cash Pool</th><th>Utilization</th><th>Idle Cash</th>
-                <th>Yield / mo on Collateral</th><th>on Whole Pool</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.cash.map(c => (
-                <tr key={c.account_name}>
-                  <td><strong>{c.account_name}</strong></td>
-                  <td>{formatFullCurrency(c.put_premium)}</td>
-                  <td>{formatFullCurrency(c.avg_collateral)}</td>
+                  <td>{formatFullCurrency(a.cash_at_work ?? 0)}</td>
                   <td>
-                    {c.cash_backed ? formatFullCurrency(c.avg_cash_pool ?? 0)
-                      : <span style={{ color: 'var(--color-text-tertiary)' }} title="Puts here are secured by margin, not cash">margin</span>}
+                    {a.idle_cash !== null && a.idle_cash !== undefined
+                      ? formatFullCurrency(a.idle_cash)
+                      : <span style={{ color: 'var(--color-text-tertiary)' }} title="Margin account — puts are secured by borrowing, so there is no cash pool">margin</span>}
                   </td>
-                  <td>{c.utilization_pct !== null ? `${c.utilization_pct.toFixed(0)}%` : '—'}</td>
-                  <td>{c.idle_cash !== null ? formatFullCurrency(c.idle_cash) : '—'}</td>
-                  <td><YieldCell value={c.yield_on_collateral_monthly} target={putTarget} /></td>
-                  <td><YieldCell value={c.yield_on_cash_monthly} target={putTarget} /></td>
+                  <td>{formatFullCurrency(a.total_capital ?? 0)}</td>
+                  <td>{formatFullCurrency(a.calls ?? 0)}</td>
+                  <td>{formatFullCurrency(a.puts ?? 0)}</td>
+                  <td><strong>{formatFullCurrency(a.total_income ?? 0)}</strong></td>
+                  <td><YieldCell value={a.total_yield_monthly ?? null} target={acctTarget} /></td>
                 </tr>
               ))}
+              <tr style={{ fontWeight: 700 }}>
+                <td>TOTAL</td>
+                <td>{formatFullCurrency(data.by_account.reduce((t, a) => t + a.avg_capital, 0))}</td>
+                <td>{formatFullCurrency(data.by_account.reduce((t, a) => t + (a.cash_at_work ?? 0), 0))}</td>
+                <td />
+                <td>{formatFullCurrency(data.by_account.reduce((t, a) => t + (a.total_capital ?? 0), 0))}</td>
+                <td>{formatFullCurrency(data.by_account.reduce((t, a) => t + (a.calls ?? 0), 0))}</td>
+                <td>{formatFullCurrency(data.by_account.reduce((t, a) => t + (a.puts ?? 0), 0))}</td>
+                <td>{formatFullCurrency(data.by_account.reduce((t, a) => t + (a.total_income ?? 0), 0))}</td>
+                <td>
+                  <YieldCell
+                    target={acctTarget}
+                    value={(() => {
+                      const cap = data.by_account.reduce((t, a) => t + (a.total_capital ?? 0), 0)
+                      const inc = data.by_account.reduce((t, a) => t + (a.total_income ?? 0), 0)
+                      return cap > 0 ? (inc / cap) * 100 * 30 / data.period.days : null
+                    })()}
+                  />
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -1788,6 +1801,7 @@ function PerformanceDetail({ onBack }: { onBack: () => void }) {
           <p>{data.coverage.note}</p>
         </div>
       </section>
+
     </>
   )
 }

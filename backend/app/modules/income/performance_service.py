@@ -88,7 +88,9 @@ from sqlalchemy.orm import Session
 
 #: First date in investment_holdings_history. Income before this cannot be
 #: put over a denominator, so periods are clamped here.
-HISTORY_START = date(2026, 2, 16)
+HISTORY_START = date(2026, 1, 2)   # first trading day; Jan 2 - Feb 13 is
+                                    # backfilled (source='backfill_lot_engine'),
+                                    # live snapshots begin 2026-02-16
 
 #: Shortest span worth extrapolating to a monthly rate. CBRS, assigned nine
 #: days before the view was first run, annualised to 107.51%/mo — a number
@@ -104,6 +106,13 @@ MIN_SPAN_DAYS = 21
 #: shared threshold.
 TARGET_CALL_MONTHLY_PCT = 1.0
 TARGET_PUT_MONTHLY_PCT = 2.0
+
+#: The ACCOUNT bar, which is not the average of the other two. Neel,
+#: 2026-09-12: "the expectation at the account level is 1% of Equity+cash".
+#: Deliberately the whole cash pool and not just the collateral in use —
+#: an account is accountable for the dry powder it is sitting on, so idle
+#: cash drags the number instead of being quietly excluded from it.
+TARGET_ACCOUNT_MONTHLY_PCT = 1.0
 
 #: One options contract. Below this many shares a covered call is impossible.
 SHARES_PER_CONTRACT = 100
@@ -149,17 +158,34 @@ def get_portfolio_performance(
 
     # --- income per (account, symbol)
     income_rows = db.execute(text(f"""
-        SELECT account_id, symbol,
-               SUM(amount) FILTER (WHERE transaction_type IN {OPTION_TYPES}
-                                   AND description ILIKE '%%call%%') AS calls,
-               SUM(amount) FILTER (WHERE transaction_type IN {OPTION_TYPES}
-                                   AND description ILIKE '%%put%%') AS puts,
-               SUM(amount) FILTER (WHERE transaction_type = 'DIVIDEND') AS dividends,
+        WITH first_cap AS (
+            -- First day each (account, symbol) has SHARE capital on record.
+            SELECT account_id, symbol, MIN(snapshot_date) AS f
+            FROM investment_holdings_history GROUP BY 1, 2
+        )
+        SELECT t.account_id, t.symbol,
+               -- All-or-nothing per pair, for the SHARE-denominated streams
+               -- only: calls and dividends count from the first day the pair
+               -- has share capital. Otherwise a position excluded from the
+               -- backfill (no lots, phantom ACAT) carries January premium
+               -- over a zero January denominator — the failure that put SOXL
+               -- at 24%/mo earlier.
+               SUM(t.amount) FILTER (WHERE t.transaction_type IN {OPTION_TYPES}
+                                     AND t.description ILIKE '%%call%%'
+                                     AND t.transaction_date >= COALESCE(fc.f, :start)) AS calls,
+               -- Puts are NOT clamped by share capital: their denominator is
+               -- cash collateral, which is observed from 2025-12-03 — before
+               -- this period begins — so every put in range has one.
+               SUM(t.amount) FILTER (WHERE t.transaction_type IN {OPTION_TYPES}
+                                     AND t.description ILIKE '%%put%%') AS puts,
+               SUM(t.amount) FILTER (WHERE t.transaction_type = 'DIVIDEND'
+                                     AND t.transaction_date >= COALESCE(fc.f, :start)) AS dividends,
                COUNT(*) AS legs
-        FROM investment_transactions
-        WHERE transaction_date >= :start AND transaction_date <= :end
-          AND transaction_type IN {INCOME_TYPES}
-          AND symbol IS NOT NULL AND symbol <> ''
+        FROM investment_transactions t
+        LEFT JOIN first_cap fc ON fc.account_id = t.account_id AND fc.symbol = t.symbol
+        WHERE t.transaction_date >= :start AND t.transaction_date <= :end
+          AND t.transaction_type IN {INCOME_TYPES}
+          AND t.symbol IS NOT NULL AND t.symbol <> ''
         GROUP BY 1, 2
     """), p).fetchall()
 
@@ -294,11 +320,13 @@ def get_portfolio_performance(
         a = by_account.setdefault(r.account_id, {
             "account_id": r.account_id,
             "account_name": names.get(r.account_id, r.account_id),
-            "income": 0.0, "calls": 0.0, "puts": 0.0, "equity_income": 0.0,
+            "income": 0.0, "calls": 0.0, "puts": 0.0, "dividends": 0.0,
+            "equity_income": 0.0,
             "avg_capital": 0.0, "symbols": 0, "legs": 0})
         a["income"] += total
         a["calls"] += calls
         a["puts"] += puts
+        a["dividends"] += dividends
         a["equity_income"] += equity_income
         a["symbols"] += 1
         a["legs"] += r.legs
@@ -347,22 +375,50 @@ def get_portfolio_performance(
         symbols.append(s)
     symbols.sort(key=lambda s: (s["yield_monthly"] is None, s["yield_monthly"] or 0))
 
+    # The account view carries BOTH businesses on one row, so it also carries
+    # the blended answer: every dollar of capital an account had at work —
+    # shares plus the cash its puts tied up — against everything that capital
+    # earned. Neel, 2026-09-12: "merge and show ... total income yield per
+    # month". Idle cash is reported beside it rather than inside it: including
+    # cash that earned nothing would punish an account for holding dry powder,
+    # excluding it silently would hide that the powder is dry.
+    cash_by_account = {c["account_id"]: c for c in _cash_performance(
+        db, start, end, days, collateral)}
     accounts = []
     for a in by_account.values():
         a["put_collateral"] = round(collateral["by_account"].get(a["account_id"], 0.0), 2)
         a["put_yield_monthly"] = _monthly(a["puts"], a["put_collateral"], days)
         a["yield_monthly"] = _monthly(a["equity_income"], a["avg_capital"], days)
-        for k in ("calls", "puts", "equity_income"):
+
+        c = cash_by_account.get(a["account_id"], {})
+        a["idle_cash"] = c.get("idle_cash")
+        a["cash_pool"] = c.get("avg_cash_pool")
+        a["cash_backed"] = c.get("cash_backed", False)
+        a["utilization_pct"] = c.get("utilization_pct")
+
+        # Cash means the POOL where cash is real. The margin accounts have no
+        # pool (negative true_cash — the puts are secured by borrowing), so
+        # there the cash at work is the collateral itself.
+        a["cash_at_work"] = round(
+            a["cash_pool"] if a.get("cash_backed") and a.get("cash_pool")
+            else a["put_collateral"], 2)
+        a["total_capital"] = round(a["avg_capital"] + a["cash_at_work"], 2)
+        a["total_income"] = round(a["calls"] + a["puts"] + a["dividends"], 2)
+        a["total_yield_monthly"] = _monthly(
+            a["total_income"], a["total_capital"], days)
+
+        for k in ("calls", "puts", "dividends", "equity_income"):
             a[k] = round(a[k], 2)
         a["income"] = round(a["income"], 2)
         a["avg_capital"] = round(a["avg_capital"], 2)
         accounts.append(a)
-    accounts.sort(key=lambda a: -(a["yield_monthly"] or -999))
+    accounts.sort(key=lambda a: -(a["total_yield_monthly"] or -999))
 
     return {
         "period": {"start": str(start), "end": str(end), "days": days},
         "targets": {"call_monthly_pct": TARGET_CALL_MONTHLY_PCT,
-                    "put_monthly_pct": TARGET_PUT_MONTHLY_PCT},
+                    "put_monthly_pct": TARGET_PUT_MONTHLY_PCT,
+                    "account_monthly_pct": TARGET_ACCOUNT_MONTHLY_PCT},
         "coverage": {
             "history_start": str(HISTORY_START),
             "note": ("Capital is the daily average from "
