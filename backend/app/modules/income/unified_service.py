@@ -170,12 +170,18 @@ _NON_SALARY_PAYROLL_RECEIPTS = {
 }
 
 #: GROSS one-time payroll amounts to strip from a W-2 before spreading it as
-#: salary. Neel, 2026-09-12: "keep severance out as one time". The W-2 holds
-#: the severance gross; only the NET deposit ($39,308.18) is known, so that
-#: is the placeholder here — replace with the gross from the severance
-#: letter when found, and 2025's monthly salary shifts by the difference/10.
+#: salary. Neel, 2026-09-12: "keep severance out as one time".
+#:
+#: Only the NET severance deposit ($39,308.18) is documented; the W-2 carries
+#: it gross. Neel: "use the same ratio as the salary slip (net/gross)". With
+#: one ratio r for regular pay and severance alike,
+#:     r = (net regular + net severance) / W-2 Box 1
+#:       = (77,014.41 + 39,308.18) / 177,281.42 = 0.65615
+#:     gross severance = 39,308.18 / r = 59907.62
+#: leaving $117,373 of regular 2025 wages, $11,737/mo over Jan-Oct. Replace
+#: with the figure from the severance letter if it ever surfaces.
 _ONE_TIME_W2_GROSS = {
-    ("jaya", 2025): 39308.18,
+    ("jaya", 2025): 59907.62,
 }
 
 # Must match backend/app/modules/income/db_queries.py predicates.
