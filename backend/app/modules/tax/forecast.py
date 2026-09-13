@@ -18,7 +18,7 @@ Updated with official 2025 tax law changes including:
 from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from decimal import Decimal
-from sqlalchemy import extract, and_, func
+from sqlalchemy import extract, and_, func, text
 from datetime import date
 import json
 
@@ -680,6 +680,44 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
             "state_withheld": state_withheld,
         })
 
+    # No W-2 on file (an open year): wages come from the SAME salary rows
+    # the Income tab shows — paystub gross where stubs exist, otherwise the
+    # stated gross rate — and withholding from whatever paystubs exist.
+    # Without this the 2026 forecast carried $0 of wages against $115K of
+    # salary on the Income tab. `source` on each breakdown row says which.
+    if not w2_records:
+        from app.modules.income.unified_service import _salary_rows
+        by_person: dict = {}
+        for r in _salary_rows(db, date(year, 1, 1), date(year, 12, 31), "month"):
+            entry = by_person.setdefault(r["person"], {"wages": 0.0, "sources": set()})
+            entry["wages"] += float(r["amount"])
+            entry["sources"].add(r["source"])
+        slips = db.execute(text("""
+            SELECT person, SUM(federal_withheld) AS fed, SUM(state_withheld) AS st,
+                   SUM(social_security) AS ss, SUM(medicare) AS med
+            FROM salary_payslips
+            WHERE EXTRACT(YEAR FROM pay_date) = :y
+            GROUP BY person
+        """), {"y": year}).mappings().all()
+        slip_by_person = {(r["person"] or "").split()[0].lower(): r for r in slips}
+        for person, entry in by_person.items():
+            slip = slip_by_person.get(person)
+            fed = float(slip["fed"] or 0) if slip else 0.0
+            st = float(slip["st"] or 0) if slip else 0.0
+            total_w2_wages += entry["wages"]
+            total_federal_withheld += fed
+            total_state_withheld += st
+            total_social_security += float(slip["ss"] or 0) if slip else 0.0
+            total_medicare += float(slip["med"] or 0) if slip else 0.0
+            w2_breakdown.append({
+                "employee_name": person.title(),
+                "employer": None,
+                "wages": entry["wages"],
+                "federal_withheld": fed,
+                "state_withheld": st,
+                "source": "+".join(sorted(entry["sources"])),  # stub / gross_rate / ...
+            })
+
     income["w2_income"] = {
         "total_wages": total_w2_wages,
         "federal_withheld": total_federal_withheld,
@@ -1206,11 +1244,12 @@ def _calculate_other_taxes(
     Only income from TAXABLE accounts is subject to NIIT.
     """
     other_tax = 0
-    
-    # Payroll taxes (already withheld, but included in "other" category)
+
+    # Payroll taxes (Social Security + Medicare) are NOT part of the return's
+    # total tax — they are withheld at source and appear on no 1040 tax line.
+    # Folding them in overstated 2025 by $13,740 (reconciliation §4F). They
+    # stay visible in details["payroll_taxes"]; they just do not sum here.
     w2_data = income.get("w2_income", {})
-    other_tax += w2_data.get("social_security", 0)
-    other_tax += w2_data.get("medicare", 0)
     
     # NIIT (Net Investment Income Tax) - 3.8% on investment income above threshold
     # Threshold: $250,000 for MFJ, $200,000 for Single
@@ -1469,7 +1508,11 @@ def _calculate_capital_gains(db: Session, year: int) -> Dict[str, float]:
         from app.modules.tax.cost_basis_service import CostBasisService
 
         service = CostBasisService(db)
-        summary = service.get_capital_gains_summary(year)
+        # The docstring above promised TAXABLE accounts only; the call never
+        # enforced it. Retirement lot sales leaked onto Schedule D — 94% of
+        # the 2025 forecast's miss (docs/2025-TAX-RETURN-RECONCILIATION.md).
+        summary = service.get_capital_gains_summary(
+            year, exclude_account_types=non_taxable_types)
 
         if summary.get("num_transactions", 0) > 0:
             stock_gains_st = summary.get("total_short_term_gain", 0)

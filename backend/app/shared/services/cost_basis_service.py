@@ -257,9 +257,20 @@ class CostBasisService:
 
         return query.order_by(StockLotSale.sale_date).all()
 
-    def get_capital_gains_summary(self, year: int) -> Dict:
+    def get_capital_gains_summary(self, year: int,
+                                  exclude_account_types=None) -> Dict:
         """
         Get capital gains summary for a tax year.
+
+        exclude_account_types: iterable of investment_accounts.account_type
+        values whose sales are dropped — the tax path passes the retirement
+        types. This lot engine was made shared for income unification on
+        2026-07-04, where the rule is "retirement accounts count"; the tax
+        forecaster kept calling it unfiltered and 2025's forecast carried
+        $87K of IRA/401k gains onto Schedule D (AGI 371,722 vs the filed
+        279,049). Per definition-of-income, tax views filter FROM the shared
+        definition; this is that filter. See
+        docs/2025-TAX-RETURN-RECONCILIATION.md §4A.
 
         Returns dict with:
         - total_short_term_gain
@@ -271,6 +282,15 @@ class CostBasisService:
         - by_symbol breakdown
         """
         sales = self.get_realized_gains(year)
+        if exclude_account_types:
+            from sqlalchemy import text as _t
+            excluded = set(exclude_account_types)
+            acct_type = {r.account_id: (r.account_type or "").lower() for r in self.db.execute(
+                _t("SELECT account_id, account_type FROM investment_accounts")).fetchall()}
+            lot_acct = {r.lot_id: r.account_id for r in self.db.execute(
+                _t("SELECT lot_id, account_id FROM stock_lot")).fetchall()}
+            sales = [sl for sl in sales
+                     if acct_type.get(lot_acct.get(sl.lot_id, ""), "") not in excluded]
 
         short_term_gain = Decimal(0)
         long_term_gain = Decimal(0)

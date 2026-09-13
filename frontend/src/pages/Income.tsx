@@ -3008,14 +3008,22 @@ export function Income() {
   // Shown ONLY on the taxable-only yearly view, and as its own panel — it is
   // not income and does not belong among the eight source cards.
   const [taxReturn, setTaxReturn] = useState<any>(null)
+  // For a year with no return on record, the forecaster's estimate. Its
+  // method reconciles to the filed 2025 return within ~8% after the
+  // 2026-09-12 fixes (retirement-account leak, payroll out of total); the
+  // remaining residual is option-premium timing and CA rules.
+  const [taxForecast, setTaxForecast] = useState<any>(null)
   const showTaxPanel = taxableOnly && typeof mainSelectedYear === 'number' && mainSelectedMonth === null
   useEffect(() => {
-    if (!showTaxPanel) { setTaxReturn(null); return }
+    if (!showTaxPanel) { setTaxReturn(null); setTaxForecast(null); return }
     ;(async () => {
       try {
         const res = await fetch(`${API_BASE}/tax/returns/${mainSelectedYear}`, { headers: getAuthHeaders() })
-        setTaxReturn(res.ok ? await res.json() : null)   // 404 = no return on record (e.g. 2026)
-      } catch { setTaxReturn(null) }
+        if (res.ok) { setTaxReturn(await res.json()); setTaxForecast(null); return }
+        setTaxReturn(null)                                 // 404 = no return on record
+        const f = await fetch(`${API_BASE}/tax/forecast/${mainSelectedYear}`, { headers: getAuthHeaders() })
+        setTaxForecast(f.ok ? await f.json() : null)
+      } catch { setTaxReturn(null); setTaxForecast(null) }
     })()
   }, [showTaxPanel, mainSelectedYear])
   // BBD metrics for options expected values (1% of portfolio/month)
@@ -4095,17 +4103,49 @@ export function Income() {
 
       {/* Taxes — separate from the income cards by design. Only meaningful
           against taxable income, so only on the Taxable Only yearly view. */}
-      {showTaxPanel && !taxReturn && (
+      {showTaxPanel && !taxReturn && !taxForecast && (
         <section className={styles.accountsSection}>
           <h2>Taxes ({mainSelectedYear})</h2>
-          <div className={styles.chartEmpty}>
-            No return on record for {mainSelectedYear}
-            {typeof mainSelectedYear === 'number' && mainSelectedYear >= new Date().getFullYear()
-              ? ' — the year is still open; an estimate can be shown here once you decide what it should be based on.'
-              : '.'}
-          </div>
+          <div className={styles.chartEmpty}>No return on record for {mainSelectedYear}.</div>
         </section>
       )}
+      {showTaxPanel && !taxReturn && taxForecast && (() => {
+        const f = taxForecast
+        const rate = f.agi > 0 ? (f.total_tax / f.agi) * 100 : null
+        return (
+          <section className={styles.accountsSection}>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <span>Taxes ({mainSelectedYear})</span>
+              <span title="No return yet — forecast from the ledger year to date. Method reconciles to the filed 2025 return within ~8%; residual is option-premium timing and California rules."
+                    style={{ fontSize: 'var(--text-xs)', fontWeight: 600, padding: '1px 8px',
+                             borderRadius: 'var(--radius-full)', color: '#F59E0B', border: '1px solid #F59E0B' }}>
+                estimated · year to date
+              </span>
+              {f.filing_status && (
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{f.filing_status}</span>
+              )}
+            </h2>
+            <div className={styles.earningsTableContainer}>
+              <table className={styles.earningsTable}>
+                <thead><tr><th>Federal</th><th>State</th><th>Other (NIIT)</th><th>Total Tax</th><th>AGI</th><th>Effective Rate</th></tr></thead>
+                <tbody>
+                  <tr style={{ fontWeight: 600 }}>
+                    <td>{formatFullCurrency(f.federal_tax)}</td>
+                    <td>{formatFullCurrency(f.state_tax)}</td>
+                    <td>{f.other_tax ? formatFullCurrency(f.other_tax) : '—'}</td>
+                    <td><strong>{formatFullCurrency(f.total_tax)}</strong></td>
+                    <td>{formatFullCurrency(f.agi)}</td>
+                    <td>{rate !== null ? `${rate.toFixed(2)}%` : '—'}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div className={styles.earningsTableNote}>
+                <p>Estimate on income booked so far this year — not a projection to year end. Payroll taxes withheld are not part of this total.</p>
+              </div>
+            </div>
+          </section>
+        )
+      })()}
       {showTaxPanel && taxReturn && (() => {
         const calculated = /not filed/i.test(taxReturn.details?.note ?? '')
         const rate = taxReturn.agi > 0 ? (taxReturn.total_tax / taxReturn.agi) * 100 : null
