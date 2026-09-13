@@ -315,6 +315,9 @@ def get_unified_income(
             yr = int(yr)
             if not gross:
                 continue
+            # Payslips are dated facts and outrank a spread for their year.
+            if any(mk.startswith(f"{yr}-") for mk in payslip_months.get(key, set())):
+                continue
             net_of_onetime = float(gross) - _ONE_TIME_W2_GROSS.get((key, yr), 0.0)
             months = sorted(deposit_months.get((key, yr), set())) or list(range(1, 13))
             for m in months:

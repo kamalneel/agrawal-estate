@@ -543,6 +543,35 @@ class SalaryService:
             return 'Jaya'
         return name.title()
 
+    def _load_payslips_from_database(self) -> None:
+        try:
+            from app.core.database import SessionLocal
+            from sqlalchemy import text
+            db = SessionLocal()
+            try:
+                rows = db.execute(text(
+                    "SELECT person, employer, pay_date, period_start, period_end, gross, net "
+                    "FROM salary_payslips ORDER BY pay_date")).fetchall()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"salary_payslips unavailable: {e}")
+            return
+        for r in rows:
+            name = self._normalize_name(r.person)
+            if name not in self.salaries:
+                self.salaries[name] = SalaryIncome(name=name, employer=r.employer or "")
+            pd = datetime.combine(r.pay_date, datetime.min.time())
+            self.salaries[name].payslips.append(SalaryPayslip(
+                employee_name=name, employer=r.employer or "",
+                pay_date=pd,
+                period_start=datetime.combine(r.period_start, datetime.min.time()) if r.period_start else pd,
+                period_end=datetime.combine(r.period_end, datetime.min.time()) if r.period_end else pd,
+                year=r.pay_date.year,
+                gross_pay_period=float(r.gross or 0),
+                net_pay_period=float(r.net or 0),
+            ))
+
     def load_all_payslips(self) -> Dict[str, SalaryIncome]:
         """Load all payslip and W-2 data. Tries database first, then parses files."""
         self.salaries = {}
@@ -575,7 +604,13 @@ class SalaryService:
                         self.salaries[name].yearly_state_tax[year] = payslip.state_tax_ytd
         else:
             print(f"Salary data directory not found: {self.data_dir}")
-        
+
+        # Payslips recorded directly (salary_payslips): dated gross facts.
+        # YTD fields are left at zero on purpose — a stub must not set
+        # yearly_gross, or the W-2 spread would treat the year as closed and
+        # double-count it.
+        self._load_payslips_from_database()
+
         # Load W-2 data - try database first, fall back to parsing files
         loaded_from_db = self._load_w2_from_database()
         if not loaded_from_db:
