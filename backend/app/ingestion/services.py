@@ -1375,13 +1375,23 @@ def save_tax_return(db: Session, record: ParsedRecord, ingestion_id: Optional[in
     ).first()
     
     if existing:
-        # Update existing record if new data is better
-        if data.get("agi") and (not existing.agi or existing.agi == 0):
-            existing.agi = data.get("agi")
-        if data.get("federal_tax") and (not existing.federal_tax or existing.federal_tax == 0):
-            existing.federal_tax = data.get("federal_tax")
-        if data.get("state_tax") and (not existing.state_tax or existing.state_tax == 0):
-            existing.state_tax = data.get("state_tax")
+        # A parsed FILED return supersedes a computed placeholder outright.
+        # The fill-only-if-empty rule below exists so a partial parse never
+        # clobbers a good row — but it also meant the calculated 2025 row
+        # (source_file='calculated_from_data', federal $45,838) could never
+        # be replaced by the filed return ($41,287) once both were non-zero.
+        # Neel, 2026-09-12: "ingest this data so you won't have to rely on
+        # calculated".
+        placeholder = (existing.source_file or "") == "calculated_from_data"
+        for f in ("agi", "federal_tax", "federal_withheld", "federal_owed",
+                  "federal_refund", "state_tax", "state_withheld", "state_owed",
+                  "state_refund", "filing_status"):
+            v = data.get(f)
+            if v is None:
+                continue
+            cur = getattr(existing, f)
+            if placeholder or cur is None or cur == 0:
+                setattr(existing, f, v)
         if data.get("effective_rate"):
             existing.effective_rate = data.get("effective_rate")
         if data.get("source_file"):

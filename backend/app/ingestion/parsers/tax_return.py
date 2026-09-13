@@ -80,7 +80,12 @@ class TaxReturnParser(BaseParser):
                 tax_data = {}
                 
                 # Check format type
-                if 'FEDERAL TAX SUMMARY' in first_page_text or (
+                summary_page = next((pdf.pages[i].extract_text() or '' for i in range(min(4, len(pdf.pages)))
+                                     if 'EFFECTIVE TAX RATE' in (pdf.pages[i].extract_text() or '')
+                                     and 'TOTAL TAX' in (pdf.pages[i].extract_text() or '')), None)
+                if summary_page is not None and 'FEDERAL TAX SUMMARY' not in summary_page:
+                    tax_data = self._parse_cover_summary_format(summary_page, pdf)
+                elif 'FEDERAL TAX SUMMARY' in first_page_text or (
                     len(pdf.pages) > 1 and 'FEDERAL TAX SUMMARY' in (pdf.pages[1].extract_text() or '')
                 ):
                     for i in range(min(3, len(pdf.pages))):
@@ -513,6 +518,64 @@ class TaxReturnParser(BaseParser):
         
         return data
     
+    def _parse_cover_summary_format(self, summary_text: str, pdf) -> Dict[str, Any]:
+        """Preparer cover-letter summary (Diwakar Taxes, TY2025):
+
+            FEDERAL
+            TOTAL TAX                     $ 41,287
+            LESS: PAYMENTS AND CREDITS    $ 63,184
+            REFUND                        $ 21,897
+            YOUR FEDERAL EFFECTIVE TAX RATE IS 17.45%
+            STATE
+            TOTAL TAX                     $ 17,619
+            ...
+
+        Two things defeated the other strategies on this layout: the cover
+        says "2025 INCOME TAX RETURN", so r'(\d{4})\s+TAX RETURN' never
+        matches; and there is no "FEDERAL TAX SUMMARY" heading, only
+        "FEDERAL". The year is taken from the 1040 header ("Form 1040 (2025)")
+        with the cover line as fallback; AGI and withholding from the 1040
+        page-2 line numbers (11b, 25d).
+        """
+        data: Dict[str, Any] = {}
+        pages = [pg.extract_text() or '' for pg in pdf.pages[:6]]
+        alltext = "\n".join(pages)
+
+        m = (re.search(r'Form 1040 \((\d{4})\)', alltext)
+             or re.search(r'(\d{4})\s+INCOME TAX RETURN', alltext, re.IGNORECASE))
+        if m:
+            data['year'] = int(m.group(1))
+
+        def block(name):
+            i = summary_text.upper().find(name)
+            return summary_text[i:] if i >= 0 else ''
+        fed, state = block('FEDERAL'), block('STATE')
+        fed = fed[:fed.upper().find('STATE')] if 'STATE' in fed.upper() else fed
+
+        def amount(txt, label):
+            mm = re.search(re.escape(label) + r'[^\n$]*\$\s*([\d,]+)', txt, re.IGNORECASE)
+            return int(mm.group(1).replace(',', '')) if mm else None
+
+        ft, fp, fr = amount(fed, 'TOTAL TAX'), amount(fed, 'PAYMENTS AND CREDITS'), amount(fed, 'REFUND')
+        st, sp, sr = amount(state, 'TOTAL TAX'), amount(state, 'PAYMENTS AND CREDITS'), amount(state, 'REFUND')
+        if ft is not None: data['federal_tax'] = ft
+        if fr is not None: data['federal_refund'] = fr
+        if ft is not None and fp is not None: data['federal_owed'] = max(ft - fp, 0)
+        if st is not None: data['state_tax'] = st
+        if sr is not None: data['state_refund'] = sr
+        if st is not None and sp is not None: data['state_owed'] = max(st - sp, 0)
+
+        rate = re.search(r'EFFECTIVE TAX RATE IS\s+([\d.]+)%', summary_text, re.IGNORECASE)
+        if rate: data['effective_rate'] = float(rate.group(1))
+
+        agi = re.search(r'\b11b\s+([\d,]+)\.', alltext) or re.search(r'\b11a\s+([\d,]+)\.', alltext)
+        if agi: data['agi'] = int(agi.group(1).replace(',', ''))
+        wh = re.search(r'\b25d\s+([\d,]+)\.', alltext)
+        if wh: data['federal_withheld'] = int(wh.group(1).replace(',', ''))
+        if re.search(r'Married filing jointly', alltext, re.IGNORECASE) and re.search(r'\b12e\s+31,500\.', alltext):
+            data['filing_status'] = 'MFJ'   # MFJ standard deduction for 2025
+        return data
+
     def _parse_tax_preparer_format(self, summary_text: str, pdf) -> Dict[str, Any]:
         """Parse the tax preparer summary format."""
         data = {}

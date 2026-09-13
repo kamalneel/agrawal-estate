@@ -2,7 +2,7 @@
 
 **Tax year:** 2025 (filing due April 15, 2026; if extended, October 15, 2026)
 **Filers:** Neel Kamal & Jaya Agrawal (MFJ)
-**CPA package status:** Not yet assembled
+**CPA package status:** Return filed 2026-02-19 (Diwakar Taxes)
 
 This is the master tracking sheet for all tax-year-2025 paperwork. Update this file whenever a new document is dropped into `data/tax-documents/2025/`.
 
@@ -57,17 +57,23 @@ This is the master tracking sheet for all tax-year-2025 paperwork. Update this f
 | `New_Tesla_Purchase_2025.txt` | New Tesla purchase | 2026-02-13 | received | Possible EV credit / sales tax deduction — confirm with CPA |
 | `Tesla_Model3_Sale_CarMax_Check.jpg` | Model 3 sale to CarMax | 2026-02-13 | received | Personal vehicle sale — typically nondeductible loss, but document for basis tracking |
 
+## Filed return
+
+| File | Preparer | Filed | Status | Notes |
+|---|---|---|---|---|
+| `2025_Tax_Return_Filed_Diwakar_Taxes.pdf` | Diwakar Taxes Inc (Amit Kumar, PTIN P01610553) | 2026-02-19 | received | 66 pp. MFJ. AGI $279,049; federal tax $41,287 (refund $21,897); CA tax $17,619 (refund $5,351). Ingested into `income_tax_returns` 2026-09-12, replacing the calculated placeholder. Previously misfiled at the folder root as a "prior-year (TY2024)" reference — it is the TY2025 return. |
+
 ## Prior-year reference
 
 | File | Notes |
 |---|---|
-| `../2025 KAMAL, NEEL Tax Returns.pdf` | Prior-year return (TY2024 filed in 2025). Used for carryovers, AGI reference, estimated payments. |
+| `../../processed/tax/returns/2024US IKAMALandAGARWAL Clnt V1.pdf` | TY2024 return. Used for carryovers, AGI reference, estimated payments. |
 
 ---
 
 ## Open items / awaiting
 
-- [ ] Confirm whether Neel has W-2 income for TY2025
+- [x] Confirm whether Neel has W-2 income for TY2025 — none; filed return shows W-2 wages $177,281 (Jaya only)
 - [ ] Mortgage 1098 for primary residence
 - [ ] Mortgage 1098 / property tax for 303 Hartstene Dr
 - [ ] Airbnb 1099-K (if issued)
