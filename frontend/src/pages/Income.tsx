@@ -2469,6 +2469,7 @@ interface SalaryProjection {
   id: number
   person: string
   monthly_net: number
+  monthly_gross?: number | null
   effective_from: string
   effective_to: string | null
   notes: string | null
@@ -2478,7 +2479,7 @@ function SalaryProjectionConfig({ employeeName }: { employeeName: string }) {
   const [projections, setProjections] = useState<SalaryProjection[]>([])
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
-  const [newRow, setNewRow] = useState({ monthly_net: '', effective_from: '', effective_to: '', notes: '' })
+  const [newRow, setNewRow] = useState({ monthly_net: '', monthly_gross: '', effective_from: '', effective_to: '', notes: '' })
 
   const fetchProjections = async () => {
     try {
@@ -2510,13 +2511,14 @@ function SalaryProjectionConfig({ employeeName }: { employeeName: string }) {
         body: JSON.stringify({
           person: employeeName,
           monthly_net: parseFloat(newRow.monthly_net),
+          monthly_gross: newRow.monthly_gross ? parseFloat(newRow.monthly_gross) : null,
           effective_from: newRow.effective_from,
           effective_to: newRow.effective_to || null,
           notes: newRow.notes || null,
         }),
       })
       if (res.ok) {
-        setNewRow({ monthly_net: '', effective_from: '', effective_to: '', notes: '' })
+        setNewRow({ monthly_net: '', monthly_gross: '', effective_from: '', effective_to: '', notes: '' })
         setAdding(false)
         fetchProjections()
       }
@@ -2573,7 +2575,9 @@ function SalaryProjectionConfig({ employeeName }: { employeeName: string }) {
         )}
         {projections.map((p) => (
           <div key={p.id} className={styles.w2Row}>
-            <span className={styles.w2Wages}>{formatCurrency(p.monthly_net)}/mo</span>
+            <span className={styles.w2Wages}>
+              {p.monthly_gross ? <>{formatCurrency(p.monthly_gross)}/mo gross</> : <>{formatCurrency(p.monthly_net)}/mo net</>}
+            </span>
             <span>{p.effective_from}</span>
             <span>{p.effective_to || 'ongoing'}</span>
             <span style={{ color: '#888', fontSize: '12px' }}>{p.notes || ''}</span>
@@ -2597,6 +2601,11 @@ function SalaryProjectionConfig({ employeeName }: { employeeName: string }) {
                 value={newRow.monthly_net}
                 onChange={(e) => setNewRow({ ...newRow, monthly_net: e.target.value })}
                 style={{ width: '100px', background: '#1a1a1a', border: '1px solid #333', borderRadius: '4px', color: '#fff', padding: '4px 8px', fontSize: '13px' }}
+              />
+              <input
+                type="number" placeholder="Monthly gross"
+                value={newRow.monthly_gross}
+                onChange={(e) => setNewRow({ ...newRow, monthly_gross: e.target.value })}
               />
             </span>
             <span>

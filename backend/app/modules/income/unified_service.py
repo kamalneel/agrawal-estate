@@ -169,6 +169,15 @@ _NON_SALARY_PAYROLL_RECEIPTS = {
     (date(2025, 10, 28), "Cisco Systems Inc", 39308.18),
 }
 
+#: GROSS one-time payroll amounts to strip from a W-2 before spreading it as
+#: salary. Neel, 2026-09-12: "keep severance out as one time". The W-2 holds
+#: the severance gross; only the NET deposit ($39,308.18) is known, so that
+#: is the placeholder here — replace with the gross from the severance
+#: letter when found, and 2025's monthly salary shifts by the difference/10.
+_ONE_TIME_W2_GROSS = {
+    ("jaya", 2025): 39308.18,
+}
+
 # Must match backend/app/modules/income/db_queries.py predicates.
 _TXN_SOURCE_CASE = """
     CASE
@@ -276,16 +285,45 @@ def get_unified_income(
             d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
             if slip.gross_pay_period:
                 payslip_months.setdefault(key, set()).add(f"{d.year}-{d.month:02d}")
-        if granularity == "year":
-            for yr, gross in (inc.yearly_gross or {}).items():
-                p = date(int(yr), 1, 1)
-                if in_range(p) and gross:
-                    by_source[p]["salary"] += float(gross)
-        else:
-            for slip in inc.payslips or []:
-                d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
-                if in_range(d) and slip.gross_pay_period:
-                    by_source[_bucket(d, granularity)]["salary"] += float(slip.gross_pay_period)
+        for slip in inc.payslips or []:
+            d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
+            if in_range(d) and slip.gross_pay_period:
+                by_source[_bucket(d, granularity)]["salary"] += float(slip.gross_pay_period)
+
+    # --- W-2 spread: ONE gross basis at every granularity.
+    #
+    # A W-2 is one number for the year. Used only at year granularity it
+    # made 2025 read $177,281 on the Yearly tab and $77,014 (net deposits)
+    # on the Monthly tab — same year, two bases. Neel, 2026-09-12: "spread
+    # the W2 across months". So W-2 gross, less one-time payments, is spread
+    # evenly across the months that person had a payroll deposit (all twelve
+    # if the deposit feed does not reach that year), and the yearly figure
+    # is the sum of those months. Where the spread covers a (person, month),
+    # deposits and projections below stand down.
+    w2_spread: Dict[tuple, float] = {}   # (person, 'YYYY-MM') -> gross
+    deposit_months: Dict[tuple, set] = {}  # (person, year) -> {month}
+    for r in db.execute(text("""
+        SELECT DISTINCT merchant, EXTRACT(YEAR FROM transaction_date)::int AS y,
+               EXTRACT(MONTH FROM transaction_date)::int AS m
+        FROM spending_transactions WHERE amount > 0 AND merchant IN :merchants
+    """).bindparams(bindparam("merchants", expanding=True)),
+        {"merchants": list(_SALARY_EMPLOYERS)}).fetchall():
+        deposit_months.setdefault((_SALARY_EMPLOYERS[r.merchant], r.y), set()).add(r.m)
+    for name, inc in salaries.items():
+        key = name.split()[0].lower()
+        for yr, gross in (inc.yearly_gross or {}).items():
+            yr = int(yr)
+            if not gross:
+                continue
+            net_of_onetime = float(gross) - _ONE_TIME_W2_GROSS.get((key, yr), 0.0)
+            months = sorted(deposit_months.get((key, yr), set())) or list(range(1, 13))
+            for m in months:
+                w2_spread[(key, f"{yr}-{m:02d}")] = net_of_onetime / len(months)
+    for (key, mk), amt in w2_spread.items():
+        y, m = map(int, mk.split("-"))
+        p = date(y, m, 1)   # a modelled monthly figure; dated the 1st
+        if in_range(p):
+            by_source[_bucket(p, granularity)]["salary"] += amt
 
     # --- salary ACTUALS from the Monarch bank feed (net deposits).
     #
@@ -303,6 +341,27 @@ def get_unified_income(
     # bucketed from each deposit's own date — bucketing from the month key
     # would collapse a month of paychecks onto the 1st and put them all in
     # one week at week granularity.
+    # Months a GROSS projection covers (person, 'YYYY-MM'). Salary is reported
+    # gross, so where a stated gross rate exists the net deposit stands down —
+    # it is the same pay on the wrong basis. Neel, 2026-09-12: "we want
+    # consistency and number prior to tax"; rates confirmed from the AdamX
+    # paystubs ($5,000 x2 Jun-Jul, $15,000 x2 from Aug) and Jaya's $150K.
+    gross_months: set = set()
+    today_ = date.today()
+    for r in db.execute(text(
+        "SELECT person, monthly_gross, effective_from, effective_to FROM salary_projections "
+        "WHERE monthly_gross IS NOT NULL AND monthly_gross > 0")).fetchall():
+        key = (r.person or "").split()[0].lower()
+        fy, fm = map(int, r.effective_from.split("-"))
+        ty, tm = map(int, r.effective_to.split("-")) if r.effective_to else (today_.year, today_.month)
+        ty, tm = min((ty, tm), (today_.year, today_.month))
+        y, m = fy, fm
+        while (y, m) <= (ty, tm):
+            gross_months.add((key, f"{y}-{m:02d}"))
+            m += 1
+            if m > 12:
+                y, m = y + 1, 1
+
     salary_actual: Dict[tuple, float] = {}   # (person, 'YYYY-MM') -> net
     for r in db.execute(text("""
         SELECT transaction_date, merchant, SUM(amount) AS amount
@@ -317,9 +376,9 @@ def get_unified_income(
         d = r.transaction_date
         mk = f"{d.year}-{d.month:02d}"
         salary_actual[(person, mk)] = salary_actual.get((person, mk), 0.0) + float(r.amount)
-        # At year granularity a W-2 already contributed this person's GROSS
-        # for the year; adding net deposits on top would double-count them.
-        if granularity == "year" and d.year in w2_years.get(person, set()):
+        # The W-2 spread already carries this month as GROSS; the net deposit
+        # would double-count it (and on the wrong basis).
+        if (person, mk) in w2_spread or (person, mk) in gross_months:
             continue
         if in_range(d):
             by_source[_bucket(d, granularity)]["salary"] += float(r.amount)
@@ -331,7 +390,7 @@ def get_unified_income(
     if granularity in ("month", "year"):
         today = date.today()
         for r in db.execute(text(
-            "SELECT person, monthly_net, effective_from, effective_to FROM salary_projections"
+            "SELECT person, monthly_net, monthly_gross, effective_from, effective_to FROM salary_projections"
         )).fetchall():
             key = (r.person or "").split()[0].lower()
             fy, fm = map(int, r.effective_from.split("-"))
@@ -343,13 +402,23 @@ def get_unified_income(
             y, m = fy, fm
             while (y, m) <= (ty, tm):
                 month_key = f"{y}-{m:02d}"
-                covered = (month_key in payslip_months.get(key, set())
-                           or (key, month_key) in salary_actual
-                           or (granularity == "year" and y in w2_years.get(key, set())))
-                if not covered:
+                # A GROSS projection is the salary itself — it outranks the net
+                # bank deposit for the same month (see gross_months below).
+                # A NET projection is only a gap-filler.
+                if r.monthly_gross:
+                    covered = ((key, month_key) in w2_spread
+                               or month_key in payslip_months.get(key, set()))
+                    amt = float(r.monthly_gross)
+                else:
+                    covered = (month_key in payslip_months.get(key, set())
+                               or (key, month_key) in salary_actual
+                               or (key, month_key) in w2_spread
+                               or (key, month_key) in gross_months)
+                    amt = float(r.monthly_net or 0)
+                if not covered and amt:
                     p = date(y, m, 1)
-                    if in_range(p) and r.monthly_net:
-                        by_source[_bucket(p, granularity)]["salary"] += float(r.monthly_net)
+                    if in_range(p):
+                        by_source[_bucket(p, granularity)]["salary"] += amt
                 m += 1
                 if m > 12:
                     y, m = y + 1, 1

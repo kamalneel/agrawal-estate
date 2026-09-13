@@ -16,6 +16,10 @@ class SalaryProjection(BaseModel):
 
     person = Column(String(100), nullable=False)           # "Neel", "Jaya"
     monthly_net = Column(Numeric(12, 2), nullable=False, default=0)
+    # Gross monthly pay for the range. The Income page reports salary GROSS
+    # (one basis at every granularity, matching the W-2 years); monthly_net
+    # is kept for BBD take-home maths and as a deposit cross-check.
+    monthly_gross = Column(Numeric(12, 2), nullable=True)
     effective_from = Column(String(7), nullable=False)     # "2025-01" (YYYY-MM)
     effective_to = Column(String(7), nullable=True)        # "2025-12" or null (ongoing)
     notes = Column(String(500), nullable=True)

@@ -21,6 +21,7 @@ from app.modules.income import db_queries
 class SalaryProjectionCreate(PydanticBaseModel):
     person: str
     monthly_net: float
+    monthly_gross: Optional[float] = None
     effective_from: str  # YYYY-MM
     effective_to: Optional[str] = None
     notes: Optional[str] = None
@@ -558,7 +559,7 @@ async def list_salary_projections(db: Session = Depends(get_db)):
     """List all salary projection records."""
     from sqlalchemy import text
     rows = db.execute(text(
-        "SELECT id, person, monthly_net, effective_from, effective_to, notes "
+        "SELECT id, person, monthly_net, effective_from, effective_to, notes, monthly_gross "
         "FROM salary_projections ORDER BY person, effective_from"
     )).fetchall()
     return {
@@ -567,6 +568,7 @@ async def list_salary_projections(db: Session = Depends(get_db)):
                 'id': r[0],
                 'person': r[1],
                 'monthly_net': float(r[2]),
+                'monthly_gross': float(r[6]) if r[6] is not None else None,
                 'effective_from': r[3],
                 'effective_to': r[4],
                 'notes': r[5],
@@ -586,15 +588,15 @@ async def create_salary_projection(body: SalaryProjectionCreate, db: Session = D
 
     if existing:
         db.execute(text(
-            "UPDATE salary_projections SET monthly_net = :mn, effective_to = :et, notes = :n, updated_at = NOW() "
+            "UPDATE salary_projections SET monthly_net = :mn, monthly_gross = :mg, effective_to = :et, notes = :n, updated_at = NOW() "
             "WHERE id = :id"
-        ), {'mn': body.monthly_net, 'et': body.effective_to, 'n': body.notes, 'id': existing[0]})
+        ), {'mn': body.monthly_net, 'mg': body.monthly_gross, 'et': body.effective_to, 'n': body.notes, 'id': existing[0]})
         row_id = existing[0]
     else:
         result = db.execute(text(
-            "INSERT INTO salary_projections (person, monthly_net, effective_from, effective_to, notes, created_at, updated_at) "
+            "INSERT INTO salary_projections (person, monthly_net, monthly_gross, effective_from, effective_to, notes, created_at, updated_at) "
             "VALUES (:p, :mn, :ef, :et, :n, NOW(), NOW()) RETURNING id"
-        ), {'p': body.person, 'mn': body.monthly_net, 'ef': body.effective_from, 'et': body.effective_to, 'n': body.notes})
+        ), {'p': body.person, 'mn': body.monthly_net, 'mg': body.monthly_gross, 'ef': body.effective_from, 'et': body.effective_to, 'n': body.notes})
         row_id = result.fetchone()[0]
 
     db.commit()
@@ -602,6 +604,7 @@ async def create_salary_projection(body: SalaryProjectionCreate, db: Session = D
         'id': row_id,
         'person': body.person,
         'monthly_net': body.monthly_net,
+        'monthly_gross': body.monthly_gross,
         'effective_from': body.effective_from,
         'effective_to': body.effective_to,
         'notes': body.notes,
