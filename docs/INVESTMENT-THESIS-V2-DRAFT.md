@@ -248,3 +248,17 @@ Neel's stop is the dip, not a debit.
 Remaining open: which names are the short-term book (a list or a rule),
 what "softer on non-income producers" means concretely (LLY, IBIT), and
 whether the long-term bucket targets change.
+
+## Rounds 10–11 (2026-09-13, late) — the two lists
+
+- **Short-term book is a named list: INTC, SOXL, RKLB, CBRS, ZM, MRVL.**
+  (Moves ZM out of `conviction_other` and MRVL out of Infrastructure AI.)
+- **Long-term book is the $1T+ rule.** MU, IBIT and LLY are long-term on
+  that rule — checked against live Robinhood fundamentals 2026-09-11:
+  MU **$1.10T**, LLY **$1.05T**, AVGO $1.72T, TSLA $1.44T. IBIT is a
+  fund ($61B AUM) tracking Bitcoin, itself >$1T — long-term by the
+  asset, not the wrapper. Sub-$1T for reference: AMD $843B, INTC $544B,
+  MRVL $207B, RKLB $38B, ZM $28B.
+- Note for the build: the Robinhood MCP `get_equity_fundamentals`
+  returns `market_cap` — the Investments spec's "trillion-club policy
+  deferred (no market-cap source exists)" is no longer true.
