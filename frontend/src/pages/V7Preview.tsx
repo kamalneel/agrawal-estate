@@ -2,10 +2,12 @@
  * V7 Preview — the two-book / four-layer notification engine, read-only,
  * beside the live V6 queue on Option Execution. Built 2026-09-13 so Neel
  * can judge it during a live trading day before anything is switched.
- * Spec: docs/INVESTMENT-THESIS-V2-DRAFT.md · policy: data/policy_v2.json.
+ * Laid out like Option Execution (Neel, 2026-09-14): account pills, one
+ * queue, sort by account — the layer is a tag on the row, not a section.
+ * Spec: docs/OPTIONS-STRATEGY-V7-SPEC.md · policy: data/policy_v2.json.
  */
-import { useEffect, useState } from 'react'
-import { RefreshCw, AlertTriangle, ChevronRight } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { RefreshCw, AlertTriangle, ChevronDown } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { formatCurrency } from '../components/charts'
@@ -44,11 +46,15 @@ interface Preview {
   counts: Record<string, number>
 }
 
-const LAYER_BLURB: Record<number, string> = {
-  1: 'Long-term book — delta 10-15 calls on every name, consistently. Stuck calls roll weekly at the same strike for a credit; buy back on a dip; the roll before ex-dividend goes 3-4 weeks out. Puts only to re-enter after a call assignment.',
-  2: 'Short-term book — calls between delta 20 and 40, the technicals pick the number (low RSI → nearer 20). Never at the money. Same rule whether the shares were assigned or bought.',
-  3: 'Short-term puts against cash and margin, to maximise option income. Capacity = margin line + cash − open collateral − margin already drawn. No new put once the short-term book is at 20%.',
-  4: 'Recovery — a notice with a dollar amount, never a pick. Margin drawn by shares instead of puts; the 80/20 split drifting. No hurry: the cost of the abnormal state is put income (~2%/mo) becoming call income (~1%/mo).',
+const ACCOUNT_ORDER = ["Neel's Brokerage", "Neel's Retirement", "Neel's Roth IRA",
+  "Jaya's Brokerage", "Jaya's IRA", "Jaya's Roth IRA", "Alisha's Brokerage", "Agrawal Family HSA"]
+
+const LAYER_NAME: Record<number, string> = { 1: 'Long-term calls', 2: 'Short-term calls', 3: 'Short-term puts', 4: 'Recovery' }
+const LAYER_RULE: Record<number, string> = {
+  1: 'Long-term book: delta 10-15 calls on every name. Stuck calls roll weekly at the same strike for a credit; buy back on a dip; the roll before ex-dividend goes 3-4 weeks out. Puts only to re-enter after a call assignment.',
+  2: 'Short-term book: calls between delta 20 and 40, the technicals pick the number (low RSI → nearer 20). Never at the money. Same rule whether the shares were assigned or bought.',
+  3: 'Short-term puts against cash and margin, to maximise option income. Capacity = margin line + cash − open collateral − margin drawn. None once the short-term book is at 20%.',
+  4: 'Recovery: a notice with a dollar amount, never a pick. Margin drawn by shares instead of puts; the 80/20 split drifting.',
 }
 
 const ACTION_COLOR: Record<string, string> = {
@@ -57,11 +63,16 @@ const ACTION_COLOR: Record<string, string> = {
   'LET ASSIGN': 'var(--color-warning)', NOTICE: 'var(--color-negative)', REVIEW: 'var(--color-warning)',
 }
 
+const acctRank = (a: string) => { const i = ACCOUNT_ORDER.indexOf(a); return i < 0 ? 99 : i }
+
 export default function V7Preview() {
   const [data, setData] = useState<Preview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState<string | null>(null)
+  const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
+  const [sort, setSort] = useState<'account' | 'layer'>('account')
+  const [showRules, setShowRules] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -73,11 +84,35 @@ export default function V7Preview() {
   }
   useEffect(load, [])
 
+  const all = useMemo(() => (data ? data.layers.flatMap(L => L.items) : []), [data])
+
+  // account pills — every account that has holdings or cards, canonical order
+  const accounts = useMemo(() => {
+    const names = new Set<string>(all.map(c => c.account).filter(a => a && a !== 'Portfolio'))
+    data?.accounts.forEach(a => names.add(a.account))
+    return Array.from(names).sort((a, b) => acctRank(a) - acctRank(b)).map(name => ({
+      name,
+      total: all.filter(c => c.account === name).length,
+      notices: all.filter(c => c.account === name && c.layer === 4).length,
+    }))
+  }, [all, data])
+
+  const rows = useMemo(() => {
+    const list = selectedAccount ? all.filter(c => c.account === selectedAccount || c.account === 'Portfolio') : all
+    return [...list].sort((a, b) => sort === 'account'
+      ? (acctRank(a.account) - acctRank(b.account)) || (a.layer - b.layer) || a.symbol.localeCompare(b.symbol)
+      : (a.layer - b.layer) || (acctRank(a.account) - acctRank(b.account)) || a.symbol.localeCompare(b.symbol))
+  }, [all, selectedAccount, sort])
+
   if (error) return <div className={styles.page}><p className={styles.error}>Could not load the V7 preview: {error}</p></div>
   if (loading || !data) return <div className={styles.page}><p className={styles.muted}>Building the V7 queue…</p></div>
 
   const { split } = data
   const stOver = split.short_term_pct > split.target.short_term_pct
+  const estTotal = rows.reduce((s, c) => s + (c.earn ?? 0), 0)
+
+  // group headers when sorted by account
+  let lastGroup: string | null = null
 
   return (
     <div className={styles.page}>
@@ -96,7 +131,6 @@ export default function V7Preview() {
         <button className={styles.refresh} onClick={load} title="Rebuild"><RefreshCw size={16} /></button>
       </header>
 
-      {/* State: the two books and the margin lines */}
       <section className={styles.state}>
         <div className={styles.stateCard}>
           <div className={styles.stateLabel}>Long-term book</div>
@@ -117,50 +151,83 @@ export default function V7Preview() {
             <div className={styles.stateSub}>line {formatCurrency(a.line!)} · put collateral {formatCurrency(a.collateral)} · cash {formatCurrency(a.cash)}</div>
           </div>
         ))}
-        {data.lists.undecided.length > 0 && (
-          <div className={styles.stateCard}>
-            <div className={styles.stateLabel}>Undecided</div>
-            <div className={styles.stateValueSm}>{data.lists.undecided.join(' · ')}</div>
-            <div className={styles.stateSub}>in V6 core; asked 2026-09-13 whether they stay as share-purchase targets</div>
-          </div>
-        )}
       </section>
 
-      {data.layers.map(L => (
-        <section key={L.n} className={styles.layer}>
-          <h2><span className={styles.layerNum}>{L.n}</span> {L.name} <span className={styles.count}>({L.items.length})</span></h2>
-          <p className={styles.blurb}>{LAYER_BLURB[L.n]}</p>
-          {L.items.length === 0 ? (
-            <p className={styles.muted}>Nothing to do.</p>
-          ) : (
-            <div className={styles.list}>
-              {L.items.map(c => (
-                <div key={c.id} className={styles.item}>
-                  <button className={styles.row} onClick={() => setOpen(open === c.id ? null : c.id)}>
-                    <span className={styles.action} style={{ color: ACTION_COLOR[c.action] ?? 'var(--color-text-secondary)', borderColor: ACTION_COLOR[c.action] ?? 'var(--color-border)' }}>{c.action}</span>
-                    <span className={styles.sym}>{c.symbol}</span>
-                    <span className={styles.acct}>{c.account}</span>
-                    <span className={styles.title}>{c.title}</span>
-                    {c.earn != null && <span className={styles.earn}>est {formatCurrency(c.earn)}</span>}
-                    {c.assumption && <span className={styles.flag} title={c.assumption}>assumption</span>}
-                    <ChevronRight size={14} className={clsx(styles.chev, open === c.id && styles.chevOpen)} />
-                  </button>
-                  <div className={styles.detail}>{c.detail}</div>
-                  {open === c.id && (
-                    <div className={styles.why}>
-                      <div>{c.why}</div>
-                      {c.assumption && <div className={styles.assumption}>⚠ {c.assumption}</div>}
-                    </div>
-                  )}
-                </div>
-              ))}
+      {/* account pills — same control as Option Execution */}
+      <div className={styles.acctFilterRow}>
+        <button className={clsx(styles.acctPill, selectedAccount === null && styles.acctPillActive)} onClick={() => setSelectedAccount(null)}>
+          <span className={styles.acctPillName}>All Accounts</span>
+          <span className={styles.acctPillCount}>{all.length}</span>
+        </button>
+        {accounts.map(a => (
+          <button key={a.name} className={clsx(styles.acctPill, selectedAccount === a.name && styles.acctPillActive)}
+                  onClick={() => setSelectedAccount(selectedAccount === a.name ? null : a.name)}>
+            {a.notices > 0 && <span className={styles.acctDot} />}
+            <span className={styles.acctPillName}>{a.name}</span>
+            <span className={styles.acctPillCount}>{a.total}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className={styles.queueHeader}>
+        <h2>Action Queue</h2>
+        <span className={styles.summary}>{rows.length} recommendation{rows.length === 1 ? '' : 's'}</span>
+        {estTotal > 0 && <span className={styles.summaryEarn}>est {formatCurrency(estTotal)} this week</span>}
+        <span className={styles.engineTag}>V7 · two books, four layers</span>
+        <span className={styles.sortToggle}>
+          <span className={styles.sortToggleLabel}>Sort:</span>
+          <button className={clsx(styles.sortToggleBtn, sort === 'account' && styles.sortToggleBtnActive)} onClick={() => setSort('account')}>Account</button>
+          <button className={clsx(styles.sortToggleBtn, sort === 'layer' && styles.sortToggleBtnActive)} onClick={() => setSort('layer')}>Layer</button>
+        </span>
+        <button className={styles.rulesToggle} onClick={() => setShowRules(v => !v)}>{showRules ? 'hide' : 'show'} the four layers</button>
+      </div>
+
+      {showRules && (
+        <div className={styles.rules}>
+          {[1, 2, 3, 4].map(n => (
+            <div key={n} className={styles.rule}><span className={styles.layerTag}>L{n}</span> <strong>{LAYER_NAME[n]}</strong> — {LAYER_RULE[n]}</div>
+          ))}
+        </div>
+      )}
+
+      <div className={styles.list}>
+        {rows.length === 0 && <p className={styles.muted}>Nothing to do.</p>}
+        {rows.map(c => {
+          const group = sort === 'account' ? c.account : `L${c.layer} ${LAYER_NAME[c.layer]}`
+          const header = group !== lastGroup ? group : null
+          lastGroup = group
+          const rsi = c.context?.rsi as number | null | undefined
+          return (
+            <div key={c.id}>
+              {header && <div className={styles.groupHeader}>{header}</div>}
+              <div className={styles.item}>
+                <button className={styles.row} onClick={() => setOpen(open === c.id ? null : c.id)}>
+                  <span className={styles.action} style={{ color: ACTION_COLOR[c.action] ?? 'var(--color-text-secondary)', borderColor: ACTION_COLOR[c.action] ?? 'var(--color-border)' }}>{c.action}</span>
+                  <span className={styles.sym}>{c.symbol}</span>
+                  <span className={styles.acct}>{c.account}</span>
+                  <span className={styles.title}>{c.title}<span className={styles.detailInline}> · {c.detail}</span></span>
+                  <span className={styles.layerTag} title={LAYER_NAME[c.layer]}>L{c.layer}</span>
+                  {rsi != null && <span className={styles.chip}>RSI {Math.round(rsi)}</span>}
+                  {c.assumption && <span className={styles.flag} title={c.assumption}>assumption</span>}
+                  {c.earn != null && <span className={styles.earn}>Earn ~{formatCurrency(c.earn)}</span>}
+                  <ChevronDown size={14} className={clsx(styles.chev, open === c.id && styles.chevOpen)} />
+                </button>
+                {open === c.id && (
+                  <div className={styles.why}>
+                    <div className={styles.whyRule}>{LAYER_NAME[c.layer]}</div>
+                    <div className={styles.whyDetail}>{c.detail}</div>
+                    <div>{c.why}</div>
+                    {c.assumption && <div className={styles.assumption}>⚠ {c.assumption}</div>}
+                  </div>
+                )}
+              </div>
             </div>
-          )}
-        </section>
-      ))}
+          )
+        })}
+      </div>
 
       <p className={styles.footnote}>
-        Strikes and premiums are the same heuristics V6 uses — estimates, not quotes. Cards marked <em>assumption</em> encode a rule Neel has not stated yet; they are listed in data/policy_v2.json.
+        Strikes and premiums are the same heuristics V6 uses — estimates, not quotes. Cards marked <em>assumption</em> encode a rule Neel has not stated yet; they are listed in data/policy_v2.json. Undecided names: {data.lists.undecided.join(', ')}.
       </p>
     </div>
   )
