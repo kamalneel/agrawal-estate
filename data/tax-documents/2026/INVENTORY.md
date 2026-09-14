@@ -59,6 +59,15 @@ Neel's stubs show $0 of 401(k), benefits, or post-tax deductions; SS 930 / Medic
 |---|---|---|---|---|
 | _(none yet)_ | | | | |
 
+## Estimated tax payments (recorded in `estimated_tax_payments`)
+
+| Date | Agency | Quarter | Amount | Confirmation | Notes |
+|---|---|---|---:|---|---|
+| 2026-05-01 | IRS | Q1 | 1,700.00 | — | IRS Direct Pay |
+| 2026-05-01 | CA FTB | Q1 | 550.00 | — | FTB Web Pay |
+| 2026-09-14 | IRS | Q3 | 10,000.00 | EFT 240665811453052 | IRS Direct Pay, submitted 1:53 PM EDT; screenshot of the status page was shown, not filed (temp file expired) |
+| 2026-09-14 | CA FTB | Q3 | 5,000.00 | pending | FTB Web Pay scheduled 09/14/2026; Payment Summary showed it Pending (5 business days to post); screenshot shown, not filed |
+
 ## Other
 
 | File | Topic | Received | Status | Notes |

@@ -1,4 +1,4 @@
-# 2026 Tax Estimate — as of 2026-09-12
+# 2026 Tax Estimate — as of 2026-09-14
 
 **Filers:** Neel Kamal & Jaya Agrawal, MFJ, California.
 **Method:** the app's forecast (`GET /api/v1/tax/forecast/2026`) after the fixes from `2025-TAX-RETURN-RECONCILIATION.md`, plus full-year scenarios computed with the same rules. Validation: the same code re-run for 2025 now gives 61,210 federal + CA against the filed 58,998 (+3.7%; was +54%).
@@ -9,8 +9,9 @@
 | | Federal | California |
 |---|---:|---:|
 | Withheld from Neel's AdamX pay (YTD per 09/15 stub) | 9,015.18 | 4,198.28 |
-| Estimated payments (Q1, paid 2026-05-01) | 1,700.00 | 550.00 |
-| **Paid to date** | **10,715.18** | **4,748.28** |
+| Estimated payment Q1 (2026-05-01) | 1,700.00 | 550.00 |
+| Estimated payment Q3 (2026-09-14; IRS EFT 240665811453052, FTB Web Pay pending) | 10,000.00 | 5,000.00 |
+| **Paid to date** | **20,715.18** | **9,748.28** |
 | Also withheld, not income tax: Social Security 4,030.00, Medicare 942.50, CA SDI 845.00 | | |
 
 Neel's stub at the $360K rate withholds 2,569.50 federal and 1,172.44 CA per semi-monthly period, with no 401(k), benefit, or post-tax deductions. Seven more pay dates remain (Sep 30 – Dec 31), so year-end withholding at the current W-4 will be about **27,002 federal / 12,405 CA**.
@@ -32,8 +33,8 @@ Jaya's DeWinter withholding is unknown: no stubs are ingested. Her wages are in 
 | NIIT | 0 (AGI under 250,000 so far) |
 | California (CA taxable 185,223, tax 10,103, less exemption credits 306) | 9,797 |
 | **Federal + CA on income to date** | **31,851** |
-| Paid to date | 15,463 |
-| Uncovered so far | 16,387 |
+| Paid to date | 30,463 |
+| Uncovered so far | 1,388 |
 
 ## 3. Full-year scenarios
 
@@ -46,8 +47,8 @@ Assumptions: Neel 15,000 per period through Dec 31 (170,000 for the year); renta
 | NIIT | 1,885 | 4,925 |
 | California | 20,637 | 28,774 |
 | **Federal + CA** | **65,030** | **97,208** |
-| Less Neel's year-end withholding + estimates paid (28,702 fed / 12,955 CA) | | |
-| **Still to pay (fed / CA)** | 15,692 / 7,681 | 39,732 / 15,819 |
+| Less Neel's year-end withholding + estimates paid (38,702 fed / 17,955 CA) | | |
+| **Still to pay (fed / CA)** | 5,692 / 2,681 | 29,732 / 10,819 |
 
 Scenario C is the realistic one; its "still to pay" drops by whatever DeWinter has withheld for Jaya.
 
@@ -63,20 +64,20 @@ Withholding is treated as paid evenly through the year (6,750 federal / 3,101 CA
 |---|---:|---:|---:|
 | Q1 due 2026-04-15 | 11,354 | 8,450 | 2,904 |
 | Q2 due 2026-06-15 | 22,708 | 15,200 | 7,508 |
-| **Q3 due 2026-09-15** | 34,062 | 21,951 | **12,111** |
-| Q4 due 2027-01-15 | 45,416 | 28,702 | 16,714 |
+| **Q3 due 2026-09-15** | 34,062 | 31,951 (after the 10,000 paid Sep 14) | **2,111** |
+| Q4 due 2027-01-15 | 45,416 | 38,702 | 6,714 |
 
 | California (30% / 40% / 0% / 30%) | Required cumulative | Deemed paid | Shortfall |
 |---|---:|---:|---:|
 | Q1 due 2026-04-15 | 5,814 | 3,651 | 2,163 |
-| Q2 due 2026-06-15 | 13,567 | 6,753 | 6,814 |
-| Q3 due 2026-09-15 | 13,567 | 9,854 | 3,713 |
-| Q4 due 2027-01-15 | 19,381 | 12,955 | 6,426 |
+| Q2 due 2026-06-15 | 13,567 | 6,753 | 6,814 (accrued until the Sep 14 payment) |
+| Q3 due 2026-09-15 | 13,567 | 14,854 (after the 5,000 paid Sep 14) | met |
+| Q4 due 2027-01-15 | 19,381 | 17,955 | 1,426 |
 
 Two ways to close the gap:
 
-1. **Estimated payments:** federal 12,111 by 2026-09-15 and 4,603 by 2027-01-15; California 6,814 now and the remaining 6,426 by 2027-01-15 (or 13,240 now). Earlier-quarter shortfalls still accrue penalty up to the payment date (roughly 7% annualized, so a few hundred dollars).
-2. **Raise W-4 withholding instead:** because withholding is deemed paid evenly across all four quarters, extra withholding of about **2,388 federal and 918 CA on each of the seven remaining paychecks** reaches the safe harbor and retroactively cures the Q1–Q3 shortfalls with no penalty at all. This is the cheaper route if AdamX can apply it from the Sep 30 pay date.
+1. **Estimated payments:** federal 10,000 was paid 2026-09-14, leaving 2,111 of the Q3 mark and 6,714 in total to reach the safe harbor by 2027-01-15; California 5,000 was paid 2026-09-14, which clears the Q3 mark; 1,426 remains by 2027-01-15. Earlier-quarter shortfalls still accrue penalty up to the payment date (roughly 7% annualized, so a few hundred dollars).
+2. **Raise W-4 withholding instead:** because withholding is deemed paid evenly across all four quarters, extra withholding of about **959 federal and 204 CA on each of the seven remaining paychecks** reaches the safe harbor and retroactively cures the Q1–Q3 shortfalls with no penalty at all. This is the cheaper route if AdamX can apply it from the Sep 30 pay date.
 
 The 2025 return used the annualized-income method (Form 2210 Schedule AI) to eliminate the federal penalty; it will not help in 2026 because the first quarter already carried 102,717 of income.
 
