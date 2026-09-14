@@ -367,8 +367,11 @@ def build_v7_queue(db: Session) -> Dict:
                     cost = mark * 100 * n
                     # what the replacement call would bring — the other half of the decision
                     resell = weekly_premium(n, spot, RATE_TIER1_WEEKLY)
-                    card(1, "BUY BACK", acct, sym,
-                         f"{sym} ${k:,.0f} call — {100 * (1 - mark / o['original']):.0f}% captured: buy back for ${cost:,.0f}, resell est ${resell:,}",
+                    worth_it = resell > cost
+                    card(1, "BUY BACK" if worth_it else "HOLD", acct, sym,
+                         (f"{sym} ${k:,.0f} call — {100 * (1 - mark / o['original']):.0f}% captured: buy back for ${cost:,.0f}, resell est ${resell:,}"
+                          if worth_it else
+                          f"{sym} ${k:,.0f} call — {100 * (1 - mark / o['original']):.0f}% captured: let the last ${cost:,.0f} decay (resell est only ${resell:,})"),
                          f"{n} contract{'s' if n > 1 else ''} · mark ${mark:,.2f} vs ${o['original']:,.2f} sold · "
                          f"kept ${(o['original'] - mark) * 100 * n:,.0f} of ${o['original'] * 100 * n:,.0f} · exp {_fmt_exp(o['expiration'])}",
                          f"Rule 2: time value is not penalty — but it is not free. The ${cost:,.0f} left in this contract "
