@@ -262,3 +262,17 @@ whether the long-term bucket targets change.
 - Note for the build: the Robinhood MCP `get_equity_fundamentals`
   returns `market_cap` — the Investments spec's "trillion-club policy
   deferred (no market-cap source exists)" is no longer true.
+
+## V7 preview built (2026-09-13, night)
+
+Neel: "this can only be tested when we are live during trading hours,
+which will be tomorrow. Create another UI of V7 so I can check it."
+Built: `data/policy_v2.json`, `backend/app/modules/strategies/v7_engine.py`,
+`GET /strategies/v7/preview`, page **More → Notifications V7 (preview)**
+(`/strategies/v7-preview`). Spec: `docs/OPTIONS-STRATEGY-V7-SPEC.md`.
+V6 untouched and still live. First run on Friday's close: 14 long-term
+call cards (AAPL/TSLA/MSFT/IBIT ITM rolls, NVDA $240 buy-backs at 86-89%
+captured, AVGO/NVDA waits on RSI, one GOOGL sell), 1 short-term (INTC
+$100 ITM, hold to expiry — assumption), 4 short-term puts (MRVL/RKLB in
+Neel's, RKLB/SOXL in Jaya's), 2 recovery notices (margin drawn $73,841 /
+$131,051). Books read 92.7% / 9.4%.

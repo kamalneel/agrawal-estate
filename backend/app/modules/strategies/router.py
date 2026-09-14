@@ -6965,6 +6965,16 @@ async def get_v6_action_queue(db: Session = Depends(get_db)):
     return build_action_queue(db)
 
 
+@router.get("/v7/preview")
+async def get_v7_preview(db: Session = Depends(get_db)):
+    """V7 action queue — PREVIEW ONLY. Two books, four layers, built from
+    data/policy_v2.json. Runs beside V6, which stays the live notification
+    engine until the switch is flipped. See v7_engine.py and
+    docs/INVESTMENT-THESIS-V2-DRAFT.md."""
+    from app.modules.strategies.v7_engine import build_v7_queue
+    return build_v7_queue(db)
+
+
 @router.get("/v6/assignment-loss")
 async def get_v6_assignment_loss(db: Session = Depends(get_db)):
     """Forced-assignment loss: strike vs. market price AT THE MOMENT OF

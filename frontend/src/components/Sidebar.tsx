@@ -22,6 +22,7 @@ import {
   Link2,
   CreditCard,
   Layers,
+  FlaskConical,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import styles from './Sidebar.module.css'
@@ -61,6 +62,7 @@ const moreGroup: NavGroup = {
     { path: '/tax', label: 'Tax Center', icon: <FileText size={18} /> },
     { path: '/strategies/retirement-deductions', label: 'Retirement', icon: <PiggyBank size={18} /> },
     { path: '/strategies/tax-optimization', label: 'Tax Planning', icon: <Lightbulb size={18} /> },
+    { path: '/strategies/v7-preview', label: 'Notifications V7 (preview)', icon: <FlaskConical size={18} /> },
     { path: '/strategies/management', label: 'Strategy Settings', icon: <Settings size={18} /> },
     { path: '/integrations/plaid', label: 'Bank Connections', icon: <Link2 size={18} /> },
   ],

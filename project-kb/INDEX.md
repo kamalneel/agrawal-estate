@@ -82,6 +82,8 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 ## Strategy Spec Docs (V6)
 - [V6 Philosophy](../docs/OPTIONS-STRATEGY-V6-PHILOSOPHY.md) — the "why": beliefs, lessons, account-type rules, runaway vs. oscillating
 - [V6 Engine Spec](../docs/OPTIONS-STRATEGY-V6-ENGINES.md) — the "what": 4-engine decision tables, delta targets, sizing rules
+- [V7 Spec — Two Books, Four Layers (preview)](../docs/OPTIONS-STRATEGY-V7-SPEC.md) — long-term ($1T+, never sold, delta 10-15 calls, re-entry puts only) / short-term (named list, delta 20-40 calls, puts on margin); recovery is a notice with a dollar amount; V6 stays live
+- [Investment Thesis v2 — working draft](../docs/INVESTMENT-THESIS-V2-DRAFT.md) — the 2026-09-13 conversation, round by round, that produced V7; open questions listed
 
 ---
 

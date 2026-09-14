@@ -16,6 +16,7 @@ import TaxDocuments from './pages/TaxDocuments'
 import ActualTaxFile from './pages/ActualTaxFile'
 import TaxPlanning from './pages/TaxPlanning'
 import { OptionsExecution } from './pages/OptionsExecution'
+import V7Preview from './pages/V7Preview'
 import BuyBorrowDie from './pages/BuyBorrowDie'
 import Spending from './pages/Spending'
 import RetirementDeductions from './pages/RetirementDeductions'
@@ -58,6 +59,7 @@ export default function App() {
         {/* Strategies */}
         <Route path="/strategies/tax-optimization" element={<TaxPlanning />} />
         <Route path="/strategies/options-selling" element={<OptionsExecution />} />
+        <Route path="/strategies/v7-preview" element={<V7Preview />} />
         <Route path="/strategies/buy-borrow-die" element={<BuyBorrowDie />} />
         <Route path="/strategies/spending" element={<Spending />} />
         <Route path="/strategies/retirement-deductions" element={<RetirementDeductions />} />
