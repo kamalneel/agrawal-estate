@@ -223,3 +223,32 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    (portfolio cash/buying-power, or a derived figure like collateral summed
    from strikes) before running `--save`. Caught once already: a paste
    labeled "Neel's Retirement" matched Jaya's IRA to the penny.
+
+## Scheduled sync (2026-09-14)
+
+Neel: "make the sync a scheduled job." The Robinhood MCP servers are
+OAuth'd to Claude Code at project scope, not to the backend, so the sync
+runs as a headless Claude Code session: `scripts/scheduled_refresh.sh`
+calls `claude -p "/refresh …"` with only the tools the skill needs
+allowed, writes bundles to `/tmp/agrawal-refresh/<stamp>/`, logs to
+`logs/refresh/<stamp>.log`, and records the outcome in
+`data/refresh_status.json`. Any failure (non-zero exit, `is_error`, or a
+report without `SYNC OK`) emails Neel through the notification service;
+a backend that is not running is reported the same way and skipped.
+
+Schedule: `scripts/com.agrawal.estate.refresh.plist`, installed at
+`~/Library/LaunchAgents/com.agrawal.estate.refresh.plist` — hourly at
+:05 from 7:05 to 13:05 PT, Monday–Friday (13:05 is the post-close
+snapshot). Reinstall after editing:
+
+    cp scripts/com.agrawal.estate.refresh.plist ~/Library/LaunchAgents/
+    launchctl bootout gui/$(id -u)/com.agrawal.estate.refresh
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agrawal.estate.refresh.plist
+
+Run by hand: `./scripts/scheduled_refresh.sh`. Cost: ~$3.25 per run
+(measured 2026-09-14), i.e. ~$23 per trading day at hourly cadence —
+trim the StartCalendarInterval entries to change it. The OAuth tokens
+are the ones this Mac's Claude Code holds; if Robinhood requires
+re-authorization, the run fails with an auth error in the log and the
+failure email — run `/mcp` in an interactive session to re-authorize.
+The Mac must be awake for launchd to fire; a missed slot is not made up.
