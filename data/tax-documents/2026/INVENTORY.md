@@ -22,7 +22,24 @@ See `data/tax-documents/2025/INVENTORY.md` for last year's structure and outstan
 
 | File | Recipient | Issuer | Received | Status | Notes |
 |---|---|---|---|---|---|
-| _(none yet)_ | | | | | |
+| _(Neel W-2, AdamX Inc.)_ | Neel | AdamX Inc. | — | awaiting | Expected late Jan 2027; paystubs below are the interim record |
+| _(Jaya W-2, DeWinter)_ | Jaya | DeWinter | — | awaiting | Expected late Jan 2027 |
+
+## Paystubs (interim record of wages and tax withheld until the W-2 arrives)
+
+Ingested into `salary_payslips` with `backend/scripts/ingest_paystubs.py`; the tax forecast reads the latest YTD row per person.
+
+| File | Person | Employer | Pay date | Gross | Fed w/h | CA w/h | YTD gross | YTD fed | YTD CA | Status |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| _(Jun 15 / Jun 30 stubs)_ | Neel | AdamX Inc. | 2026-06-15, 06-30 | 5,000 each | ? | ? | | | | **awaiting** — rows exist gross-only from a screen paste; PDFs needed |
+| `paystubs/Neel_AdamX_Paystub_2026-07-15.pdf` | Neel | AdamX Inc. | 2026-07-15 | 5,000.00 | 326.67 | 170.24 | 15,000.00 | 980.01 | 510.72 | ingested 2026-09-12 |
+| `paystubs/Neel_AdamX_Paystub_2026-07-31.pdf` | Neel | AdamX Inc. | 2026-07-31 | 5,000.00 | 326.67 | 170.24 | 20,000.00 | 1,306.68 | 680.96 | ingested 2026-09-12 |
+| `paystubs/Neel_AdamX_Paystub_2026-08-14.pdf` | Neel | AdamX Inc. | 2026-08-14 | 15,000.00 | 2,569.50 | 1,172.44 | 35,000.00 | 3,876.18 | 1,853.40 | ingested 2026-09-12 |
+| `paystubs/Neel_AdamX_Paystub_2026-08-31.pdf` | Neel | AdamX Inc. | 2026-08-31 | 15,000.00 | 2,569.50 | 1,172.44 | 50,000.00 | 6,445.68 | 3,025.84 | ingested 2026-09-12 |
+| `paystubs/Neel_AdamX_Paystub_2026-09-15.pdf` | Neel | AdamX Inc. | 2026-09-15 | 15,000.00 | 2,569.50 | 1,172.44 | 65,000.00 | 9,015.18 | 4,198.28 | ingested 2026-09-12 |
+| _(Jaya DeWinter stubs, Jun–Sep 2026)_ | Jaya | DeWinter | — | | | | | | | **awaiting** — $150K/yr per projection; no withholding known |
+
+Neel's stubs show $0 of 401(k), benefits, or post-tax deductions; SS 930 / Medicare 217.50 / CA SDI 195 per period at the $360K rate.
 
 ## Income — 1099 (Brokerage / Retirement)
 
@@ -52,6 +69,9 @@ See `data/tax-documents/2025/INVENTORY.md` for last year's structure and outstan
 
 ## Open items / awaiting
 
+- [ ] Neel's June 2026 AdamX paystubs (06/15, 06/30) — PDFs
+- [ ] Jaya's DeWinter paystubs (June 2026 onward)
+- [ ] Robinhood 2026 activity CSVs for both brokerage accounts — no dividend (CDIV) or interest (INT) rows exist for 2026 yet
 - [ ] All W-2s (Neel + Jaya, ~late January 2027)
 - [ ] All 1099s from brokerages (~mid February 2027)
 - [ ] K-1s from partnerships (~March–September 2027)

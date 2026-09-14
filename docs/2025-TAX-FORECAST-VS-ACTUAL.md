@@ -1,3 +1,5 @@
+> **Superseded 2026-09-12.** This compared the forecast against the 1099s. The filed return arrived and is reconciled line by line in [`2025-TAX-RETURN-RECONCILIATION.md`](2025-TAX-RETURN-RECONCILIATION.md); the 5.2% error measured here regressed to 54% after the July 2026 lot-engine change. Kept for the history of the Feb fixes.
+
 # 2025 Tax Forecast vs Actual — Analysis Report
 
 **Date:** February 13, 2026

@@ -61,7 +61,7 @@ This is the master tracking sheet for all tax-year-2025 paperwork. Update this f
 
 | File | Preparer | Filed | Status | Notes |
 |---|---|---|---|---|
-| `2025_Tax_Return_Filed_Diwakar_Taxes.pdf` | Diwakar Taxes Inc (Amit Kumar, PTIN P01610553) | 2026-02-19 | received | 66 pp. MFJ. AGI $279,049; federal tax $41,287 (refund $21,897); CA tax $17,619 (refund $5,351). Ingested into `income_tax_returns` 2026-09-12, replacing the calculated placeholder. Previously misfiled at the folder root as a "prior-year (TY2024)" reference — it is the TY2025 return. |
+| `2025_Tax_Return_Filed_Diwakar_Taxes.pdf` | Diwakar Taxes Inc (Amit Kumar, PTIN P01610553) | 2026-02-19 | received | 66 pp. MFJ. AGI $279,049; federal tax $41,287 (refund $21,897); CA tax $17,619 (refund $5,351). Ingested into `income_tax_returns` 2026-09-12, replacing the calculated placeholder. Previously misfiled at the folder root as a "prior-year (TY2024)" reference — it is the TY2025 return. Reconciled against the app forecast 2026-09-12: `docs/2025-TAX-RETURN-RECONCILIATION.md`. |
 
 ## Prior-year reference
 

@@ -30,6 +30,92 @@ from app.modules.income.rental_service import get_rental_service
 from app.modules.investments.models import InvestmentTransaction, InvestmentAccount
 
 
+NON_TAXABLE_ACCOUNT_TYPES = ['ira', 'roth_ira', 'traditional_ira', '401k', 'hsa', 'retirement']
+
+
+def _calculate_payroll_taxes(income: Dict[str, Any]) -> float:
+    """Social Security + Medicare withheld from wages. Informational only —
+    never part of the return's total tax (playbook: total-tax-means-the-return-total)."""
+    w2_data = income.get("w2_income", {})
+    return float(w2_data.get("social_security", 0) or 0) + float(w2_data.get("medicare", 0) or 0)
+
+
+def _calculate_ca_exemption_credits(db: Session, federal_agi: float, year: int, filing_status: str = "MFJ") -> float:
+    """Form 540 line 32: personal + dependent exemption credits, phased out
+    above the federal-AGI threshold printed on the form ($6 per $2,500 of
+    excess per exemption). 2025 values reproduce the filed return (781)."""
+    constants = {
+        2024: {"personal": 149, "dependent": 461, "threshold_mfj": 489719, "threshold_single": 244857},
+        2025: {"personal": 153, "dependent": 475, "threshold_mfj": 504411, "threshold_single": 252203},
+    }
+    c = constants.get(year, constants[2025])  # later years: last published until FTB updates
+    joint = filing_status in ("MFJ", "married_filing_jointly")
+    personal_count = 2 if joint else 1
+    threshold = c["threshold_mfj"] if joint else c["threshold_single"]
+    try:
+        dependents = db.query(TaxDependent).filter(TaxDependent.tax_year == year).count()
+    except Exception:
+        db.rollback()
+        dependents = 0
+    import math
+    steps = math.ceil(max(0.0, federal_agi - threshold) / 2500) if federal_agi > threshold else 0
+    personal = max(0, personal_count * c["personal"] - personal_count * 6 * steps)
+    dependent = max(0, dependents * c["dependent"] - dependents * 6 * steps)
+    return float(personal + dependent)
+
+
+def _get_other_income(db: Session, year: int) -> float:
+    """Schedule 1 line 8z: broker bonuses and similar (Robinhood type ABIP),
+    taxable accounts only. TY2025 had 465 of it that never reached the forecast."""
+    try:
+        row = db.query(func.sum(InvestmentTransaction.amount)).join(
+            InvestmentAccount,
+            and_(
+                InvestmentTransaction.account_id == InvestmentAccount.account_id,
+                InvestmentTransaction.source == InvestmentAccount.source
+            )
+        ).filter(
+            InvestmentTransaction.transaction_type.in_(['ABIP']),
+            extract('year', InvestmentTransaction.transaction_date) == year,
+            ~func.lower(InvestmentAccount.account_type).in_(NON_TAXABLE_ACCOUNT_TYPES)
+        ).scalar()
+        return float(row or 0)
+    except Exception:
+        db.rollback()
+        return 0.0
+
+
+def _paystub_months(db: Session, year: int) -> Dict[str, Any]:
+    """Dated facts from salary_payslips: gross and withholding by pay month,
+    the persons covered, and the latest stub date. Feeds the quarterly
+    schedule (actual withholding per quarter instead of an even spread)."""
+    out = {"wages_by_month": {}, "withholding_by_month": {}, "persons": set(),
+           "persons_with_withholding": set(), "through": None}
+    try:
+        rows = db.execute(text("""
+            SELECT person, pay_date, gross, federal_withheld, state_withheld, gross_ytd
+            FROM salary_payslips
+            WHERE EXTRACT(YEAR FROM pay_date) = :y
+            ORDER BY pay_date
+        """), {"y": year}).mappings().all()
+    except Exception:
+        db.rollback()
+        return out
+    for r in rows:
+        m = r["pay_date"].month
+        key = (r["person"] or "").split()[0].lower()
+        out["persons"].add(key)
+        out["wages_by_month"][m] = out["wages_by_month"].get(m, 0.0) + float(r["gross"] or 0)
+        if r["federal_withheld"] is not None:
+            wm = out["withholding_by_month"].setdefault(m, {"federal": 0.0, "state": 0.0})
+            wm["federal"] += float(r["federal_withheld"] or 0)
+            wm["state"] += float(r["state_withheld"] or 0)
+            out["persons_with_withholding"].add(key)
+        if r["gross_ytd"] is not None:
+            out["through"] = max(out["through"], r["pay_date"]) if out["through"] else r["pay_date"]
+    return out
+
+
 # IRS Quarterly Estimated Tax Payment Schedule
 # These are the due dates for estimated tax payments
 QUARTERLY_PAYMENT_SCHEDULE = {
@@ -242,7 +328,8 @@ def _calculate_quarterly_payments(
     income_by_month: Dict[int, float],
     year: int,
     w2_months: int = 10,  # Number of months W2 income was earned (for withholding distribution)
-    estimated_payments: Optional[Dict[str, Any]] = None  # Estimated payments already made
+    estimated_payments: Optional[Dict[str, Any]] = None,  # Estimated payments already made
+    withholding_by_month: Optional[Dict[int, Dict[str, float]]] = None,  # actual paystub withholding
 ) -> List[Dict[str, Any]]:
     """
     Calculate quarterly estimated tax payments based on income timing.
@@ -349,9 +436,14 @@ def _calculate_quarterly_payments(
         
         # Calculate W2 withholding for this quarter (assume evenly distributed over w2_months)
         # Count how many months in this quarter had W2 income
-        w2_months_in_quarter = sum(1 for m in q["months"] if m <= w2_months)
-        quarter_w2_federal = monthly_federal_withheld * w2_months_in_quarter
-        quarter_w2_state = monthly_state_withheld * w2_months_in_quarter
+        if withholding_by_month:
+            # Dated facts from paystubs beat an even spread.
+            quarter_w2_federal = sum(withholding_by_month.get(m, {}).get("federal", 0) for m in q["months"])
+            quarter_w2_state = sum(withholding_by_month.get(m, {}).get("state", 0) for m in q["months"])
+        else:
+            w2_months_in_quarter = sum(1 for m in q["months"] if m <= w2_months)
+            quarter_w2_federal = monthly_federal_withheld * w2_months_in_quarter
+            quarter_w2_state = monthly_state_withheld * w2_months_in_quarter
         cumulative_w2_federal += quarter_w2_federal
         cumulative_w2_state += quarter_w2_state
         
@@ -512,15 +604,21 @@ def calculate_tax_forecast(
     # Subtract credits from federal tax (non-refundable, capped at tax liability)
     federal_tax_after_credits = max(0, federal_tax - credits["total_credits"])
 
-    # Calculate state tax (assuming California)
-    # CA uses its own standard deduction (much lower than federal)
-    ca_taxable_income = _calculate_ca_taxable_income(agi, deductions, forecast_year)
-    state_tax = _calculate_ca_state_tax(ca_taxable_income, filing_status, forecast_year)
+    # California is its own computation (playbook: california-is-its-own-computation):
+    # CA AGI adds back HSA contributions (CA does not recognize HSAs), uses its
+    # own standard deduction and FTB rate schedule, then subtracts exemption credits.
+    hsa_addback = float(forecast_income.get("retirement_contributions", {}).get("hsa_contribution", 0) or 0)
+    ca_agi = agi + hsa_addback
+    ca_taxable_income = _calculate_ca_taxable_income(ca_agi, deductions, forecast_year)
+    ca_tax_before_credits = _calculate_ca_state_tax(ca_taxable_income, filing_status, forecast_year)
+    ca_exemption_credits = _calculate_ca_exemption_credits(db, agi, forecast_year, filing_status)
+    state_tax = max(0.0, ca_tax_before_credits - ca_exemption_credits)
 
-    # Calculate other taxes (payroll, NIIT, etc.)
+    # Other taxes on the return (NIIT). Payroll taxes are reported separately.
     other_taxes = _calculate_other_taxes(forecast_income, agi, base_details)
+    payroll_taxes = _calculate_payroll_taxes(forecast_income)
 
-    # Calculate effective rate (use federal tax after credits)
+    # Total tax = Form 1040 line 24 + Form 540 line 64 (never includes payroll)
     total_tax = federal_tax_after_credits + state_tax + other_taxes
     effective_rate = (total_tax / agi * 100) if agi > 0 else 0
 
@@ -549,7 +647,8 @@ def calculate_tax_forecast(
         state_withheld=state_withheld,
         income_by_month=monthly_income,
         year=forecast_year,
-        estimated_payments=estimated_payments
+        estimated_payments=estimated_payments,
+        withholding_by_month=forecast_income.get("w2_income", {}).get("withholding_by_month") or None,
     )
 
     # Calculate safe harbor amounts (to avoid underpayment penalties)
@@ -595,7 +694,16 @@ def calculate_tax_forecast(
         "federal_tax_before_credits": federal_tax,
         "state_tax": state_tax,
         "other_tax": other_taxes,
+        "payroll_taxes": round(payroll_taxes, 2),
         "total_tax": total_tax,
+        "ca_details": {
+            "hsa_addback": round(hsa_addback, 2),
+            "ca_agi": round(ca_agi, 2),
+            "ca_taxable_income": round(ca_taxable_income, 2),
+            "tax_before_credits": round(ca_tax_before_credits, 2),
+            "exemption_credits": round(ca_exemption_credits, 2),
+        },
+        "data_gaps": forecast_income.get("data_gaps", []),
         "effective_rate": round(effective_rate, 2),
         "filing_status": filing_status,
         "qbi_deduction": round(qbi_deduction, 2),
@@ -606,7 +714,9 @@ def calculate_tax_forecast(
         "w2_withholding": {
             "federal": forecast_income.get("w2_income", {}).get("federal_withheld", 0),
             "state": forecast_income.get("w2_income", {}).get("state_withheld", 0),
-            "total": w2_withheld
+            "total": w2_withheld,
+            "source": forecast_income.get("w2_income", {}).get("source", "W-2"),
+            "through": forecast_income.get("w2_income", {}).get("through"),
         },
         "estimated_payments": {
             "federal_paid": estimated_payments.get("total_federal_paid", 0),
@@ -730,8 +840,28 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
         "social_security": total_social_security,
         "medicare": total_medicare,
         "dependent_care_benefits": total_dependent_care,
-        "breakdown": w2_breakdown
+        "breakdown": w2_breakdown,
+        "source": "W-2" if w2_records else "paystub",
     }
+    income["data_gaps"] = []
+    if not w2_records:
+        stubs = _paystub_months(db, year)
+        income["w2_income"]["wages_by_month"] = stubs["wages_by_month"]
+        income["w2_income"]["withholding_by_month"] = stubs["withholding_by_month"]
+        income["w2_income"]["through"] = stubs["through"].isoformat() if stubs["through"] else None
+        # Anyone paid this year (per the Income tab's salary rows) with no
+        # stub carrying withholding: their tax paid is unknown, not zero.
+        for b in w2_breakdown:
+            key = (b.get("employee_name") or "").split()[0].lower()
+            if b.get("wages", 0) > 0 and key not in stubs["persons_with_withholding"]:
+                income["data_gaps"].append({
+                    "kind": "withholding_unknown", "person": b.get("employee_name"),
+                    "detail": f"wages {b['wages']:,.0f} from {b.get('source')} but no paystub with withholding; "
+                              f"tax already paid is understated",
+                })
+
+    # Schedule 1 line 8z (Robinhood ACAT bonus etc.)
+    income["other_income"] = _get_other_income(db, year)
     
     # Get TAXABLE investment income only (excludes IRA, Roth IRA, 401k, HSA)
     # Income in retirement accounts is tax-deferred or tax-free
@@ -900,6 +1030,7 @@ def _calculate_agi(income: Dict[str, Any]) -> float:
     # to avoid double-counting and to apply realization adjustments.
     agi += income.get("dividend_income", 0)
     agi += income.get("interest_income", 0)
+    agi += income.get("other_income", 0)  # Schedule 1 line 8z
 
     # Rental income (net after expenses)
     rental_income = income.get("rental_income", 0)
@@ -966,6 +1097,7 @@ def _calculate_taxable_income(
     # Standard deduction amounts (Married Filing Jointly)
     # Source: One Big Beautiful Bill Act (OBBBA), signed July 4, 2025
     standard_deductions = {
+        2026: 32200,  # IRS Rev. Proc. 2025-32
         2025: 31500,  # Official IRS amount for 2025 (OBBBA)
         2024: 29200,
         2023: 27700,
@@ -1011,12 +1143,13 @@ def _calculate_ca_taxable_income(
     Source: California Franchise Tax Board (FTB)
     """
     ca_standard_deductions = {
-        2025: 11026,  # MFJ, estimated from 2024 + inflation
+        2026: 11412,  # placeholder = 2025 until FTB publishes; revisit
+        2025: 11412,  # MFJ, official FTB (filed TY2025 return, Form 540 line 18)
         2024: 10726,  # MFJ, official
         2023: 10404,  # MFJ, official
     }
 
-    ca_standard = ca_standard_deductions.get(year, 11026)
+    ca_standard = ca_standard_deductions.get(year, 11412)
     # CA itemized deductions differ from federal (e.g., no SALT cap)
     # For simplicity, use the larger of CA standard or itemized
     itemized_total = deductions.get("itemized_total", 0)
@@ -1050,7 +1183,21 @@ def _calculate_federal_tax(
     Source: IRS Revenue Procedure 2024-40, Tax Foundation
     """
     # --- Ordinary income brackets ---
-    if year >= 2025:
+    if year >= 2026:
+        # IRS Rev. Proc. 2025-32 (tax year 2026)
+        if filing_status in ["Single", "single"]:
+            brackets = [
+                (0, 0.10), (12400, 0.12), (50400, 0.22),
+                (105700, 0.24), (201775, 0.32), (256225, 0.35), (640600, 0.37),
+            ]
+            ltcg_brackets = [(0, 0.0), (49450, 0.15), (545500, 0.20)]
+        else:
+            brackets = [
+                (0, 0.10), (24800, 0.12), (100800, 0.22),
+                (211400, 0.24), (403550, 0.32), (512450, 0.35), (768700, 0.37),
+            ]
+            ltcg_brackets = [(0, 0.0), (98900, 0.15), (613700, 0.20)]
+    elif year >= 2025:
         if filing_status in ["MFJ", "married_filing_jointly"]:
             brackets = [
                 (0, 0.10), (23850, 0.12), (96950, 0.22),
@@ -1156,56 +1303,28 @@ def _calculate_ca_state_tax(
     # 2025 California Tax Brackets (Married Filing Jointly)
     # Note: California adjusts brackets annually for inflation
     # Using 2024 brackets with ~2.8% inflation adjustment for 2025
+    # FTB "540 Tax Rate Schedules". The 2025 Schedule Y reproduces the filed
+    # TY2025 return exactly (274,439 taxable → 18,400). 2026 uses 2025 until
+    # the FTB publishes the indexed schedule (revisit; slightly overstates).
     if year >= 2025:
-        brackets = [
-            (0, 0.01),
-            (20862, 0.02),      # ~2.8% inflation adjustment
-            (49387, 0.04),
-            (62928, 0.06),
-            (78502, 0.08),
-            (104558, 0.093),
-            (627495, 0.103),
-            (753057, 0.113),
-            (1261792, 0.123),
+        brackets = [  # Schedule Y (MFJ), 2025
+            (0, 0.01), (22158, 0.02), (52528, 0.04), (82904, 0.06), (115084, 0.08),
+            (145448, 0.093), (742958, 0.103), (891542, 0.113), (1485906, 0.123),
         ]
-
         if filing_status in ["Single", "single"]:
-            brackets = [
-                (0, 0.01),
-                (10431, 0.02),
-                (24694, 0.04),
-                (31464, 0.06),
-                (39251, 0.08),
-                (52279, 0.093),
-                (313748, 0.103),
-                (376529, 0.113),
-                (630896, 0.123),
+            brackets = [  # Schedule X (Single), 2025
+                (0, 0.01), (11079, 0.02), (26264, 0.04), (41452, 0.06), (57542, 0.08),
+                (72724, 0.093), (371479, 0.103), (445771, 0.113), (742953, 0.123),
             ]
     else:
-        # 2024 California Tax Brackets (Married Filing Jointly)
-        brackets = [
-            (0, 0.01),
-            (20298, 0.02),
-            (48042, 0.04),
-            (61214, 0.06),
-            (76364, 0.08),
-            (101710, 0.093),
-            (610404, 0.103),
-            (732546, 0.113),
-            (1227424, 0.123),
+        brackets = [  # Schedule Y (MFJ), 2024
+            (0, 0.01), (21512, 0.02), (50998, 0.04), (80490, 0.06), (111732, 0.08),
+            (141212, 0.093), (721318, 0.103), (865574, 0.113), (1442628, 0.123),
         ]
-
         if filing_status in ["Single", "single"]:
-            brackets = [
-                (0, 0.01),
-                (10149, 0.02),
-                (24021, 0.04),
-                (30607, 0.06),
-                (38182, 0.08),
-                (50855, 0.093),
-                (305202, 0.103),
-                (366273, 0.113),
-                (613712, 0.123),
+            brackets = [  # Schedule X (Single), 2024
+                (0, 0.01), (10756, 0.02), (25499, 0.04), (40245, 0.06), (55866, 0.08),
+                (70606, 0.093), (360659, 0.103), (432787, 0.113), (721314, 0.123),
             ]
 
     tax = 0.0
@@ -1272,6 +1391,7 @@ def _calculate_other_taxes(
     investment_income = (
         income.get("dividend_income", 0) +
         income.get("interest_income", 0) +
+        income.get("other_income", 0) +  # Form 8960 line 7 (TY2025: ACAT bonus)
         net_capital_gains +  # Includes options gains (realized) + stock lot gains
         max(0, net_rental)   # Include rental income (if positive)
     )
@@ -1394,6 +1514,15 @@ def _build_forecast_details(
             "source": "Interest Income",
             "amount": income["interest_income"]
         })
+
+    if income.get("other_income", 0):
+        details["income_sources"].append({
+            "source": "Other Income (Schedule 1 line 8z)",
+            "amount": income["other_income"],
+            "note": "Broker bonuses (ABIP)"
+        })
+    if income.get("data_gaps"):
+        details["data_gaps"] = income["data_gaps"]
     
     # Add account-level breakdowns for investment income
     if income.get("options_by_account"):
@@ -1425,6 +1554,7 @@ def _build_forecast_details(
     investment_income = (
         income.get("dividend_income", 0) +
         income.get("interest_income", 0) +
+        income.get("other_income", 0) +
         net_capital_gains +  # Includes realized options gains
         max(0, net_rental)
     )
@@ -1715,10 +1845,17 @@ def _get_monthly_income_breakdown(
     """
     monthly = {m: 0.0 for m in range(1, 13)}
     
-    # W-2 wages - spread evenly across 12 months
-    w2_monthly = income.get("w2_income", {}).get("total_wages", 0) / 12
-    for m in range(1, 13):
-        monthly[m] += w2_monthly
+    # W-2 wages: dated paystub months when we have them; anything beyond the
+    # stubs (projected months, other earners) is spread evenly.
+    wages_by_month = income.get("w2_income", {}).get("wages_by_month") or {}
+    dated = 0.0
+    for m, amt in wages_by_month.items():
+        monthly[int(m)] += float(amt or 0)
+        dated += float(amt or 0)
+    remaining = income.get("w2_income", {}).get("total_wages", 0) - dated
+    if remaining > 0:
+        for m in range(1, 13):
+            monthly[m] += remaining / 12
     
     # Options income by month (from taxable accounts only)
     options_monthly = db_queries.get_options_income_monthly(db, year=year)

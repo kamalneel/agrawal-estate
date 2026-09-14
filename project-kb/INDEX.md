@@ -26,6 +26,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Three Authoritative Data Sources](playbook/universal/process/three-authoritative-data-sources.md) — all data enters via PDF/CSV statements, activity CSVs, or Robinhood paste
 - [Check Data Freshness First, and Ask For What Is Missing](playbook/universal/process/check-freshness-and-ask-first.md) — stale data looks like a real number; check MAX(date) per stream up front and request the file or reconnect, don't wait to be corrected
 - [A Recurring Line That Vanishes Is a Data Defect](playbook/universal/process/missing-recurring-line-is-a-defect.md) — check expected lines mechanically and flag the gap in red; know the cadence first (school bills Sep–May)
+- [Reconcile the Forecast to the Filed Document Line by Line](playbook/universal/process/reconcile-forecast-to-the-filed-return.md) — table, formula check on the document's inputs, waterfall, classify each gap (bug / data / assumption / formula / definition)
 
 ### Technical
 - [No Direct DB Modifications](playbook/universal/technical/no-direct-db-modifications.md) — all data changes must come from authoritative sources
@@ -39,10 +40,18 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Derived Tables Need an Explicit Rebuild Trigger](playbook/universal/technical/derived-tables-need-a-rebuild-trigger.md) — hook the rebuild to whoever actually writes the source rows; a manual script is not a trigger
 - [A Synthesised Series Needs a Control Total Inside the Period](playbook/universal/technical/synthesised-series-need-in-period-control-totals.md) — a backfill that reconciled only at the seam was $217K–$458K high for ten months; check every in-period statement and abort on a miss
 - [Lot Quantities Are Post-Split Units](playbook/universal/technical/lot-quantities-are-post-split-units.md) — stock_lot scales open lots at a split; replay transactions for as-of-day share counts and price them raw
+- [Filter to Taxable Accounts at Every Source That Feeds a Tax Number](playbook/universal/technical/filter-taxable-accounts-at-every-tax-source.md) — shared engines include all accounts by design; the tax path passes an explicit scope (87K IRA-gain leak, TY2025)
+- [The Same Fact Under Two Spellings Is a Duplicate](playbook/universal/technical/same-fact-two-spellings-is-a-duplicate.md) — canonical category keys + upsert per key; two rental-expense batches double-counted 7,090
 
 ## Playbook — Project-Specific
 
-*(none yet)*
+### Tax
+- [How We Do Taxes — Annual Cycle](playbook/project-specific/tax/README.md) — the cycle from forecasting to CPA package to post-filing reconciliation; links every tax rule
+- [Option Premium Is Taxed When the Position Closes](playbook/project-specific/tax/option-premium-is-taxed-when-the-position-closes.md) — income at collection, tax at BTC/expiry/assignment; assigned-put premium defers into share basis; no count-based closure rates
+- [California Is Its Own Computation](playbook/project-specific/tax/california-is-its-own-computation.md) — HSA add-back, CA standard deduction, FTB rate schedule (2025 Schedule Y listed), exemption credits, FTB 5805
+- ["Total Tax" Means the Return Total](playbook/project-specific/tax/total-tax-means-the-return-total.md) — 1040 line 24 + 540 line 64; payroll withholding is a separate informational line
+- [MAGI Cliffs Drive Decisions](playbook/project-specific/tax/magi-cliffs-drive-decisions.md) — EV credit 300K, NIIT 250K, IRA phase-outs, CTC 400K; show headroom, flag when forecast error exceeds it
+- [A 1099-R Gross Distribution Is Not Income Until the Code Says So](playbook/project-specific/tax/gross-1099-r-is-not-income.md) — code G rollovers and 8606 conversions are 0 taxable; 130K of gross on the TY2025 return
 
 ---
 
@@ -66,6 +75,8 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Investments Page Spec](../docs/INVESTMENTS-PAGE-SPEC.md) — pure price performance excluding income (value − cost basis, exact not approximated), winners/losers, trillion-club policy deferred (no market-cap source exists)
 - [Spending Page Spec](../docs/SPENDING-PAGE-SPEC.md) — one definition (classify(): counterparty → refund → kind → label), period attribution for rent, per-account freshness, cash movements from statement PDFs
 - [Spending Page Audit 2026-09](../docs/SPENDING-PAGE-AUDIT-2026-09.md) — the incidents behind the rules above (rent as Transfer, refunds as income, dead outflows), what was fixed, what is still open
+- [2025 Tax Return Reconciliation](../docs/2025-TAX-RETURN-RECONCILIATION.md) — filed return vs forecast line by line: 54% miss, waterfall, root causes classified, prioritized fixes
+- [2026 Tax Estimate](../docs/2026-TAX-ESTIMATE.md) — as of 2026-09-12: paid to date from paystubs, YTD liability, full-year scenarios, safe-harbor payments due 9/15 and 1/15
 - [Cleanup Backlog](../docs/CLEANUP-BACKLOG.md) — running list for the cleanup phase: broken tsc build, yfinance migration, dead engines (v2–v4), plaid, god files, docs archive
 
 ## Strategy Spec Docs (V6)
