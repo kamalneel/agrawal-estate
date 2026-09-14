@@ -303,6 +303,12 @@ def build_v7_queue(db: Session) -> Dict:
                              if floor else None),
                  context={"book": "short", "rsi": rsi, "delta": delta, "spot": spot, "uncovered": int(uncovered)})
 
+    # Calls Neel has decided to let assign (policy_v2 planned_assignments):
+    # the long-term book's one exit — a trim he chose, usually to repay
+    # margin. LET ASSIGN instead of ROLL, with the tax-lot reminder.
+    planned = {(e["account"], e["symbol"], float(e["strike"])): e
+               for e in pol.get("planned_assignments", {}).get("entries", [])}
+
     # ---------------- Layer 1 + 2: open calls (stuck / winning) ----------------
     for o in sorted(options, key=lambda o: (_acct_rank(o["account"]), o["symbol"])):
         if o["type"] != "call" or o["symbol"] not in price:
@@ -314,6 +320,17 @@ def build_v7_queue(db: Session) -> Dict:
         itm = spot > k
         mark = o["mark"]
         n = o["contracts"]
+        plan = planned.get((acct, sym, k))
+        if plan:
+            proceeds = k * 100 * n
+            card(1 if book == "long" else 2, "LET ASSIGN", acct, sym,
+                 f"{sym} ${k:,.0f} call — planned: let {n * 100:,} shares go {_fmt_exp(o['expiration'])}",
+                 f"{n} contract{'s' if n > 1 else ''} · ${spot - k:,.2f} in the money · proceeds ${proceeds:,.0f} at strike"
+                 + (" · Highest Cost lots" if sheltered(acct) is False else ""),
+                 f"Decided {plan['decided']}: {plan['reason']} Do not roll. If it slips out of the money by "
+                 f"expiry, the shares stay and the plan waits for the next call.",
+                 context={"planned": True, "proceeds": proceeds})
+            continue
         if book == "long":
             if itm:
                 intrinsic = spot - k
@@ -348,13 +365,18 @@ def build_v7_queue(db: Session) -> Dict:
                 if mark is not None and o["original"] and o["original"] > 0 and mark <= o["original"] * (1 - DIP_BUYBACK_CAPTURE) \
                         and (o["dte"] is None or o["dte"] >= 2):
                     cost = mark * 100 * n
+                    # what the replacement call would bring — the other half of the decision
+                    resell = weekly_premium(n, spot, RATE_TIER1_WEEKLY)
                     card(1, "BUY BACK", acct, sym,
-                         f"{sym} ${k:,.0f} call — {100 * (1 - mark / o['original']):.0f}% captured: buy back, resell on the bounce",
+                         f"{sym} ${k:,.0f} call — {100 * (1 - mark / o['original']):.0f}% captured: buy back for ${cost:,.0f}, resell est ${resell:,}",
                          f"{n} contract{'s' if n > 1 else ''} · mark ${mark:,.2f} vs ${o['original']:,.2f} sold · "
-                         f"cost ${cost:,.0f} · exp {_fmt_exp(o['expiration'])}",
-                         "Rule 2: time value is not penalty. Close it now rather than wait for Friday and risk the "
-                         "bounce first; sell a fresh call when the stock recovers.",
-                         context={"captured_pct": round(100 * (1 - mark / o["original"]), 1)})
+                         f"kept ${(o['original'] - mark) * 100 * n:,.0f} of ${o['original'] * 100 * n:,.0f} · exp {_fmt_exp(o['expiration'])}",
+                         f"Rule 2: time value is not penalty — but it is not free. The ${cost:,.0f} left in this contract "
+                         f"decays to zero by expiry on its own; paying it now buys the shares back early so a new call "
+                         f"(est ${resell:,} for next week at delta 10-15) can be sold on the bounce. Worth it only if the "
+                         f"new call clears the ${cost:,.0f}.",
+                         earn=max(resell - int(cost), 0),
+                         context={"captured_pct": round(100 * (1 - mark / o["original"]), 1), "buyback_cost": cost, "resell_est": resell})
         else:
             if itm and o["dte"] is not None and o["dte"] <= SHORT_TERM_LET_ASSIGN_DTE:
                 card(2, "LET ASSIGN", acct, sym,

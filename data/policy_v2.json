@@ -2,22 +2,59 @@
   "status": "DRAFT — drives the V7 preview only. V6 (investment_policy.json, allocation_targets.json, v6_engine.py) stays live until the switch is flipped.",
   "source": "docs/INVESTMENT-THESIS-V2-DRAFT.md, rounds 1-11, 2026-09-13. Every rule here was stated by Neel in that conversation; anything Claude inferred is marked assumption.",
   "as_of": "2026-09-13",
-
   "long_term": {
     "rule": "Market cap $1T or more, or an explicit override. Never sold. Income from dividends and covered calls. No puts, except to re-enter after a call assignment.",
-    "symbols": ["TSLA", "AAPL", "SPCX", "NVDA", "AVGO", "AMD", "MSFT", "GOOG", "GOOGL", "MU", "IBIT", "LLY"],
+    "symbols": [
+      "TSLA",
+      "AAPL",
+      "SPCX",
+      "NVDA",
+      "AVGO",
+      "AMD",
+      "MSFT",
+      "GOOG",
+      "GOOGL",
+      "MU",
+      "IBIT",
+      "LLY"
+    ],
     "overrides": {
       "AMD": "Neel 2026-09-13: long-term although $843B — 'it is getting there'. Same override as 2026-07-23.",
       "IBIT": "A fund on Bitcoin, itself over $1T — long-term by the asset, not the wrapper.",
       "SPCX": "SpaceX proxy; the core half of the thesis with AAPL and TSLA."
     },
-    "market_caps_checked_2026_09_11": {"MU": 1.10e12, "LLY": 1.05e12, "AVGO": 1.72e12, "TSLA": 1.44e12, "AMD": 8.43e11},
-    "undecided": ["TSM", "AMZN", "META"],
+    "market_caps_checked_2026_09_11": {
+      "MU": 1100000000000.0,
+      "LLY": 1050000000000.0,
+      "AVGO": 1720000000000.0,
+      "TSLA": 1440000000000.0,
+      "AMD": 843000000000.0
+    },
+    "undecided": [
+      "TSM",
+      "AMZN",
+      "META"
+    ],
     "undecided_note": "In V6 core with TSM/AMZN buy targets. Asked 2026-09-13 whether they stay as share-purchase targets; not yet answered. V7 preview treats them as long-term if held, and emits no buy for them.",
     "buckets": {
-      "physical_ai": ["AAPL", "TSLA", "SPCX"],
-      "infrastructure_ai": ["NVDA", "AVGO", "AMD", "MSFT", "GOOG", "GOOGL", "MU"],
-      "other": ["IBIT", "LLY"]
+      "physical_ai": [
+        "AAPL",
+        "TSLA",
+        "SPCX"
+      ],
+      "infrastructure_ai": [
+        "NVDA",
+        "AVGO",
+        "AMD",
+        "MSFT",
+        "GOOG",
+        "GOOGL",
+        "MU"
+      ],
+      "other": [
+        "IBIT",
+        "LLY"
+      ]
     },
     "calls": {
       "delta": "10-15 (taxable 10-15, sheltered 15) — income without getting called away",
@@ -37,16 +74,30 @@
       "buy_gaps": "Filled by buying shares from trim proceeds, never by selling puts (taken as settled 2026-09-13; Neel's 'the only reason to sell a put on a trillion-dollar stock is reassignment')."
     }
   },
-
   "short_term": {
     "rule": "A named list. No long thesis. Return from calls on owned shares and puts sold against cash and margin. Chosen because their volatility pays.",
-    "symbols": ["INTC", "SOXL", "RKLB", "CBRS", "ZM", "MRVL"],
+    "symbols": [
+      "INTC",
+      "SOXL",
+      "RKLB",
+      "CBRS",
+      "ZM",
+      "MRVL"
+    ],
     "calls": {
       "delta_min": 20,
       "delta_max": 40,
       "rule": "Between delta 20 and 40; the technicals pick the number. Low RSI -> nearer 20 (the bounce is coming). Never at the money. No difference between shares that arrived by assignment and shares bought outright.",
-      "rsi_to_delta": {"below_40": 20, "40_to_55": 30, "above_55": 40},
-      "otm_pct_by_delta": {"20": 0.04, "30": 0.025, "40": 0.015},
+      "rsi_to_delta": {
+        "below_40": 20,
+        "40_to_55": 30,
+        "above_55": 40
+      },
+      "otm_pct_by_delta": {
+        "20": 0.04,
+        "30": 0.025,
+        "40": 0.015
+      },
       "example": "INTC assigned at $90: delta 10 ~ $100 (the long-term treatment), delta 20 ~ $98, Neel would go ~ $95, not $92-93."
     },
     "stuck_calls": {
@@ -59,21 +110,67 @@
       "throttle": "No new short-term put once short-term exposure (holdings + put collateral) is at or above the 20% target."
     }
   },
-
-  "split_target": {"long_term_pct": 80, "short_term_pct": 20},
-
+  "split_target": {
+    "long_term_pct": 80,
+    "short_term_pct": 20
+  },
   "margin": {
-    "lines": {"neel_brokerage": 250000, "jaya_brokerage": 150000},
+    "lines": {
+      "neel_brokerage": 250000,
+      "jaya_brokerage": 150000
+    },
     "use": "Margin is for puts, and puts are for the short-term book.",
     "recovery": "When margin is drawn by shares (not puts), the system says 'Margin drawn by $X — sell about $X of stock to return to normal' and stops. Which position is Neel's call. No urgency: the only cost is put income (~2%/mo) becoming call income (~1%/mo) on that amount."
   },
-
   "ex_dividend_estimates": {
     "_note": "Next ex-dividend dates for long-term names with a dividend worth more than a deep-ITM weekly's time value. AVGO is from Robinhood fundamentals (2026-09-11); the rest are projected from the last quarterly date and must be confirmed in the week before.",
-    "AVGO": {"date": "2026-09-21", "dividend": 0.65, "source": "robinhood fundamentals 2026-09-11"},
-    "AAPL": {"date": "2026-11-10", "dividend": 0.26, "source": "projected from Aug 2026"},
-    "MSFT": {"date": "2026-11-19", "dividend": 0.83, "source": "projected from Aug 2026"},
-    "LLY": {"date": "2026-11-13", "dividend": 1.73, "source": "projected from 2026-08-14"},
-    "MU": {"date": "2026-10-06", "dividend": 0.15, "source": "projected from 2026-07-06"}
+    "AVGO": {
+      "date": "2026-09-21",
+      "dividend": 0.65,
+      "source": "robinhood fundamentals 2026-09-11"
+    },
+    "AAPL": {
+      "date": "2026-11-10",
+      "dividend": 0.26,
+      "source": "projected from Aug 2026"
+    },
+    "MSFT": {
+      "date": "2026-11-19",
+      "dividend": 0.83,
+      "source": "projected from Aug 2026"
+    },
+    "LLY": {
+      "date": "2026-11-13",
+      "dividend": 1.73,
+      "source": "projected from 2026-08-14"
+    },
+    "MU": {
+      "date": "2026-10-06",
+      "dividend": 0.15,
+      "source": "projected from 2026-07-06"
+    }
+  },
+  "planned_assignments": {
+    "_note": "Calls Neel has DECIDED to let assign — the long-term book's one exit: a trim he chose, usually to repay margin (layer 4 says 'sell about $X'; this is where the pick is recorded). The engine says LET ASSIGN for these instead of ROLL, and reminds about tax lots. Remove an entry once it has assigned.",
+    "entries": [
+      {
+        "account": "Jaya's Brokerage",
+        "symbol": "TSLA",
+        "strike": 340.0,
+        "expiration": "2026-09-18",
+        "contracts": 3,
+        "reason": "TSLA trim 2,000 -> 1,600 (planned since 2026-08-09); ~$102K repays most of Jaya's $131K margin. Highest Cost delivers the $435/$396.89/$375 lots (-$18K short-term loss, not +$76K FIFO gain).",
+        "decided": "2026-09-13"
+      },
+      {
+        "account": "Neel's Brokerage",
+        "symbol": "AAPL",
+        "strike": 322.5,
+        "expiration": "2026-09-18",
+        "contracts": 2,
+        "reason": "200 sh -> ~$64.5K takes Neel's $74K margin to about zero; every AAPL lot is ~$108 so ~$43K long-term gain is unavoidable and accepted.",
+        "decided": "2026-09-13"
+      }
+    ]
   }
 }
