@@ -468,6 +468,26 @@
       "step": 1,
       "min": 0,
       "max": 1
+    },
+    "rule_b_min_dte": {
+      "value": 4,
+      "label": "Dip buy-back: minimum days to expiry",
+      "group": "Winning calls",
+      "description": "Rule B fires only with at least this many days left on the call — inside the last days Rule A owns it (hold, roll Friday). SPCX $160 with 3 days left and 11% of room: leave it.",
+      "unit": "days",
+      "step": 1,
+      "min": 0,
+      "max": 10
+    },
+    "free_close_captured_pct": {
+      "value": 95,
+      "label": "Dip buy-back: free-close threshold",
+      "group": "Winning calls",
+      "description": "…unless the call is this far captured — closing is effectively free (SOXL $150 at 98%, NVDA $240 at 96%), so Rule B may fire regardless of days left.",
+      "unit": "%",
+      "step": 1,
+      "min": 80,
+      "max": 100
     }
   }
 }

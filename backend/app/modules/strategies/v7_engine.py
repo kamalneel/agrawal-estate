@@ -562,7 +562,11 @@ def build_v7_queue(db: Session) -> Dict:
                 er = earnings_within(sym, int(K(pol, "bounce_days")) + 2)
                 dte = o["dte"] if o["dte"] is not None else 5
                 cost = (mark or 0) * 100 * n
-                if dip and cheap and not er and dte >= 1:
+                # Rule B needs enough week left to matter — or a call so far
+                # captured that closing is free (Neel, 2026-09-15: SPCX $160
+                # at 86% with 3 days left and 11% of room is Rule A's, not B's).
+                enough_time = dte >= int(K(pol, "rule_b_min_dte")) or (captured is not None and captured >= K(pol, "free_close_captured_pct"))
+                if dip and cheap and not er and dte >= 1 and enough_time:
                     # Rule B: buy back on the dip, wait for the bounce, sell higher.
                     card(1, "BUY BACK", acct, sym,
                          f"{sym} ${k:,.0f} call — dip: buy back for ${cost:,.0f}, wait for the bounce, sell higher",
@@ -588,6 +592,8 @@ def build_v7_queue(db: Session) -> Dict:
                          "or the ex-dividend rule changes that.",
                          earn=est if dte == 0 else None,
                          context={"captured_pct": round(captured, 1) if captured is not None else None})
+                elif dip and cheap and not er and dte >= 1 and not enough_time:
+                    pass  # Rule A: expires within days, room to spare — hold, roll Friday (no card until Thursday)
                 elif er and dip and cheap:
                     card(1, "HOLD", acct, sym,
                          f"{sym} ${k:,.0f} call — dip, but earnings {er}: keep the cover",
