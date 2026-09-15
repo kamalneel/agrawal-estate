@@ -99,7 +99,8 @@
         "30": 0.025,
         "40": 0.015
       },
-      "example": "INTC assigned at $90: delta 10 ~ $100 (the long-term treatment), delta 20 ~ $98, Neel would go ~ $95, not $92-93."
+      "example": "INTC assigned at $90: delta 10 ~ $100 (the long-term treatment), delta 20 ~ $98, Neel would go ~ $95, not $92-93.",
+      "bounce_wait": "Neel 2026-09-15: Rule B's bounce-wait applies to the short-term book too — after a dip buy-back, wait +bounce_pct or bounce_days before selling the next call."
     },
     "stuck_calls": {
       "assumption": "Not discussed. V7 preview: an ITM short-term call at expiry is LET ASSIGN (the shares are short-term; re-enter with a put). To confirm with Neel."

@@ -336,6 +336,35 @@ def build_v7_queue(db: Session) -> Dict:
         cost_ps = (h["cost_basis"] / h["qty"]) if (h["cost_basis"] and h["qty"]) else None
         exp = next_expiration(today)
 
+        # Bounce-wait after a dip buy-back — both books (Neel, 2026-09-15):
+        # the point of closing on the dip was to sell the next call off a
+        # higher price. Wait +bounce_pct from the buy-back day's close, or
+        # bounce_days trading days, then sell. (A runaway thesis, checked
+        # below for the long-term book, outranks this.)
+        bb = buybacks.get((acct, sym))
+        rw_active = book == "long" and (lambda r: r and not r["resolved"])(_runaway_status(pol, sym, spot, today))
+        if bb and not rw_active:
+            bb_close = next((c for d, c in closes.get(sym, []) if d == bb["date"]), None)
+            if bb_close is None:
+                bb_close = next((c for d, c in reversed(closes.get(sym, [])) if d <= bb["date"]), None)
+            target = bb_close * (1 + K(pol, "bounce_pct") / 100) if bb_close else None
+            waited = _trading_days_between(bb["date"], today)
+            released = (target is not None and spot >= target) or waited >= int(K(pol, "bounce_days"))
+            if not released:
+                left = int(K(pol, "bounce_days")) - waited
+                card(1 if book == "long" else 2, "WAIT", acct, sym,
+                     f"{sym}: bought back {bb['date']:%-m/%-d} on the dip — wait for the bounce before selling the next call",
+                     f"{n} contract{'s' if n > 1 else ''} uncovered · now ${spot:,.2f}"
+                     + (f" vs ${bb_close:,.2f} at buy-back · sell when ≥ ${target:,.2f} (+{K(pol, 'bounce_pct'):.1f}%)" if target else "")
+                     + f" or in {left} trading day{'s' if left != 1 else ''}"
+                     + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
+                     "Rule B: the point of closing on the dip was to sell the next call off a higher price — a "
+                     "higher strike, a safer cushion. Re-selling today would give the strike the dip just took "
+                     "away. The clock keeps the shares from sitting uncovered indefinitely.",
+                     context={"book": book, "rsi": rsi, "spot": spot, "bounce_wait": True})
+                continue
+        bounce_note = f"Bounce after the {bb['date']:%-m/%-d} buy-back has arrived — sell off this price. " if bb else ""
+
         if book == "long":
             lt = pol["long_term"]["calls"]
             rw = _runaway_status(pol, sym, spot, today)
@@ -360,29 +389,6 @@ def build_v7_queue(db: Session) -> Dict:
                                  + "Remove the entry from policy_v2.json runaway_theses. ")
             else:
                 resolved_note = ""
-            bb = buybacks.get((acct, sym))
-            if bb:
-                # Rule B, second half: shares uncovered on purpose after a dip
-                # buy-back. Wait for the bounce — +bounce_pct from the buy-back
-                # day's close, or bounce_days trading days — then sell higher.
-                bb_close = next((c for d, c in closes.get(sym, []) if d == bb["date"]), None)
-                if bb_close is None:
-                    bb_close = next((c for d, c in reversed(closes.get(sym, [])) if d <= bb["date"]), None)
-                target = bb_close * (1 + K(pol, "bounce_pct") / 100) if bb_close else None
-                waited = _trading_days_between(bb["date"], today)
-                released = (target is not None and spot >= target) or waited >= int(K(pol, "bounce_days"))
-                if not released:
-                    card(1, "WAIT", acct, sym,
-                         f"{sym}: bought back {bb['date']:%-m/%-d} on the dip — wait for the bounce before selling the next call",
-                         f"{n} contract{'s' if n > 1 else ''} uncovered · now ${spot:,.2f}"
-                         + (f" vs ${bb_close:,.2f} at buy-back · sell when ≥ ${target:,.2f} (+{K(pol, 'bounce_pct'):.1f}%)" if target else "")
-                         + f" or in {int(K(pol, 'bounce_days')) - waited} trading day{'s' if int(K(pol, 'bounce_days')) - waited != 1 else ''}"
-                         + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
-                         "Rule B: the point of closing on the dip was to sell the next call off a higher price — a "
-                         "higher strike, a safer cushion. Re-selling today would give the strike the dip just took "
-                         "away. The clock keeps the shares from sitting uncovered indefinitely.",
-                         context={"book": "long", "rsi": rsi, "spot": spot, "bounce_wait": True})
-                    continue
             if sym == "TSLA":
                 otm, delta_txt = K(pol, "lt_otm_tsla"), "10-12"
                 gate = K(pol, "lt_tsla_rsi_gate")
@@ -405,7 +411,7 @@ def build_v7_queue(db: Session) -> Dict:
                  f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} this week"
                  + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
                  resolved_note + (f"{wait_reason}. " if wait else "")
-                 + (f"Bounce after the {bb['date']:%-m/%-d} buy-back has arrived — sell off this price. " if bb else "")
+                 + bounce_note
                  + "Long-term book: income without getting called away. Delta 10-15 by the V7 policy; "
                    "the shares are never sold, so the strike stays far enough out that assignment is unlikely.",
                  earn=None if wait else est,
@@ -425,7 +431,7 @@ def build_v7_queue(db: Session) -> Dict:
             card(2, "SELL", acct, sym,
                  f"{sym}: sell {n} call{'s' if n > 1 else ''} at delta {delta}",
                  f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} this week · {rsi_note}",
-                 "Short-term book: calls between delta 20 and 40, the technicals pick the number — "
+                 bounce_note + "Short-term book: calls between delta 20 and 40, the technicals pick the number — "
                  "low RSI means the bounce is coming, so nearer 20; never at the money. "
                  "Same rule whether the shares were assigned or bought.",
                  earn=est,
