@@ -457,6 +457,16 @@
       "step": 0.5,
       "min": 1,
       "max": 30
+    },
+    "cost_floor_enabled": {
+      "value": 0,
+      "label": "Cost-basis floor on call strikes",
+      "group": "Books",
+      "description": "1 = never sell a call below the position's average cost (V6's rule). 0 = off. Neel, 2026-09-15: 'preserving my cost basis is a vanity metric' — the goal is weekly option income without too much risk; the delta picks the strike, not the basis.",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1
     }
   }
 }

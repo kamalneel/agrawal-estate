@@ -396,7 +396,7 @@ def build_v7_queue(db: Session) -> Dict:
                 wait_reason = (rsi_ctx or {}).get("reason") or ""
             strike = strike_for(spot, otm)
             floor = ""
-            if cost_ps and strike < cost_ps:
+            if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:
                 strike, floor = cost_ps, " (raised to cost-basis floor)"
             est = weekly_premium(n, spot, RATE_TIER1_WEEKLY)
             action = "WAIT" if wait else "SELL"
@@ -415,7 +415,7 @@ def build_v7_queue(db: Session) -> Dict:
             otm = {20: K(pol, "st_otm_d20"), 30: K(pol, "st_otm_d30"), 40: K(pol, "st_otm_d40")}[delta]
             strike = strike_for(spot, otm)
             floor = ""
-            if cost_ps and strike < cost_ps:
+            if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:
                 strike, floor = cost_ps, " (raised to cost-basis floor)"
             # premium scales between the far-OTM and ATM rates with delta
             rate = RATE_TIER1_WEEKLY + (RATE_ATM_WEEKLY - RATE_TIER1_WEEKLY) * (delta - 10) / 40
@@ -429,8 +429,7 @@ def build_v7_queue(db: Session) -> Dict:
                  "low RSI means the bounce is coming, so nearer 20; never at the money. "
                  "Same rule whether the shares were assigned or bought.",
                  earn=est,
-                 assumption=("cost-basis floor kept from V6 (never sell at a loss if assigned) — not discussed"
-                             if floor else None),
+                 assumption=None,
                  context={"book": "short", "rsi": rsi, "delta": delta, "spot": spot, "uncovered": int(uncovered)})
 
     # Calls Neel has decided to let assign (policy_v2 planned_assignments):
