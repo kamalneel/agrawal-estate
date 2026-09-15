@@ -26,6 +26,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Three Authoritative Data Sources](playbook/universal/process/three-authoritative-data-sources.md) — all data enters via PDF/CSV statements, activity CSVs, or Robinhood paste
 - [Check Data Freshness First, and Ask For What Is Missing](playbook/universal/process/check-freshness-and-ask-first.md) — stale data looks like a real number; check MAX(date) per stream up front and request the file or reconnect, don't wait to be corrected
 - [A Recurring Line That Vanishes Is a Data Defect](playbook/universal/process/missing-recurring-line-is-a-defect.md) — check expected lines mechanically and flag the gap in red; know the cadence first (school bills Sep–May)
+- [Test a Strategy Engine Live, Beside the Old One](playbook/universal/process/test-a-strategy-engine-live-beside-the-old-one.md) — preview page beside the live one; one observation at a time during trading; explain, one question, agree, encode as a knob, push
 - [Reconcile the Forecast to the Filed Document Line by Line](playbook/universal/process/reconcile-forecast-to-the-filed-return.md) — table, formula check on the document's inputs, waterfall, classify each gap (bug / data / assumption / formula / definition)
 
 ### Technical
