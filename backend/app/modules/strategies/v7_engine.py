@@ -530,19 +530,24 @@ def build_v7_queue(db: Session) -> Dict:
                 # OTM: the dip buy-back / profit take
                 rw = _runaway_status(pol, sym, spot, today)
                 if rw and not rw["resolved"] and mark is not None:
-                    # A declared runaway thesis is symbol-wide: the point of the
-                    # buy-back was to uncap the shares, and a cap in another
-                    # account is the same cap. No resell estimate — nothing is
-                    # resold until the thesis resolves.
-                    cost = mark * 100 * n
-                    card(1, "BUY BACK", acct, sym,
-                         f"{sym} ${k:,.0f} call — runaway thesis ({rw['entry']['declared']}): buy back to uncap, ${cost:,.0f}",
-                         f"{n} contract{'s' if n > 1 else ''} · mark ${mark:,.2f} vs ${o['original'] or 0:,.2f} sold · exp {_fmt_exp(o['expiration'])} · "
-                         f"release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading days",
-                         f"{rw['entry']['reason']} The thesis applies to every account holding {sym}; a cap here is "
-                         f"the same cap you paid to remove elsewhere. No new call until the thesis resolves.",
-                         context={"runaway": True, "buyback_cost": cost})
-                    continue
+                    # A runaway thesis is about DISTANCE (Neel, 2026-09-15): the
+                    # cap that gets bought back is the one close enough to take
+                    # the shares on the first day of the move. A cap far enough
+                    # above is room for the run and stays — until the price
+                    # climbs into the cushion, which this re-checks every run.
+                    cushion = K(pol, "runaway_cushion_pct")
+                    gap_pct = (k / spot - 1) * 100
+                    if gap_pct <= cushion:
+                        cost = mark * 100 * n
+                        card(1, "BUY BACK", acct, sym,
+                             f"{sym} ${k:,.0f} call — runaway thesis, only {gap_pct:.1f}% above spot: buy back to uncap, ${cost:,.0f}",
+                             f"{n} contract{'s' if n > 1 else ''} · mark ${mark:,.2f} vs ${o['original'] or 0:,.2f} sold · exp {_fmt_exp(o['expiration'])} · "
+                             f"cushion {cushion:.0f}% · release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading days",
+                             f"{rw['entry']['reason']} This cap is inside the {cushion:.0f}% cushion — it would take the shares "
+                             f"on the first day of the move. A cap further out is left alone.",
+                             context={"runaway": True, "buyback_cost": cost, "gap_pct": round(gap_pct, 1)})
+                        continue
+                    # outside the cushion: the call is room for the run — fall through to normal handling
                 captured = (1 - mark / o["original"]) * 100 if (mark is not None and o["original"]) else None
                 move = _day_move_pct(closes.get(sym, []), spot, today)
                 rsi_ctx = _rsi(db, acct_id.get(acct), sym)
