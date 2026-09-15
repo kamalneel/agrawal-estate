@@ -173,5 +173,18 @@
         "decided": "2026-09-13"
       }
     ]
+  },
+  "runaway_theses": {
+    "_note": "Neel, 2026-09-15. A discretionary override of the technicals: Neel bought back a call on a long-term name (paying real time value) because non-technical reasons — news, structure — say the stock is about to run. RSI cannot be the trigger (it is already high before a runaway and stays high during one; V6 philosophy §6). So the thesis is DECLARED here, the engine stops selling calls on the symbol, and the thesis RESOLVES when the price is up `release_pct` from the declaration price (the run happened — sell the next call up there) or `release_days` trading days pass (it did not — resume income), whichever comes first. Remove or let it expire; the engine marks resolved entries. A thesis is symbol-wide: every account holding the name stops selling calls, and open calls on it are buy-back-to-uncap cards.",
+    "release_pct": 5.0,
+    "release_days": 10,
+    "entries": [
+      {
+        "symbol": "SPCX",
+        "declared": "2026-09-14",
+        "price_at_declaration": 151.88,
+        "reason": "Bought back the $152.50 calls (2 in Neel's Brokerage) at $3.01 expecting a run on non-technical grounds; RSI 67 at the time. Do not re-cap until +5% ($159.47) or 2026-09-28."
+      }
+    ]
   }
 }

@@ -191,6 +191,36 @@ def _short_term_delta(rsi: Optional[float], pol: Dict) -> int:
     return m["above_55"]
 
 
+def _trading_days_between(a: date, b: date) -> int:
+    n, d = 0, a
+    while d < b:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n += 1
+    return n
+
+
+def _runaway_status(pol: Dict, sym: str, spot: Optional[float], today: date) -> Optional[Dict]:
+    """Active runaway thesis on `sym`, or None. Resolved when the price is
+    up release_pct from the declaration or release_days trading days have
+    passed — the returned dict says which, so the card can say it."""
+    rt = pol.get("runaway_theses", {})
+    for e in rt.get("entries", []):
+        if e["symbol"] != sym:
+            continue
+        declared = date.fromisoformat(e["declared"])
+        p0 = float(e["price_at_declaration"])
+        target = p0 * (1 + rt.get("release_pct", 5.0) / 100)
+        days = _trading_days_between(declared, today)
+        deadline_days = int(rt.get("release_days", 10))
+        moved = spot is not None and spot >= target
+        expired = days >= deadline_days
+        return {"entry": e, "target": target, "days": days, "deadline_days": deadline_days,
+                "resolved": moved or expired, "how": "moved" if moved else "expired" if expired else None,
+                "p0": p0}
+    return None
+
+
 def _fmt_exp(d: Optional[date]) -> str:
     return d.strftime("%-m/%-d") if d else "—"
 
@@ -257,6 +287,28 @@ def build_v7_queue(db: Session) -> Dict:
 
         if book == "long":
             lt = pol["long_term"]["calls"]
+            rw = _runaway_status(pol, sym, spot, today)
+            if rw:
+                e = rw["entry"]
+                if not rw["resolved"]:
+                    card(1, "WAIT", acct, sym,
+                         f"{sym}: runaway thesis declared {e['declared']} — no new call until +{pol['runaway_theses']['release_pct']:.0f}% or {rw['deadline_days']} trading days",
+                         f"{n} contract{'s' if n > 1 else ''} uncovered · now ${spot:,.2f} vs ${rw['p0']:,.2f} at declaration · "
+                         f"release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading day{'s' if rw['deadline_days'] - rw['days'] != 1 else ''}"
+                         + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
+                         f"You overrode the technicals: {e['reason']} RSI cannot say when a runaway is over (it is "
+                         f"high before and during one), so the thesis resolves on price or on time — whichever "
+                         f"comes first — and only then does the delta 10-15 call go back on, at the higher price.",
+                         context={"book": "long", "rsi": rsi, "spot": spot, "runaway": True})
+                    continue
+                # resolved: fall through to the normal SELL, but say why it is back
+                resolved_note = (f"Runaway thesis of {e['declared']} resolved — "
+                                 + (f"{sym} reached ${rw['target']:,.2f} (+{pol['runaway_theses']['release_pct']:.0f}%): sell the call up here. "
+                                    if rw['how'] == 'moved' else
+                                    f"{rw['deadline_days']} trading days passed without the move: resume income. ")
+                                 + "Remove the entry from policy_v2.json runaway_theses. ")
+            else:
+                resolved_note = ""
             if sym == "TSLA":
                 otm, delta_txt = lt["otm_pct_tsla"], "10-12"
                 wait = not (rsi is not None and rsi > 75)
@@ -277,7 +329,7 @@ def build_v7_queue(db: Session) -> Dict:
                  f"{sym}: {'hold off — ' if wait else ''}sell {n} call{'s' if n > 1 else ''} at delta {delta_txt}",
                  f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} this week"
                  + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
-                 (f"{wait_reason}. " if wait else "")
+                 resolved_note + (f"{wait_reason}. " if wait else "")
                  + "Long-term book: income without getting called away. Delta 10-15 by the V7 policy; "
                    "the shares are never sold, so the strike stays far enough out that assignment is unlikely.",
                  earn=None if wait else est,
@@ -401,6 +453,21 @@ def build_v7_queue(db: Session) -> Dict:
                                   "floor_hit": floor_hit})
             else:
                 # OTM: the dip buy-back / profit take
+                rw = _runaway_status(pol, sym, spot, today)
+                if rw and not rw["resolved"] and mark is not None:
+                    # A declared runaway thesis is symbol-wide: the point of the
+                    # buy-back was to uncap the shares, and a cap in another
+                    # account is the same cap. No resell estimate — nothing is
+                    # resold until the thesis resolves.
+                    cost = mark * 100 * n
+                    card(1, "BUY BACK", acct, sym,
+                         f"{sym} ${k:,.0f} call — runaway thesis ({rw['entry']['declared']}): buy back to uncap, ${cost:,.0f}",
+                         f"{n} contract{'s' if n > 1 else ''} · mark ${mark:,.2f} vs ${o['original'] or 0:,.2f} sold · exp {_fmt_exp(o['expiration'])} · "
+                         f"release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading days",
+                         f"{rw['entry']['reason']} The thesis applies to every account holding {sym}; a cap here is "
+                         f"the same cap you paid to remove elsewhere. No new call until the thesis resolves.",
+                         context={"runaway": True, "buyback_cost": cost})
+                    continue
                 if mark is not None and o["original"] and o["original"] > 0 and mark <= o["original"] * (1 - DIP_BUYBACK_CAPTURE) \
                         and (o["dte"] is None or o["dte"] >= 2):
                     cost = mark * 100 * n

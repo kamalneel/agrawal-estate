@@ -276,3 +276,24 @@ captured, AVGO/NVDA waits on RSI, one GOOGL sell), 1 short-term (INTC
 $100 ITM, hold to expiry — assumption), 4 short-term puts (MRVL/RKLB in
 Neel's, RKLB/SOXL in Jaya's), 2 recovery notices (margin drawn $73,841 /
 $131,051). Books read 92.7% / 9.4%.
+
+## 2026-09-15 (Tuesday, trading) — two rules built from live feedback
+
+- **When to roll an ITM long-term call.** Thursday by default; Friday
+  morning if RSI > 70; immediately when the expiring contract's time value
+  is ≤ $0.10 (early-exercise floor) or the ex-div rule applies; never
+  Friday afternoon. Why: the same-strike credit is TV(next) − TV(this),
+  and TV(this) decays fastest at the end (AAPL $315: ~$0.75 Tue → ~$0.98
+  Thu); every un-rolled day is a day the dip can settle it for free, and
+  an early or 2-week roll leaves an at-the-money call to buy back at
+  maximum time value when the dip comes. Roll day is relative to each
+  contract's own expiry. Applies in every account.
+- **Runaway thesis (SPCX).** Neel bought back the $152.50 calls at $3.01
+  on non-technical grounds (RSI 67 — technicals said don't). RSI cannot
+  be the release (high before and during a runaway; V6 philosophy §6).
+  Rule: declare the thesis in `policy_v2.json runaway_theses`; the engine
+  stops selling calls on the symbol in every account, shows open calls as
+  buy-back-to-uncap, and resolves the thesis at **+5% from the
+  declaration price or 10 trading days**, whichever first — then the
+  delta 10-15 call goes back on. SPCX declared 2026-09-14 at $151.88 →
+  release $159.47 or 2026-09-28.
