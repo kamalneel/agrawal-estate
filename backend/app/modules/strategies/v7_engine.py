@@ -51,23 +51,17 @@ from app.shared.services.option_premium import (
 from app.modules.strategies.technical_signals import get_entry_timing
 from app.modules.strategies.v6_engine import (
     NON_TAXABLE_TYPES, CANONICAL_ORDER, MARGIN_ID_TO_NAME, _load_policy_ignore_list,
+    _load_earnings_calendar,
 )
 
 logger = logging.getLogger(__name__)
 
 _POLICY_V2 = Path(__file__).resolve().parents[4] / "data" / "policy_v2.json"
 
-#: A call whose mark is at most this fraction of what it was sold for is
-#: "mostly time value gone" — the dip buy-back / profit-take trigger.
-DIP_BUYBACK_CAPTURE = 0.60
-#: Roll before ex-div this many days ahead, and go this far out.
-EXDIV_LOOKAHEAD_DAYS = 10
-EXDIV_ROLL_WEEKS = 4
-#: Below this many DTE an ITM short-term call is treated as "at expiry".
-SHORT_TERM_LET_ASSIGN_DTE = 2
-#: Time value per share at which an expiring ITM call is rolled immediately
-#: (early-exercise floor — IBIT $39 sat at $0.055 on 2026-09-15).
-ROLL_TV_FLOOR = 0.10
+def K(pol: Dict, key: str):
+    """A tunable from policy_v2.json "knobs" — every number the engine uses
+    that Neel may want to turn (gear icon on the V7 page)."""
+    return pol["knobs"][key]["value"]
 
 
 def load_policy_v2() -> Dict:
@@ -104,6 +98,51 @@ def _holdings(db: Session) -> Tuple[Dict[Tuple[str, str], Dict], Dict[str, float
     for s, p in hist.items():
         price.setdefault(s, p)
     return holdings, price, acct_type, acct_id
+
+
+def _closes(db: Session) -> Dict[str, List[Tuple[date, float]]]:
+    """Last few daily closes per symbol, oldest first — for today's move and
+    the bounce-since-buy-back check."""
+    rows = db.execute(text("""
+        SELECT symbol, price_date, close_price FROM (
+            SELECT symbol, price_date, close_price,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY price_date DESC) rn
+            FROM symbol_price_history) x
+        WHERE rn <= 8 ORDER BY symbol, price_date
+    """)).fetchall()
+    out: Dict[str, List[Tuple[date, float]]] = {}
+    for r in rows:
+        out.setdefault(r.symbol, []).append((r.price_date, float(r.close_price)))
+    return out
+
+
+def _day_move_pct(closes: List[Tuple[date, float]], spot: float, today: date) -> Optional[float]:
+    """Today's move vs the last close before today."""
+    prev = [c for d, c in closes if d < today]
+    if not prev or not prev[-1]:
+        return None
+    return (spot / prev[-1] - 1) * 100
+
+
+def _recent_buybacks(db: Session, since: date) -> Dict[Tuple[str, str], Dict]:
+    """(account_name, symbol) -> the latest BTC on a call with no STO on the
+    same symbol after it: the shares are deliberately uncovered (Rule B's
+    'buy back on the dip, wait for the bounce')."""
+    rows = db.execute(text("""
+        SELECT a.account_name, t.symbol, t.transaction_date, t.transaction_type, t.description
+        FROM investment_transactions t JOIN investment_accounts a ON a.account_id = t.account_id
+        WHERE t.transaction_type IN ('BTC', 'STO') AND t.transaction_date >= :since
+          AND t.description ILIKE '%call%'
+        ORDER BY t.transaction_date, t.id
+    """), {"since": since}).fetchall()
+    last: Dict[Tuple[str, str], Dict] = {}
+    for r in rows:
+        key = (r.account_name, r.symbol)
+        if r.transaction_type == "BTC":
+            last[key] = {"date": r.transaction_date, "description": r.description}
+        else:
+            last.pop(key, None)  # a later STO re-covered the shares
+    return last
 
 
 def _open_options(db: Session, today: date) -> List[Dict]:
@@ -181,14 +220,13 @@ def _rsi(db: Session, account_id: str, symbol: str) -> Optional[Dict]:
 def _short_term_delta(rsi: Optional[float], pol: Dict) -> int:
     """Delta 20-40 picked by RSI (policy_v2 short_term.calls.rsi_to_delta).
     No RSI on file -> the middle of the window."""
-    m = pol["short_term"]["calls"]["rsi_to_delta"]
     if rsi is None:
         return 30
-    if rsi < 40:
-        return m["below_40"]
-    if rsi <= 55:
-        return m["40_to_55"]
-    return m["above_55"]
+    if rsi < K(pol, "st_rsi_low"):
+        return 20
+    if rsi <= K(pol, "st_rsi_high"):
+        return 30
+    return 40
 
 
 def _trading_days_between(a: date, b: date) -> int:
@@ -210,9 +248,9 @@ def _runaway_status(pol: Dict, sym: str, spot: Optional[float], today: date) -> 
             continue
         declared = date.fromisoformat(e["declared"])
         p0 = float(e["price_at_declaration"])
-        target = p0 * (1 + rt.get("release_pct", 5.0) / 100)
+        target = p0 * (1 + K(pol, "runaway_release_pct") / 100)
         days = _trading_days_between(declared, today)
-        deadline_days = int(rt.get("release_days", 10))
+        deadline_days = int(K(pol, "runaway_release_days"))
         moved = spot is not None and spot >= target
         expired = days >= deadline_days
         return {"entry": e, "target": target, "days": days, "deadline_days": deadline_days,
@@ -241,6 +279,19 @@ def build_v7_queue(db: Session) -> Dict:
     options = _open_options(db, today)
     cash = _cash(db)
     reentry = _recent_call_assignments(db, today - timedelta(days=14))
+    closes = _closes(db)
+    buybacks = _recent_buybacks(db, today - timedelta(days=10))
+    earnings_cal = _load_earnings_calendar()
+
+    def earnings_within(sym: str, days: int) -> Optional[str]:
+        er = earnings_cal.get(sym)
+        if not er:
+            return None
+        try:
+            d = date.fromisoformat(er["date"])
+        except Exception:  # noqa: BLE001
+            return None
+        return er["date"] if 0 <= (d - today).days <= days else None
 
     def sheltered(acct: str) -> bool:
         return acct_type.get(acct, "") in NON_TAXABLE_TYPES
@@ -292,7 +343,7 @@ def build_v7_queue(db: Session) -> Dict:
                 e = rw["entry"]
                 if not rw["resolved"]:
                     card(1, "WAIT", acct, sym,
-                         f"{sym}: runaway thesis declared {e['declared']} — no new call until +{pol['runaway_theses']['release_pct']:.0f}% or {rw['deadline_days']} trading days",
+                         f"{sym}: runaway thesis declared {e['declared']} — no new call until +{K(pol, 'runaway_release_pct'):.0f}% or {rw['deadline_days']} trading days",
                          f"{n} contract{'s' if n > 1 else ''} uncovered · now ${spot:,.2f} vs ${rw['p0']:,.2f} at declaration · "
                          f"release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading day{'s' if rw['deadline_days'] - rw['days'] != 1 else ''}"
                          + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
@@ -303,19 +354,43 @@ def build_v7_queue(db: Session) -> Dict:
                     continue
                 # resolved: fall through to the normal SELL, but say why it is back
                 resolved_note = (f"Runaway thesis of {e['declared']} resolved — "
-                                 + (f"{sym} reached ${rw['target']:,.2f} (+{pol['runaway_theses']['release_pct']:.0f}%): sell the call up here. "
+                                 + (f"{sym} reached ${rw['target']:,.2f} (+{K(pol, 'runaway_release_pct'):.0f}%): sell the call up here. "
                                     if rw['how'] == 'moved' else
                                     f"{rw['deadline_days']} trading days passed without the move: resume income. ")
                                  + "Remove the entry from policy_v2.json runaway_theses. ")
             else:
                 resolved_note = ""
+            bb = buybacks.get((acct, sym))
+            if bb:
+                # Rule B, second half: shares uncovered on purpose after a dip
+                # buy-back. Wait for the bounce — +bounce_pct from the buy-back
+                # day's close, or bounce_days trading days — then sell higher.
+                bb_close = next((c for d, c in closes.get(sym, []) if d == bb["date"]), None)
+                if bb_close is None:
+                    bb_close = next((c for d, c in reversed(closes.get(sym, [])) if d <= bb["date"]), None)
+                target = bb_close * (1 + K(pol, "bounce_pct") / 100) if bb_close else None
+                waited = _trading_days_between(bb["date"], today)
+                released = (target is not None and spot >= target) or waited >= int(K(pol, "bounce_days"))
+                if not released:
+                    card(1, "WAIT", acct, sym,
+                         f"{sym}: bought back {bb['date']:%-m/%-d} on the dip — wait for the bounce before selling the next call",
+                         f"{n} contract{'s' if n > 1 else ''} uncovered · now ${spot:,.2f}"
+                         + (f" vs ${bb_close:,.2f} at buy-back · sell when ≥ ${target:,.2f} (+{K(pol, 'bounce_pct'):.1f}%)" if target else "")
+                         + f" or in {int(K(pol, 'bounce_days')) - waited} trading day{'s' if int(K(pol, 'bounce_days')) - waited != 1 else ''}"
+                         + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
+                         "Rule B: the point of closing on the dip was to sell the next call off a higher price — a "
+                         "higher strike, a safer cushion. Re-selling today would give the strike the dip just took "
+                         "away. The clock keeps the shares from sitting uncovered indefinitely.",
+                         context={"book": "long", "rsi": rsi, "spot": spot, "bounce_wait": True})
+                    continue
             if sym == "TSLA":
-                otm, delta_txt = lt["otm_pct_tsla"], "10-12"
-                wait = not (rsi is not None and rsi > 75)
-                wait_reason = (f"RSI {rsi:.0f} — TSLA carve-out fires only above 75" if rsi is not None
-                               else "no RSI on file — TSLA carve-out needs RSI > 75")
+                otm, delta_txt = K(pol, "lt_otm_tsla"), "10-12"
+                gate = K(pol, "lt_tsla_rsi_gate")
+                wait = not (rsi is not None and rsi > gate)
+                wait_reason = (f"RSI {rsi:.0f} — TSLA carve-out fires only above {gate:.0f}" if rsi is not None
+                               else f"no RSI on file — TSLA carve-out needs RSI > {gate:.0f}")
             else:
-                otm = lt["otm_pct_sheltered"] if sheltered(acct) else lt["otm_pct_taxable"]
+                otm = K(pol, "lt_otm_sheltered") if sheltered(acct) else K(pol, "lt_otm_taxable")
                 delta_txt = "15" if sheltered(acct) else "10-15"
                 wait = bool(rsi_ctx and rsi_ctx.get("wait"))
                 wait_reason = (rsi_ctx or {}).get("reason") or ""
@@ -330,14 +405,14 @@ def build_v7_queue(db: Session) -> Dict:
                  f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} this week"
                  + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
                  resolved_note + (f"{wait_reason}. " if wait else "")
+                 + (f"Bounce after the {bb['date']:%-m/%-d} buy-back has arrived — sell off this price. " if bb else "")
                  + "Long-term book: income without getting called away. Delta 10-15 by the V7 policy; "
                    "the shares are never sold, so the strike stays far enough out that assignment is unlikely.",
                  earn=None if wait else est,
                  context={"book": "long", "rsi": rsi, "spot": spot, "uncovered": int(uncovered)})
         else:
-            st = pol["short_term"]["calls"]
             delta = _short_term_delta(rsi, pol)
-            otm = st["otm_pct_by_delta"][str(delta)]
+            otm = {20: K(pol, "st_otm_d20"), 30: K(pol, "st_otm_d30"), 40: K(pol, "st_otm_d40")}[delta]
             strike = strike_for(spot, otm)
             floor = ""
             if cost_ps and strike < cost_ps:
@@ -392,16 +467,16 @@ def build_v7_queue(db: Session) -> Dict:
                 tv = (mark - intrinsic) if mark is not None else None
                 ex = exdiv.get(sym)
                 ex_date = date.fromisoformat(ex["date"]) if ex else None
-                exdiv_soon = ex_date is not None and 0 <= (ex_date - today).days <= EXDIV_LOOKAHEAD_DAYS
+                exdiv_soon = ex_date is not None and 0 <= (ex_date - today).days <= int(K(pol, 'exdiv_lookahead_days'))
                 roll_credit = weekly_premium(n, spot, RATE_TIER1_WEEKLY)  # next week's time value, rough
-                if exdiv_soon and (o["dte"] is None or o["expiration"] < ex_date + timedelta(days=EXDIV_ROLL_WEEKS * 7)):
-                    out = ex_date + timedelta(days=EXDIV_ROLL_WEEKS * 7)
+                if exdiv_soon and (o["dte"] is None or o["expiration"] < ex_date + timedelta(days=int(K(pol, 'exdiv_roll_weeks')) * 7)):
+                    out = ex_date + timedelta(days=int(K(pol, 'exdiv_roll_weeks')) * 7)
                     card(1, "ROLL", acct, sym,
-                         f"{sym} ${k:,.0f} call ITM — ex-dividend {_fmt_exp(ex_date)}: roll {EXDIV_ROLL_WEEKS} weeks out, same strike",
+                         f"{sym} ${k:,.0f} call ITM — ex-dividend {_fmt_exp(ex_date)}: roll {int(K(pol, 'exdiv_roll_weeks'))} weeks out, same strike",
                          f"{n} contract{'s' if n > 1 else ''} · ${intrinsic:,.2f} in the money · "
                          f"time value ${tv:,.2f}" if tv is not None else f"{n} contract{'s' if n > 1 else ''} · ${intrinsic:,.2f} in the money",
                          f"Rule 3: a deep-ITM weekly's time value falls below the ${ex['dividend']:.2f} dividend and gets "
-                         f"exercised early the day before ex-div ({ex_date:%b %-d}). A {EXDIV_ROLL_WEEKS}-week contract "
+                         f"exercised early the day before ex-div ({ex_date:%b %-d}). A {int(K(pol, 'exdiv_roll_weeks'))}-week contract "
                          f"carries enough time value to survive it. Same strike, still a credit. Buy back on the dip after.",
                          context={"exdiv": ex["date"], "roll_to": out.isoformat()})
                 else:
@@ -422,14 +497,14 @@ def build_v7_queue(db: Session) -> Dict:
                     rsi = rsi_ctx.get("rsi") if rsi_ctx else None
                     dte = o["dte"] if o["dte"] is not None else 5
                     exp_d = o["expiration"]
-                    floor_hit = tv is not None and tv <= ROLL_TV_FLOOR
-                    stretch = rsi is not None and rsi > 70
+                    floor_hit = tv is not None and tv <= K(pol, 'roll_tv_floor')
+                    stretch = rsi is not None and rsi > K(pol, 'roll_stretch_rsi')
                     # the roll day is relative to THIS contract's expiry, not the calendar week
                     roll_date = exp_d - timedelta(days=0 if stretch else 1) if exp_d else None
                     roll_day = (f"{'Friday morning' if stretch else 'Thursday'} {_fmt_exp(roll_date)}") if roll_date else "Thursday"
                     due_today = dte <= (0 if stretch else 1)
                     if floor_hit:
-                        action, when = "ROLL", f"now — time value ${tv:,.2f} is at the ${ROLL_TV_FLOOR:.2f} early-exercise floor"
+                        action, when = "ROLL", f"now — time value ${tv:,.2f} is at the ${K(pol, 'roll_tv_floor'):.2f} early-exercise floor"
                     elif due_today:
                         action, when = "ROLL", "today" + (" (morning, not afternoon)" if dte == 0 else "")
                     else:
@@ -445,8 +520,8 @@ def build_v7_queue(db: Session) -> Dict:
                          "The credit is next week's time value minus this week's, and this week's decays fastest "
                          "at the end — so later in the week pays more, and every un-rolled day is a day the dip "
                          "can settle it for free (an early roll leaves an at-the-money call to buy back at max "
-                         "time value when the dip comes). Thursday by default, Friday morning when RSI > 70, "
-                         f"immediately once the expiring contract's time value is ≤ ${ROLL_TV_FLOOR:.2f} "
+                         "time value when the dip comes). Thursday by default, Friday morning when RSI is high, "
+                         f"immediately once the expiring contract's time value is ≤ ${K(pol, 'roll_tv_floor'):.2f} "
                          "(nothing left to wait for, early-exercise risk rising). Never Friday afternoon.",
                          earn=roll_credit if action == "ROLL" else None,
                          context={"intrinsic": intrinsic, "time_value": tv, "roll_day": roll_day, "rsi": rsi,
@@ -468,26 +543,49 @@ def build_v7_queue(db: Session) -> Dict:
                          f"the same cap you paid to remove elsewhere. No new call until the thesis resolves.",
                          context={"runaway": True, "buyback_cost": cost})
                     continue
-                if mark is not None and o["original"] and o["original"] > 0 and mark <= o["original"] * (1 - DIP_BUYBACK_CAPTURE) \
-                        and (o["dte"] is None or o["dte"] >= 2):
-                    cost = mark * 100 * n
-                    # what the replacement call would bring — the other half of the decision
-                    resell = weekly_premium(n, spot, RATE_TIER1_WEEKLY)
-                    worth_it = resell > cost
-                    card(1, "BUY BACK" if worth_it else "HOLD", acct, sym,
-                         (f"{sym} ${k:,.0f} call — {100 * (1 - mark / o['original']):.0f}% captured: buy back for ${cost:,.0f}, resell est ${resell:,}"
-                          if worth_it else
-                          f"{sym} ${k:,.0f} call — {100 * (1 - mark / o['original']):.0f}% captured: let the last ${cost:,.0f} decay (resell est only ${resell:,})"),
-                         f"{n} contract{'s' if n > 1 else ''} · mark ${mark:,.2f} vs ${o['original']:,.2f} sold · "
-                         f"kept ${(o['original'] - mark) * 100 * n:,.0f} of ${o['original'] * 100 * n:,.0f} · exp {_fmt_exp(o['expiration'])}",
-                         f"Rule 2: time value is not penalty — but it is not free. The ${cost:,.0f} left in this contract "
-                         f"decays to zero by expiry on its own; paying it now buys the shares back early so a new call "
-                         f"(est ${resell:,} for next week at delta 10-15) can be sold on the bounce. Worth it only if the "
-                         f"new call clears the ${cost:,.0f}.",
-                         earn=max(resell - int(cost), 0),
-                         context={"captured_pct": round(100 * (1 - mark / o["original"]), 1), "buyback_cost": cost, "resell_est": resell})
+                captured = (1 - mark / o["original"]) * 100 if (mark is not None and o["original"]) else None
+                move = _day_move_pct(closes.get(sym, []), spot, today)
+                rsi_ctx = _rsi(db, acct_id.get(acct), sym)
+                rsi = rsi_ctx.get("rsi") if rsi_ctx else None
+                dip = (move is not None and move <= K(pol, "dip_move_pct")) or (rsi is not None and rsi < K(pol, "dip_rsi"))
+                cheap = captured is not None and captured >= K(pol, "cheap_captured_pct")
+                er = earnings_within(sym, int(K(pol, "bounce_days")) + 2)
+                dte = o["dte"] if o["dte"] is not None else 5
+                cost = (mark or 0) * 100 * n
+                if dip and cheap and not er and dte >= 1:
+                    # Rule B: buy back on the dip, wait for the bounce, sell higher.
+                    card(1, "BUY BACK", acct, sym,
+                         f"{sym} ${k:,.0f} call — dip: buy back for ${cost:,.0f}, wait for the bounce, sell higher",
+                         f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured (mark ${mark:,.2f} vs ${o['original']:,.2f}) · "
+                         + (f"today {move:+.1f}%" if move is not None else "move n/a")
+                         + (f" · RSI {rsi:.0f}" if rsi is not None else "") + f" · exp {_fmt_exp(o['expiration'])}",
+                         f"Rule B: the stock is down and the call is cheap. Closing now costs ${cost:,.0f} and buys a higher "
+                         f"strike: the next call goes on once {sym} is +{K(pol, 'bounce_pct'):.1f}% from today's close, or in "
+                         f"{int(K(pol, 'bounce_days'))} trading days at the latest. Re-selling today would cap at the dip price.",
+                         context={"captured_pct": round(captured, 1), "buyback_cost": cost, "day_move_pct": move, "rsi": rsi})
+                elif dte <= 1:
+                    # Rule A: winning call at expiry — roll Friday, don't lose Monday.
+                    otm = K(pol, "lt_otm_tsla") if sym == "TSLA" else (K(pol, "lt_otm_sheltered") if sheltered(acct) else K(pol, "lt_otm_taxable"))
+                    nxt = strike_for(spot, otm)
+                    est = weekly_premium(n, spot, RATE_TIER1_WEEKLY)
+                    card(1, "ROLL" if dte == 0 else "WAIT", acct, sym,
+                         (f"{sym} ${k:,.0f} call expires today — roll: sell next week's delta 10-15 (~${nxt:,.0f})" if dte == 0
+                          else f"{sym} ${k:,.0f} call expires tomorrow — roll Friday, not today"),
+                         f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured · exp {_fmt_exp(o['expiration'])} · next est ${est:,}"
+                         + (f" · today {move:+.1f}%" if move is not None else ""),
+                         "Rule A: a winning call is left to expire and the next one is sold the same Friday — no "
+                         "Monday lost, and no early close just because a threshold crossed. Only a dip (Rule B) "
+                         "or the ex-dividend rule changes that.",
+                         earn=est if dte == 0 else None,
+                         context={"captured_pct": round(captured, 1) if captured is not None else None})
+                elif er and dip and cheap:
+                    card(1, "HOLD", acct, sym,
+                         f"{sym} ${k:,.0f} call — dip, but earnings {er}: keep the cover",
+                         f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured · exp {_fmt_exp(o['expiration'])}",
+                         "Rule B would close this on the dip, but the shares would sit uncovered across an earnings "
+                         "date. The cover stays.")
         else:
-            if itm and o["dte"] is not None and o["dte"] <= SHORT_TERM_LET_ASSIGN_DTE:
+            if itm and o["dte"] is not None and o["dte"] <= int(K(pol, 'st_let_assign_dte')):
                 card(2, "LET ASSIGN", acct, sym,
                      f"{sym} ${k:,.0f} call ITM at expiry — let the shares go",
                      f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${spot - k:,.2f} in the money",
@@ -523,7 +621,7 @@ def build_v7_queue(db: Session) -> Dict:
                             if o["type"] == "put" and o["symbol"] in short_term)
     st_exposure = st_value + st_put_collateral
     st_pct = (st_exposure / (total_value + st_put_collateral) * 100) if total_value else 0.0
-    cap_pct = pol["split_target"]["short_term_pct"]
+    cap_pct = K(pol, "short_term_cap_pct")
     lines = {MARGIN_ID_TO_NAME.get(k, k): v for k, v in pol["margin"]["lines"].items()}
 
     put_candidates = []
@@ -534,7 +632,8 @@ def build_v7_queue(db: Session) -> Dict:
         any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None)
         rsi_ctx = _rsi(db, any_acct, sym) if any_acct else None
         rsi = rsi_ctx.get("rsi") if rsi_ctx else None
-        fav = "favourable" if (rsi is not None and rsi < 50) else "unfavourable" if (rsi is not None and rsi > 65) else "neutral"
+        fav = ("favourable" if (rsi is not None and rsi < K(pol, "put_rsi_favourable")) else
+               "unfavourable" if (rsi is not None and rsi > K(pol, "put_rsi_unfavourable")) else "neutral")
         put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "entry": fav})
     put_candidates.sort(key=lambda c: ({"favourable": 0, "neutral": 1, "unfavourable": 2}[c["entry"]], -(c["spot"])))
 
@@ -542,7 +641,7 @@ def build_v7_queue(db: Session) -> Dict:
         c = cash[acct]
         line = lines.get(acct, 0.0)
         capacity = (line + c["cash"] if line else c["cash"]) - c["collateral"] - (c["margin_used"] if line else 0)
-        if capacity < 5000:
+        if capacity < K(pol, "put_min_capacity"):
             continue
         if st_pct >= cap_pct:
             card(3, "HOLD", acct, "—",
@@ -554,7 +653,7 @@ def build_v7_queue(db: Session) -> Dict:
         picks = [p for p in put_candidates if p["spot"] * 100 <= capacity][:2]
         for p in picks:
             n = max(1, int(capacity // (p["spot"] * 100)))
-            n = min(n, 2)
+            n = min(n, int(K(pol, "put_max_contracts")))
             order = atm_order(n, p["spot"])
             card(3, "SELL PUT", acct, p["symbol"],
                  f"{p['symbol']}: sell {n} put{'s' if n > 1 else ''} at ~${order['strike']:,.0f} ({p['entry']} entry"

@@ -6975,6 +6975,47 @@ async def get_v7_preview(db: Session = Depends(get_db)):
     return build_v7_queue(db)
 
 
+@router.get("/v7/knobs")
+async def get_v7_knobs():
+    """Every tunable the V7 engine uses — data/policy_v2.json "knobs"."""
+    from app.modules.strategies.v7_engine import load_policy_v2
+    pol = load_policy_v2()
+    return {"knobs": {k: v for k, v in pol["knobs"].items() if not k.startswith("_")},
+            "note": pol["knobs"].get("_note", "")}
+
+
+@router.put("/v7/knobs")
+async def put_v7_knobs(payload: dict):
+    """Update knob values. Body: {"values": {key: number, ...}}. Validated
+    against each knob's min/max; written back to data/policy_v2.json so the
+    next engine run (and git) sees it."""
+    from pathlib import Path as _Path
+    import json as _json
+    from app.modules.strategies.v7_engine import _POLICY_V2
+    pol = _json.loads(_POLICY_V2.read_text())
+    knobs = pol["knobs"]
+    values = (payload or {}).get("values", {})
+    changed = {}
+    for key, raw in values.items():
+        if key not in knobs or key.startswith("_"):
+            raise HTTPException(400, f"unknown knob {key}")
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key}: not a number")
+        k = knobs[key]
+        if "min" in k and v < k["min"] or "max" in k and v > k["max"]:
+            raise HTTPException(400, f"{key}: {v} outside [{k.get('min')}, {k.get('max')}]")
+        if isinstance(k["value"], int) and float(v).is_integer():
+            v = int(v)
+        if v != k["value"]:
+            changed[key] = {"from": k["value"], "to": v}
+            k["value"] = v
+    if changed:
+        _POLICY_V2.write_text(_json.dumps(pol, indent=2, ensure_ascii=False) + "\n")
+    return {"changed": changed, "knobs": {k: v for k, v in knobs.items() if not k.startswith("_")}}
+
+
 @router.get("/v6/assignment-loss")
 async def get_v6_assignment_loss(db: Session = Depends(get_db)):
     """Forced-assignment loss: strike vs. market price AT THE MOMENT OF

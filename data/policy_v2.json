@@ -113,7 +113,8 @@
   },
   "split_target": {
     "long_term_pct": 80,
-    "short_term_pct": 20
+    "short_term_pct": 20,
+    "_note": "short_term_pct is mirrored by the knob short_term_cap_pct; the knob wins in the engine."
   },
   "margin": {
     "lines": {
@@ -175,9 +176,7 @@
     ]
   },
   "runaway_theses": {
-    "_note": "Neel, 2026-09-15. A discretionary override of the technicals: Neel bought back a call on a long-term name (paying real time value) because non-technical reasons — news, structure — say the stock is about to run. RSI cannot be the trigger (it is already high before a runaway and stays high during one; V6 philosophy §6). So the thesis is DECLARED here, the engine stops selling calls on the symbol, and the thesis RESOLVES when the price is up `release_pct` from the declaration price (the run happened — sell the next call up there) or `release_days` trading days pass (it did not — resume income), whichever comes first. Remove or let it expire; the engine marks resolved entries. A thesis is symbol-wide: every account holding the name stops selling calls, and open calls on it are buy-back-to-uncap cards.",
-    "release_pct": 5.0,
-    "release_days": 10,
+    "_note": "Neel, 2026-09-15. A discretionary override of the technicals: Neel bought back a call on a long-term name (paying real time value) because non-technical reasons — news, structure — say the stock is about to run. RSI cannot be the trigger (it is already high before a runaway and stays high during one; V6 philosophy §6). So the thesis is DECLARED here, the engine stops selling calls on the symbol, and the thesis RESOLVES when the price is up `release_pct` from the declaration price (the run happened — sell the next call up there) or `release_days` trading days pass (it did not — resume income), whichever comes first. Remove or let it expire; the engine marks resolved entries. A thesis is symbol-wide: every account holding the name stops selling calls, and open calls on it are buy-back-to-uncap cards. Release thresholds are the knobs runaway_release_pct / runaway_release_days.",
     "entries": [
       {
         "symbol": "SPCX",
@@ -186,5 +185,268 @@
         "reason": "Bought back the $152.50 calls (2 in Neel's Brokerage) at $3.01 expecting a run on non-technical grounds; RSI 67 at the time. Do not re-cap until +5% ($159.47) or 2026-09-28."
       }
     ]
+  },
+  "knobs": {
+    "_note": "Every tunable number the V7 engine uses, in one place, editable from the gear icon on the V7 page (GET/PUT /strategies/v7/knobs). The engine reads this file on every run, so a change applies to the next build. Neel, 2026-09-15: 'these numbers are knobs we will adjust in the future.' Edits are written back here so git shows every change.",
+    "lt_otm_taxable": {
+      "value": 0.055,
+      "label": "Long-term call distance, taxable",
+      "group": "Long-term calls",
+      "description": "Strike as a fraction above spot for delta 10-15 in a taxable account.",
+      "unit": "× spot",
+      "step": 0.005,
+      "min": 0.01,
+      "max": 0.15
+    },
+    "lt_otm_sheltered": {
+      "value": 0.045,
+      "label": "Long-term call distance, sheltered",
+      "group": "Long-term calls",
+      "description": "Strike as a fraction above spot for delta 15 in an IRA/Roth/HSA.",
+      "unit": "× spot",
+      "step": 0.005,
+      "min": 0.01,
+      "max": 0.15
+    },
+    "lt_otm_tsla": {
+      "value": 0.06,
+      "label": "TSLA call distance",
+      "group": "Long-term calls",
+      "description": "TSLA carve-out: delta 10-12.",
+      "unit": "× spot",
+      "step": 0.005,
+      "min": 0.01,
+      "max": 0.15
+    },
+    "lt_tsla_rsi_gate": {
+      "value": 75,
+      "label": "TSLA RSI gate",
+      "group": "Long-term calls",
+      "description": "Sell a TSLA call only when RSI is above this.",
+      "unit": "RSI",
+      "step": 1,
+      "min": 50,
+      "max": 90
+    },
+    "roll_tv_floor": {
+      "value": 0.1,
+      "label": "Roll-now time-value floor",
+      "group": "Stuck calls",
+      "description": "Roll an ITM call immediately once the expiring contract's time value per share is at or below this — early-exercise risk, nothing left to wait for.",
+      "unit": "$/share",
+      "step": 0.05,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "roll_stretch_rsi": {
+      "value": 70,
+      "label": "Stretch-to-Friday RSI",
+      "group": "Stuck calls",
+      "description": "Above this RSI the roll waits until Friday morning instead of Thursday (the dip is more likely).",
+      "unit": "RSI",
+      "step": 1,
+      "min": 50,
+      "max": 90
+    },
+    "exdiv_lookahead_days": {
+      "value": 10,
+      "label": "Ex-dividend lookahead",
+      "group": "Stuck calls",
+      "description": "Within this many days of an ex-dividend date, the roll goes long instead of weekly.",
+      "unit": "days",
+      "step": 1,
+      "min": 1,
+      "max": 30
+    },
+    "exdiv_roll_weeks": {
+      "value": 4,
+      "label": "Ex-dividend roll length",
+      "group": "Stuck calls",
+      "description": "How many weeks out the pre-ex-dividend roll goes.",
+      "unit": "weeks",
+      "step": 1,
+      "min": 2,
+      "max": 8
+    },
+    "dip_move_pct": {
+      "value": -1.5,
+      "label": "Dip: today's move",
+      "group": "Winning calls",
+      "description": "A day move at or below this counts as a dip (Rule B: buy back, wait for the bounce, sell higher).",
+      "unit": "%",
+      "step": 0.5,
+      "min": -10,
+      "max": 0
+    },
+    "dip_rsi": {
+      "value": 45,
+      "label": "Dip: RSI below",
+      "group": "Winning calls",
+      "description": "Or RSI below this counts as a dip.",
+      "unit": "RSI",
+      "step": 1,
+      "min": 20,
+      "max": 60
+    },
+    "cheap_captured_pct": {
+      "value": 80,
+      "label": "Cheap: premium captured",
+      "group": "Winning calls",
+      "description": "A call this far captured is cheap enough to close on a dip.",
+      "unit": "%",
+      "step": 5,
+      "min": 50,
+      "max": 99
+    },
+    "bounce_pct": {
+      "value": 2.0,
+      "label": "Bounce: price up",
+      "group": "Winning calls",
+      "description": "After a dip buy-back, sell the next call once the stock is this far above the buy-back day's close.",
+      "unit": "%",
+      "step": 0.5,
+      "min": 0.5,
+      "max": 10
+    },
+    "bounce_days": {
+      "value": 2,
+      "label": "Bounce: max wait",
+      "group": "Winning calls",
+      "description": "…or after this many trading days uncovered, whichever comes first.",
+      "unit": "trading days",
+      "step": 1,
+      "min": 1,
+      "max": 10
+    },
+    "runaway_release_pct": {
+      "value": 5.0,
+      "label": "Runaway: release on price",
+      "group": "Runaway thesis",
+      "description": "A declared runaway thesis resolves when the stock is this far above the declaration price.",
+      "unit": "%",
+      "step": 0.5,
+      "min": 1,
+      "max": 30
+    },
+    "runaway_release_days": {
+      "value": 10,
+      "label": "Runaway: release on time",
+      "group": "Runaway thesis",
+      "description": "…or after this many trading days.",
+      "unit": "trading days",
+      "step": 1,
+      "min": 2,
+      "max": 40
+    },
+    "st_rsi_low": {
+      "value": 40,
+      "label": "Short-term calls: RSI → delta 20",
+      "group": "Short-term calls",
+      "description": "RSI below this → delta 20 (the bounce is coming).",
+      "unit": "RSI",
+      "step": 1,
+      "min": 20,
+      "max": 60
+    },
+    "st_rsi_high": {
+      "value": 55,
+      "label": "Short-term calls: RSI → delta 40",
+      "group": "Short-term calls",
+      "description": "RSI above this → delta 40; between → delta 30.",
+      "unit": "RSI",
+      "step": 1,
+      "min": 40,
+      "max": 80
+    },
+    "st_otm_d20": {
+      "value": 0.04,
+      "label": "Delta 20 distance",
+      "group": "Short-term calls",
+      "description": "Strike fraction above spot for delta 20.",
+      "unit": "× spot",
+      "step": 0.005,
+      "min": 0.005,
+      "max": 0.15
+    },
+    "st_otm_d30": {
+      "value": 0.025,
+      "label": "Delta 30 distance",
+      "group": "Short-term calls",
+      "description": "Strike fraction above spot for delta 30.",
+      "unit": "× spot",
+      "step": 0.005,
+      "min": 0.005,
+      "max": 0.15
+    },
+    "st_otm_d40": {
+      "value": 0.015,
+      "label": "Delta 40 distance",
+      "group": "Short-term calls",
+      "description": "Strike fraction above spot for delta 40.",
+      "unit": "× spot",
+      "step": 0.005,
+      "min": 0.005,
+      "max": 0.15
+    },
+    "st_let_assign_dte": {
+      "value": 2,
+      "label": "Short-term ITM: let assign within",
+      "group": "Short-term calls",
+      "description": "An ITM short-term call this close to expiry is let go (assumption — not yet confirmed by Neel).",
+      "unit": "days",
+      "step": 1,
+      "min": 0,
+      "max": 5
+    },
+    "put_rsi_favourable": {
+      "value": 50,
+      "label": "Put entry: RSI favourable below",
+      "group": "Short-term puts",
+      "description": "",
+      "unit": "RSI",
+      "step": 1,
+      "min": 20,
+      "max": 70
+    },
+    "put_rsi_unfavourable": {
+      "value": 65,
+      "label": "Put entry: RSI unfavourable above",
+      "group": "Short-term puts",
+      "description": "",
+      "unit": "RSI",
+      "step": 1,
+      "min": 40,
+      "max": 90
+    },
+    "put_min_capacity": {
+      "value": 5000,
+      "label": "Put: minimum capacity",
+      "group": "Short-term puts",
+      "description": "Below this much undeployed capacity, no put card for the account.",
+      "unit": "$",
+      "step": 500,
+      "min": 0,
+      "max": 50000
+    },
+    "put_max_contracts": {
+      "value": 2,
+      "label": "Put: max contracts per card",
+      "group": "Short-term puts",
+      "description": "",
+      "unit": "contracts",
+      "step": 1,
+      "min": 1,
+      "max": 10
+    },
+    "short_term_cap_pct": {
+      "value": 20,
+      "label": "Short-term book cap",
+      "group": "Books",
+      "description": "No new short-term put once the short-term book (holdings + put collateral) is at or above this share of the portfolio.",
+      "unit": "%",
+      "step": 1,
+      "min": 5,
+      "max": 50
+    }
   }
 }

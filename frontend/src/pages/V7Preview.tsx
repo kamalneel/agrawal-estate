@@ -7,7 +7,7 @@
  * Spec: docs/OPTIONS-STRATEGY-V7-SPEC.md · policy: data/policy_v2.json.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { RefreshCw, AlertTriangle, ChevronDown } from 'lucide-react'
+import { RefreshCw, AlertTriangle, ChevronDown, Settings } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { formatCurrency } from '../components/charts'
@@ -30,6 +30,8 @@ interface Card {
 }
 
 interface Layer { n: number; name: string; items: Card[] }
+
+interface Knob { value: number; label: string; group: string; description: string; unit: string; step?: number; min?: number; max?: number }
 
 interface Preview {
   as_of: string
@@ -73,6 +75,34 @@ export default function V7Preview() {
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [sort, setSort] = useState<'account' | 'layer'>('account')
   const [showRules, setShowRules] = useState(false)
+  const [showKnobs, setShowKnobs] = useState(false)
+  const [knobs, setKnobs] = useState<Record<string, Knob> | null>(null)
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState<string | null>(null)
+
+  const loadKnobs = () => {
+    fetch(`${API_BASE}/strategies/v7/knobs`, { headers: getAuthHeaders() })
+      .then(r => r.json())
+      .then(d => { setKnobs(d.knobs); setDraft(Object.fromEntries(Object.entries(d.knobs as Record<string, Knob>).map(([k, v]) => [k, String(v.value)]))) })
+      .catch(() => setKnobs(null))
+  }
+  const saveKnobs = () => {
+    if (!knobs) return
+    const values: Record<string, number> = {}
+    for (const [k, v] of Object.entries(draft)) {
+      const n = Number(v)
+      if (!Number.isNaN(n) && n !== knobs[k].value) values[k] = n
+    }
+    if (Object.keys(values).length === 0) { setSaving('nothing changed'); return }
+    setSaving('saving…')
+    fetch(`${API_BASE}/strategies/v7/knobs`, {
+      method: 'PUT', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values }),
+    })
+      .then(async r => { if (!r.ok) throw new Error((await r.json()).detail ?? `HTTP ${r.status}`); return r.json() })
+      .then(d => { setSaving(`saved ${Object.keys(d.changed).length} — rebuilding`); setKnobs(d.knobs); load() })
+      .catch(e => setSaving(`error: ${e.message}`))
+  }
 
   const load = () => {
     setLoading(true)
@@ -82,7 +112,7 @@ export default function V7Preview() {
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  useEffect(() => { load(); loadKnobs() }, [])
 
   const all = useMemo(() => (data ? data.layers.flatMap(L => L.items) : []), [data])
 
@@ -128,8 +158,48 @@ export default function V7Preview() {
             as of {data.as_of} · positions {data.data_as_of.options?.slice(0, 16)} · cash {data.data_as_of.cash}
           </div>
         </div>
-        <button className={styles.refresh} onClick={load} title="Rebuild"><RefreshCw size={16} /></button>
+        <div className={styles.headerBtns}>
+          <button className={clsx(styles.refresh, showKnobs && styles.refreshActive)} onClick={() => setShowKnobs(v => !v)} title="Knobs — every number the engine uses"><Settings size={16} /></button>
+          <button className={styles.refresh} onClick={load} title="Rebuild"><RefreshCw size={16} /></button>
+        </div>
       </header>
+
+      {showKnobs && knobs && (() => {
+        const groups = Array.from(new Set(Object.values(knobs).map(k => k.group)))
+        return (
+          <section className={styles.knobs}>
+            <div className={styles.knobsHead}>
+              <div>
+                <strong>Knobs</strong>
+                <span className={styles.muted}> — every number the engine uses. A change is written to data/policy_v2.json and the next build picks it up.</span>
+              </div>
+              <div className={styles.knobsActions}>
+                {saving && <span className={styles.muted}>{saving}</span>}
+                <button className={styles.knobSave} onClick={saveKnobs}>Save &amp; rebuild</button>
+              </div>
+            </div>
+            {groups.map(g => (
+              <div key={g} className={styles.knobGroup}>
+                <div className={styles.knobGroupName}>{g}</div>
+                {Object.entries(knobs).filter(([, k]) => k.group === g).map(([key, k]) => {
+                  const dirty = Number(draft[key]) !== k.value
+                  return (
+                    <label key={key} className={clsx(styles.knob, dirty && styles.knobDirty)} title={key}>
+                      <span className={styles.knobLabel}>{k.label}</span>
+                      <span className={styles.knobInput}>
+                        <input type="number" value={draft[key] ?? ''} step={k.step ?? 1} min={k.min} max={k.max}
+                               onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))} />
+                        <span className={styles.knobUnit}>{k.unit}</span>
+                      </span>
+                      <span className={styles.knobDesc}>{k.description}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            ))}
+          </section>
+        )
+      })()}
 
       <section className={styles.state}>
         <div className={styles.stateCard}>

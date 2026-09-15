@@ -297,3 +297,24 @@ $131,051). Books read 92.7% / 9.4%.
   declaration price or 10 trading days**, whichever first — then the
   delta 10-15 call goes back on. SPCX declared 2026-09-14 at $151.88 →
   release $159.47 or 2026-09-28.
+
+## 2026-09-15 (later) — winning calls, and knobs
+
+- **Rule A (default for a winning/OTM long-term call):** hold it; on the
+  Friday it expires, sell next week's delta 10-15 the same day. No early
+  close just because a % threshold crossed — rolling on a down day gives a
+  worse strike. The old "60% captured → buy back" trigger is retired.
+- **Rule B (the exception):** when the stock is down (today ≤ −1.5% or
+  RSI < 45) and the call is cheap (≥ 80% captured), buy back, **do not
+  re-sell yet**, wait for the bounce (+2% from the buy-back day's close or
+  2 trading days), then sell the delta 10-15 call off the higher price.
+  Suppressed inside an earnings window (shares would sit uncovered
+  across the date). The engine detects the buy-back from the ledger (BTC
+  with no STO after) — nothing to declare.
+- **Knobs.** Every number the engine uses now lives in
+  `policy_v2.json` "knobs" (26 of them), editable from the gear icon on
+  the V7 page; a save writes the file and rebuilds, so git shows every
+  change. First candidate to turn: TSLA $390 today is 77% captured on a
+  −0.1% day — Rule B does not fire at 80% / −1.5%; Neel's own read was
+  "the stock is way down", which is a two-day −2% — a "dip window" knob
+  (days) may be wanted.
