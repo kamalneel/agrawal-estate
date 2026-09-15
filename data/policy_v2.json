@@ -67,7 +67,8 @@
       "rule_1": "Roll weekly, same strike, for a credit. Never pay intrinsic to get out.",
       "rule_2": "Buy back on the dip — time value is not penalty. If spot is under the strike mid-week and the call is mostly time value, close it and sell fresh calls on the bounce.",
       "rule_3": "The roll immediately before an ex-dividend date goes 3-4 weeks out, same strike, so time value on the day before ex-div exceeds the dividend and early exercise does not take the shares.",
-      "operating_assumption": "What goes up comes down. The system does not plan for a stock that runs $330 -> $350 -> $370 without a dip."
+      "operating_assumption": "What goes up comes down. The system does not plan for a stock that runs $330 -> $350 -> $370 without a dip.",
+      "rule_4_when_to_roll": "Neel, 2026-09-15. Roll THURSDAY by default; Friday morning if RSI > 70; immediately if the expiring contract's time value is <= $0.10/share (early-exercise floor) or the ex-dividend rule applies. Never Friday afternoon. Why: the same-strike credit is TV(next) - TV(this); TV(this) decays fastest in its last days so the credit grows through the week (AAPL $315: ~$0.75 Tue -> ~$0.98 Thu), and every un-rolled day is a day the dip can settle it for free. Rolling out early (or 2 weeks) leaves an at-the-money call to buy back at maximum time value when the dip comes - the fatter 2-week credit is the market paying for exactly that risk. Down moves early in the week are waited out, not rolled."
     },
     "puts": {
       "rule": "Only to re-enter after a call assignment. Never to acquire. If such a put is assigned, the shares are simply held.",

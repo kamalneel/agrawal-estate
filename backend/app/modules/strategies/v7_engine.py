@@ -65,6 +65,9 @@ EXDIV_LOOKAHEAD_DAYS = 10
 EXDIV_ROLL_WEEKS = 4
 #: Below this many DTE an ITM short-term call is treated as "at expiry".
 SHORT_TERM_LET_ASSIGN_DTE = 2
+#: Time value per share at which an expiring ITM call is rolled immediately
+#: (early-exercise floor — IBIT $39 sat at $0.055 on 2026-09-15).
+ROLL_TV_FLOOR = 0.10
 
 
 def load_policy_v2() -> Dict:
@@ -350,16 +353,52 @@ def build_v7_queue(db: Session) -> Dict:
                          f"carries enough time value to survive it. Same strike, still a credit. Buy back on the dip after.",
                          context={"exdiv": ex["date"], "roll_to": out.isoformat()})
                 else:
-                    card(1, "ROLL", acct, sym,
-                         f"{sym} ${k:,.0f} call ITM — roll to next week, same strike",
+                    # WHEN to roll (Neel, 2026-09-15). A same-strike roll's credit
+                    # is time value(next) − time value(this); the expiring
+                    # contract decays fastest in its last days while next
+                    # week's barely moves, so the credit grows through the
+                    # week (~$0.75 Tue → ~$0.98 Thu on AAPL $315, 2026-09-15).
+                    # And every un-rolled day is a day the dip can settle it
+                    # for free — an early roll leaves an at-the-money call to
+                    # buy back at max time value when the dip finally comes.
+                    # So: Thursday by default; Friday morning if RSI > 70 (the
+                    # dip is more likely, stretch); NOW only when the expiring
+                    # contract's time value is at the early-exercise floor.
+                    # Never Friday afternoon: an unfilled roll assigns at the
+                    # close.
+                    rsi_ctx = _rsi(db, acct_id.get(acct), sym)
+                    rsi = rsi_ctx.get("rsi") if rsi_ctx else None
+                    dte = o["dte"] if o["dte"] is not None else 5
+                    exp_d = o["expiration"]
+                    floor_hit = tv is not None and tv <= ROLL_TV_FLOOR
+                    stretch = rsi is not None and rsi > 70
+                    # the roll day is relative to THIS contract's expiry, not the calendar week
+                    roll_date = exp_d - timedelta(days=0 if stretch else 1) if exp_d else None
+                    roll_day = (f"{'Friday morning' if stretch else 'Thursday'} {_fmt_exp(roll_date)}") if roll_date else "Thursday"
+                    due_today = dte <= (0 if stretch else 1)
+                    if floor_hit:
+                        action, when = "ROLL", f"now — time value ${tv:,.2f} is at the ${ROLL_TV_FLOOR:.2f} early-exercise floor"
+                    elif due_today:
+                        action, when = "ROLL", "today" + (" (morning, not afternoon)" if dte == 0 else "")
+                    else:
+                        action, when = "WAIT", roll_day
+                    tv_txt = f" · time value left ${tv:,.2f}" if tv is not None else ""
+                    card(1, action, acct, sym,
+                         f"{sym} ${k:,.0f} call ITM — roll {when}, same strike" if action == "ROLL"
+                         else f"{sym} ${k:,.0f} call ITM — roll {roll_day}, not yet",
                          f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
-                         + (f" · time value ${tv:,.2f}" if tv is not None else "")
-                         + f" · roll credit est ${roll_credit:,}",
-                         "Rule 1: never pay intrinsic to get out. Roll weekly at the same strike for a credit and "
-                         "wait for the dip — what goes up comes down. One-week cadence so a short dip can be used "
-                         "the week it happens (rule 2: buy back on the dip, time value is not penalty).",
-                         earn=roll_credit,
-                         context={"intrinsic": intrinsic, "time_value": tv})
+                         + tv_txt + f" · roll credit est ${roll_credit:,}"
+                         + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
+                         "Rule 1: never pay intrinsic to get out; roll weekly at the same strike for a credit. "
+                         "The credit is next week's time value minus this week's, and this week's decays fastest "
+                         "at the end — so later in the week pays more, and every un-rolled day is a day the dip "
+                         "can settle it for free (an early roll leaves an at-the-money call to buy back at max "
+                         "time value when the dip comes). Thursday by default, Friday morning when RSI > 70, "
+                         f"immediately once the expiring contract's time value is ≤ ${ROLL_TV_FLOOR:.2f} "
+                         "(nothing left to wait for, early-exercise risk rising). Never Friday afternoon.",
+                         earn=roll_credit if action == "ROLL" else None,
+                         context={"intrinsic": intrinsic, "time_value": tv, "roll_day": roll_day, "rsi": rsi,
+                                  "floor_hit": floor_hit})
             else:
                 # OTM: the dip buy-back / profit take
                 if mark is not None and o["original"] and o["original"] > 0 and mark <= o["original"] * (1 - DIP_BUYBACK_CAPTURE) \
