@@ -488,6 +488,16 @@
       "step": 1,
       "min": 80,
       "max": 100
+    },
+    "st_max_symbol_pct_of_book": {
+      "value": 35,
+      "label": "Short-term put: max single-name share of the book",
+      "group": "Short-term puts",
+      "description": "No new put on a name whose holdings + put collateral already make up this much of the short-term book (holdings + all put collateral). Neel 2026-09-16: SOXL was 36% and V7 was still asking for more.",
+      "unit": "%",
+      "step": 5,
+      "min": 10,
+      "max": 100
     }
   }
 }

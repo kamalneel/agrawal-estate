@@ -640,18 +640,37 @@ def build_v7_queue(db: Session) -> Dict:
     cap_pct = K(pol, "short_term_cap_pct")
     lines = {MARGIN_ID_TO_NAME.get(k, k): v for k, v in pol["margin"]["lines"].items()}
 
+    # Existing exposure per short-term name (holdings + put collateral,
+    # every account): a put is a commitment to own MORE of the name, so a
+    # name already a big share of the book is skipped, whatever its RSI
+    # says (Neel, 2026-09-16: 800 SOXL on the way and V7 asked for more).
+    st_by_sym: Dict[str, float] = {}
+    for (_, s_), h_ in holdings.items():
+        if s_ in short_term:
+            st_by_sym[s_] = st_by_sym.get(s_, 0.0) + h_["qty"] * price.get(s_, 0)
+    for o in options:
+        if o["type"] == "put" and o["symbol"] in short_term:
+            st_by_sym[o["symbol"]] = st_by_sym.get(o["symbol"], 0.0) + o["strike"] * 100 * o["contracts"]
+    book_total = max(st_exposure, 1.0)
+    max_sym_pct = K(pol, "st_max_symbol_pct_of_book")
+
     put_candidates = []
+    concentrated = []
     for sym in sorted(short_term):
         spot = price.get(sym)
         if not spot:
+            continue
+        sym_pct = st_by_sym.get(sym, 0.0) / book_total * 100
+        if sym_pct >= max_sym_pct:
+            concentrated.append(f"{sym} {sym_pct:.0f}%")
             continue
         any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None)
         rsi_ctx = _rsi(db, any_acct, sym) if any_acct else None
         rsi = rsi_ctx.get("rsi") if rsi_ctx else None
         fav = ("favourable" if (rsi is not None and rsi < K(pol, "put_rsi_favourable")) else
                "unfavourable" if (rsi is not None and rsi > K(pol, "put_rsi_unfavourable")) else "neutral")
-        put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "entry": fav})
-    put_candidates.sort(key=lambda c: ({"favourable": 0, "neutral": 1, "unfavourable": 2}[c["entry"]], -(c["spot"])))
+        put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "entry": fav, "book_pct": sym_pct})
+    put_candidates.sort(key=lambda c: ({"favourable": 0, "neutral": 1, "unfavourable": 2}[c["entry"]], c["book_pct"], -(c["spot"])))
 
     for acct in sorted(cash, key=_acct_rank):
         c = cash[acct]
@@ -673,10 +692,13 @@ def build_v7_queue(db: Session) -> Dict:
             order = atm_order(n, p["spot"])
             card(3, "SELL PUT", acct, p["symbol"],
                  f"{p['symbol']}: sell {n} put{'s' if n > 1 else ''} at ~${order['strike']:,.0f} ({p['entry']} entry"
-                 + (f", RSI {p['rsi']:.0f}" if p["rsi"] is not None else "") + ")",
+                 + (f", RSI {p['rsi']:.0f}" if p["rsi"] is not None else "") + f", {p['book_pct']:.0f}% of the book)",
                  f"collateral ${order['strike'] * 100 * n:,.0f} of ${capacity:,.0f} undeployed"
                  + (" (margin-backed)" if line else " (cash-secured)") + f" · est ${order['est_premium']:,} this week",
                  "Layer 3: puts on the short-term list against cash and margin to maximise option income. "
+                 "Ranked by RSI entry, then by how little of the book the name already is — a put is a commitment "
+                 f"to own more, so names at or above {max_sym_pct:.0f}% of the book are skipped"
+                 + (f" (today: {', '.join(concentrated)})" if concentrated else "") + ". "
                  "Capacity = margin line + cash − open collateral − margin already drawn.",
                  earn=order["est_premium"],
                  assumption="Put strike: V6's ATM whole-dollar kept — Neel has not stated a put delta.",
