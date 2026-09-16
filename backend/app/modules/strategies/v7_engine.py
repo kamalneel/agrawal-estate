@@ -677,21 +677,30 @@ def build_v7_queue(db: Session) -> Dict:
                          f"strike: the next call goes on once {sym} is +{K(pol, 'bounce_pct'):.1f}% from today's close, or in "
                          f"{int(K(pol, 'bounce_days'))} trading days at the latest. Re-selling today would cap at the dip price.",
                          context={"captured_pct": round(captured, 1), "buyback_cost": cost, "day_move_pct": move, "rsi": rsi})
-                elif dte <= 1:
+                elif dte <= 1 or (dte < int(K(pol, "rule_b_min_dte")) and move is not None and move >= K(pol, "rule_a_up_day_pct")):
                     # Rule A: winning call at expiry — roll Friday, don't lose Monday.
+                    # Refinement (Neel, 2026-09-16): in the last days, an up day is
+                    # the moment — theta timing is a wash, the price path decides.
+                    up_day = dte > 1 and move is not None and move >= K(pol, "rule_a_up_day_pct")
                     td = K(pol, "lt_delta_tsla") if sym == "TSLA" else (K(pol, "lt_delta_sheltered") if sheltered(acct) else K(pol, "lt_delta_taxable"))
                     vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
                     nxt = strike_for_delta(spot, td, vol, 7, 0.055)
                     est = call_premium(spot, nxt, vol, 7, n, RATE_TIER1_WEEKLY)
-                    card(1, "ROLL" if dte == 0 else "WAIT", acct, sym,
-                         (f"{sym} ${k:,.0f} call expires today — roll: sell next week's delta 10-15 (~${nxt:,.0f})" if dte == 0
+                    roll_now = dte == 0 or up_day
+                    card(1, "ROLL" if roll_now else "WAIT", acct, sym,
+                         (f"{sym} ${k:,.0f} call — up {move:+.1f}% today: roll now, sell next week's delta {td:.0f} (~${nxt:,.0f})" if up_day
+                          else f"{sym} ${k:,.0f} call expires today — roll: sell next week's delta {td:.0f} (~${nxt:,.0f})" if dte == 0
                           else f"{sym} ${k:,.0f} call expires tomorrow — roll Friday, not today"),
                          f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured · exp {_fmt_exp(o['expiration'])} · next est ${est:,}"
                          + (f" · today {move:+.1f}%" if move is not None else ""),
-                         "Rule A: a winning call is left to expire and the next one is sold the same Friday — no "
-                         "Monday lost, and no early close just because a threshold crossed. Only a dip (Rule B) "
-                         "or the ex-dividend rule changes that.",
-                         earn=est if dte == 0 else None,
+                         ("Rule A, up-day refinement: in the last days of a winning call the buy-back you save by "
+                          "waiting is what the new call loses to decay — a wash — so the price path decides, and an "
+                          f"up day of ≥{K(pol, 'rule_a_up_day_pct'):.1f}% is the moment to set the next strike. "
+                          if up_day else
+                          "Rule A: a winning call is left to expire and the next one is sold the same Friday — no "
+                          "Monday lost, and no early close just because a threshold crossed. An up day in the last "
+                          "days brings the roll forward; only a dip (Rule B) or the ex-dividend rule changes it otherwise."),
+                         earn=est if roll_now else None,
                          context={"captured_pct": round(captured, 1) if captured is not None else None})
                 elif dip and cheap and not er and dte >= 1 and not enough_time:
                     pass  # Rule A: expires within days, room to spare — hold, roll Friday (no card until Thursday)

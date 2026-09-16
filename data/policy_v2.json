@@ -524,6 +524,16 @@
       "step": 1,
       "min": 1,
       "max": 7
+    },
+    "rule_a_up_day_pct": {
+      "value": 1.0,
+      "label": "Winning call: roll early on an up day of",
+      "group": "Winning calls",
+      "description": "Within the last days of a winning call (fewer than the dip buy-back's minimum), roll as soon as the stock is up at least this much on the day — the bounce is the moment to set the next strike. Otherwise roll Friday. Neel 2026-09-16: TSLA $390 on a +1.3% day; theta timing was a wash, the price path decides.",
+      "unit": "%",
+      "step": 0.25,
+      "min": 0.25,
+      "max": 5
     }
   }
 }
