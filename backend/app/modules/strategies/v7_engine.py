@@ -257,6 +257,15 @@ def _z_for_delta(delta: float) -> float:
     return (lo + hi) / 2
 
 
+def call_delta(spot: float, strike: float, vol: Optional[float], dte: int) -> Optional[float]:
+    """Chance the call finishes in the money, from realized vol (r = 0)."""
+    if not vol or strike <= 0 or spot <= 0:
+        return None
+    T = max(dte, 1) / 365
+    sd = vol * math.sqrt(T)
+    return _ncdf((math.log(spot / strike) + 0.5 * sd * sd) / sd)
+
+
 def strike_for_delta(spot: float, delta_pct: float, vol: Optional[float], dte: int, fallback_otm: float) -> float:
     """Call strike at the target delta from the name's own volatility and
     the days to expiry: spot · exp(σ√T · z). Falls back to a flat distance
@@ -640,19 +649,26 @@ def build_v7_queue(db: Session) -> Dict:
                     # the shares on the first day of the move. A cap far enough
                     # above is room for the run and stays — until the price
                     # climbs into the cushion, which this re-checks every run.
-                    cushion = K(pol, "runaway_cushion_pct")
+                    # Distance, time and volatility together: the call's delta.
+                    # A $10 gap with 2 days left is a normal delta-10 call; the
+                    # same gap with 9 days left is a real chance of assignment
+                    # during the run (Neel, 2026-09-16, SPCX $160).
+                    vol_rw = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+                    dlt = call_delta(spot, k, vol_rw, o["dte"] if o["dte"] is not None else 5)
+                    thr = K(pol, "runaway_uncap_delta") / 100
                     gap_pct = (k / spot - 1) * 100
-                    if gap_pct <= cushion:
+                    if dlt is not None and dlt >= thr:
                         cost = mark * 100 * n
                         card(1, "BUY BACK", acct, sym,
-                             f"{sym} ${k:,.0f} call — runaway thesis, only {gap_pct:.1f}% above spot: buy back to uncap, ${cost:,.0f}",
-                             f"{n} contract{'s' if n > 1 else ''} · mark ${mark:,.2f} vs ${o['original'] or 0:,.2f} sold · exp {_fmt_exp(o['expiration'])} · "
-                             f"cushion {cushion:.0f}% · release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading days",
-                             f"{rw['entry']['reason']} This cap is inside the {cushion:.0f}% cushion — it would take the shares "
-                             f"on the first day of the move. A cap further out is left alone.",
-                             context={"runaway": True, "buyback_cost": cost, "gap_pct": round(gap_pct, 1)})
+                             f"{sym} ${k:,.0f} call — runaway thesis, delta {dlt:.2f} with {o['dte']} days left: buy back to uncap, ${cost:,.0f}",
+                             f"{n} contract{'s' if n > 1 else ''} · {gap_pct:+.1f}% above spot · mark ${mark:,.2f} vs ${o['original'] or 0:,.2f} sold · exp {_fmt_exp(o['expiration'])} · "
+                             f"release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading days",
+                             f"{rw['entry']['reason']} At delta {dlt:.2f} this cap has a real chance of taking the shares "
+                             f"during the run (threshold {thr:.2f}). A call with a lower delta — further out, or nearer "
+                             f"expiry — is room for the run and stays.",
+                             context={"runaway": True, "buyback_cost": cost, "gap_pct": round(gap_pct, 1), "delta": round(dlt, 2)})
                         continue
-                    # outside the cushion: the call is room for the run — fall through to normal handling
+                    # low delta: the call is room for the run — fall through to normal handling
                 captured = (1 - mark / o["original"]) * 100 if (mark is not None and o["original"]) else None
                 move = _day_move_pct(closes.get(sym, []), spot, today)
                 rsi_ctx = _rsi(db, acct_id.get(acct), sym)

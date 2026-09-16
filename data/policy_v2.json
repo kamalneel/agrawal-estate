@@ -173,7 +173,7 @@
     ]
   },
   "runaway_theses": {
-    "_note": "Neel, 2026-09-15. A discretionary override of the technicals: Neel bought back a call on a long-term name (paying real time value) because non-technical reasons — news, structure — say the stock is about to run. RSI cannot be the trigger (it is already high before a runaway and stays high during one; V6 philosophy §6). So the thesis is DECLARED here, the engine stops selling calls on the symbol, and the thesis RESOLVES when the price is up `release_pct` from the declaration price (the run happened — sell the next call up there) or `release_days` trading days pass (it did not — resume income), whichever comes first. Remove or let it expire; the engine marks resolved entries. A thesis is about DISTANCE, not the symbol (Neel, 2026-09-15): only calls whose strike is within runaway_cushion_pct of spot are uncap candidates — a cap far enough above is room for the run and stays. Re-evaluated every run, so a rising price pulls a far call into the cushion when it matters. Release thresholds are the knobs runaway_release_pct / runaway_release_days.",
+    "_note": "Neel, 2026-09-15. A discretionary override of the technicals: Neel bought back a call on a long-term name (paying real time value) because non-technical reasons — news, structure — say the stock is about to run. RSI cannot be the trigger (it is already high before a runaway and stays high during one; V6 philosophy §6). So the thesis is DECLARED here, the engine stops selling calls on the symbol, and the thesis RESOLVES when the price is up `release_pct` from the declaration price (the run happened — sell the next call up there) or `release_days` trading days pass (it did not — resume income), whichever comes first. Remove or let it expire; the engine marks resolved entries. A thesis is about DISTANCE, not the symbol (Neel, 2026-09-15): only calls whose DELTA is at or above runaway_uncap_delta are uncap candidates — distance, time and the name's volatility together. A $10 gap with 2 days left is a normal call; the same gap with 9 days left is a risk. Re-evaluated every run. Release thresholds are the knobs runaway_release_pct / runaway_release_days.",
     "entries": [
       {
         "symbol": "SPCX",
@@ -435,16 +435,6 @@
       "min": 5,
       "max": 50
     },
-    "runaway_cushion_pct": {
-      "value": 8.0,
-      "label": "Runaway: cushion",
-      "group": "Runaway thesis",
-      "description": "While a runaway thesis is active, a call is bought back only if its strike is within this much above spot; a call further out is room for the run and stays. New calls must be outside it. (SPCX 9/15: $152.50 over $150 = 1.7% — uncap; $160 over $144 = 11% — leave.)",
-      "unit": "%",
-      "step": 0.5,
-      "min": 1,
-      "max": 30
-    },
     "vol_reference_pct": {
       "value": 65,
       "label": "Volatility scaling: reference vol",
@@ -544,6 +534,16 @@
       "step": 0.05,
       "min": 1,
       "max": 2
+    },
+    "runaway_uncap_delta": {
+      "value": 30,
+      "label": "Runaway: uncap calls at delta ≥",
+      "group": "Runaway thesis",
+      "description": "While a runaway thesis is active, a call is bought back only when its delta (chance of finishing in the money, from the name's realized vol, the gap and the days left) is at or above this. Neel 2026-09-16: SPCX \\$160 with 2 days left and a \\$10 gap is delta 0.08 — a normal call, not a runaway risk; Monday's \\$152.50 was 0.39.",
+      "unit": "delta",
+      "step": 5,
+      "min": 10,
+      "max": 60
     }
   }
 }
