@@ -505,8 +505,16 @@ def build_v7_queue(db: Session) -> Dict:
             else:
                 target_delta = K(pol, "lt_delta_sheltered") if sheltered(acct) else K(pol, "lt_delta_taxable")
                 delta_txt = f"{target_delta:.0f}"
-                wait = bool(rsi_ctx and rsi_ctx.get("wait"))
-                wait_reason = (rsi_ctx or {}).get("reason") or ""
+                # V6's "declining — needs two +3% sessions" gate is retired
+                # (Neel, 2026-09-16: NVDA had recovered +2.2% off Monday's low
+                # and it still said hold off). Wait only while the name is
+                # depressed — ≥ threshold below its 10-day average, where a
+                # call caps the recovery. The bounce-wait after a buy-back is
+                # handled above.
+                vs_lt = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
+                wait = vs_lt is not None and vs_lt <= -K(pol, "mr_threshold_pct")
+                wait_reason = (f"{vs_lt:+.1f}% vs 10-day average — depressed; a call sold here caps the recovery"
+                               if wait else "")
             strike = strike_for_delta(spot, target_delta, vol, dte_new, 0.055)
             floor = ""
             if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:

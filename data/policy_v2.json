@@ -61,7 +61,8 @@
       "tsla": "delta 10-12, fire only when RSI > 75",
       "otm_pct_taxable": "retired 2026-09-16 — see knobs lt_delta_* and vol_*",
       "otm_pct_sheltered": "retired",
-      "otm_pct_tsla": "retired"
+      "otm_pct_tsla": "retired",
+      "entry_timing": "Settled 2026-09-16: V6's 'declining, needs two +3% sessions' gate is retired. A long-term call waits only while (a) a bounce-wait after a dip buy-back is running, (b) the name is >= mr_threshold_pct below its 10-day average (a call sold at the bottom caps the recovery), or (c) the TSLA RSI carve-out. Otherwise sell."
     },
     "stuck_calls": {
       "rule_1": "Roll weekly, same strike, for a credit. Never pay intrinsic to get out.",
