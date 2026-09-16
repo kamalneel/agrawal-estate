@@ -131,7 +131,7 @@ def format_html_email(queue: Dict, scan_label: str = "") -> str:
         f'<strong>{len(items)} recommendations</strong> across {len(by_account)} accounts'
         + (f' &nbsp; <span style="color:#dc2626; font-weight:700;">{urgent} URGENT</span>' if urgent else "")
         + (f' &nbsp; <span style="color:#d97706; font-weight:700;">{high} HIGH</span>' if high else "")
-        + f'<br><span style="color:#6b7280; font-size:12px;">{scan_label} · V6.1</span>'
+        + f'<br><span style="color:#6b7280; font-size:12px;">{scan_label} · {(queue.get("engine_version") or "v6.1").upper()}</span>'
         "</div>"
     )
 

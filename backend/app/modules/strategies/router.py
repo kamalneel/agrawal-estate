@@ -6957,12 +6957,16 @@ async def get_position_coverage(
 
 
 @router.get("/v6/action-queue")
-async def get_v6_action_queue(db: Session = Depends(get_db)):
-    """V6 Stage-1 action queue (Engines 4+1) — one feed for the Options
-    Execution page and (later) the email notification. See
-    docs/OPTIONS-EXECUTION-PAGE-SPEC.md."""
-    from app.modules.strategies.v6_engine import build_action_queue
-    return build_action_queue(db)
+async def get_v6_action_queue(engine: Optional[str] = None, db: Session = Depends(get_db)):
+    """The action queue behind the Options Execution page — the LIVE engine
+    (settings.LIVE_STRATEGY_ENGINE, V7 since 2026-09-16) in the queue
+    contract the page has always consumed. `?engine=v6` returns the V6
+    queue for comparison. See docs/OPTIONS-EXECUTION-PAGE-SPEC.md."""
+    if (engine or "").lower() == "v6":
+        from app.modules.strategies.v6_engine import build_action_queue
+        return build_action_queue(db)
+    from app.modules.strategies.v7_engine import build_live_action_queue
+    return build_live_action_queue(db)
 
 
 @router.get("/v7/preview")

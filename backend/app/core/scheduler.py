@@ -913,10 +913,10 @@ class RecommendationScheduler:
         try:
             logger.info(f"[V6] Running V6 action-queue check (scan_type={scan_type})...")
 
-            from app.modules.strategies.v6_engine import build_action_queue
-            queue = build_action_queue(db)
+            from app.modules.strategies.v7_engine import build_live_action_queue
+            queue = build_live_action_queue(db)   # V7 since 2026-09-16; settings.LIVE_STRATEGY_ENGINE
             items = queue.get("items", [])
-            logger.info(f"[V6] Total items: {len(items)}")
+            logger.info(f"[{queue.get('engine_version', 'v6')}] Total items: {len(items)}")
 
             if not send_notifications:
                 logger.info("[V6] Notifications disabled, skipping send")
@@ -946,10 +946,11 @@ class RecommendationScheduler:
 
             summary = queue.get("summary", {})
             urgent = summary.get("urgent", 0)
+            ev = (queue.get("engine_version") or "v6").upper().split("-")[0].split(".")[0]
             subject = (
-                f"🚨 {urgent} Urgent — V6 Action Queue"
+                f"🚨 {urgent} Urgent — {ev} Action Queue"
                 if urgent else
-                f"📊 {len(items)} V6 Recommendations — {scan_label.split('—')[0].strip()}"
+                f"📊 {len(items)} {ev} Recommendations — {scan_label.split('—')[0].strip()}"
             )
 
             success, _ = notification_service._send_email(

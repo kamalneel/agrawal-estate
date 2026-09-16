@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
     # Family Password - set via environment variable or .env file
+    # Which strategy engine feeds the Option Execution page and the
+    # notification email: "v7" (two books, four layers) or "v6". Neel,
+    # 2026-09-16: "I hardly see myself going back to V6." Flip to roll back.
+    LIVE_STRATEGY_ENGINE: str = "v7"
     FAMILY_PASSWORD: str = "Alishade@r"
     
     @property

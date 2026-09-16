@@ -1033,3 +1033,73 @@ def build_v7_queue(db: Session) -> Dict:
         ],
         "counts": {str(k): len(v) for k, v in layers.items()},
     }
+
+
+# ---------------------------------------------------------------------------
+# Production adapter — V7 in the shape the Option Execution page and the
+# notification email already consume (Neel, 2026-09-16: "put this in
+# production, both in the UI and in the email"). Nothing downstream
+# changes; only the engine behind it.
+# ---------------------------------------------------------------------------
+
+_PRIORITY_BY_ACTION = {
+    "LET ASSIGN": "high", "NOTICE": "high", "ROLL": "high", "BUY BACK": "medium",
+    "SELL": "medium", "SELL PUT": "medium", "REVIEW": "medium",
+    "WAIT": "low", "HOLD": "low", "LET EXPIRE": "low",
+}
+
+
+def _v6_shape(card: Dict, layer_name: str, today: date) -> Dict:
+    ctx = dict(card.get("context") or {})
+    ctx["layer"] = card["layer"]
+    ctx["layer_name"] = layer_name
+    if card.get("assumption"):
+        ctx["assumption"] = card["assumption"]
+    # the page's RSI chip and "wait" styling read context.entry_timing
+    if ctx.get("rsi") is not None:
+        ctx.setdefault("entry_timing", {"rsi": ctx["rsi"], "wait": card["action"] == "WAIT"})
+    priority = _PRIORITY_BY_ACTION.get(card["action"], "medium")
+    # a roll that is due NOW (time-value floor / expiry day) is urgent
+    if card["action"] == "ROLL" and ("now" in card["title"] or "today" in card["title"]):
+        priority = "urgent"
+    action = {"SELL PUT": "SELL", "LET ASSIGN": "ASSIGN", "LET EXPIRE": "HOLD", "BUY BACK": "CLOSE",
+              "NOTICE": "WATCH", "REVIEW": "WATCH"}.get(card["action"], card["action"])
+    return {
+        "id": card["id"], "priority": priority, "action": action,
+        "engine": card["layer"], "rule": f"L{card['layer']} {layer_name}",
+        "title": card["title"], "account": card["account"], "symbol": card["symbol"],
+        "detail": f"{card['title']} · {card['detail']}" if card["detail"] else card["title"],
+        "why": card["why"], "earn": card.get("earn"), "context": ctx,
+    }
+
+
+def build_action_queue(db: Session) -> Dict:
+    """V7 in V6's queue contract: {generated_at, data_as_of, week_ending,
+    engine_version, summary, items, positions}. The positions board is
+    V6's (it is data, not recommendations)."""
+    from app.modules.strategies.v6_engine import build_action_queue as _v6
+    from app.shared.services.option_premium import friday_on_or_after
+    v7 = build_v7_queue(db)
+    v6 = _v6(db)   # for the positions board only
+    today = date.today()
+    items = [_v6_shape(c, L["name"], today) for L in v7["layers"] for c in L["items"]]
+    order = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+    items.sort(key=lambda i: (order[i["priority"]], _acct_rank(i["account"]), i["symbol"]))
+    summary = {p: sum(1 for i in items if i["priority"] == p) for p in order}
+    return {
+        "generated_at": str(today), "data_as_of": v6.get("data_as_of"),
+        "week_ending": str(friday_on_or_after(today)), "engine_version": "v7",
+        "summary": {**summary, "total": len(items)},
+        "items": items, "positions": v6.get("positions", []),
+        "v7": {"split": v7["split"], "accounts": v7["accounts"], "lists": v7["lists"]},
+    }
+
+
+def build_live_action_queue(db: Session) -> Dict:
+    """The queue the page and the email use — V7 or V6 per
+    settings.LIVE_STRATEGY_ENGINE."""
+    from app.core.config import settings
+    if (settings.LIVE_STRATEGY_ENGINE or "v7").lower() == "v6":
+        from app.modules.strategies.v6_engine import build_action_queue as _v6
+        return _v6(db)
+    return build_action_queue(db)

@@ -1,11 +1,14 @@
-# Options Strategy V7 — Two Books, Four Layers (PREVIEW)
+# Options Strategy V7 — Two Books, Four Layers
 
-Status: **preview, 2026-09-13.** V6 stays the live notification engine
-(`v6_engine.py`, `investment_policy.json`, `allocation_targets.json`,
-`docs/OPTIONS-STRATEGY-V6-*.md`). V7 runs beside it and feeds only the
-**Notifications V7 (preview)** page (`/strategies/v7-preview`,
-`GET /api/v1/strategies/v7/preview`). Nothing switches until Neel has
-watched it against V6 during live trading days and says so.
+Status: **LIVE since 2026-09-16** (Neel: "V7 is shaping up well. I hardly
+see myself going back to V6. Put this in production, both in the UI and
+in the email."). `settings.LIVE_STRATEGY_ENGINE = "v7"` feeds the Option
+Execution page (`/strategies/v6/action-queue`, kept for the page's
+contract; `?engine=v6` returns V6 for comparison) and the notification
+email (`check_and_notify_v6` → `build_live_action_queue`). V6 stays in
+the tree, frozen, one setting away. The **Notifications V7 (preview)**
+page (`/strategies/v7-preview`) remains as the lab: same engine, the
+four-layer view, the knobs.
 
 Every rule below was stated by Neel in the conversation recorded in
 [INVESTMENT-THESIS-V2-DRAFT.md](INVESTMENT-THESIS-V2-DRAFT.md); the

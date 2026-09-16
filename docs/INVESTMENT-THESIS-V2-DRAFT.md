@@ -365,3 +365,14 @@ $131,051). Books read 92.7% / 9.4%.
   at the time-value floor; the alternative is assignment (long-term name
   → hold the shares; short-term → then calls), shown with what it would
   cost against the account's room. Planned assignments apply to puts too.
+
+## 2026-09-16 — V7 goes live
+
+Neel: "V7 is shaping up well. I hardly see myself going back to V6. Put
+this in production, both in the UI and in the email." Done via
+`settings.LIVE_STRATEGY_ENGINE = "v7"`: the Option Execution page and the
+scan emails now carry V7's cards in the queue shape they always used
+(priority: ROLL-now/floor → urgent; ROLL, LET ASSIGN, NOTICE → high;
+SELL, SELL PUT, BUY BACK → medium; WAIT/HOLD/LET EXPIRE → low). V6 is
+one setting away. The preview page stays as the lab. This draft becomes
+the working history of V7; the spec is docs/OPTIONS-STRATEGY-V7-SPEC.md.

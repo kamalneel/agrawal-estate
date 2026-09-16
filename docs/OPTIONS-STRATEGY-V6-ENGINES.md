@@ -1,3 +1,5 @@
+> **FROZEN 2026-09-16.** V7 (docs/OPTIONS-STRATEGY-V7-SPEC.md) is the live engine; this document describes V6, kept for rollback (`LIVE_STRATEGY_ENGINE=v6`) and history.
+
 # Options Strategy — V6 Engine Spec
 
 **Version:** 6.1  

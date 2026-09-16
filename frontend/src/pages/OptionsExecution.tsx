@@ -393,7 +393,7 @@ export function OptionsExecution() {
                   {high > 0 && <span className={clsx(styles.badge, styles.badgeHigh)}>{high} HIGH</span>}
                 </>
               })()}
-              <span className={styles.engineTag}>{queue ? 'V6.1 · engines 4+1' : ''}</span>
+              <span className={styles.engineTag}>{queue ? ((queue as any).engine_version === 'v7' ? 'V7 · two books, four layers' : 'V6.1 · engines 4+1') : ''}</span>
               <div className={styles.sortToggle}>
                 <span className={styles.sortToggleLabel}>Sort:</span>
                 <button
