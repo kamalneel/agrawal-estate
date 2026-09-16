@@ -643,6 +643,8 @@ def build_v7_queue(db: Session) -> Dict:
             else:
                 # OTM: the dip buy-back / profit take
                 rw = _runaway_status(pol, sym, spot, today)
+                dlt = call_delta(spot, k, _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days"))),
+                                 o["dte"] if o["dte"] is not None else 5)
                 if rw and not rw["resolved"] and mark is not None:
                     # A runaway thesis is about DISTANCE (Neel, 2026-09-15): the
                     # cap that gets bought back is the one close enough to take
@@ -654,7 +656,6 @@ def build_v7_queue(db: Session) -> Dict:
                     # same gap with 9 days left is a real chance of assignment
                     # during the run (Neel, 2026-09-16, SPCX $160).
                     vol_rw = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
-                    dlt = call_delta(spot, k, vol_rw, o["dte"] if o["dte"] is not None else 5)
                     thr = K(pol, "runaway_uncap_delta") / 100
                     gap_pct = (k / spot - 1) * 100
                     if dlt is not None and dlt >= thr:
@@ -703,6 +704,17 @@ def build_v7_queue(db: Session) -> Dict:
                     nxt = strike_for_delta(spot, td, vol, 7, 0.055)
                     est = call_premium(spot, nxt, vol, 7, n, RATE_TIER1_WEEKLY)
                     roll_now = dte == 0 or up_day
+                    if rw and not rw["resolved"]:
+                        # Under a runaway thesis the roll's second leg — a new call —
+                        # is exactly what the thesis forbids. Let this one expire.
+                        card(1, "LET EXPIRE", acct, sym,
+                             f"{sym} ${k:,.0f} call — let it expire {_fmt_exp(o['expiration'])}; runaway thesis, no new call yet",
+                             f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured · delta {(dlt if dlt is not None else 0):.2f} · "
+                             f"release at ${rw['target']:,.2f} or in {rw['deadline_days'] - rw['days']} trading days",
+                             f"{rw['entry']['reason']} This cap is low-delta and expires on its own; the next call waits "
+                             f"for the thesis to resolve (+{K(pol, 'runaway_release_pct'):.0f}% or the clock).",
+                             context={"runaway": True, "captured_pct": round(captured, 1) if captured is not None else None})
+                        continue
                     card(1, "ROLL" if roll_now else "WAIT", acct, sym,
                          (f"{sym} ${k:,.0f} call — up {move:+.1f}% today: roll now, sell next week's delta {td:.0f} (~${nxt:,.0f})" if up_day
                           else f"{sym} ${k:,.0f} call expires today — roll: sell next week's delta {td:.0f} (~${nxt:,.0f})" if dte == 0
