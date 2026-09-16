@@ -101,6 +101,17 @@ def _holdings(db: Session) -> Tuple[Dict[Tuple[str, str], Dict], Dict[str, float
     return holdings, price, acct_type, acct_id
 
 
+def _implied_vols(db: Session, max_age_days: int = 5) -> Dict[str, float]:
+    """Latest stored at-the-money implied vol per symbol (fraction), if it
+    is recent. The sync writes it alongside the close (skill step 3b)."""
+    rows = db.execute(text("""
+        SELECT DISTINCT ON (symbol) symbol, implied_vol, price_date FROM symbol_price_history
+        WHERE implied_vol IS NOT NULL ORDER BY symbol, price_date DESC
+    """)).fetchall()
+    today = date.today()
+    return {r.symbol: float(r.implied_vol) for r in rows if (today - r.price_date).days <= max_age_days}
+
+
 def _closes(db: Session) -> Dict[str, List[Tuple[date, float]]]:
     """Recent daily closes per symbol, oldest first — today's move, the
     bounce-since-buy-back check, realized volatility, the 10-day average."""
@@ -383,7 +394,18 @@ def build_v7_queue(db: Session) -> Dict:
     cash = _cash(db)
     reentry = _recent_call_assignments(db, today - timedelta(days=14))
     closes = _closes(db)
+    ivs = _implied_vols(db)
     buybacks = _recent_buybacks(db, today - timedelta(days=10))
+
+    def vol_of(sym: str) -> Tuple[Optional[float], str]:
+        """(vol, source) — the market's implied vol when the sync has stored a
+        recent one, else 20-day realized. NVDA 2026-09-16: realized 52% vs
+        implied 32% put the delta-15 strike at $235 instead of $227.50 and
+        the estimate at 3x the chain. Implied is what the chain prices."""
+        if sym in ivs:
+            return ivs[sym], "IV"
+        return _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days"))), "realized"
+
     earnings_cal = _load_earnings_calendar()
 
     def earnings_within(sym: str, days: int) -> Optional[str]:
@@ -494,7 +516,7 @@ def build_v7_queue(db: Session) -> Dict:
                                  + "Remove the entry from policy_v2.json runaway_theses. ")
             else:
                 resolved_note = ""
-            vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+            vol, vol_src = vol_of(sym)
             dte_new = max((exp - today).days, 1)
             if sym == "TSLA":
                 target_delta, delta_txt = K(pol, "lt_delta_tsla"), f"{K(pol, 'lt_delta_tsla'):.0f}"
@@ -524,7 +546,7 @@ def build_v7_queue(db: Session) -> Dict:
             card(1, action, acct, sym,
                  f"{sym}: {'hold off — ' if wait else ''}sell {n} call{'s' if n > 1 else ''} at delta {delta_txt}",
                  f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,}"
-                 + (f" · vol {vol * 100:.0f}%" if vol else "")
+                 + (f" · {vol_src} {vol * 100:.0f}%" if vol else "")
                  + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
                  resolved_note + (f"{wait_reason}. " if wait else "")
                  + bounce_note
@@ -533,7 +555,7 @@ def build_v7_queue(db: Session) -> Dict:
                  earn=None if wait else est,
                  context={"book": "long", "rsi": rsi, "spot": spot, "uncovered": int(uncovered)})
         else:
-            vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+            vol, vol_src = vol_of(sym)
             vs_sma = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
             delta, rsi_note = _short_term_delta(rsi, pol, vol, vs_sma)
             dte_new = max((exp - today).days, 1)
@@ -651,8 +673,7 @@ def build_v7_queue(db: Session) -> Dict:
             else:
                 # OTM: the dip buy-back / profit take
                 rw = _runaway_status(pol, sym, spot, today)
-                dlt = call_delta(spot, k, _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days"))),
-                                 o["dte"] if o["dte"] is not None else 5)
+                dlt = call_delta(spot, k, vol_of(sym)[0], o["dte"] if o["dte"] is not None else 5)
                 if rw and not rw["resolved"] and mark is not None:
                     # A runaway thesis is about DISTANCE (Neel, 2026-09-15): the
                     # cap that gets bought back is the one close enough to take
@@ -663,7 +684,6 @@ def build_v7_queue(db: Session) -> Dict:
                     # A $10 gap with 2 days left is a normal delta-10 call; the
                     # same gap with 9 days left is a real chance of assignment
                     # during the run (Neel, 2026-09-16, SPCX $160).
-                    vol_rw = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
                     thr = K(pol, "runaway_uncap_delta") / 100
                     gap_pct = (k / spot - 1) * 100
                     if dlt is not None and dlt >= thr:
@@ -708,7 +728,7 @@ def build_v7_queue(db: Session) -> Dict:
                     # the moment — theta timing is a wash, the price path decides.
                     up_day = dte > 1 and move is not None and move >= K(pol, "rule_a_up_day_pct")
                     td = K(pol, "lt_delta_tsla") if sym == "TSLA" else (K(pol, "lt_delta_sheltered") if sheltered(acct) else K(pol, "lt_delta_taxable"))
-                    vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+                    vol, vol_src = vol_of(sym)
                     nxt = strike_for_delta(spot, td, vol, 7, 0.055)
                     est = call_premium(spot, nxt, vol, 7, n, RATE_TIER1_WEEKLY)
                     roll_now = dte == 0 or up_day
@@ -824,7 +844,7 @@ def build_v7_queue(db: Session) -> Dict:
         any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None) or "neel_brokerage"
         rsi_ctx = _rsi(db, any_acct, sym)
         rsi = rsi_ctx.get("rsi") if rsi_ctx else None
-        vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+        vol, vol_src = vol_of(sym)
         vs_sma = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
         thr = K(pol, "mr_threshold_pct")
         if vs_sma is not None and vs_sma <= -thr:

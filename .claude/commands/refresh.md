@@ -41,6 +41,17 @@ discrepancy, unresolved — see the sync doc).
    for every unique position option_id; `get_option_quotes` for marks
    (≤20 ids per call); `get_equity_quotes` for every held/underlying
    symbol.
+3b. **At-the-money implied vol, per symbol** (added 2026-09-16 — the V7
+   engine prices strikes and premiums from it; realized vol was 3× off
+   on NVDA). For every symbol in `equity_marks`: pick the nearest Friday
+   with ≥ 3 days left; strike = spot rounded to the chain's increment
+   ($5 above $200, $2.50 for $50–200, $1 below $50 — try the next
+   increment up if the strike does not exist); `get_option_instruments(
+   chain_symbol, expiration_dates, type=call, strike_price)`; then one
+   `get_option_quotes` batch for all of them and read
+   `implied_volatility`. Write `"implied_vols": {SYMBOL: 0.32, …}` into
+   both bundles (fraction, not percent). A symbol with no strike found is
+   simply omitted — the engine falls back to realized vol for it.
 4. **Verify BEFORE saving** (hard gate, never skip): for each IRA,
    `cash − buying_power` must equal short-put collateral
    (Σ strike × contracts × 100) **to the cent**. If it doesn't, stop and

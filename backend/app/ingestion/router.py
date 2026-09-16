@@ -2089,12 +2089,16 @@ async def ingest_price_history(payload: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="no bars")
     upserted = 0
     for b in bars:
+        # implied_vol (fraction, e.g. 0.32) is optional; a bar without it
+        # leaves any stored value alone
         db.execute(_text("""
-            INSERT INTO symbol_price_history (symbol, price_date, close_price, source)
-            VALUES (:sym, :d, :c, :src)
+            INSERT INTO symbol_price_history (symbol, price_date, close_price, source, implied_vol)
+            VALUES (:sym, :d, :c, :src, :iv)
             ON CONFLICT (symbol, price_date)
-            DO UPDATE SET close_price = EXCLUDED.close_price, source = EXCLUDED.source
-        """), {"sym": b["symbol"].upper(), "d": b["date"], "c": b["close"], "src": source})
+            DO UPDATE SET close_price = EXCLUDED.close_price, source = EXCLUDED.source,
+                          implied_vol = COALESCE(EXCLUDED.implied_vol, symbol_price_history.implied_vol)
+        """), {"sym": b["symbol"].upper(), "d": b["date"], "c": b["close"], "src": source,
+                "iv": b.get("implied_vol")})
         upserted += 1
     db.commit()
     return {"success": True, "upserted": upserted}

@@ -385,8 +385,15 @@ def sync_price_history(api: str, bundle: dict, save: bool) -> None:
     marks = bundle.get("equity_marks") or {}
     if not marks:
         return
-    bars = [{"symbol": sym, "date": bundle["as_of"], "close": price} for sym, price in marks.items()]
-    print(f"\n=== price history ({len(bars)} symbols as of {bundle['as_of']}) ===")
+    # implied_vols: {symbol: fraction} from an at-the-money quote at the
+    # nearest weekly (skill step 3b). Optional per symbol; the engine falls
+    # back to realized vol for any symbol without one.
+    ivs = bundle.get("implied_vols") or {}
+    bars = [{"symbol": sym, "date": bundle["as_of"], "close": price,
+             **({"implied_vol": float(ivs[sym])} if sym in ivs else {})}
+            for sym, price in marks.items()]
+    with_iv = sum(1 for b in bars if "implied_vol" in b)
+    print(f"\n=== price history ({len(bars)} symbols as of {bundle['as_of']}, {with_iv} with implied vol) ===")
     if save:
         result = post(api, "/ingestion/price-history",
                      {"source": "robinhood_mcp_live_quote", "bars": bars})

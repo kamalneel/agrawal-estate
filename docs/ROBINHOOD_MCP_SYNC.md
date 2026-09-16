@@ -252,3 +252,16 @@ are the ones this Mac's Claude Code holds; if Robinhood requires
 re-authorization, the run fails with an auth error in the log and the
 failure email — run `/mcp` in an interactive session to re-authorize.
 The Mac must be awake for launchd to fire; a missed slot is not made up.
+
+## Implied vol per symbol (2026-09-16)
+
+Every sync now stores an at-the-money implied volatility next to the
+close (`symbol_price_history.implied_vol`, fraction). The refresh skill's
+step 3b fetches one ATM call quote per held symbol at the nearest weekly
+with ≥ 3 days left and reads `implied_volatility`; the bridge writes it
+via `implied_vols` in the bundle. The V7 engine prices strikes and
+premiums from this (falling back to 20-day realized vol when a symbol
+has none within 5 days). Why: NVDA's realized vol was 52% against a
+market 32% — the engine's delta-15 strike landed at $235 (market delta
+0.05) instead of $227.50, and the premium estimate read $855 against a
+real ~$450.
