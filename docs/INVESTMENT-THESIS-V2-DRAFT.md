@@ -354,3 +354,14 @@ $131,051). Books read 92.7% / 9.4%.
   chance it goes down more is low, so the return is solid" — is the ZM
   row. The engine's old ranking (RSI entry, then least owned) had put
   RKLB first by accident. V6's ATM put strike retired.
+- **Long-term calls wait while RSI < 40** (restores the RSI half of V6's
+  entry gate; the "two +3% sessions" half stays retired). AVGO: bought
+  back Monday at ~$345, $341 now, RSI 34, only −2.7% vs a 10-day average
+  that fell with it — a call sold here caps the recovery. NVDA RSI 45 →
+  sell. Knob lt_wait_rsi.
+- **ITM short puts had no rule at all** (the AVGO $380 put drew no card).
+  Now the mirror of the stuck-call rule: never pay intrinsic; roll the
+  same strike for a credit on the Thursday of expiry week, immediately
+  at the time-value floor; the alternative is assignment (long-term name
+  → hold the shares; short-term → then calls), shown with what it would
+  cost against the account's room. Planned assignments apply to puts too.

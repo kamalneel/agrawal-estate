@@ -545,6 +545,26 @@
       "step": 5,
       "min": 10,
       "max": 60
+    },
+    "lt_wait_rsi": {
+      "value": 40,
+      "label": "Long-term call: wait while RSI below",
+      "group": "Long-term calls",
+      "description": "No new long-term call while the name is oversold — a call sold at the bottom caps the recovery. Restores the RSI half of V6's entry gate (the 'two +3% sessions' half stays retired). Neel 2026-09-16: AVGO RSI 34, still slipping after Monday's buy-back — wait; NVDA RSI 45 — sell.",
+      "unit": "RSI",
+      "step": 1,
+      "min": 20,
+      "max": 60
+    },
+    "put_roll_tv_floor": {
+      "value": 0.1,
+      "label": "ITM put: roll-now time-value floor",
+      "group": "Stuck calls",
+      "description": "Same as the call rule, mirrored: an in-the-money short put is rolled Thursday for a credit at the same strike; immediately once its time value is at or below this (early-assignment risk). Never pay intrinsic to get out; assignment is the alternative when the shares are wanted and the cash/margin is there.",
+      "unit": "$/share",
+      "step": 0.05,
+      "min": 0,
+      "max": 1
     }
   }
 }

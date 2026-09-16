@@ -395,6 +395,7 @@ def build_v7_queue(db: Session) -> Dict:
     reentry = _recent_call_assignments(db, today - timedelta(days=14))
     closes = _closes(db)
     ivs = _implied_vols(db)
+    lines = {MARGIN_ID_TO_NAME.get(k_, k_): v_ for k_, v_ in pol["margin"]["lines"].items()}
     buybacks = _recent_buybacks(db, today - timedelta(days=10))
 
     def vol_of(sym: str) -> Tuple[Optional[float], str]:
@@ -534,9 +535,16 @@ def build_v7_queue(db: Session) -> Dict:
                 # call caps the recovery. The bounce-wait after a buy-back is
                 # handled above.
                 vs_lt = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
-                wait = vs_lt is not None and vs_lt <= -K(pol, "mr_threshold_pct")
-                wait_reason = (f"{vs_lt:+.1f}% vs 10-day average — depressed; a call sold here caps the recovery"
-                               if wait else "")
+                depressed_sma = vs_lt is not None and vs_lt <= -K(pol, "mr_threshold_pct")
+                # RSI too: a 10-day average follows a slide down, so the gap stays
+                # small while the stock keeps falling (AVGO 2026-09-16: -2.7% vs
+                # average, RSI 34, 6% under Friday). Restored from V6's gate.
+                oversold = rsi is not None and rsi < K(pol, "lt_wait_rsi")
+                wait = depressed_sma or oversold
+                wait_reason = (" and ".join(
+                    ([f"{vs_lt:+.1f}% vs 10-day average"] if depressed_sma else [])
+                    + ([f"RSI {rsi:.0f} < {K(pol, 'lt_wait_rsi'):.0f}"] if oversold else []))
+                    + " — oversold; a call sold here caps the recovery") if wait else ""
             strike = strike_for_delta(spot, target_delta, vol, dte_new, 0.055)
             floor = ""
             if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:
@@ -780,6 +788,66 @@ def build_v7_queue(db: Session) -> Dict:
                      "Short-term book. If still ITM at expiry it is let go (see assumption).",
                      assumption="Short-term stuck-call rule not stated; preview holds until expiry.")
 
+    # ---------------- Layer 1/2: open short PUTS in the money ----------------
+    # V7 had no rule for an existing short put that goes in the money (the
+    # AVGO $380 put, 2026-09-16, drew no card at all). Mirror of the stuck-
+    # call rule: never pay intrinsic to get out; roll the same strike for a
+    # credit on the Thursday of its expiry week, immediately once the time
+    # value hits the floor; the alternative is assignment — allowed, and on
+    # a long-term name the shares are simply held — when the cash/margin is
+    # there and the shares are wanted (record it in planned_assignments).
+    for o in sorted(options, key=lambda o: (_acct_rank(o["account"]), o["symbol"])):
+        if o["type"] != "put" or o["symbol"] not in price:
+            continue
+        sym, acct, spot, k, n = o["symbol"], o["account"], price[o["symbol"]], o["strike"], o["contracts"]
+        if spot >= k:
+            continue  # out of the money — nothing to do until expiry
+        book = "long" if sym in long_term else "short" if sym in short_term else None
+        intrinsic = k - spot
+        mark = o["mark"]
+        tv = (mark - intrinsic) if mark is not None else None
+        dte = o["dte"] if o["dte"] is not None else 5
+        plan = planned.get((acct, sym, k))
+        cost_to_own = k * 100 * n
+        layer = 1 if book == "long" else 2
+        if plan:
+            card(layer, "LET ASSIGN", acct, sym,
+                 f"{sym} ${k:,.0f} put — planned: take {n * 100:,} shares {_fmt_exp(o['expiration'])} for ${cost_to_own:,.0f}",
+                 f"{n} contract{'s' if n > 1 else ''} · ${intrinsic:,.2f} in the money · exp {_fmt_exp(o['expiration'])}",
+                 f"Decided {plan['decided']}: {plan['reason']}",
+                 context={"planned": True})
+            continue
+        floor_hit = tv is not None and tv <= K(pol, "put_roll_tv_floor")
+        due = dte <= 1
+        action = "ROLL" if (floor_hit or due) else "WAIT"
+        when = (f"now — time value ${tv:,.2f} at the floor" if floor_hit else "today" if due
+                else f"Thursday {_fmt_exp(o['expiration'] - timedelta(days=1)) if o['expiration'] else ''}")
+        acct_c = cash.get(acct, {})
+        line = lines.get(acct)
+        # brokerage: line + cash − collateral − drawn; IRA: cash_balance is
+        # already net of collateral (the bridge writes buying power there)
+        room = (line + acct_c.get("cash", 0) - acct_c.get("collateral", 0) - acct_c.get("margin_used", 0)) if line else acct_c.get("cash", 0)
+        roll_credit = call_premium(spot, k, vol_of(sym)[0], 7, n, RATE_ATM_WEEKLY) - int((tv or 0) * 100 * n)
+        roll_credit = max(roll_credit, 0)
+        card(layer, action, acct, sym,
+             f"{sym} ${k:,.0f} put ITM — roll {when}, same strike" if action == "ROLL"
+             else f"{sym} ${k:,.0f} put ITM — roll {when}, not yet",
+             f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
+             + (f" · time value left ${tv:,.2f}" if tv is not None else "")
+             + f" · roll credit est ${roll_credit:,} · assignment would take ${cost_to_own:,.0f}"
+             + (f" of ${room:,.0f} capacity" if room is not None else ""),
+             ("Long-term name: " if book == "long" else "Short-term name: ")
+             + "the mirror of the stuck-call rule. Never pay intrinsic to get out; roll the same strike for a credit "
+               "on the Thursday of its expiry week (the expiring contract's time value bleeds out first), immediately "
+               f"once time value is ≤ ${K(pol, 'put_roll_tv_floor'):.2f} (early-assignment risk). The alternative is "
+               "assignment"
+             + (" — on a long-term name the shares are simply held" if book == "long" else " — short-term book, then calls on the shares")
+             + f"; that takes ${cost_to_own:,.0f}"
+             + (f" and this account has ${room:,.0f} of room" if room is not None else "")
+             + ". To take it, record the contract in planned_assignments.",
+             earn=roll_credit if action == "ROLL" else None,
+             context={"intrinsic": intrinsic, "time_value": tv, "cost_to_own": cost_to_own, "room": room})
+
     # ---------------- Layer 1: re-entry puts on long-term names ----------------
     for a in reentry:
         if a["symbol"] not in long_term:
@@ -804,7 +872,6 @@ def build_v7_queue(db: Session) -> Dict:
     st_exposure = st_value + st_put_collateral
     st_pct = (st_exposure / (total_value + st_put_collateral) * 100) if total_value else 0.0
     cap_pct = K(pol, "short_term_cap_pct")
-    lines = {MARGIN_ID_TO_NAME.get(k, k): v for k, v in pol["margin"]["lines"].items()}
 
     # Existing exposure per short-term name (holdings + put collateral,
     # every account): a put is a commitment to own MORE of the name, so a
