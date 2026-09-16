@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -101,14 +102,14 @@ def _holdings(db: Session) -> Tuple[Dict[Tuple[str, str], Dict], Dict[str, float
 
 
 def _closes(db: Session) -> Dict[str, List[Tuple[date, float]]]:
-    """Last few daily closes per symbol, oldest first — for today's move and
-    the bounce-since-buy-back check."""
+    """Recent daily closes per symbol, oldest first — today's move, the
+    bounce-since-buy-back check, realized volatility, the 10-day average."""
     rows = db.execute(text("""
         SELECT symbol, price_date, close_price FROM (
             SELECT symbol, price_date, close_price,
                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY price_date DESC) rn
             FROM symbol_price_history) x
-        WHERE rn <= 8 ORDER BY symbol, price_date
+        WHERE rn <= 70 ORDER BY symbol, price_date
     """)).fetchall()
     out: Dict[str, List[Tuple[date, float]]] = {}
     for r in rows:
@@ -217,7 +218,100 @@ def _rsi(db: Session, account_id: str, symbol: str) -> Optional[Dict]:
     return e if e.get("available") else None
 
 
-def _short_term_delta(rsi: Optional[float], pol: Dict) -> int:
+def _realized_vol(closes: List[Tuple[date, float]], lookback: int) -> Optional[float]:
+    """Annualised realized volatility (fraction) from the last `lookback`
+    daily closes. None with fewer than 10 points."""
+    c = [v for _, v in closes[-(lookback + 1):]]
+    if len(c) < 11:
+        return None
+    rets = [math.log(c[i] / c[i - 1]) for i in range(1, len(c)) if c[i - 1] > 0 and c[i] > 0]
+    if len(rets) < 10:
+        return None
+    m = sum(rets) / len(rets)
+    var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
+    return math.sqrt(var * 252)
+
+
+def _vs_sma_pct(closes: List[Tuple[date, float]], spot: float, n: int) -> Optional[float]:
+    c = [v for _, v in closes[-n:]]
+    if len(c) < max(5, n // 2):
+        return None
+    return (spot / (sum(c) / len(c)) - 1) * 100
+
+
+def _ncdf(x: float) -> float:
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def _z_for_delta(delta: float) -> float:
+    """z with N(z) = 1 − delta (call strike distance in σ√T units).
+    Acklam-free approximation via bisection on the erf — good to 1e-4."""
+    target = 1 - delta
+    lo, hi = -6.0, 6.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if _ncdf(mid) < target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def strike_for_delta(spot: float, delta_pct: float, vol: Optional[float], dte: int, fallback_otm: float) -> float:
+    """Call strike at the target delta from the name's own volatility and
+    the days to expiry: spot · exp(σ√T · z). Falls back to a flat distance
+    when there is no volatility on file."""
+    if not vol or dte <= 0:
+        return spot * (1 + fallback_otm)
+    T = max(dte, 1) / 365
+    return spot * math.exp(vol * math.sqrt(T) * _z_for_delta(delta_pct / 100))
+
+
+def call_premium(spot: float, strike: float, vol: Optional[float], dte: int, contracts: int, fallback_rate: float) -> int:
+    """Black-Scholes call value (r = 0) with realized vol standing in for
+    IV — an estimate, labelled so. Flat-rate fallback without vol."""
+    if not vol or dte <= 0 or strike <= 0:
+        return weekly_premium(contracts, spot, fallback_rate)
+    T = max(dte, 1) / 365
+    sd = vol * math.sqrt(T)
+    d1 = (math.log(spot / strike) + 0.5 * sd * sd) / sd
+    d2 = d1 - sd
+    px = spot * _ncdf(d1) - strike * _ncdf(d2)
+    return int(max(px, 0.0) * 100 * contracts)
+
+
+def _short_term_delta(rsi: Optional[float], pol: Dict, vol: Optional[float] = None,
+                      vs_sma: Optional[float] = None) -> Tuple[int, str]:
+    """Short-term call delta, one rule for every name (Neel, 2026-09-16):
+    base from RSI (20/30/40), overridden by mean reversion (≥ threshold
+    below the 10-day average → 20, above → 40), then scaled by the name's
+    realized volatility against a reference — a name twice as volatile
+    gets half the delta — and clamped to the window. Returns (delta, why)."""
+    thr = K(pol, "mr_threshold_pct")
+    if vs_sma is not None and vs_sma <= -thr:
+        base, why = 20, f"{vs_sma:+.1f}% vs 10-day avg → base 20 (bounce is the trade)"
+    elif vs_sma is not None and vs_sma >= thr:
+        base, why = 40, f"{vs_sma:+.1f}% vs 10-day avg → base 40"
+    elif rsi is None:
+        base, why = 30, "no RSI on file → base 30"
+    elif rsi < K(pol, "st_rsi_low"):
+        base, why = 20, f"RSI {rsi:.0f} → base 20"
+    elif rsi <= K(pol, "st_rsi_high"):
+        base, why = 30, f"RSI {rsi:.0f} → base 30"
+    else:
+        base, why = 40, f"RSI {rsi:.0f} → base 40"
+    if vol:
+        ref = K(pol, "vol_reference_pct") / 100
+        scaled = base * ref / vol
+        why += f" × {ref * 100:.0f}%/{vol * 100:.0f}% vol"
+    else:
+        scaled = base
+        why += " (no vol on file)"
+    d = int(round(max(K(pol, "st_delta_min"), min(K(pol, "st_delta_max"), scaled))))
+    return d, why + f" → delta {d}"
+
+
+def _short_term_delta_legacy(rsi: Optional[float], pol: Dict) -> int:
     """Delta 20-40 picked by RSI (policy_v2 short_term.calls.rsi_to_delta).
     No RSI on file -> the middle of the window."""
     if rsi is None:
@@ -335,6 +429,8 @@ def build_v7_queue(db: Session) -> Dict:
         rsi = rsi_ctx.get("rsi") if rsi_ctx else None
         cost_ps = (h["cost_basis"] / h["qty"]) if (h["cost_basis"] and h["qty"]) else None
         exp = next_expiration(today)
+        if (exp - today).days < int(K(pol, "new_call_min_dte")):
+            exp = exp + timedelta(days=7)  # too little week left — sell next Friday's
 
         # Bounce-wait after a dip buy-back — both books (Neel, 2026-09-15):
         # the point of closing on the dip was to sell the next call off a
@@ -389,26 +485,29 @@ def build_v7_queue(db: Session) -> Dict:
                                  + "Remove the entry from policy_v2.json runaway_theses. ")
             else:
                 resolved_note = ""
+            vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+            dte_new = max((exp - today).days, 1)
             if sym == "TSLA":
-                otm, delta_txt = K(pol, "lt_otm_tsla"), "10-12"
+                target_delta, delta_txt = K(pol, "lt_delta_tsla"), f"{K(pol, 'lt_delta_tsla'):.0f}"
                 gate = K(pol, "lt_tsla_rsi_gate")
                 wait = not (rsi is not None and rsi > gate)
                 wait_reason = (f"RSI {rsi:.0f} — TSLA carve-out fires only above {gate:.0f}" if rsi is not None
                                else f"no RSI on file — TSLA carve-out needs RSI > {gate:.0f}")
             else:
-                otm = K(pol, "lt_otm_sheltered") if sheltered(acct) else K(pol, "lt_otm_taxable")
-                delta_txt = "15" if sheltered(acct) else "10-15"
+                target_delta = K(pol, "lt_delta_sheltered") if sheltered(acct) else K(pol, "lt_delta_taxable")
+                delta_txt = f"{target_delta:.0f}"
                 wait = bool(rsi_ctx and rsi_ctx.get("wait"))
                 wait_reason = (rsi_ctx or {}).get("reason") or ""
-            strike = strike_for(spot, otm)
+            strike = strike_for_delta(spot, target_delta, vol, dte_new, 0.055)
             floor = ""
             if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:
                 strike, floor = cost_ps, " (raised to cost-basis floor)"
-            est = weekly_premium(n, spot, RATE_TIER1_WEEKLY)
+            est = call_premium(spot, strike, vol, dte_new, n, RATE_TIER1_WEEKLY)
             action = "WAIT" if wait else "SELL"
             card(1, action, acct, sym,
                  f"{sym}: {'hold off — ' if wait else ''}sell {n} call{'s' if n > 1 else ''} at delta {delta_txt}",
-                 f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} this week"
+                 f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,}"
+                 + (f" · vol {vol * 100:.0f}%" if vol else "")
                  + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
                  resolved_note + (f"{wait_reason}. " if wait else "")
                  + bounce_note
@@ -417,23 +516,24 @@ def build_v7_queue(db: Session) -> Dict:
                  earn=None if wait else est,
                  context={"book": "long", "rsi": rsi, "spot": spot, "uncovered": int(uncovered)})
         else:
-            delta = _short_term_delta(rsi, pol)
-            otm = {20: K(pol, "st_otm_d20"), 30: K(pol, "st_otm_d30"), 40: K(pol, "st_otm_d40")}[delta]
-            strike = strike_for(spot, otm)
+            vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+            vs_sma = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
+            delta, rsi_note = _short_term_delta(rsi, pol, vol, vs_sma)
+            dte_new = max((exp - today).days, 1)
+            strike = strike_for_delta(spot, delta, vol, dte_new, 0.025)
             floor = ""
             if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:
                 strike, floor = cost_ps, " (raised to cost-basis floor)"
-            # premium scales between the far-OTM and ATM rates with delta
             rate = RATE_TIER1_WEEKLY + (RATE_ATM_WEEKLY - RATE_TIER1_WEEKLY) * (delta - 10) / 40
-            est = weekly_premium(n, spot, rate)
-            rsi_note = (f"RSI {rsi:.0f} → delta {delta}" if rsi is not None
-                        else f"no RSI on file → delta {delta} (middle of the window)")
+            est = call_premium(spot, strike, vol, dte_new, n, rate)
             card(2, "SELL", acct, sym,
                  f"{sym}: sell {n} call{'s' if n > 1 else ''} at delta {delta}",
-                 f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} this week · {rsi_note}",
-                 bounce_note + "Short-term book: calls between delta 20 and 40, the technicals pick the number — "
-                 "low RSI means the bounce is coming, so nearer 20; never at the money. "
-                 "Same rule whether the shares were assigned or bought.",
+                 f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} · {rsi_note}",
+                 bounce_note + "Short-term book, one rule for every name: RSI picks a base delta (20/30/40), "
+                 "being ≥ threshold below the 10-day average forces 20 (the bounce is the trade), then the "
+                 "delta is scaled by the name's own 20-day realized volatility against the reference — a name "
+                 "twice as volatile gets half the delta. Strike and premium come from that volatility and the "
+                 "days to expiry, not a fixed distance. Never at the money.",
                  earn=est,
                  assumption=None,
                  context={"book": "short", "rsi": rsi, "delta": delta, "spot": spot, "uncovered": int(uncovered)})
@@ -579,9 +679,10 @@ def build_v7_queue(db: Session) -> Dict:
                          context={"captured_pct": round(captured, 1), "buyback_cost": cost, "day_move_pct": move, "rsi": rsi})
                 elif dte <= 1:
                     # Rule A: winning call at expiry — roll Friday, don't lose Monday.
-                    otm = K(pol, "lt_otm_tsla") if sym == "TSLA" else (K(pol, "lt_otm_sheltered") if sheltered(acct) else K(pol, "lt_otm_taxable"))
-                    nxt = strike_for(spot, otm)
-                    est = weekly_premium(n, spot, RATE_TIER1_WEEKLY)
+                    td = K(pol, "lt_delta_tsla") if sym == "TSLA" else (K(pol, "lt_delta_sheltered") if sheltered(acct) else K(pol, "lt_delta_taxable"))
+                    vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+                    nxt = strike_for_delta(spot, td, vol, 7, 0.055)
+                    est = call_premium(spot, nxt, vol, 7, n, RATE_TIER1_WEEKLY)
                     card(1, "ROLL" if dte == 0 else "WAIT", acct, sym,
                          (f"{sym} ${k:,.0f} call expires today — roll: sell next week's delta 10-15 (~${nxt:,.0f})" if dte == 0
                           else f"{sym} ${k:,.0f} call expires tomorrow — roll Friday, not today"),

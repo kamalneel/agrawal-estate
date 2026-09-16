@@ -59,9 +59,9 @@
     "calls": {
       "delta": "10-15 (taxable 10-15, sheltered 15) — income without getting called away",
       "tsla": "delta 10-12, fire only when RSI > 75",
-      "otm_pct_taxable": 0.055,
-      "otm_pct_sheltered": 0.045,
-      "otm_pct_tsla": 0.06
+      "otm_pct_taxable": "retired 2026-09-16 — see knobs lt_delta_* and vol_*",
+      "otm_pct_sheltered": "retired",
+      "otm_pct_tsla": "retired"
     },
     "stuck_calls": {
       "rule_1": "Roll weekly, same strike, for a credit. Never pay intrinsic to get out.",
@@ -94,11 +94,7 @@
         "40_to_55": 30,
         "above_55": 40
       },
-      "otm_pct_by_delta": {
-        "20": 0.04,
-        "30": 0.025,
-        "40": 0.015
-      },
+      "otm_pct_by_delta": "retired 2026-09-16 — strike now comes from the name's realized volatility (see knobs vol_*)",
       "example": "INTC assigned at $90: delta 10 ~ $100 (the long-term treatment), delta 20 ~ $98, Neel would go ~ $95, not $92-93.",
       "bounce_wait": "Neel 2026-09-15: Rule B's bounce-wait applies to the short-term book too — after a dip buy-back, wait +bounce_pct or bounce_days before selling the next call."
     },
@@ -189,35 +185,35 @@
   },
   "knobs": {
     "_note": "Every tunable number the V7 engine uses, in one place, editable from the gear icon on the V7 page (GET/PUT /strategies/v7/knobs). The engine reads this file on every run, so a change applies to the next build. Neel, 2026-09-15: 'these numbers are knobs we will adjust in the future.' Edits are written back here so git shows every change.",
-    "lt_otm_taxable": {
-      "value": 0.055,
-      "label": "Long-term call distance, taxable",
+    "lt_delta_taxable": {
+      "value": 12,
+      "label": "Long-term call delta, taxable",
       "group": "Long-term calls",
-      "description": "Strike as a fraction above spot for delta 10-15 in a taxable account.",
-      "unit": "× spot",
-      "step": 0.005,
-      "min": 0.01,
-      "max": 0.15
+      "description": "Target delta for a long-term call in a taxable account (income without getting called away).",
+      "unit": "delta",
+      "step": 1,
+      "min": 5,
+      "max": 30
     },
-    "lt_otm_sheltered": {
-      "value": 0.045,
-      "label": "Long-term call distance, sheltered",
+    "lt_delta_sheltered": {
+      "value": 15,
+      "label": "Long-term call delta, sheltered",
       "group": "Long-term calls",
-      "description": "Strike as a fraction above spot for delta 15 in an IRA/Roth/HSA.",
-      "unit": "× spot",
-      "step": 0.005,
-      "min": 0.01,
-      "max": 0.15
+      "description": "Target delta in an IRA / Roth / HSA.",
+      "unit": "delta",
+      "step": 1,
+      "min": 5,
+      "max": 30
     },
-    "lt_otm_tsla": {
-      "value": 0.06,
-      "label": "TSLA call distance",
+    "lt_delta_tsla": {
+      "value": 11,
+      "label": "TSLA call delta",
       "group": "Long-term calls",
-      "description": "TSLA carve-out: delta 10-12.",
-      "unit": "× spot",
-      "step": 0.005,
-      "min": 0.01,
-      "max": 0.15
+      "description": "TSLA carve-out (fires only above the RSI gate).",
+      "unit": "delta",
+      "step": 1,
+      "min": 5,
+      "max": 30
     },
     "lt_tsla_rsi_gate": {
       "value": 75,
@@ -359,35 +355,25 @@
       "min": 40,
       "max": 80
     },
-    "st_otm_d20": {
-      "value": 0.04,
-      "label": "Delta 20 distance",
+    "st_delta_min": {
+      "value": 10,
+      "label": "Short-term delta floor",
       "group": "Short-term calls",
-      "description": "Strike fraction above spot for delta 20.",
-      "unit": "× spot",
-      "step": 0.005,
-      "min": 0.005,
-      "max": 0.15
+      "description": "After volatility scaling, never below this.",
+      "unit": "delta",
+      "step": 1,
+      "min": 5,
+      "max": 30
     },
-    "st_otm_d30": {
-      "value": 0.025,
-      "label": "Delta 30 distance",
+    "st_delta_max": {
+      "value": 40,
+      "label": "Short-term delta ceiling",
       "group": "Short-term calls",
-      "description": "Strike fraction above spot for delta 30.",
-      "unit": "× spot",
-      "step": 0.005,
-      "min": 0.005,
-      "max": 0.15
-    },
-    "st_otm_d40": {
-      "value": 0.015,
-      "label": "Delta 40 distance",
-      "group": "Short-term calls",
-      "description": "Strike fraction above spot for delta 40.",
-      "unit": "× spot",
-      "step": 0.005,
-      "min": 0.005,
-      "max": 0.15
+      "description": "After volatility scaling, never above this.",
+      "unit": "delta",
+      "step": 1,
+      "min": 20,
+      "max": 60
     },
     "st_let_assign_dte": {
       "value": 2,
@@ -459,6 +445,36 @@
       "min": 1,
       "max": 30
     },
+    "vol_reference_pct": {
+      "value": 65,
+      "label": "Volatility scaling: reference vol",
+      "group": "Volatility",
+      "description": "Short-term call delta = RSI base × (this ÷ the name's 20-day realized vol), clamped to the window. 65% ≈ the short-term list's median. A name twice as volatile gets half the delta — no per-name settings (Neel, 2026-09-16).",
+      "unit": "% ann.",
+      "step": 5,
+      "min": 20,
+      "max": 150
+    },
+    "vol_lookback_days": {
+      "value": 20,
+      "label": "Volatility scaling: lookback",
+      "group": "Volatility",
+      "description": "Trading days of closes used for realized volatility, the 10-day average uses half of it.",
+      "unit": "days",
+      "step": 5,
+      "min": 10,
+      "max": 60
+    },
+    "mr_threshold_pct": {
+      "value": 5.0,
+      "label": "Mean reversion: distance from 10-day average",
+      "group": "Volatility",
+      "description": "At least this far BELOW the 10-day average → base delta 20 (the bounce is the trade); this far ABOVE → base 40. Between → RSI decides.",
+      "unit": "%",
+      "step": 0.5,
+      "min": 1,
+      "max": 20
+    },
     "cost_floor_enabled": {
       "value": 0,
       "label": "Cost-basis floor on call strikes",
@@ -498,6 +514,16 @@
       "step": 5,
       "min": 10,
       "max": 100
+    },
+    "new_call_min_dte": {
+      "value": 3,
+      "label": "New call: minimum days to expiry",
+      "group": "Short-term calls",
+      "description": "A new call goes on this Friday's expiry only if at least this many days remain; otherwise next Friday's. Neel 2026-09-16 (Wednesday): 'not this week, but the end of next week.'",
+      "unit": "days",
+      "step": 1,
+      "min": 1,
+      "max": 7
     }
   }
 }

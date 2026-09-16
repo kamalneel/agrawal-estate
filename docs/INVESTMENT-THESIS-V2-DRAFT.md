@@ -318,3 +318,28 @@ $131,051). Books read 92.7% / 9.4%.
   −0.1% day — Rule B does not fire at 80% / −1.5%; Neel's own read was
   "the stock is way down", which is a two-day −2% — a "dip window" knob
   (days) may be wanted.
+
+## 2026-09-16 (Wednesday, trading) — one rule for every name
+
+- **No per-stock windows** (Neel): if a knob needs changing, it changes
+  for everyone. So the thing that makes SOXL "special" is measured, not
+  named: **20-day realized volatility** from our own daily closes (SOXL
+  111%, CBRS 116%, MRVL 88%, INTC/ZM 67%, RKLB 55%).
+- **Short-term call delta = RSI base (20/30/40) → mean-reversion override
+  (≥5% below the 10-day average → 20; ≥5% above → 40) → × reference vol
+  (65%) ÷ the name's realized vol → clamped 10–40.** SOXL today: −5.9%
+  vs 10-day → base 20 × 65/111 → **delta 12 → ~$132**, est ~$0.90 (Neel
+  had picked $130 at $1.12). INTC: 30 × 65/67 → 29, unchanged.
+- **Strike and premium from the name's own volatility and the days to
+  expiry** (spot·e^(σ√T·z); Black-Scholes with realized vol as the IV
+  stand-in), replacing the fixed %-above-spot tables in both books. AAPL
+  delta 12 → ~$346 instead of the table's $351; matches the chain better.
+- **New calls go on next Friday when this Friday has < 3 days left**
+  (Wednesday: "not this week, but the end of next week").
+- **Concentration:** no new short-term put on a name already ≥ 30% of
+  the short-term book (holdings + put collateral); ranking prefers the
+  names owned least. SOXL at 34.6% with 200 more shares arriving Friday
+  was being asked for more — the ranking had looked at RSI only.
+- Rule B needs ≥ 4 days to expiry unless the call is ≥ 95% captured
+  (free to close): SPCX $160 at 86%, 3 days, 11% of room → Rule A's.
+- Knobs: 34 now, six groups, gear icon on the page.
