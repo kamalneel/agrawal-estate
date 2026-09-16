@@ -103,7 +103,7 @@
     },
     "puts": {
       "rule": "Sell puts on short-term names against cash (cash-secured) or margin cash, to maximise option income.",
-      "strike_assumption": "Put delta not stated. V7 preview keeps V6's ATM whole-dollar strike (max premium). To confirm.",
+      "strike_assumption": "Settled 2026-09-16: put delta is the mirror of the call rule (depressed/oversold → closer put, extended → farther), vol-scaled; candidates ranked by weekly yield ÷ volatility with a depressed bonus.",
       "entry": "V6 Tier-2 entry kept: RSI < 50 favourable, > 65 unfavourable.",
       "throttle": "No new short-term put once short-term exposure (holdings + put collateral) is at or above the 20% target."
     }
@@ -389,7 +389,7 @@
       "value": 50,
       "label": "Put entry: RSI favourable below",
       "group": "Short-term puts",
-      "description": "",
+      "description": "Retired 2026-09-16 — put entry is now the return/risk ranking; kept for reference.",
       "unit": "RSI",
       "step": 1,
       "min": 20,
@@ -399,7 +399,7 @@
       "value": 65,
       "label": "Put entry: RSI unfavourable above",
       "group": "Short-term puts",
-      "description": "",
+      "description": "Retired 2026-09-16 — put entry is now the return/risk ranking; kept for reference.",
       "unit": "RSI",
       "step": 1,
       "min": 40,
@@ -534,6 +534,16 @@
       "step": 0.25,
       "min": 0.25,
       "max": 5
+    },
+    "put_depressed_bonus": {
+      "value": 1.25,
+      "label": "Put ranking: depressed-name bonus",
+      "group": "Short-term puts",
+      "description": "Multiplier on the return/risk score for a name at least the mean-reversion threshold below its 10-day average (its further downside is the weaker case). Neel 2026-09-16, ZM at its monthly low.",
+      "unit": "×",
+      "step": 0.05,
+      "min": 1,
+      "max": 2
     }
   }
 }

@@ -764,6 +764,17 @@ def build_v7_queue(db: Session) -> Dict:
     book_total = max(st_exposure, 1.0)
     max_sym_pct = K(pol, "st_max_symbol_pct_of_book")
 
+    # Put candidates, one rule for every name (Neel, 2026-09-16): the put
+    # delta is the mirror of the call rule — a depressed / oversold name
+    # gets a CLOSER put (its further downside is the weaker case), an
+    # extended / overbought one a farther put — scaled by the name's own
+    # realized volatility. Then rank by return per unit of risk (weekly
+    # yield on collateral ÷ volatility), with a bonus for names below
+    # their 10-day average, after the concentration cap.
+    put_dte = max((next_expiration(today) - today).days, 1)
+    if put_dte < int(K(pol, "new_call_min_dte")):
+        put_dte += 7
+    put_exp = today + timedelta(days=put_dte)
     put_candidates = []
     concentrated = []
     for sym in sorted(short_term):
@@ -774,13 +785,47 @@ def build_v7_queue(db: Session) -> Dict:
         if sym_pct >= max_sym_pct:
             concentrated.append(f"{sym} {sym_pct:.0f}%")
             continue
-        any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None)
-        rsi_ctx = _rsi(db, any_acct, sym) if any_acct else None
+        any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None) or "neel_brokerage"
+        rsi_ctx = _rsi(db, any_acct, sym)
         rsi = rsi_ctx.get("rsi") if rsi_ctx else None
-        fav = ("favourable" if (rsi is not None and rsi < K(pol, "put_rsi_favourable")) else
-               "unfavourable" if (rsi is not None and rsi > K(pol, "put_rsi_unfavourable")) else "neutral")
-        put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "entry": fav, "book_pct": sym_pct})
-    put_candidates.sort(key=lambda c: ({"favourable": 0, "neutral": 1, "unfavourable": 2}[c["entry"]], c["book_pct"], -(c["spot"])))
+        vol = _realized_vol(closes.get(sym, []), int(K(pol, "vol_lookback_days")))
+        vs_sma = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
+        thr = K(pol, "mr_threshold_pct")
+        if vs_sma is not None and vs_sma <= -thr:
+            base, why = 40, f"{vs_sma:+.1f}% vs 10-day avg → base 40 (depressed: closer put)"
+        elif vs_sma is not None and vs_sma >= thr:
+            base, why = 20, f"{vs_sma:+.1f}% vs 10-day avg → base 20 (extended: farther put)"
+        elif rsi is None:
+            base, why = 30, "no RSI on file → base 30"
+        elif rsi < K(pol, "st_rsi_low"):
+            base, why = 40, f"RSI {rsi:.0f} → base 40"
+        elif rsi <= K(pol, "st_rsi_high"):
+            base, why = 30, f"RSI {rsi:.0f} → base 30"
+        else:
+            base, why = 20, f"RSI {rsi:.0f} → base 20"
+        if vol:
+            ref = K(pol, "vol_reference_pct") / 100
+            delta = int(round(max(K(pol, "st_delta_min"), min(K(pol, "st_delta_max"), base * ref / vol))))
+            why += f" × {ref * 100:.0f}%/{vol * 100:.0f}% vol → delta {delta}"
+            T = put_dte / 365
+            strike = float(round(spot * math.exp(-vol * math.sqrt(T) * _z_for_delta(delta / 100))))
+            call_px = call_premium(spot, strike, vol, put_dte, 1, RATE_ATM_WEEKLY) / 100
+            put_px = max(call_px - spot + strike, 0.0)   # put-call parity, r = 0
+        else:
+            delta = base
+            why += " (no vol on file — ATM)"
+            strike = float(round(spot))
+            put_px = weekly_premium(1, spot, RATE_ATM_WEEKLY) / 100
+        yld_wk = put_px / strike * 100 * 7 / put_dte if strike else 0.0
+        score = (yld_wk / (vol * 100) * 100) if vol else yld_wk
+        depressed = vs_sma is not None and vs_sma <= -thr
+        if depressed:
+            score *= K(pol, "put_depressed_bonus")
+        put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "vol": vol, "vs_sma": vs_sma,
+                               "book_pct": sym_pct, "delta": delta, "why": why, "strike": strike,
+                               "put_px": put_px, "yield_wk": yld_wk, "score": score, "depressed": depressed})
+    put_candidates.sort(key=lambda c: -c["score"])
+    ranking_txt = " > ".join(f"{c['symbol']} {c['score']:.2f}" for c in put_candidates)
 
     for acct in sorted(cash, key=_acct_rank):
         c = cash[acct]
@@ -795,24 +840,27 @@ def build_v7_queue(db: Session) -> Dict:
                  "The 20% cap, not judgement per name, is what bounds the risk to the long-term shares that "
                  "secure the margin. Capacity waits until a short-term position leaves.")
             continue
-        picks = [p for p in put_candidates if p["spot"] * 100 <= capacity][:2]
-        for p in picks:
-            n = max(1, int(capacity // (p["spot"] * 100)))
+        picks = [p for p in put_candidates if p["strike"] * 100 <= capacity][:2]
+        for rank, p in enumerate(picks, 1):
+            n = max(1, int(capacity // (p["strike"] * 100)))
             n = min(n, int(K(pol, "put_max_contracts")))
-            order = atm_order(n, p["spot"])
+            est = int(p["put_px"] * 100 * n)
             card(3, "SELL PUT", acct, p["symbol"],
-                 f"{p['symbol']}: sell {n} put{'s' if n > 1 else ''} at ~${order['strike']:,.0f} ({p['entry']} entry"
-                 + (f", RSI {p['rsi']:.0f}" if p["rsi"] is not None else "") + f", {p['book_pct']:.0f}% of the book)",
-                 f"collateral ${order['strike'] * 100 * n:,.0f} of ${capacity:,.0f} undeployed"
-                 + (" (margin-backed)" if line else " (cash-secured)") + f" · est ${order['est_premium']:,} this week",
-                 "Layer 3: puts on the short-term list against cash and margin to maximise option income. "
-                 "Ranked by RSI entry, then by how little of the book the name already is — a put is a commitment "
-                 f"to own more, so names at or above {max_sym_pct:.0f}% of the book are skipped"
+                 f"{p['symbol']}: sell {n} put{'s' if n > 1 else ''} at ~${p['strike']:,.0f} (delta {p['delta']}, #{rank} by return/risk"
+                 + (", depressed" if p["depressed"] else "") + f", {p['book_pct']:.0f}% of the book)",
+                 f"exp {_fmt_exp(put_exp)} · collateral ${p['strike'] * 100 * n:,.0f} of ${capacity:,.0f} undeployed"
+                 + (" (margin-backed)" if line else " (cash-secured)")
+                 + f" · est ${est:,} · {p['yield_wk']:.1f}%/wk on collateral · {p['why']}",
+                 "Layer 3: puts on the short-term list against cash and margin. The put delta is the mirror of the "
+                 "call rule — a depressed or oversold name gets a closer put, an extended one a farther put — scaled "
+                 "by the name's own volatility. Candidates are ranked by return per unit of risk (weekly yield on "
+                 f"collateral ÷ volatility, ×{K(pol, 'put_depressed_bonus'):.2f} when ≥{K(pol, 'mr_threshold_pct'):.0f}% below the 10-day average): "
+                 f"{ranking_txt}. Names at or above {max_sym_pct:.0f}% of the book are skipped"
                  + (f" (today: {', '.join(concentrated)})" if concentrated else "") + ". "
                  "Capacity = margin line + cash − open collateral − margin already drawn.",
-                 earn=order["est_premium"],
-                 assumption="Put strike: V6's ATM whole-dollar kept — Neel has not stated a put delta.",
-                 context={"capacity": capacity, "st_pct": round(st_pct, 1)})
+                 earn=est,
+                 context={"capacity": capacity, "st_pct": round(st_pct, 1), "score": round(p["score"], 2),
+                          "delta": p["delta"], "vol": p["vol"], "vs_sma": p["vs_sma"]})
 
     # ---------------- Layer 4: recovery state ----------------
     state_accounts = []

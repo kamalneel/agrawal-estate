@@ -343,3 +343,14 @@ $131,051). Books read 92.7% / 9.4%.
 - Rule B needs ≥ 4 days to expiry unless the call is ≥ 95% captured
   (free to close): SPCX $160 at 86%, 3 days, 11% of room → Rule A's.
 - Knobs: 34 now, six groups, gear icon on the page.
+- **Short-term puts, settled (2026-09-16):** the put delta is the mirror
+  of the call rule — depressed / oversold name → closer put (base 40),
+  extended / overbought → farther (base 20), then × reference vol ÷ the
+  name's realized vol, clamped 10–40. Candidates ranked by **return per
+  unit of risk** (weekly yield on collateral ÷ volatility, ×1.25 when
+  ≥5% below the 10-day average), after the 30% concentration cap.
+  Today: ZM $90 (delta 39, 2.2%/wk) > RKLB $61 (35, 1.5%) > CBRS > MRVL;
+  SOXL and INTC capped. Neel's example — "Zoom is at its monthly low, the
+  chance it goes down more is low, so the return is solid" — is the ZM
+  row. The engine's old ranking (RSI entry, then least owned) had put
+  RKLB first by accident. V6's ATM put strike retired.
