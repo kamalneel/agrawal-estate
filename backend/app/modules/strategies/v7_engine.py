@@ -1193,6 +1193,7 @@ def build_action_queue(db: Session) -> Dict:
     return {
         "generated_at": str(today), "data_as_of": v6.get("data_as_of"),
         "week_ending": str(friday_on_or_after(today)), "engine_version": "v7",
+        "premium": premium_summary(db, today),
         "summary": {**summary, "total": len(items)},
         "items": items, "positions": v6.get("positions", []),
         "v7": {"split": v7["split"], "accounts": v7["accounts"], "lists": v7["lists"]},
@@ -1207,3 +1208,33 @@ def build_live_action_queue(db: Session) -> Dict:
         from app.modules.strategies.v6_engine import build_action_queue as _v6
         return _v6(db)
     return build_action_queue(db)
+
+
+def premium_summary(db: Session, today: Optional[date] = None) -> Dict:
+    """Net option premium — every STO minus every BTC — for today and the
+    week to date (Monday onward), all accounts, with per-account detail.
+    Neel, 2026-09-17: "the total return of the effort of the day" in every
+    scan email, progressing through the day. Only fills the sync has
+    imported count, so a scan reflects the sync before it.
+    """
+    today = today or date.today()
+    monday = today - timedelta(days=today.weekday())
+    rows = db.execute(text("""
+        SELECT a.account_name, t.transaction_date, t.transaction_type, t.amount
+        FROM investment_transactions t JOIN investment_accounts a ON a.account_id = t.account_id
+        WHERE t.transaction_type IN ('STO', 'BTC') AND t.transaction_date BETWEEN :m AND :t
+    """), {"m": monday, "t": today}).fetchall()
+    def agg(rs):
+        sto = sum(float(r.amount) for r in rs if r.transaction_type == "STO")
+        btc = sum(float(r.amount) for r in rs if r.transaction_type == "BTC")   # negative
+        return {"sold": round(sto), "bought_back": round(-btc), "net": round(sto + btc),
+                "fills": len(rs), "accounts": sorted({r.account_name for r in rs}, key=_acct_rank)}
+    today_rows = [r for r in rows if r.transaction_date == today]
+    by_acct = {}
+    for r in today_rows:
+        by_acct.setdefault(r.account_name, []).append(r)
+    return {
+        "today": {**agg(today_rows), "date": today.isoformat(),
+                  "by_account": {a: agg(rs)["net"] for a, rs in sorted(by_acct.items(), key=lambda kv: _acct_rank(kv[0]))}},
+        "week": {**agg(rows), "since": monday.isoformat()},
+    }

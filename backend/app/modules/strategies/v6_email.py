@@ -126,7 +126,27 @@ def format_html_email(queue: Dict, scan_label: str = "") -> str:
     summary = queue.get("summary", {})
     urgent, high = summary.get("urgent", 0), summary.get("high", 0)
 
+    prem = queue.get("premium") or {}
+    prem_html = ""
+    if prem:
+        t, w = prem.get("today", {}), prem.get("week", {})
+        color = lambda v: "#16a34a" if v >= 0 else "#dc2626"
+        by = " · ".join(f"{a} {'+' if v >= 0 else '-'}${abs(v):,.0f}" for a, v in (t.get("by_account") or {}).items())
+        prem_html = (
+            '<div style="margin-bottom:10px; padding:10px 12px; background:#f0fdf4; border:1px solid #bbf7d0; '
+            'border-radius:6px; font-size:14px; color:#374151;">'
+            f'<strong>Today\'s option premium: <span style="color:{color(t.get("net", 0))};">'
+            f'{"+" if t.get("net", 0) >= 0 else "-"}${abs(t.get("net", 0)):,.0f}</span></strong>'
+            f' &nbsp;<span style="color:#6b7280; font-size:12px;">sold ${t.get("sold", 0):,.0f} − bought back ${t.get("bought_back", 0):,.0f} · {t.get("fills", 0)} fills'
+            + (f' · {by}' if by else "") + '</span>'
+            f'<br><span style="font-size:13px;">Week to date (since {w.get("since", "")}): <strong style="color:{color(w.get("net", 0))};">'
+            f'{"+" if w.get("net", 0) >= 0 else "-"}${abs(w.get("net", 0)):,.0f}</strong>'
+            f' <span style="color:#6b7280; font-size:12px;">({w.get("fills", 0)} fills)</span></span>'
+            '<br><span style="color:#9ca3af; font-size:11px;">counts fills the last sync imported; figures grow through the day</span>'
+            '</div>'
+        )
     header = (
+        prem_html +
         '<div style="margin-bottom:14px; font-size:14px; color:#374151;">'
         f'<strong>{len(items)} recommendations</strong> across {len(by_account)} accounts'
         + (f' &nbsp; <span style="color:#dc2626; font-weight:700;">{urgent} URGENT</span>' if urgent else "")
@@ -153,14 +173,21 @@ def format_html_email(queue: Dict, scan_label: str = "") -> str:
 
 def format_plain_text(queue: Dict, scan_label: str = "") -> str:
     items = queue.get("items", [])
+    prem = queue.get("premium") or {}
+    prem_txt = ""
+    if prem:
+        t, w = prem.get("today", {}), prem.get("week", {})
+        prem_txt = (f"Today's option premium: {'+' if t.get('net', 0) >= 0 else '-'}${abs(t.get('net', 0)):,.0f} "
+                    f"(sold ${t.get('sold', 0):,.0f} - bought back ${t.get('bought_back', 0):,.0f}, {t.get('fills', 0)} fills) · "
+                    f"week to date {'+' if w.get('net', 0) >= 0 else '-'}${abs(w.get('net', 0)):,.0f}\n\n")
     if not items:
-        return "No recommendations at this time."
+        return prem_txt + "No recommendations at this time."
 
     by_account: Dict[str, List[Dict]] = {}
     for i in items:
         by_account.setdefault(i["account"], []).append(i)
 
-    lines = [f"{scan_label} — {len(items)} recommendations\n"]
+    lines = [prem_txt + f"{scan_label} — {len(items)} recommendations\n"]
     for acct in CANONICAL_ORDER:
         rows = by_account.get(acct)
         if not rows:

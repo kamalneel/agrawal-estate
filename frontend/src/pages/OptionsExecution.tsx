@@ -322,7 +322,10 @@ export function OptionsExecution() {
           <div className={styles.weekLine}>
             Week ending {queue ? new Date(queue.week_ending + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '—'}
             <span className={styles.weekPremium}>
-              {weekOptions !== null ? <>premium this week: <strong style={{ color: weekOptions < 0 ? '#FF5A5A' : '#00D632' }}>{fmt(weekOptions)}</strong></> : null}
+              {(queue as any)?.premium ? (
+                <>premium today: <strong style={{ color: (queue as any).premium.today.net < 0 ? 'var(--color-negative)' : 'var(--color-positive)' }}>{fmt((queue as any).premium.today.net)}</strong>
+                  {' '}· week: <strong style={{ color: (queue as any).premium.week.net < 0 ? 'var(--color-negative)' : 'var(--color-positive)' }}>{fmt((queue as any).premium.week.net)}</strong></>
+              ) : weekOptions !== null ? <>premium this week: <strong style={{ color: weekOptions < 0 ? '#FF5A5A' : '#00D632' }}>{fmt(weekOptions)}</strong></> : null}
             </span>
           </div>
           {queue?.data_as_of && (
