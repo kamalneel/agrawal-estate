@@ -6969,6 +6969,18 @@ async def get_v6_action_queue(engine: Optional[str] = None, db: Session = Depend
     return build_live_action_queue(db)
 
 
+@router.get("/data-as-of")
+async def get_data_as_of(db: Session = Depends(get_db)):
+    """Cheap freshness probe for the pages to poll: the latest position
+    snapshot and cash snapshot. When either advances, the page re-fetches.
+    (Neel, 2026-09-17: a stale tab kept showing a card for a call he had
+    already sold; the hourly sync lands but the page did not know.)"""
+    from sqlalchemy import text as _text
+    pos = db.execute(_text("SELECT MAX(snapshot_date) FROM sold_options_snapshots")).scalar()
+    cash = db.execute(_text("SELECT MAX(snapshot_date) FROM account_cash_balance_history")).scalar()
+    return {"positions": str(pos) if pos else None, "cash": str(cash) if cash else None}
+
+
 @router.get("/v7/preview")
 async def get_v7_preview(db: Session = Depends(get_db)):
     """V7 action queue — PREVIEW ONLY. Two books, four layers, built from

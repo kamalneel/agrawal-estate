@@ -11,6 +11,7 @@ import { RefreshCw, AlertTriangle, ChevronDown, Settings } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { formatCurrency } from '../components/charts'
+import { useDataAsOfPoll } from '../hooks/useDataAsOfPoll'
 import styles from './V7Preview.module.css'
 
 const API_BASE = '/api/v1'
@@ -113,6 +114,7 @@ export default function V7Preview() {
       .finally(() => setLoading(false))
   }
   useEffect(() => { load(); loadKnobs() }, [])
+  useDataAsOfPoll(load)   // re-build when a sync lands
 
   const all = useMemo(() => (data ? data.layers.flatMap(L => L.items) : []), [data])
 

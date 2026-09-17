@@ -3,6 +3,7 @@ import { RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
+import { useDataAsOfPoll } from '../hooks/useDataAsOfPoll'
 import { AssignmentLossThisMonth } from '../components/AssignmentLossCard/AssignmentLossThisMonth'
 import { accountRank } from '../lib/accountOrder'
 import styles from './OptionsExecution.module.css'
@@ -230,6 +231,8 @@ export function OptionsExecution() {
   }
 
   useEffect(() => { fetchAll() }, [])
+  // re-fetch when a sync lands (every 2 min while visible)
+  useDataAsOfPoll(fetchAll)
 
   const now = new Date()
 
