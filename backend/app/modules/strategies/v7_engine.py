@@ -787,6 +787,50 @@ def build_v7_queue(db: Session) -> Dict:
                      f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${spot - k:,.2f} in the money",
                      "Short-term book. If still ITM at expiry it is let go (see assumption).",
                      assumption="Short-term stuck-call rule not stated; preview holds until expiry.")
+            else:
+                # Winning short-term call: the same Rules A/B as the long-term
+                # book (2026-09-17 — CBRS $215 and RKLB $70 at expiry drew
+                # nothing because these rules only lived in the long branch).
+                captured = (1 - mark / o["original"]) * 100 if (mark is not None and o["original"]) else None
+                move = _day_move_pct(closes.get(sym, []), spot, today)
+                rsi_ctx = _rsi(db, acct_id.get(acct), sym)
+                rsi = rsi_ctx.get("rsi") if rsi_ctx else None
+                dip = (move is not None and move <= K(pol, "dip_move_pct")) or (rsi is not None and rsi < K(pol, "dip_rsi"))
+                cheap = captured is not None and captured >= K(pol, "cheap_captured_pct")
+                er = earnings_within(sym, int(K(pol, "bounce_days")) + 2)
+                dte = o["dte"] if o["dte"] is not None else 5
+                cost = (mark or 0) * 100 * n
+                enough_time = dte >= int(K(pol, "rule_b_min_dte")) or (captured is not None and captured >= K(pol, "free_close_captured_pct"))
+                up_day = dte > 1 and dte < int(K(pol, "rule_b_min_dte")) and move is not None and move >= K(pol, "rule_a_up_day_pct")
+                if dip and cheap and not er and dte >= 1 and enough_time:
+                    card(2, "BUY BACK", acct, sym,
+                         f"{sym} ${k:,.0f} call — dip: buy back for ${cost:,.0f}, wait for the bounce, sell higher",
+                         f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured (mark ${mark:,.2f} vs ${o['original']:,.2f}) · "
+                         + (f"today {move:+.1f}%" if move is not None else "move n/a") + (f" · RSI {rsi:.0f}" if rsi is not None else "")
+                         + f" · exp {_fmt_exp(o['expiration'])}",
+                         "Rule B, short-term book: the stock is down and the call is cheap — close now, wait for the bounce "
+                         f"(+{K(pol, 'bounce_pct'):.1f}% or {int(K(pol, 'bounce_days'))} trading days), then sell the next call at the "
+                         "delta 20-40 rule off the higher price.",
+                         context={"captured_pct": round(captured, 1), "buyback_cost": cost, "day_move_pct": move, "rsi": rsi})
+                elif dte <= 1 or up_day:
+                    vol_n, _vs = vol_of(sym)
+                    vs_n = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
+                    d_n, why_n = _short_term_delta(rsi, pol, vol_n, vs_n)
+                    nxt = strike_for_delta(spot, d_n, vol_n, 7, 0.025)
+                    est = call_premium(spot, nxt, vol_n, 7, n, RATE_ATM_WEEKLY)
+                    roll_now = dte == 0 or up_day
+                    card(2, "ROLL" if roll_now else "WAIT", acct, sym,
+                         (f"{sym} ${k:,.0f} call — up {move:+.1f}% today: roll now, sell next week's delta {d_n} (~${nxt:,.0f})" if up_day
+                          else f"{sym} ${k:,.0f} call expires today — roll: sell next week's delta {d_n} (~${nxt:,.0f})" if dte == 0
+                          else f"{sym} ${k:,.0f} call expires tomorrow — roll Friday, not today"),
+                         f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured · exp {_fmt_exp(o['expiration'])} · next est ${est:,} · {why_n}"
+                         + (f" · today {move:+.1f}%" if move is not None else ""),
+                         ("Rule A, up-day refinement: in the last days of a winning call the price path decides; an up day is "
+                          "the moment to set the next strike. " if up_day else
+                          "Rule A: a winning call is left to expire and the next one sold the same Friday — no Monday lost. ")
+                         + "Short-term book: the next call at the delta 20-40 rule.",
+                         earn=est if roll_now else None,
+                         context={"captured_pct": round(captured, 1) if captured is not None else None, "rsi": rsi})
 
     # ---------------- Layer 1/2: open short PUTS in the money ----------------
     # V7 had no rule for an existing short put that goes in the money (the
