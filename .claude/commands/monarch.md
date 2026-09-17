@@ -108,8 +108,14 @@ then in code.
   negative "Work expenses (reimbursed)" line in the month it lands and
   nets against spending. Adamx-tagged spend sits under the same line.
 - **Zelle payees that are spending:** Fariba → Dog sitter; Lianxiang Liu
-  → Massage (the weekly tip). Any other Zelle to a person filed as
-  Transfer is suspect — ask.
+  → Massage (the weekly tip); Liseldí Domínguez → Household Help (the
+  house cleaner, monthly from 2026-09). Pranay's $630.35 on 2026-09-11
+  was an iPhone 17 he ordered on the family's behalf → Electronics,
+  pinned by amount. Any other Zelle to a person filed as Transfer is
+  suspect — ask.
+- **IRS and FTB** payments are always Taxes (Monarch alternates with
+  "ONE TIME"). Cross-check each estimated payment against
+  `estimated_tax_payments` in the tax module; both pages must agree.
 - **Per-person lines stay** (Jaya Personal Expense, Jaya's Education,
   Child Incentive). Isha programs → Jaya Personal Expense. Talent Sherpas
   (Jaya's executive coach for job interviews) → Jaya's Education.

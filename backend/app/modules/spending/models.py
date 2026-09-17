@@ -287,6 +287,12 @@ COUNTERPARTY_RULES: list[tuple] = [
     # weekly tip, which Monarch filed as Transfer and so never counted.
     ("Dog sitter", CategoryKind.SPENDING, ("fariba",), "out"),
     ("Massage", CategoryKind.SPENDING, ("lianxiang",), "out"),
+    # Liseldí Domínguez is the house cleaner, monthly, paid by Zelle (Neel,
+    # 2026-09-17: "we've just hired her, so you will see more of those").
+    # Monarch files the Zelle as Transfer. Both spellings, with and
+    # without accents, in case Monarch strips them.
+    ("Household Help", CategoryKind.SPENDING,
+     ("liseldí domínguez", "liseldi dominguez", "domínguez", "dominguez"), "out"),
 ]
 
 #: One transaction that is really two. Matched by statement needle AND exact
@@ -304,6 +310,14 @@ SPLIT_ROWS: list[dict] = [
             (9000.00, "Home Rent", CategoryKind.SPENDING, (2026, 6)),
             (10580.00, "Security deposit", CategoryKind.TRANSFER, None),
         ],
+    },
+    # 2026-09-11, $630.35 Zelle to Pranay: he ordered an iPhone 17 (JS) and
+    # was paid back. Monarch filed it as Transfer. Pinned by amount because
+    # a future payment to Pranay could be anything — ask, don't assume.
+    {
+        "needle": "pranay",
+        "amount": 630.35,
+        "parts": [(630.35, "Electronics", CategoryKind.SPENDING, None)],
     },
 ]
 
@@ -456,6 +470,11 @@ MERCHANT_CATEGORY_OVERRIDES: list[tuple[str, str]] = [
     ("isha foundation", "Jaya Personal Expense"),
     # Jaya's executive coach for job interviews (Neel, 2026-09-11).
     ("talent sherpas", "Jaya's Education"),
+    # Estimated tax payments. Monarch alternates these between "Taxes" and
+    # "ONE TIME" (2026-09: IRS $10,000 -> Taxes, FTB $5,000 -> ONE TIME).
+    # Both are taxes; both stay non-monthly.
+    ("internal revenue service", "Taxes"),
+    ("california franchise tax board", "Taxes"),
 ]
 
 
