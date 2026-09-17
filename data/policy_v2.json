@@ -170,6 +170,15 @@
         "contracts": 1,
         "reason": "Swapped for the AAPL $322.50 plan (Neel, 2026-09-17): MSFT is $50 ITM and a same-strike roll costs a debit (rule 1: never pay to roll), while AAPL $322.50 rolls for +$425. Assignment frees $45K of margin; gain $6,510 (~$2,400 tax, Highest Cost delivers the $492.67 and $418 lots first) vs AAPL's $41,605. Leaves 0 MSFT against a 200-share long-term target — re-entry put allowed afterwards.",
         "decided": "2026-09-17"
+      },
+      {
+        "account": "Neel's Brokerage",
+        "symbol": "TSLA",
+        "strike": 335.0,
+        "expiration": "2026-09-18",
+        "contracts": 1,
+        "reason": "Free the margin (Neel, 2026-09-17). $20 ITM, a same-strike roll pays nothing. Frees $33,500; Highest Cost delivers the $435 lot from the 6/25 put assignment — a −$10,000 short-term loss to harvest (FIFO would have been +$24,900 long-term).",
+        "decided": "2026-09-17"
       }
     ]
   },
