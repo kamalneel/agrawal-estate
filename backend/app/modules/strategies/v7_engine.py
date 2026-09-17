@@ -859,14 +859,17 @@ def build_v7_queue(db: Session) -> Dict:
                 put_px = max(call_px - spot + k, 0.0)
                 est = int(put_px * 100 * n_)
                 left = (o["mark"] or 0) * 100 * n_
-                card(1 if book == "long" else 2, "ROLL" if dte_p == 0 else "WAIT", acct, sym,
-                     (f"{sym} ${k:,.0f} put expires today — roll this morning: sell next week's ${k:,.0f} put" if dte_p == 0
-                      else f"{sym} ${k:,.0f} put expires tomorrow — roll Friday morning, not today"),
+                freed = k * 100 * n_
+                card(1 if book == "long" else 2, "LET EXPIRE" if dte_p == 0 else "WAIT", acct, sym,
+                     (f"{sym} ${k:,.0f} put expires today — let it go; ${freed:,.0f} frees for the best put (layer 3)" if dte_p == 0
+                      else f"{sym} ${k:,.0f} put expires tomorrow — let it expire; ${freed:,.0f} goes back to the put ranking"),
                      f"{n_} contract{'s' if n_ > 1 else ''} · ${spot - k:,.2f} out of the money · ${left:,.0f} of time value left to bleed · "
-                     f"next week's est ${est:,}",
-                     "An out-of-the-money put at expiry: what you save by waiting (its last time value) is more than the new "
-                     "put loses to a day of decay, so roll on the last morning, not before — and never Friday afternoon.",
-                     earn=est if dte_p == 0 else None)
+                     f"same-name renewal would pay est ${est:,}",
+                     "An out-of-the-money put at expiry keeps its last time value if left alone. The freed collateral is "
+                     "not automatically re-sold on the same name — layer 3 ranks every name by weekly yield at the "
+                     "risk-normalised delta and puts the cash where it earns most (on expiry day the layer-3 card already "
+                     "counts this collateral as available).",
+                     context={"frees": freed})
             continue
         intrinsic = k - spot
         mark = o["mark"]
@@ -1030,10 +1033,18 @@ def build_v7_queue(db: Session) -> Dict:
     put_candidates.sort(key=lambda c: -c["score"])
     ranking_txt = " > ".join(f"{c['symbol']} {c['score']:.2f}%/wk" for c in put_candidates)
 
+    # collateral coming free today: OTM puts expiring today
+    freeing_today: Dict[str, float] = {}
+    for o in options:
+        if o["type"] == "put" and o["dte"] == 0 and price.get(o["symbol"], 0) >= o["strike"]:
+            freeing_today[o["account"]] = freeing_today.get(o["account"], 0.0) + o["strike"] * 100 * o["contracts"]
+    # a name picked in one account counts against its share of the book for the next
+    reserved: Dict[str, float] = {}
     for acct in sorted(cash, key=_acct_rank):
         c = cash[acct]
         line = lines.get(acct, 0.0)
         capacity = (line + c["cash"] if line else c["cash"]) - c["collateral"] - (c["margin_used"] if line else 0)
+        capacity += freeing_today.get(acct, 0.0)
         if capacity < K(pol, "put_min_capacity"):
             continue
         if st_pct >= cap_pct:
@@ -1048,8 +1059,13 @@ def build_v7_queue(db: Session) -> Dict:
         for p in put_candidates:
             if p["strike"] * 100 > remaining:
                 continue
+            if p["book"] == "short":
+                already = st_by_sym.get(p["symbol"], 0.0) + reserved.get(p["symbol"], 0.0)
+                if already / book_total * 100 >= max_sym_pct:
+                    continue  # picked elsewhere this run, now at the cap
             n = min(int(remaining // (p["strike"] * 100)), int(K(pol, "put_max_contracts")))
             picks.append((p, n)); remaining -= p["strike"] * 100 * n
+            reserved[p["symbol"]] = reserved.get(p["symbol"], 0.0) + p["strike"] * 100 * n
             if len(picks) == 2 or remaining < K(pol, "put_min_capacity"):
                 break
         for rank, (p, n) in enumerate(picks, 1):
