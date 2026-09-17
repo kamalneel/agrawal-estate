@@ -734,7 +734,7 @@ def build_v7_queue(db: Session) -> Dict:
                     # Rule A: winning call at expiry — roll Friday, don't lose Monday.
                     # Refinement (Neel, 2026-09-16): in the last days, an up day is
                     # the moment — theta timing is a wash, the price path decides.
-                    up_day = dte > 1 and move is not None and move >= K(pol, "rule_a_up_day_pct")
+                    up_day = dte >= 1 and move is not None and move >= K(pol, "rule_a_up_day_pct")
                     td = K(pol, "lt_delta_tsla") if sym == "TSLA" else (K(pol, "lt_delta_sheltered") if sheltered(acct) else K(pol, "lt_delta_taxable"))
                     vol, vol_src = vol_of(sym)
                     nxt = strike_for_delta(spot, td, vol, 7, 0.055)
@@ -801,7 +801,7 @@ def build_v7_queue(db: Session) -> Dict:
                 dte = o["dte"] if o["dte"] is not None else 5
                 cost = (mark or 0) * 100 * n
                 enough_time = dte >= int(K(pol, "rule_b_min_dte")) or (captured is not None and captured >= K(pol, "free_close_captured_pct"))
-                up_day = dte > 1 and dte < int(K(pol, "rule_b_min_dte")) and move is not None and move >= K(pol, "rule_a_up_day_pct")
+                up_day = dte >= 1 and dte < int(K(pol, "rule_b_min_dte")) and move is not None and move >= K(pol, "rule_a_up_day_pct")
                 if dip and cheap and not er and dte >= 1 and enough_time:
                     card(2, "BUY BACK", acct, sym,
                          f"{sym} ${k:,.0f} call — dip: buy back for ${cost:,.0f}, wait for the bounce, sell higher",
