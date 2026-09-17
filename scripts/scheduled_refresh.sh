@@ -13,6 +13,13 @@
 # does not mention the bridge's "done" line. Any failure emails Neel through
 # the backend's notification service so a dead sync is never silent
 # (playbook: check-freshness-and-ask-first).
+#
+# Sync → wait → email (Neel, 2026-09-17). When the run finishes the script
+# POSTs /strategies/notify/after-sync. At the four decision-point slots
+# (6:40, 7:50, 11:50, 19:50 — the email lands ~6 min later, where Neel's
+# 6:50 / 8:00 / 12:00 / 8:00 PM scans used to be) that sends the full scan
+# email on the data just synced; at every other slot a short "sync
+# complete" confirmation. Failed syncs still produce the email, flagged.
 set -u
 PROJECT="/Users/neelpersonal/Coding-Projects/agrawal-estate-planner"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -41,7 +48,18 @@ fi
 PROMPT="/refresh
 Scheduled headless run. Write the two bundle JSON files to $BUNDLES (not a scratchpad). Do every step of the skill including assignment detection and the post-verify. Skip the price-history and earnings-calendar refreshes unless the skill's own conditions say to run them. Finish with a report of at most 15 lines that starts with the line SYNC OK, or SYNC FAILED followed by why, if any gate or save did not pass."
 
-echo "$(date) start" >> "$LOG"
+# which email follows this run: decision-point slot → that scan; else a
+# short sync-complete note. ±10 min tolerance around the slot so a launchd
+# run that started late still gets its scan; a manual run at 9:12 does not.
+NOW=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+SCAN=""
+for pair in 400:6am_main 470:8am_post_open 710:12pm_midday 1190:8pm_evening; do
+  slot=${pair%%:*}
+  if (( NOW >= slot - 10 && NOW <= slot + 10 )); then SCAN=${pair##*:}; fi
+done
+[[ -n "${1:-}" ]] && SCAN="$1"     # ./scheduled_refresh.sh 8pm_evening  forces one
+
+echo "$(date) start scan=${SCAN:-none}" >> "$LOG"
 # hard stop: a headless run that hangs (a prompt it cannot answer, a stuck
 # MCP call) must not sit forever and block the next slot — 2026-09-17 the
 # 7:05 run hung for 3 hours with 5s of CPU. 20 minutes is 4x a normal run.
@@ -57,7 +75,6 @@ echo "$RESULT" >> "$LOG"
 backend/venv/bin/python - "$RESULT" "$STATUS" "$LOG" <<'PY'
 import json, sys, datetime, pathlib
 raw, status, log = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-sys.path.insert(0, "backend")
 try:
     d = json.loads(raw)
     text = str(d.get("result", ""))
@@ -69,10 +86,24 @@ summary = {"ran_at": datetime.datetime.now().isoformat(timespec="seconds"), "ok"
            "cost_usd": cost, "log": log, "report": text[-3000:]}
 pathlib.Path("data/refresh_status.json").write_text(json.dumps(summary, indent=2))
 print(("OK " if not err else "FAILED ") + f"cost=${cost}")
-if err:
-    from app.shared.services.notifications import get_notification_service
-    get_notification_service()._send_email(
-        subject="Robinhood scheduled sync FAILED",
-        html_body="<pre>" + (text or "(no output)")[-3000:].replace("<", "&lt;") + "</pre><p>Log: " + log + "</p>",
-        plain_text=(text or "(no output)")[-3000:] + "\nLog: " + log)
 PY
+
+# the email — scan or confirmation — comes from the backend, which reads
+# data/refresh_status.json just written. If that call itself fails, fall
+# back to a bare failure email so the run is never silent.
+NOTIFY=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 -X POST \
+  "http://127.0.0.1:8000/api/v1/strategies/notify/after-sync${SCAN:+?scan_type=$SCAN}")
+echo "$(date) notify scan=${SCAN:-none} http=$NOTIFY" >> "$LOG"
+if [[ "$NOTIFY" != "200" ]]; then
+  backend/venv/bin/python - "$LOG" "$NOTIFY" <<'PY'
+import sys, json
+sys.path.insert(0, "backend")
+log, code = sys.argv[1], sys.argv[2]
+st = json.load(open("data/refresh_status.json"))
+from app.shared.services.notifications import get_notification_service
+get_notification_service()._send_email(
+    subject=("Robinhood sync " + ("OK" if st.get("ok") else "FAILED")) + f" — but the email step returned HTTP {code}",
+    html_body="<pre>" + (st.get("report") or "(no output)").replace("<", "&lt;") + "</pre><p>Log: " + log + "</p>",
+    plain_text=(st.get("report") or "(no output)") + "\nLog: " + log)
+PY
+fi

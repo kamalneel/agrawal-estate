@@ -37,98 +37,32 @@ class RecommendationScheduler:
         """
         Set up scheduled jobs per V3 Algorithm Specification.
         
-        Schedule (Pacific Time, Weekdays Only — Neel's decision points, 2026-07-14):
-        ============================================
-        Scan 1: 6:50 AM  - Wake-up triage (after the 6:32 post-open MCP sync;
-                           options marks are only real after the 6:30 open)
-        Scan 2: 8:00 AM  - Coffee-break decisions (after the 7:40 sync)
-        Scan 3: 12:00 PM - Final pre-close decisions (after the 11:40 sync;
-                           market closes 1:00 PM)
-        Scan 4: 8:00 PM  - Evening planning for the next day (runs off the
-                           1:10 PM post-close sync — market data is final
-                           after the close, no evening sync needed)
+        Decision-point scan emails (Neel, 2026-07-14: 6:50 / 8:00 / 12:00 /
+        8:00 PM PT) are NOT scheduled here since 2026-09-17 — they are
+        sent by notify_after_sync() when the launchd sync that precedes
+        each one completes (see the note in the body). What remains here
+        are the housekeeping jobs.
 
         NO after-hours notifications between 1 PM and 8 PM.
         NO weekend notifications (market closed).
         """
 
         # =================================================================
-        # SCAN 1: 6:50 AM - Main Daily Scan (with technical analysis)
+        # SCAN EMAILS ARE NO LONGER CRON JOBS HERE (2026-09-17)
         # =================================================================
-        # Purpose: Wake-up triage on REAL post-open options marks — the
-        # 6:32 MCP sync has landed by now. (Was 6:00; pre-open data told
-        # you nothing about options values. Neel, 2026-07-14.)
-        self.scheduler.add_job(
-            self.run_full_technical_analysis,
-            trigger=CronTrigger(
-                hour=6,
-                minute=50,
-                day_of_week='mon-fri',
-                timezone=PT
-            ),
-            id='scan_1_main_daily',
-            name='Scan 1: Wake-up Triage (6:50 AM PT)',
-            replace_existing=True
-        )
-        
-        # =================================================================
-        # SCAN 2: 8:00 AM - Post-Opening Urgent (Version-aware)
-        # =================================================================
-        # Purpose: Catch urgent state changes from market open volatility
-        # Routes to V4 or V5 based on ALGORITHM_VERSION
-        self.scheduler.add_job(
-            lambda: self._run_versioned_check(scan_type='8am_post_open'),
-            trigger=CronTrigger(
-                hour=8,
-                minute=0,
-                day_of_week='mon-fri',
-                timezone=PT
-            ),
-            id='scan_2_post_open',
-            name='Scan 2: Post-Opening (8:00 AM PT)',
-            replace_existing=True
-        )
+        # Neel: "the flow is Sync → wait for completion → email." Until
+        # today the four decision-point scans (6:50 / 8:00 / 12:00 / 8:00
+        # PM PT) fired on their own clock, ~15 min after a launchd sync
+        # that might or might not have finished. Now the sync wrapper
+        # (scripts/scheduled_refresh.sh, launchd com.agrawal.estate.refresh)
+        # runs at 6:40 / 7:50 / 11:50 / 19:50 and, when its run completes,
+        # POSTs /strategies/notify/after-sync?scan_type=… — which calls
+        # notify_after_sync() below. The email therefore always sits on
+        # the sync that just finished, and says so in its header. The
+        # in-between syncs (9:05, 10:05, 13:05) send a short "sync
+        # complete" email through the same endpoint, without scan_type.
+        # Nothing here fires a scan on its own any more.
 
-        # =================================================================
-        # SCAN 3: 12:00 PM - Midday (Version-aware)
-        # =================================================================
-        # Purpose: Check for intraday opportunities
-        # Routes to V4 or V5 based on ALGORITHM_VERSION
-        self.scheduler.add_job(
-            lambda: self._run_versioned_check(scan_type='12pm_midday'),
-            trigger=CronTrigger(
-                hour=12,
-                minute=0,
-                day_of_week='mon-fri',
-                timezone=PT
-            ),
-            id='scan_3_midday',
-            name='Scan 3: Midday (12:00 PM PT)',
-            replace_existing=True
-        )
-
-        # (12:45 PM pre-close scan removed 2026-07-14: Neel's final decision
-        # point is the 12:00 scan; the last 15 minutes before close were
-        # noise, not a decision window.)
-
-        # =================================================================
-        # SCAN 5: 8:00 PM - Evening Planning (Version-aware)
-        # =================================================================
-        # Purpose: Next day preparation
-        # Routes to V4 or V5 based on ALGORITHM_VERSION
-        self.scheduler.add_job(
-            lambda: self._run_versioned_check(scan_type='8pm_evening'),
-            trigger=CronTrigger(
-                hour=20,
-                minute=0,
-                day_of_week='mon-fri',
-                timezone=PT
-            ),
-            id='scan_5_evening',
-            name='Scan 5: Evening Planning (8:00 PM PT)',
-            replace_existing=True
-        )
-        
         # =================================================================
         # NO AFTER-HOURS OR WEEKEND SCANS
         # =================================================================
@@ -902,7 +836,8 @@ class RecommendationScheduler:
     # V6 NOTIFICATION METHOD
     # =========================================================================
 
-    def check_and_notify_v6(self, send_notifications: bool = True, scan_type: str = None):
+    def check_and_notify_v6(self, send_notifications: bool = True, scan_type: str = None,
+                            sync: Optional[Dict[str, Any]] = None):
         """
         V6-native recommendation check and notification — same engine that
         powers the Options Execution page (build_action_queue). Added
@@ -933,16 +868,10 @@ class RecommendationScheduler:
 
             from app.modules.strategies.v6_email import format_html_email, format_plain_text
 
-            _scan_labels = {
-                "6am_main":         "Scan 1 — Wake-up Triage (6:50 AM PT)",
-                "8am_post_open":    "Scan 2 — Coffee Break (8:00 AM PT)",
-                "12pm_midday":      "Scan 3 — Pre-Close Decisions (12:00 PM PT)",
-                "8pm_evening":      "Scan 5 — Evening Planning (8:00 PM PT)",
-            }
-            scan_label = _scan_labels.get(scan_type or "", scan_type or "")
+            scan_label = SCAN_LABELS.get(scan_type or "", scan_type or "")
 
-            html_body = format_html_email(queue, scan_label=scan_label)
-            plain_text = format_plain_text(queue, scan_label=scan_label)
+            html_body = format_html_email(queue, scan_label=scan_label, sync=sync)
+            plain_text = format_plain_text(queue, scan_label=scan_label, sync=sync)
 
             summary = queue.get("summary", {})
             urgent = summary.get("urgent", 0)
@@ -952,6 +881,8 @@ class RecommendationScheduler:
                 if urgent else
                 f"📊 {len(items)} {ev} Recommendations — {scan_label.split('—')[0].strip()}"
             )
+            if sync and not sync.get("ok"):
+                subject = "⚠️ SYNC FAILED · " + subject
 
             success, _ = notification_service._send_email(
                 subject=subject, html_body=html_body, plain_text=plain_text
@@ -1549,6 +1480,73 @@ class RecommendationScheduler:
 
 
 # Global scheduler instance
+# Decision points (Neel, 2026-07-14), now timed by the sync that precedes
+# each one (2026-09-17): the wrapper syncs at 6:40 / 7:50 / 11:50 / 19:50
+# and the email follows the moment the run completes (~6 min later).
+SCAN_LABELS = {
+    "6am_main":      "Scan 1 — Wake-up Triage (after the 6:40 AM sync)",
+    "8am_post_open": "Scan 2 — Coffee Break (after the 7:50 AM sync)",
+    "12pm_midday":   "Scan 3 — Pre-Close Decisions (after the 11:50 AM sync)",
+    "8pm_evening":   "Scan 5 — Evening Planning (after the 7:50 PM sync)",
+}
+
+
+def read_refresh_status() -> Dict[str, Any]:
+    """The last scheduled sync's outcome, written by scripts/scheduled_refresh.sh."""
+    import json
+    from app.core.config import settings
+    try:
+        return json.loads((settings.DATA_DIR / "refresh_status.json").read_text())
+    except Exception:
+        return {}
+
+
+def notify_after_sync(scan_type: Optional[str] = None) -> Dict[str, Any]:
+    """Sync → wait → email (Neel, 2026-09-17). Called by the sync wrapper
+    the moment a run finishes, success or failure.
+
+    - scan_type given: the decision-point scan email, with the sync's
+      outcome in its header and the sync report at the bottom. On a
+      failed sync the email still goes out (on the data already in the
+      app) with a red banner and a SYNC FAILED subject — a missed
+      decision point is worse than a stale one.
+    - no scan_type: a short "Sync complete" (or "Sync FAILED") email —
+      the report plus the queue's urgent/high counts and today's
+      premium — so Neel can confirm every run looks right.
+    """
+    sync = read_refresh_status()
+    if scan_type:
+        sched = _scheduler or RecommendationScheduler()
+        try:
+            sched.check_and_notify_v6(send_notifications=True, scan_type=scan_type, sync=sync)
+        finally:
+            if sched is not _scheduler:
+                sched.shutdown()
+        return {"sent": "scan", "scan_type": scan_type, "sync_ok": sync.get("ok")}
+
+    from app.modules.strategies.v6_email import sync_box_html, sync_report_html, sync_report_plain, _sync_time, _as_of_pt
+    from app.modules.strategies.v7_engine import build_live_action_queue
+    db: Session = SessionLocal()
+    try:
+        queue = build_live_action_queue(db)
+    finally:
+        db.close()
+    summary = queue.get("summary", {})
+    prem = (queue.get("premium") or {}).get("today", {})
+    net = prem.get("net", 0)
+    counts = f"queue {summary.get('urgent', 0)} urgent / {summary.get('high', 0)} high"
+    prem_txt = f"today's premium {'+' if net >= 0 else '-'}${abs(net):,.0f} ({prem.get('fills', 0)} fills)"
+    when = _sync_time(sync)
+    subject = (f"✅ Sync complete {when} — {counts}, {prem_txt}" if sync.get("ok")
+               else f"⚠️ Sync FAILED {when} — {counts} (stale)")
+    html = (sync_box_html(sync, queue.get("data_as_of", ""))
+            + f'<div style="font-size:14px; color:#374151;">{counts} · {prem_txt} · data as of {_as_of_pt(queue.get("data_as_of", ""))}</div>'
+            + sync_report_html(sync))
+    plain = f"{sync_report_plain(sync)}\n\n{counts} · {prem_txt} · data as of {_as_of_pt(queue.get('data_as_of', ''))}"
+    ok, _ = get_notification_service()._send_email(subject=subject, html_body=html, plain_text=plain)
+    return {"sent": "sync_summary" if ok else None, "sync_ok": sync.get("ok")}
+
+
 _scheduler: Optional[RecommendationScheduler] = None
 
 

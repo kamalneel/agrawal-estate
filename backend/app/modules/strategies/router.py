@@ -6969,6 +6969,24 @@ async def get_v6_action_queue(engine: Optional[str] = None, db: Session = Depend
     return build_live_action_queue(db)
 
 
+@router.post("/notify/after-sync")
+async def post_notify_after_sync(scan_type: Optional[str] = None):
+    """Called by scripts/scheduled_refresh.sh the moment a sync finishes
+    (success or failure — it reads data/refresh_status.json). With
+    scan_type (6am_main / 8am_post_open / 12pm_midday / 8pm_evening) it
+    sends that decision-point scan email on the data just synced; without
+    it, a short "sync complete" confirmation. Neel, 2026-09-17: "the flow
+    is Sync → wait for completion → email." See scheduler.notify_after_sync."""
+    from app.core.scheduler import notify_after_sync, SCAN_LABELS
+    if scan_type and scan_type not in SCAN_LABELS:
+        raise HTTPException(status_code=400, detail=f"unknown scan_type; one of {sorted(SCAN_LABELS)}")
+    try:
+        return notify_after_sync(scan_type)
+    except Exception as e:
+        logger.error(f"notify_after_sync failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/data-as-of")
 async def get_data_as_of(db: Session = Depends(get_db)):
     """Cheap freshness probe for the pages to poll: the latest position

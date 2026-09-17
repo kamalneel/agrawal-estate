@@ -155,23 +155,18 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
 
 - **`/refresh` skill** (`.claude/commands/refresh.md`): say "refresh" /
   type `/refresh` in a Claude session and the whole recipe above runs.
-- **Scheduled**: launchd agent `com.neelpersonal.rh-refresh` runs
-  `scripts/rh_refresh_headless.sh` (headless `claude -p "/refresh"`) at
-  **6:32 / 7:40 / 11:40 / 13:10 PT weekdays** (Neel's decision-point
-  schedule, 2026-07-14): post-open (options marks real only after 6:30),
-  coffee-break, final pre-close decision, and a 13:10 post-close capture
-  that is final for the day — no evening sync needed. Backend email scans
-  (`backend/app/core/scheduler.py`) follow at 6:50, 8:00, 12:00, and
-  20:00 (the evening scan runs off the post-close data). Manual trigger:
-  the freshness pill (POST `/ingestion/refresh-now` → `launchctl start`).
-  Logs: `~/Library/Logs/rh-refresh.log`.
+- **Scheduled**: see *Scheduled sync* below (`com.agrawal.estate.refresh`;
+  the July `com.neelpersonal.rh-refresh` agent was retired 2026-09-17 —
+  it had been running beside the September one, 11 syncs a day).
+  Manual trigger: the freshness pill (POST `/ingestion/refresh-now` →
+  `launchctl start com.agrawal.estate.refresh`).
 - **Auth prerequisite**: headless runs use the CLI-registered MCP servers
   (`claude mcp list`), NOT claude.ai connectors. Both servers are
   registered project-local; they must be **authorized once via `/mcp` in
   a fresh CLI session** in this directory (and re-authorized if Robinhood
   tokens expire — failed runs say so in the log).
 - Disable: `launchctl unload ~/Library/LaunchAgents/com.neelpersonal.rh-refresh.plist`.
-- Each run consumes Claude usage (3 sessions/weekday).
+- Each run consumes Claude usage (~$3.5; 7 runs per weekday).
 
 ## Field-mapping notes
 
@@ -237,16 +232,38 @@ report without `SYNC OK`) emails Neel through the notification service;
 a backend that is not running is reported the same way and skipped.
 
 Schedule: `scripts/com.agrawal.estate.refresh.plist`, installed at
-`~/Library/LaunchAgents/com.agrawal.estate.refresh.plist` — hourly at
-:05 from 7:05 to 13:05 PT, Monday–Friday (13:05 is the post-close
-snapshot). Reinstall after editing:
+`~/Library/LaunchAgents/com.agrawal.estate.refresh.plist`, Mon–Fri PT:
+
+| slot | then | email arrives |
+|---|---|---|
+| 6:40 | Scan 1 — wake-up triage | ~6:46 |
+| 7:50 | Scan 2 — coffee break | ~7:56 |
+| 9:05, 10:05 | "sync complete" note | |
+| 11:50 | Scan 3 — pre-close decisions | ~11:56 |
+| 13:05 (post-close) | "sync complete" note | |
+| 19:50 | Scan 5 — evening planning | ~19:56 |
+
+**Sync → wait → email** (Neel, 2026-09-17: "I thought the flow is at the
+time of email: Sync → wait for completion → email … Send an email after
+the sync is complete so that I know and can confirm"). The backend no
+longer fires the scan emails on its own clock; when a run finishes the
+wrapper POSTs `/strategies/notify/after-sync?scan_type=…` and
+`scheduler.notify_after_sync` sends the email on the data just synced.
+Every email carries a green "Synced 7:56 AM PT" box at the top and the
+run's report at the bottom; the four decision-point slots send the full
+action queue, the other three a short confirmation (subject: queue
+urgent/high counts and the day's premium). A failed sync still sends the
+scan email, with a red "Sync FAILED" banner and the data's real
+timestamp — a missed decision point is worse than a stale one. The
+wrapper maps its start time to the scan (±10 min); `./scripts/scheduled_refresh.sh 8pm_evening`
+forces one. Reinstall after editing:
 
     cp scripts/com.agrawal.estate.refresh.plist ~/Library/LaunchAgents/
     launchctl bootout gui/$(id -u)/com.agrawal.estate.refresh
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agrawal.estate.refresh.plist
 
-Run by hand: `./scripts/scheduled_refresh.sh`. Cost: ~$3.25 per run
-(measured 2026-09-14), i.e. ~$23 per trading day at hourly cadence —
+Run by hand: `./scripts/scheduled_refresh.sh`. Cost: ~$3.25–4.4 per run
+(measured 2026-09-14/17), i.e. ~$25 per trading day for 7 runs —
 trim the StartCalendarInterval entries to change it. The OAuth tokens
 are the ones this Mac's Claude Code holds; if Robinhood requires
 re-authorization, the run fails with an auth error in the log and the

@@ -287,15 +287,15 @@ async def get_ingestion_status(db: Session = Depends(get_db)):
 
 @router.post("/refresh-now")
 def trigger_refresh_now():
-    """Kick the scheduled MCP refresh job (com.neelpersonal.rh-refresh)
-    on demand — same full sync the 5:40/11:40/19:40 slots run, takes
+    """Kick the scheduled MCP refresh job (com.agrawal.estate.refresh)
+    on demand — same full sync the launchd slots run (6:40 … 19:50 PT), takes
     ~5-6 minutes. launchctl start is a no-op if the job is already
     running, so double-clicks are harmless. The freshness endpoint's
     timestamps advancing is the completion signal."""
     import subprocess
     try:
         result = subprocess.run(
-            ["launchctl", "start", "com.neelpersonal.rh-refresh"],
+            ["launchctl", "start", "com.agrawal.estate.refresh"],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode != 0:

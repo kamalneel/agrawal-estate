@@ -20,6 +20,68 @@ from typing import Dict, List
 
 from app.modules.strategies.v6_engine import CANONICAL_ORDER
 
+
+def _esc(t: str) -> str:
+    return (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _sync_time(sync: Dict) -> str:
+    """'7:56 AM' from refresh_status.json's ran_at (local ISO)."""
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(sync["ran_at"]).strftime("%-I:%M %p")
+    except Exception:
+        return sync.get("ran_at") or "?"
+
+
+def _as_of_pt(data_as_of: str) -> str:
+    """queue['data_as_of'] is a naive UTC timestamp; show it as PT."""
+    try:
+        from datetime import datetime, timezone
+        import pytz
+        dt = datetime.fromisoformat(str(data_as_of))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(pytz.timezone("America/Los_Angeles")).strftime("%b %-d, %-I:%M %p PT")
+    except Exception:
+        return str(data_as_of)
+
+
+def sync_box_html(sync: Dict, data_as_of: str = "") -> str:
+    """Green 'Synced 7:56 AM' / red 'Sync FAILED' box. Neel, 2026-09-17:
+    the flow is sync → wait → email, and the email is how he confirms the
+    sync ran; so every scan email says which sync it sits on."""
+    if not sync:
+        return ""
+    when = _sync_time(sync)
+    cost = sync.get("cost_usd")
+    cost_txt = f" · ${cost:.2f}" if isinstance(cost, (int, float)) else ""
+    if sync.get("ok"):
+        return ('<div style="margin-bottom:10px; padding:8px 12px; background:#f0fdf4; border:1px solid #bbf7d0; '
+                'border-radius:6px; font-size:13px; color:#166534;">'
+                f'<strong>Synced {when} PT</strong><span style="color:#6b7280;">{cost_txt} · full report at the bottom</span></div>')
+    return ('<div style="margin-bottom:10px; padding:8px 12px; background:#fef2f2; border:1px solid #fecaca; '
+            'border-radius:6px; font-size:13px; color:#991b1b;">'
+            f'<strong>Sync FAILED {when} PT</strong> — the recommendations below use the data already in the app'
+            + (f' (as of {_as_of_pt(data_as_of)})' if data_as_of else "")
+            + f'.<br><span style="color:#6b7280;">Log: {_esc(sync.get("log", ""))}</span></div>')
+
+
+def sync_report_html(sync: Dict) -> str:
+    if not sync or not sync.get("report"):
+        return ""
+    return ('<div style="margin-top:18px; border-top:1px solid #e5e7eb; padding-top:10px;">'
+            f'<div style="font-size:12px; color:#6b7280; margin-bottom:4px;">Sync report · {_sync_time(sync)} PT</div>'
+            f'<pre style="white-space:pre-wrap; font-size:12px; color:#374151; margin:0;">{_esc(sync["report"])}</pre></div>')
+
+
+def sync_report_plain(sync: Dict) -> str:
+    if not sync:
+        return ""
+    head = (f"Synced {_sync_time(sync)} PT" if sync.get("ok")
+            else f"SYNC FAILED {_sync_time(sync)} PT — recommendations use the data already in the app. Log: {sync.get('log', '')}")
+    return head + ("\n\n" + sync["report"] if sync.get("report") else "")
+
 _PRIORITY_STYLES = {
     "urgent": ("#dc2626", "#fee2e2"),
     "high":   ("#d97706", "#fef3c7"),
@@ -114,10 +176,10 @@ def _item_row(item: Dict) -> str:
     )
 
 
-def format_html_email(queue: Dict, scan_label: str = "") -> str:
+def format_html_email(queue: Dict, scan_label: str = "", sync: Dict = None) -> str:
     items = queue.get("items", [])
     if not items:
-        return "<p style='color:#6b7280;'>No recommendations at this time.</p>"
+        return sync_box_html(sync, queue.get("data_as_of", "")) + "<p style='color:#6b7280;'>No recommendations at this time.</p>" + sync_report_html(sync)
 
     by_account: Dict[str, List[Dict]] = {}
     for i in items:
@@ -146,7 +208,7 @@ def format_html_email(queue: Dict, scan_label: str = "") -> str:
             '</div>'
         )
     header = (
-        prem_html +
+        sync_box_html(sync, queue.get("data_as_of", "")) + prem_html +
         '<div style="margin-bottom:14px; font-size:14px; color:#374151;">'
         f'<strong>{len(items)} recommendations</strong> across {len(by_account)} accounts'
         + (f' &nbsp; <span style="color:#dc2626; font-weight:700;">{urgent} URGENT</span>' if urgent else "")
@@ -168,10 +230,10 @@ def format_html_email(queue: Dict, scan_label: str = "") -> str:
             f'<table style="width:100%; border-collapse:collapse;">{rows_html}</table>'
             "</div>"
         )
-    return header + "".join(sections)
+    return header + "".join(sections) + sync_report_html(sync)
 
 
-def format_plain_text(queue: Dict, scan_label: str = "") -> str:
+def format_plain_text(queue: Dict, scan_label: str = "", sync: Dict = None) -> str:
     items = queue.get("items", [])
     prem = queue.get("premium") or {}
     prem_txt = ""
@@ -181,7 +243,7 @@ def format_plain_text(queue: Dict, scan_label: str = "") -> str:
                     f"(sold ${t.get('sold', 0):,.0f} - bought back ${t.get('bought_back', 0):,.0f}, {t.get('fills', 0)} fills) · "
                     f"week to date {'+' if w.get('net', 0) >= 0 else '-'}${abs(w.get('net', 0)):,.0f}\n\n")
     if not items:
-        return prem_txt + "No recommendations at this time."
+        return prem_txt + "No recommendations at this time." + ("\n\n" + sync_report_plain(sync) if sync else "")
 
     by_account: Dict[str, List[Dict]] = {}
     for i in items:
@@ -205,4 +267,6 @@ def format_plain_text(queue: Dict, scan_label: str = "") -> str:
                 if rbx.get("funded") is False:
                     tag += " [NOT FUNDED]"
             lines.append(f"  [{i.get('priority', 'low').upper()}] [{i['action']}] {i['symbol']}:{tag} {i['detail']}")
+    if sync:
+        lines.append("\n" + sync_report_plain(sync))
     return "\n".join(lines)
