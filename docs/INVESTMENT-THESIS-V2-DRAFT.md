@@ -376,3 +376,18 @@ scan emails now carry V7's cards in the queue shape they always used
 SELL, SELL PUT, BUY BACK → medium; WAIT/HOLD/LET EXPIRE → low). V6 is
 one setting away. The preview page stays as the lab. This draft becomes
 the working history of V7; the spec is docs/OPTIONS-STRATEGY-V7-SPEC.md.
+
+## 2026-09-17 (Thursday) — puts on everything
+
+- Neel: "we should be selling puts on anything and everything as long as
+  it has high volatility and I can earn — include all holdings, short-
+  and long-term, in my put bucket." The 2026-09-13 rule "no puts on
+  long-term names except re-entry" is **retired**. Concentration is
+  handled by the per-name cap (short-term book) and the return/risk
+  ranking; a long-term name that assigns grows the long-term book.
+- OTM short put at expiry: roll on the last **morning** (SPCX $150: $225
+  today vs ~$280 Friday morning — the expiring put's time value bleeds
+  out overnight, the new one loses a few percent). Never Friday afternoon.
+- MSFT $450 assigns Friday instead of AAPL $322.50 (Neel): MSFT is $50
+  ITM, a same-strike roll costs a debit (rule 1); AAPL rolls for +$425.
+  Tax: MSFT gain $6,510 (~$2.4K) vs AAPL $41,605 (~$13.8K). Frees $45K.

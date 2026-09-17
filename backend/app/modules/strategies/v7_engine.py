@@ -800,9 +800,30 @@ def build_v7_queue(db: Session) -> Dict:
         if o["type"] != "put" or o["symbol"] not in price:
             continue
         sym, acct, spot, k, n = o["symbol"], o["account"], price[o["symbol"]], o["strike"], o["contracts"]
-        if spot >= k:
-            continue  # out of the money — nothing to do until expiry
         book = "long" if sym in long_term else "short" if sym in short_term else None
+        if spot >= k:
+            # Out of the money. At expiry: roll on the last MORNING — the
+            # expiring put's time value bleeds out overnight, the new one
+            # loses only a few percent (SPCX $150, 2026-09-17: $225 today,
+            # ~$280 Friday morning). Never Friday afternoon.
+            dte_p = o["dte"] if o["dte"] is not None else 5
+            if dte_p <= 1 and book is not None:
+                n_ = o["contracts"]
+                vol_p, _src = vol_of(sym)
+                # put premium next week at the same strike, via parity: put = call − S + K
+                call_px = call_premium(spot, k, vol_p, 7, 1, RATE_ATM_WEEKLY) / 100
+                put_px = max(call_px - spot + k, 0.0)
+                est = int(put_px * 100 * n_)
+                left = (o["mark"] or 0) * 100 * n_
+                card(1 if book == "long" else 2, "ROLL" if dte_p == 0 else "WAIT", acct, sym,
+                     (f"{sym} ${k:,.0f} put expires today — roll this morning: sell next week's ${k:,.0f} put" if dte_p == 0
+                      else f"{sym} ${k:,.0f} put expires tomorrow — roll Friday morning, not today"),
+                     f"{n_} contract{'s' if n_ > 1 else ''} · ${spot - k:,.2f} out of the money · ${left:,.0f} of time value left to bleed · "
+                     f"next week's est ${est:,}",
+                     "An out-of-the-money put at expiry: what you save by waiting (its last time value) is more than the new "
+                     "put loses to a day of decay, so roll on the last morning, not before — and never Friday afternoon.",
+                     earn=est if dte_p == 0 else None)
+            continue
         intrinsic = k - spot
         mark = o["mark"]
         tv = (mark - intrinsic) if mark is not None else None
@@ -900,12 +921,20 @@ def build_v7_queue(db: Session) -> Dict:
     put_exp = today + timedelta(days=put_dte)
     put_candidates = []
     concentrated = []
-    for sym in sorted(short_term):
+    # Every name held, both books (Neel, 2026-09-17: "puts on anything and
+    # everything as long as it has high volatility and I can earn"). The
+    # concentration cap applies to short-term names (share of the
+    # short-term book); a long-term name that assigns just grows the
+    # long-term book, which is what it is for.
+    held_syms = {s_ for (_, s_) in holdings.keys() if s_ not in ignore}
+    put_universe = sorted((long_term | short_term) & (held_syms | set(price)))
+    for sym in put_universe:
         spot = price.get(sym)
         if not spot:
             continue
-        sym_pct = st_by_sym.get(sym, 0.0) / book_total * 100
-        if sym_pct >= max_sym_pct:
+        book = "short" if sym in short_term else "long"
+        sym_pct = st_by_sym.get(sym, 0.0) / book_total * 100 if book == "short" else 0.0
+        if book == "short" and sym_pct >= max_sym_pct:
             concentrated.append(f"{sym} {sym_pct:.0f}%")
             continue
         any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None) or "neel_brokerage"
@@ -944,7 +973,7 @@ def build_v7_queue(db: Session) -> Dict:
         depressed = vs_sma is not None and vs_sma <= -thr
         if depressed:
             score *= K(pol, "put_depressed_bonus")
-        put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "vol": vol, "vs_sma": vs_sma,
+        put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "vol": vol, "vs_sma": vs_sma, "book": book,
                                "book_pct": sym_pct, "delta": delta, "why": why, "strike": strike,
                                "put_px": put_px, "yield_wk": yld_wk, "score": score, "depressed": depressed})
     put_candidates.sort(key=lambda c: -c["score"])
@@ -970,11 +999,12 @@ def build_v7_queue(db: Session) -> Dict:
             est = int(p["put_px"] * 100 * n)
             card(3, "SELL PUT", acct, p["symbol"],
                  f"{p['symbol']}: sell {n} put{'s' if n > 1 else ''} at ~${p['strike']:,.0f} (delta {p['delta']}, #{rank} by return/risk"
-                 + (", depressed" if p["depressed"] else "") + f", {p['book_pct']:.0f}% of the book)",
+                 + (", depressed" if p["depressed"] else "")
+                 + (f", {p['book_pct']:.0f}% of the short-term book)" if p["book"] == "short" else ", long-term name)"),
                  f"exp {_fmt_exp(put_exp)} · collateral ${p['strike'] * 100 * n:,.0f} of ${capacity:,.0f} undeployed"
                  + (" (margin-backed)" if line else " (cash-secured)")
                  + f" · est ${est:,} · {p['yield_wk']:.1f}%/wk on collateral · {p['why']}",
-                 "Layer 3: puts on the short-term list against cash and margin. The put delta is the mirror of the "
+                 "Layer 3: puts on every name you hold, both books, against cash and margin. The put delta is the mirror of the "
                  "call rule — a depressed or oversold name gets a closer put, an extended one a farther put — scaled "
                  "by the name's own volatility. Candidates are ranked by return per unit of risk (weekly yield on "
                  f"collateral ÷ volatility, ×{K(pol, 'put_depressed_bonus'):.2f} when ≥{K(pol, 'mr_threshold_pct'):.0f}% below the 10-day average): "

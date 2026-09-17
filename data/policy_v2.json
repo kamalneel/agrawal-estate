@@ -72,8 +72,8 @@
       "rule_4_when_to_roll": "Neel, 2026-09-15. Roll THURSDAY by default; Friday morning if RSI > 70; immediately if the expiring contract's time value is <= $0.10/share (early-exercise floor) or the ex-dividend rule applies. Never Friday afternoon. Why: the same-strike credit is TV(next) - TV(this); TV(this) decays fastest in its last days so the credit grows through the week (AAPL $315: ~$0.75 Tue -> ~$0.98 Thu), and every un-rolled day is a day the dip can settle it for free. Rolling out early (or 2 weeks) leaves an at-the-money call to buy back at maximum time value when the dip comes - the fatter 2-week credit is the market paying for exactly that risk. Down moves early in the week are waited out, not rolled."
     },
     "puts": {
-      "rule": "Only to re-enter after a call assignment. Never to acquire. If such a put is assigned, the shares are simply held.",
-      "buy_gaps": "Filled by buying shares from trim proceeds, never by selling puts (taken as settled 2026-09-13; Neel's 'the only reason to sell a put on a trillion-dollar stock is reassignment')."
+      "rule": "Neel 2026-09-17: 'we should be selling puts on anything and everything as long as it has high volatility and I can earn.' Puts are allowed on long-term names; the put universe is every holding, ranked by return per unit of risk. If assigned, the shares are held (long-term book). The earlier 'no puts on long-term names' rule (2026-09-13) is retired.",
+      "buy_gaps": "Filled by buying shares from trim proceeds; a put on a long-term name that assigns is a fine way to fill one too."
     }
   },
   "short_term": {
