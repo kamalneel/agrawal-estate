@@ -164,12 +164,12 @@
       },
       {
         "account": "Neel's Brokerage",
-        "symbol": "AAPL",
-        "strike": 322.5,
+        "symbol": "MSFT",
+        "strike": 450.0,
         "expiration": "2026-09-18",
-        "contracts": 2,
-        "reason": "200 sh -> ~$64.5K takes Neel's $74K margin to about zero; every AAPL lot is ~$108 so ~$43K long-term gain is unavoidable and accepted.",
-        "decided": "2026-09-13"
+        "contracts": 1,
+        "reason": "Swapped for the AAPL $322.50 plan (Neel, 2026-09-17): MSFT is $50 ITM and a same-strike roll costs a debit (rule 1: never pay to roll), while AAPL $322.50 rolls for +$425. Assignment frees $45K of margin; gain $6,510 (~$2,400 tax, Highest Cost delivers the $492.67 and $418 lots first) vs AAPL's $41,605. Leaves 0 MSFT against a 200-share long-term target — re-entry put allowed afterwards.",
+        "decided": "2026-09-17"
       }
     ]
   },
