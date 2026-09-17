@@ -969,7 +969,14 @@ def build_v7_queue(db: Session) -> Dict:
             strike = float(round(spot))
             put_px = weekly_premium(1, spot, RATE_ATM_WEEKLY) / 100
         yld_wk = put_px / strike * 100 * 7 / put_dte if strike else 0.0
-        score = (yld_wk / (vol * 100) * 100) if vol else yld_wk
+        # Score = weekly yield on collateral at the rule's delta. Risk is
+        # already in the delta (a 40 is a 40 on every name, and volatile
+        # names get a lower one); dividing by volatility again cancelled it
+        # and left every name at ~3.7 (Neel, 2026-09-17: IBIT #3 at $61 a
+        # contract while MU paid $1,976). Yield is the potential.
+        score = yld_wk
+        if put_px * 100 < K(pol, "put_min_premium_per_contract"):
+            continue  # not worth a slot
         depressed = vs_sma is not None and vs_sma <= -thr
         if depressed:
             score *= K(pol, "put_depressed_bonus")
@@ -977,7 +984,7 @@ def build_v7_queue(db: Session) -> Dict:
                                "book_pct": sym_pct, "delta": delta, "why": why, "strike": strike,
                                "put_px": put_px, "yield_wk": yld_wk, "score": score, "depressed": depressed})
     put_candidates.sort(key=lambda c: -c["score"])
-    ranking_txt = " > ".join(f"{c['symbol']} {c['score']:.2f}" for c in put_candidates)
+    ranking_txt = " > ".join(f"{c['symbol']} {c['score']:.2f}%/wk" for c in put_candidates)
 
     for acct in sorted(cash, key=_acct_rank):
         c = cash[acct]
@@ -992,10 +999,16 @@ def build_v7_queue(db: Session) -> Dict:
                  "The 20% cap, not judgement per name, is what bounds the risk to the long-term shares that "
                  "secure the margin. Capacity waits until a short-term position leaves.")
             continue
-        picks = [p for p in put_candidates if p["strike"] * 100 <= capacity][:2]
-        for rank, p in enumerate(picks, 1):
-            n = max(1, int(capacity // (p["strike"] * 100)))
-            n = min(n, int(K(pol, "put_max_contracts")))
+        # best yield that FITS, sized to the capacity, then the next with what is left
+        picks, remaining = [], capacity
+        for p in put_candidates:
+            if p["strike"] * 100 > remaining:
+                continue
+            n = min(int(remaining // (p["strike"] * 100)), int(K(pol, "put_max_contracts")))
+            picks.append((p, n)); remaining -= p["strike"] * 100 * n
+            if len(picks) == 2 or remaining < K(pol, "put_min_capacity"):
+                break
+        for rank, (p, n) in enumerate(picks, 1):
             est = int(p["put_px"] * 100 * n)
             card(3, "SELL PUT", acct, p["symbol"],
                  f"{p['symbol']}: sell {n} put{'s' if n > 1 else ''} at ~${p['strike']:,.0f} (delta {p['delta']}, #{rank} by return/risk"
@@ -1006,8 +1019,9 @@ def build_v7_queue(db: Session) -> Dict:
                  + f" · est ${est:,} · {p['yield_wk']:.1f}%/wk on collateral · {p['why']}",
                  "Layer 3: puts on every name you hold, both books, against cash and margin. The put delta is the mirror of the "
                  "call rule — a depressed or oversold name gets a closer put, an extended one a farther put — scaled "
-                 "by the name's own volatility. Candidates are ranked by return per unit of risk (weekly yield on "
-                 f"collateral ÷ volatility, ×{K(pol, 'put_depressed_bonus'):.2f} when ≥{K(pol, 'mr_threshold_pct'):.0f}% below the 10-day average): "
+                 "by the name's own volatility, so risk is in the delta. Candidates are then ranked by weekly yield on "
+                 f"collateral at that delta (×{K(pol, 'put_depressed_bonus'):.2f} when ≥{K(pol, 'mr_threshold_pct'):.0f}% below the 10-day average), "
+                 "and the best yield that fits the account's capacity is sized to it: "
                  f"{ranking_txt}. Names at or above {max_sym_pct:.0f}% of the book are skipped"
                  + (f" (today: {', '.join(concentrated)})" if concentrated else "") + ". "
                  "Capacity = margin line + cash − open collateral − margin already drawn.",

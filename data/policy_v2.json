@@ -426,10 +426,10 @@
       "max": 50000
     },
     "put_max_contracts": {
-      "value": 2,
+      "value": 4,
       "label": "Put: max contracts per card",
       "group": "Short-term puts",
-      "description": "",
+      "description": "Position is sized to the account's undeployed capacity, up to this many contracts per card.",
       "unit": "contracts",
       "step": 1,
       "min": 1,
@@ -539,7 +539,7 @@
       "value": 1.25,
       "label": "Put ranking: depressed-name bonus",
       "group": "Short-term puts",
-      "description": "Multiplier on the return/risk score for a name at least the mean-reversion threshold below its 10-day average (its further downside is the weaker case). Neel 2026-09-16, ZM at its monthly low.",
+      "description": "Multiplier on the yield score for a name at least the mean-reversion threshold below its 10-day average.",
       "unit": "×",
       "step": 0.05,
       "min": 1,
@@ -574,6 +574,16 @@
       "step": 0.05,
       "min": 0,
       "max": 1
+    },
+    "put_min_premium_per_contract": {
+      "value": 100,
+      "label": "Put: minimum $ per contract",
+      "group": "Short-term puts",
+      "description": "A put paying less than this per contract is not worth a slot (IBIT at $61 ranked #3 on 2026-09-17).",
+      "unit": "$",
+      "step": 25,
+      "min": 0,
+      "max": 1000
     }
   }
 }
