@@ -130,9 +130,14 @@ export default function Spending() {
       setYears(yrs);
       setFreshness(f);
       setOutflows(o);
-      const lcm = f?.last_complete_month;
-      if (lcm && yrs.includes(lcm.year)) { setYear(lcm.year); setMonth(lcm.month); }
-      else if (yrs.length) { setYear(yrs[0]); setMonth(null); }
+      // Open on the latest month that has any data (Neel, 2026-09-17), even
+      // if partial — the headline says "partial, through <date>" and the
+      // average-month comparison waits until the month is complete.
+      const latest = f?.data_through ?? f?.monarch_through ?? null;
+      if (latest && yrs.includes(Number(latest.slice(0, 4)))) {
+        setYear(Number(latest.slice(0, 4)));
+        setMonth(Number(latest.slice(5, 7)));
+      } else if (yrs.length) { setYear(yrs[0]); setMonth(null); }
     })();
   }, []);
 
@@ -197,7 +202,7 @@ export default function Spending() {
   // Baseline for the month view: this month's recurring vs the year's
   // average recurring month (L2 seed — "is this month normal?").
   const baseline = useMemo(() => {
-    if (!isMonth || !summary || !yearSummary || yearSummary.months_with_data < 2) return null;
+    if (!isMonth || !summary || !summary.period_complete || !yearSummary || yearSummary.months_with_data < 2) return null;
     const avg = yearSummary.avg_monthly;
     if (!avg) return null;
     return { avg, delta: (summary.recurring_spending - avg) / avg };
@@ -256,7 +261,8 @@ export default function Spending() {
           <div className={styles.headline}>
             <div>
               <div className={styles.headlineLabel}>
-                Total spend — {periodLabel}{!summary.period_complete && ' (partial)'}
+                Total spend — {periodLabel}
+                {!summary.period_complete && ` (partial, through ${dataThrough ? fmtDate(dataThrough) : '—'})`}
               </div>
               <div className={styles.headlineValue}>{fmt(summary.total_spending)}</div>
               <div className={styles.headlineSplit}>
@@ -412,15 +418,18 @@ export default function Spending() {
                       <tr><th className={styles.left}>Category</th><th>Amount</th><th>%</th><th style={{ width: '28%' }}></th></tr>
                     </thead>
                     <tbody>
-                      {monthlyCats.map((c, i) => (
-                        <CategoryTr key={c.category} c={c} color={chartColor(summary.categories.indexOf(c))} selected={filterCategory === c.category} onClick={() => pickCategory(c.category)} idx={i} />
+                      {/* One list, biggest first. Grouping one-offs at the
+                          bottom buried September's $15,000 of taxes under
+                          twenty-five everyday rows ("where did the tax
+                          expense go?", 2026-09-17). */}
+                      {summary.categories.map((c, i) => (
+                        <CategoryTr key={c.category} c={c} color={chartColor(i)} selected={filterCategory === c.category} onClick={() => pickCategory(c.category)} idx={i} />
                       ))}
                       {nonMonthlyCats.length > 0 && (
-                        <tr className={styles.groupRow}><td className={styles.left} colSpan={4}>Non-monthly · {fmt(nonMonthlyCats.reduce((s, c) => s + c.total, 0))}</td></tr>
+                        <tr className={styles.groupRow}><td className={styles.left} colSpan={4}>
+                          of which non-monthly (taxes, insurance, trips, one-offs) · {fmt(nonMonthlyCats.reduce((s, c) => s + c.total, 0))} · recurring {fmt(monthlyCats.reduce((s, c) => s + c.total, 0))}
+                        </td></tr>
                       )}
-                      {nonMonthlyCats.map((c, i) => (
-                        <CategoryTr key={c.category} c={c} color={chartColor(summary.categories.indexOf(c))} selected={filterCategory === c.category} onClick={() => pickCategory(c.category)} idx={i} />
-                      ))}
                       <tr className={styles.totalRow}>
                         <td className={styles.left}>Total</td>
                         <td className={styles.negative}>{fmt(summary.total_spending)}</td>
@@ -583,11 +592,12 @@ function CategoryTr({ c, color, selected, onClick, idx }: {
       <td className={styles.left}>
         <span className={styles.dot} style={{ background: color }} />
         {c.category}
+        {!c.is_monthly && <span className={styles.badge} style={{ marginLeft: 'var(--space-2)' }} title="Non-monthly: taxes, insurance, trips, one-offs. Counted in the total, left out of the recurring average.">one-off</span>}
         {c.refunds > 0 && <span className={`${styles.muted} ${styles.small}`}> · {fmt(c.refunds)} refunded</span>}
       </td>
-      <td className={styles.negative}>{fmt(c.total)}</td>
-      <td className={styles.muted}>{c.percent}%</td>
-      <td><div className={styles.bar}><div className={styles.barFill} style={{ width: `${Math.min(100, c.percent)}%`, background: color }} /></div></td>
+      <td className={c.total < 0 ? styles.positive : styles.negative}>{c.total < 0 ? '+' : ''}{fmt(Math.abs(c.total))}</td>
+      <td className={styles.muted}>{c.total < 0 ? '' : `${c.percent}%`}</td>
+      <td><div className={styles.bar}><div className={styles.barFill} style={{ width: `${Math.min(100, Math.max(0, c.percent))}%`, background: color }} /></div></td>
     </tr>
   );
 }
