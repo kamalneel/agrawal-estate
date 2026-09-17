@@ -42,10 +42,16 @@ PROMPT="/refresh
 Scheduled headless run. Write the two bundle JSON files to $BUNDLES (not a scratchpad). Do every step of the skill including assignment detection and the post-verify. Skip the price-history and earnings-calendar refreshes unless the skill's own conditions say to run them. Finish with a report of at most 15 lines that starts with the line SYNC OK, or SYNC FAILED followed by why, if any gate or save did not pass."
 
 echo "$(date) start" >> "$LOG"
+# hard stop: a headless run that hangs (a prompt it cannot answer, a stuck
+# MCP call) must not sit forever and block the next slot — 2026-09-17 the
+# 7:05 run hung for 3 hours with 5s of CPU. 20 minutes is 4x a normal run.
+( sleep 1200; pkill -P $$ claude 2>/dev/null; pkill -f "claude -p /refresh" 2>/dev/null ) &
+WATCHDOG=$!
 RESULT=$(claude -p "$PROMPT" \
   --allowedTools "mcp__robinhood-trading-jaya,mcp__robinhood-trading-neel,Skill,ToolSearch,Read,Write,Bash(python3 scripts/robinhood_mcp_bridge.py:*),Bash(curl:*),Bash(backend/venv/bin/python:*),Bash(cd:*),Bash(mkdir:*),Bash(ls:*),Bash(cat:*)" \
   --max-turns 120 --output-format json 2>>"$LOG")
 STATUS=$?
+kill $WATCHDOG 2>/dev/null
 echo "$RESULT" >> "$LOG"
 
 backend/venv/bin/python - "$RESULT" "$STATUS" "$LOG" <<'PY'
