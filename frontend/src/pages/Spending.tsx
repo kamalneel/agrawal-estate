@@ -62,6 +62,13 @@ interface Txn {
 }
 interface TxnPage { transactions: Txn[]; total: number; total_amount: number; page: number; total_pages: number }
 interface Filters { categories: string[]; accounts: { account: string; display: string }[]; merchants: string[] }
+interface RecurringCharge {
+  key: string; merchant: string; category: string; account: string; kind: 'fixed' | 'subscription';
+  cadence: string; charge: number; per_year: number; count: number; first: string; last: string;
+  decision: 'keep' | 'cancel' | 'check' | null; decision_date: string | null; note: string | null;
+  charged_after_cancel: boolean; stopped: boolean;
+}
+interface Recurring { as_of: string; months: number; charges: RecurringCharge[]; total_per_year: number; undecided: number }
 
 /* ─── helpers ──────────────────────────────────────────────── */
 
@@ -110,6 +117,9 @@ export default function Spending() {
   const [yearSummary, setYearSummary] = useState<Summary | null>(null);
   const [filters, setFilters] = useState<Filters | null>(null);
   const [txns, setTxns] = useState<TxnPage | null>(null);
+  const [recurring, setRecurring] = useState<Recurring | null>(null);
+  const [showFixed, setShowFixed] = useState(false);
+  const [showStopped, setShowStopped] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState('');
@@ -156,6 +166,17 @@ export default function Spending() {
 
   useEffect(() => { setPage(1); }, [search, filterCategory, filterAccount, filterType, year, month]);
 
+  useEffect(() => { getJson<Recurring>(`${API}/recurring`).then(setRecurring); }, []);
+  const decide = async (key: string, decision: 'keep' | 'cancel' | 'check' | 'clear') => {
+    try {
+      const r = await fetch(`${API}/recurring/decision`, {
+        method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, decision }),
+      });
+      if (r.ok) { setRecurring(await r.json()); if (year !== null) getJson<Summary>(`${API}/summary/${year}${month ? `?month=${month}` : ''}`).then(setSummary); }
+    } catch { /* leave as is */ }
+  };
+
   const fetchTxns = useCallback(async () => {
     if (year === null) return;
     const p = new URLSearchParams({ year: String(year), page: String(page), page_size: '50' });
@@ -180,8 +201,10 @@ export default function Spending() {
   const monthlyCats = summary?.categories.filter(c => c.is_monthly) ?? [];
   const nonMonthlyCats = summary?.categories.filter(c => !c.is_monthly) ?? [];
 
+  // Recurring spend only — annual and one-time items have their own section
+  // (Neel, 2026-09-18: "it will get muddied").
   const donut = useMemo(() => {
-    const cats = summary?.categories ?? [];
+    const cats = (summary?.categories ?? []).filter(c => c.is_monthly);
     const top = cats.slice(0, 8).map((c, i) => ({ name: c.category, value: c.total, color: chartColor(i) }));
     const rest = cats.slice(8).reduce((s, c) => s + c.total, 0);
     if (rest > 0) top.push({ name: `Other (${cats.length - 8})`, value: rest, color: 'var(--color-text-tertiary)' });
@@ -399,11 +422,40 @@ export default function Spending() {
               </div>
             )}
 
+            {/* Annual and one-time — kept apart from month-to-month spend so
+                neither muddies the other (Neel, 2026-09-18). Sums with the
+                recurring categories to the headline. */}
+            {summary.non_monthly_breakdown.length > 0 && (
+              <div className={styles.card}>
+                <h3 className={styles.cardTitle}>Annual and one-time — {periodLabel}</h3>
+                <p className={styles.cardSubtitle}>Taxes, insurance, trips and one-offs · counted in the total, left out of the recurring average</p>
+                <div className={styles.tableContainer}>
+                  <table className={styles.table}>
+                    <thead><tr><th className={styles.left}>Item</th><th>#</th><th>Amount</th></tr></thead>
+                    <tbody>
+                      {summary.non_monthly_breakdown.map(n => (
+                        <tr key={n.label} className={styles.rowClickable} onClick={() => { if (n.type === 'category') pickCategory(n.label); else { setFilterType('non_monthly'); txnRef.current?.scrollIntoView({ behavior: 'smooth' }); } }}>
+                          <td className={styles.left}>{n.label}{n.type === 'trip' && <span className={styles.badge} style={{ marginLeft: 'var(--space-2)' }}>trip</span>}</td>
+                          <td className={styles.muted}>{n.count}</td>
+                          <td className={n.total < 0 ? styles.positive : styles.negative}>{fmt(n.total)}</td>
+                        </tr>
+                      ))}
+                      <tr className={styles.totalRow}>
+                        <td className={styles.left}>Annual and one-time total</td>
+                        <td></td>
+                        <td className={styles.negative}>{fmt(summary.non_monthly_spending)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {/* L3 — composition */}
             <div className={styles.twoColumn}>
               <div className={styles.card}>
-                <h3 className={styles.cardTitle}>Where it went</h3>
-                <p className={styles.cardSubtitle}>Top 8 categories, rest grouped</p>
+                <h3 className={styles.cardTitle}>Where the recurring spend went</h3>
+                <p className={styles.cardSubtitle}>Top 8 recurring categories, rest grouped</p>
                 <div className={styles.chartContainer}>
                   <ResponsiveContainer width="100%" height={300}>
                     <PieChart>
@@ -418,8 +470,8 @@ export default function Spending() {
               </div>
 
               <div className={styles.card}>
-                <h3 className={styles.cardTitle}>Categories</h3>
-                <p className={styles.cardSubtitle}>Every category, ties to the headline · click to see its transactions</p>
+                <h3 className={styles.cardTitle}>Recurring categories</h3>
+                <p className={styles.cardSubtitle}>Month-to-month spend only · click a row for its transactions</p>
                 <div className={`${styles.tableContainer} ${styles.scrollY}`}>
                   <table className={styles.table}>
                     <thead>
@@ -430,19 +482,19 @@ export default function Spending() {
                           bottom buried September's $15,000 of taxes under
                           twenty-five everyday rows ("where did the tax
                           expense go?", 2026-09-17). */}
-                      {summary.categories.map((c, i) => (
+                      {monthlyCats.map((c, i) => (
                         <CategoryTr key={c.category} c={c} color={chartColor(i)} selected={filterCategory === c.category} onClick={() => pickCategory(c.category)} idx={i} />
                       ))}
+                      <tr className={styles.totalRow}>
+                        <td className={styles.left}>Recurring total</td>
+                        <td className={styles.negative}>{fmt(summary.recurring_spending)}</td>
+                        <td></td><td></td>
+                      </tr>
                       {nonMonthlyCats.length > 0 && (
                         <tr className={styles.groupRow}><td className={styles.left} colSpan={4}>
-                          of which non-monthly (taxes, insurance, trips, one-offs) · {fmt(nonMonthlyCats.reduce((s, c) => s + c.total, 0))} · recurring {fmt(monthlyCats.reduce((s, c) => s + c.total, 0))}
+                          + annual and one-time {fmt(summary.non_monthly_spending)} (section above) = {fmt(summary.total_spending)}
                         </td></tr>
                       )}
-                      <tr className={styles.totalRow}>
-                        <td className={styles.left}>Total</td>
-                        <td className={styles.negative}>{fmt(summary.total_spending)}</td>
-                        <td>100%</td><td></td>
-                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -489,27 +541,64 @@ export default function Spending() {
                     </tbody>
                   </table>
                 </div>
-                {summary.non_monthly_breakdown.length > 0 && (
-                  <>
-                    <h3 className={styles.cardTitle} style={{ marginTop: 'var(--space-5)' }}>Non-monthly detail</h3>
-                    <p className={styles.cardSubtitle}>Trips (all spend inside the dates) and one-off categories</p>
-                    <div className={styles.tableContainer}>
-                      <table className={styles.table}>
-                        <tbody>
-                          {summary.non_monthly_breakdown.map(n => (
-                            <tr key={n.label}>
-                              <td className={styles.left}>{n.label}{n.type === 'trip' && <span className={styles.badge} style={{ marginLeft: 'var(--space-2)' }}>trip</span>}</td>
-                              <td className={styles.muted}>{n.count}</td>
-                              <td className={styles.negative}>{fmt(n.total)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
               </div>
             </div>
+
+            {/* Recurring charges — the "am I paying for something I forgot?"
+                review (Neel, 2026-09-17). Detector + decisions live in the
+                backend; this is where the decisions get made. */}
+            {recurring && (() => {
+              const active = recurring.charges.filter(c => !c.stopped);
+              const subs = active.filter(c => c.kind === 'subscription');
+              const fixed = active.filter(c => c.kind === 'fixed');
+              const stopped = recurring.charges.filter(c => c.stopped);
+              const Row = ({ c }: { c: RecurringCharge }) => (
+                <tr key={c.key} className={c.charged_after_cancel ? styles.rowSelected : undefined}>
+                  <td className={styles.left}>
+                    {c.merchant}
+                    {c.decision === null && <span className={`${styles.badge} ${styles.badgeWarn}`} style={{ marginLeft: 'var(--space-2)' }}>new</span>}
+                    {c.charged_after_cancel && <span className={`${styles.flag} ${styles.flagCritical}`} style={{ marginLeft: 'var(--space-2)' }}>charged after cancel</span>}
+                  </td>
+                  <td className={styles.left}><span className={styles.badge}>{c.category}</span></td>
+                  <td className={styles.muted}>{c.cadence}</td>
+                  <td>{fmtFull(c.charge)}</td>
+                  <td className={styles.negative}>{fmt(c.per_year)}</td>
+                  <td className={`${styles.muted} ${styles.small}`}>{fmtDate(c.last)}</td>
+                  <td className={`${styles.left} ${styles.small}`} style={{ whiteSpace: 'nowrap' }}>
+                    {(['keep', 'cancel', 'check'] as const).map(d => (
+                      <button key={d} className={`${styles.pill} ${c.decision === d ? styles.active : ''}`} style={{ padding: '2px 8px', marginRight: 4 }}
+                        onClick={() => decide(c.key, c.decision === d ? 'clear' : d)}>{d}</button>
+                    ))}
+                  </td>
+                </tr>
+              );
+              const Head = () => (
+                <thead><tr><th className={styles.left}>Merchant</th><th className={styles.left}>Category</th><th>Cadence</th><th>Charge</th><th>$/yr</th><th>Last</th><th className={styles.left}>Decision</th></tr></thead>
+              );
+              return (
+                <div className={styles.card}>
+                  <h3 className={styles.cardTitle}>Recurring charges</h3>
+                  <p className={styles.cardSubtitle}>
+                    Steady, cadenced charges over the last {recurring.months} months · {fmt(subs.reduce((s, c) => s + c.per_year, 0))}/yr in subscriptions, {fmt(fixed.reduce((s, c) => s + c.per_year, 0))}/yr in fixed costs
+                    {recurring.undecided > 0 && ` · ${recurring.undecided} not yet decided`} · a cancelled charge that bills again turns red on the headline
+                  </p>
+                  <div className={styles.tableContainer}>
+                    <table className={styles.table}>
+                      <Head />
+                      <tbody>{subs.map(c => <Row key={c.key} c={c} />)}</tbody>
+                    </table>
+                  </div>
+                  <details open={showFixed} onToggle={e => setShowFixed((e.target as HTMLDetailsElement).open)} style={{ marginTop: 'var(--space-3)' }}>
+                    <summary className={`${styles.muted} ${styles.small}`} style={{ cursor: 'pointer' }}>Fixed living costs ({fixed.length}) — rent, school, insurance, phone, gym, car</summary>
+                    <div className={styles.tableContainer}><table className={styles.table}><Head /><tbody>{fixed.map(c => <Row key={c.key} c={c} />)}</tbody></table></div>
+                  </details>
+                  <details open={showStopped} onToggle={e => setShowStopped((e.target as HTMLDetailsElement).open)} style={{ marginTop: 'var(--space-2)' }}>
+                    <summary className={`${styles.muted} ${styles.small}`} style={{ cursor: 'pointer' }}>Stopped ({stopped.length}) — nothing for two cycles, probably already gone</summary>
+                    <div className={styles.tableContainer}><table className={styles.table}><Head /><tbody>{stopped.map(c => <Row key={c.key} c={c} />)}</tbody></table></div>
+                  </details>
+                </div>
+              );
+            })()}
 
             {/* L5 — transactions */}
             <div className={styles.card} ref={txnRef}>

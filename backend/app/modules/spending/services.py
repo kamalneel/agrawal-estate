@@ -529,6 +529,16 @@ def get_spending_transactions(
     }
 
 
+def _cancelled_since() -> dict[str, date]:
+    """merchant-key -> date Neel cancelled it. Page decisions first, then
+    the seed list in models (kept for history)."""
+    out = dict(CANCELLED_SUBSCRIPTIONS)
+    for key, d in load_decisions().items():
+        if d.get("decision") == "cancel":
+            out[key] = date.fromisoformat(d["date"])
+    return out
+
+
 def get_spending_summary(db: Session, year: int, month: Optional[int] = None) -> dict:
     """Everything the page's upper levels need for one period, from one row
     set, so every figure ties to the headline to the cent."""
@@ -641,13 +651,15 @@ def get_spending_summary(db: Session, year: int, month: Optional[int] = None) ->
         "missing_recurring": [],
         "holes": find_holes(db, year, month),
         # A merchant Neel said he cancelled, still charging after that date.
+        # Cancellations come from the Recurring charges review on the page
+        # (data/subscription_decisions.json) plus the seed in models.
         "cancelled_but_charged": [
             {"date": r["date"].isoformat(), "merchant": r["merchant"],
              "amount": round(-r["amount"], 2)}
             for r in rows
             if r["amount"] < 0 and any(
                 k in (r["merchant"] or "").lower() and r["date"] > since
-                for k, since in CANCELLED_SUBSCRIPTIONS.items())
+                for k, since in _cancelled_since().items())
         ],
     }
     # Missing-recurring detector, complete months only: a month without rent
@@ -772,4 +784,162 @@ def get_outflows(db: Session) -> dict:
         "as_of": str(as_of) if as_of else None,
         "monarch_through": str(through) if through else None,
         "months": out,
+    }
+
+
+# ── Recurring charges (the "am I paying for something I forgot?" review) ──
+
+#: Neel's decisions per recurring charge, keyed by merchant key. Lives in
+#: data/ like goal_settings.json: a manual input the ledger cannot know.
+#: {"<key>": {"decision": "keep"|"cancel"|"check", "date": "YYYY-MM-DD",
+#:            "note": "..."}}
+DECISIONS_PATH = None  # resolved lazily from settings.DATA_DIR
+
+
+def _decisions_path():
+    from app.core.config import settings
+    return settings.DATA_DIR / "subscription_decisions.json"
+
+
+def load_decisions() -> dict:
+    import json
+    try:
+        return json.loads(_decisions_path().read_text())
+    except Exception:
+        return {}
+
+
+def save_decision(key: str, decision: str, note: Optional[str] = None) -> dict:
+    import json
+    if decision not in ("keep", "cancel", "check", "clear"):
+        raise ValueError("decision must be keep, cancel, check or clear")
+    d = load_decisions()
+    if decision == "clear":
+        d.pop(key, None)
+    else:
+        d[key] = {"decision": decision, "date": date.today().isoformat(),
+                  **({"note": note} if note else {})}
+    _decisions_path().write_text(json.dumps(d, indent=2, sort_keys=True))
+    return d
+
+
+def _recurring_key(merchant: Optional[str]) -> str:
+    """Two words of the merchant, letters and digits only, minus corporate
+    filler — stable across Monarch's spellings ("Blue Bottle Coffee, Inc"
+    and "Blue Bottle Coffee" are one key)."""
+    s = "".join(ch if ch.isalnum() or ch == " " else " " for ch in (merchant or "").lower())
+    words = [w for w in s.split() if w not in ("the", "inc", "llc", "co", "com", "corp")]
+    return " ".join(words[:2])
+
+
+#: Recurring lines that are living costs, not subscriptions. Shown second
+#: in the review; they are not cancel candidates.
+FIXED_COST_LABELS = {
+    "Home Rent", "Education", "Alisha's Education", "Insurance", "Phone",
+    "Internet & Cable", "Gym", "Auto", "Auto Payment", "Child Activities",
+    "Neel's Medication", "Massage", "Dog sitter", "Household Help",
+    "Home Utility", "Taxes", "Financial Fees",
+}
+
+
+def recurring_charges(db: Session, months: int = 15) -> dict:
+    """Every steady, cadenced charge in the last `months`, with Neel's
+    decision. Two passes: whole-merchant (steady amount, monthly /
+    quarterly / yearly cadence) and merchant+exact-amount (a $9.99 Apple
+    subscription hiding among varied Apple purchases). This is the
+    detector from docs/MONARCH-CATEGORIZATION-AUDIT-2026-09.md, made a
+    page so the review is not a one-off in a chat."""
+    import statistics
+    since = date.today() - timedelta(days=30 * months)
+    rows = [r for r in spending_rows(db, since=since) if r["amount"] < 0]
+    decisions = load_decisions()
+
+    def cadence(gaps: list, n: int):
+        if not gaps:
+            return None, 0
+        med = statistics.median(gaps)
+        if n >= 4 and 26 <= med <= 35:
+            return "monthly", 12
+        if n >= 8 and 6 <= med <= 8:
+            return "weekly", 52
+        if n >= 3 and 84 <= med <= 100:
+            return "quarterly", 4
+        if n >= 2 and 350 <= med <= 380:
+            return "yearly", 1
+        return None, 0
+
+    found: dict[str, dict] = {}
+
+    def consider(key: str, xs: list, exact_amount: bool):
+        xs.sort(key=lambda r: r["date"])
+        gaps = [(b["date"] - a["date"]).days for a, b in zip(xs, xs[1:])]
+        amts = [-r["amount"] for r in xs]
+        spread = (max(amts) - min(amts)) / max(amts) if max(amts) else 1
+        if spread > 0.3:
+            return
+        cad, per_year = cadence(gaps, len(xs))
+        if not cad:
+            return
+        charge = statistics.median(amts)
+        last = xs[-1]
+        entry = {
+            "key": key,
+            "merchant": last["merchant"],
+            "category": last["label"],
+            # fixed living cost vs. a subscription you could forget about
+            "kind": "fixed" if last["label"] in FIXED_COST_LABELS else "subscription",
+            "account": ACCOUNT_NAMES.get(last["account"], last["account"]),
+            "cadence": cad,
+            "charge": round(charge, 2),
+            "per_year": round(charge * per_year, 2),
+            "count": len(xs),
+            "first": xs[0]["date"].isoformat(),
+            "last": last["date"].isoformat(),
+            "exact_amount": exact_amount,
+        }
+        # keep the bigger picture per key: whole-merchant beats exact-amount
+        if key not in found or (not exact_amount and found[key]["exact_amount"]):
+            found[key] = entry
+
+    by_merchant: dict[str, list] = defaultdict(list)
+    by_merchant_amount: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        k = _recurring_key(r["merchant"])
+        if not k:
+            continue
+        by_merchant[k].append(r)
+        by_merchant_amount[(k, round(-r["amount"], 2))].append(r)
+    for k, xs in by_merchant.items():
+        if len(xs) >= 2:
+            consider(k, xs, exact_amount=False)
+    for (k, amt), xs in by_merchant_amount.items():
+        # One merchant can carry several subscriptions (Apple: $20, $12.99,
+        # $11.98, $7.49, $2.99, $1.99 a month) — each fixed amount is its
+        # own line, keyed "apple @12.99".
+        if len(xs) >= 3 and amt <= 500 and k not in found:
+            consider(f"{k} @{amt:.2f}", xs, exact_amount=True)
+
+    today = date.today()
+    out = []
+    for e in found.values():
+        dec = decisions.get(e["key"])
+        e["decision"] = dec["decision"] if dec else None
+        e["decision_date"] = dec["date"] if dec else None
+        e["note"] = dec.get("note") if dec else None
+        last = date.fromisoformat(e["last"])
+        # "charged after cancel": a cancelled charge that billed again.
+        e["charged_after_cancel"] = bool(
+            dec and dec["decision"] == "cancel" and last > date.fromisoformat(dec["date"]))
+        # "stopped": nothing for two cadences — probably already gone.
+        expected_gap = {"weekly": 7, "monthly": 31, "quarterly": 92, "yearly": 366}[e["cadence"]]
+        e["stopped"] = (today - last).days > 2 * expected_gap
+        out.append(e)
+    out.sort(key=lambda e: (-e["per_year"]))
+    return {
+        "as_of": today.isoformat(),
+        "months": months,
+        "charges": out,
+        "total_per_year": round(sum(e["per_year"] for e in out if not e["stopped"]), 2),
+        "undecided": sum(1 for e in out if not e["decision"] and not e["stopped"]),
+        "charged_after_cancel": [e for e in out if e["charged_after_cancel"]],
     }

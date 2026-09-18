@@ -69,3 +69,23 @@ def get_outflows(db: Session = Depends(get_db)):
     """Brokerage outflows by month with the categorized total alongside —
     the reconciliation line, not the headline."""
     return services.get_outflows(db)
+
+
+@router.get("/recurring")
+def recurring(months: int = Query(15, ge=3, le=36), db: Session = Depends(get_db)):
+    """Every steady, cadenced charge with Neel's keep/cancel/check decision —
+    the "am I paying for something I forgot?" review (Neel, 2026-09-17)."""
+    return services.recurring_charges(db, months)
+
+
+@router.post("/recurring/decision")
+def recurring_decision(payload: dict, db: Session = Depends(get_db)):
+    """Record a decision for one recurring charge: {key, decision, note?}.
+    decision = keep | cancel | check | clear. A 'cancel' with a date means
+    any later charge from that merchant is flagged on the headline."""
+    try:
+        services.save_decision(payload["key"], payload["decision"], payload.get("note"))
+    except (KeyError, ValueError) as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=str(e))
+    return services.recurring_charges(db)
