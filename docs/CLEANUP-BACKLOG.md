@@ -62,3 +62,20 @@ add items here as they surface. Last updated: 2026-07-04.
 16. **Docs archive**: OPTIONS-NOTIFICATION-ALGORITHM V1–V4,
     V3-IMPLEMENTATION-NOTES, V3.3-ADDENDUM → docs/archive/ (superseded by
     V6 docs; ALGORITHM-HISTORY.md stays as the index).
+
+## Next builds (not cleanup — parked features)
+
+- **Option-chain sync (level 3).** Neel, 2026-09-18: three kinds of sync —
+  account state, live prices, option chains. Levels 1 and 2 are built
+  (`scripts/scheduled_refresh.sh` modes `state` / `prices`, buttons on
+  Options Execution and V7 Preview). Level 3 needs: a table for chain
+  snapshots (symbol, expiry, strike, type, bid/ask/mark, delta, IV, OI,
+  as-of), a `chains` mode that pulls `get_option_chains` +
+  `get_option_quotes` for the tracked symbols, and the V7 engine reading
+  real strikes/deltas/premiums from it instead of ATM-IV estimates. The
+  "Sync chains" button is wired and greyed; `POST /strategies/sync?mode=chains`
+  returns 501 until then.
+- **Spike: call the Robinhood MCP servers without a Claude session.** The
+  OAuth tokens live in `~/.claude.json`; if a plain Python MCP client can
+  use them, levels 1 and 2 become deterministic backend jobs — instant and
+  free instead of a `claude -p` run.
