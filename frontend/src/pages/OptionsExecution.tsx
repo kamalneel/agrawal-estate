@@ -6,6 +6,7 @@ import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
 import { useDataAsOfPoll } from '../hooks/useDataAsOfPoll'
 import { AssignmentLossThisMonth } from '../components/AssignmentLossCard/AssignmentLossThisMonth'
 import { accountRank } from '../lib/accountOrder'
+import { SyncButtons } from '../components/SyncButton'
 import styles from './OptionsExecution.module.css'
 
 const API_BASE = '/api/v1'
@@ -332,9 +333,12 @@ export function OptionsExecution() {
             <div className={styles.dataAsOf}>data as of {fmtPacific(queue.data_as_of)} PT</div>
           )}
         </div>
-        <button onClick={fetchAll} className={styles.refresh} title="Refresh" disabled={loading}>
-          <RefreshCw size={18} className={loading ? styles.spinner : undefined} />
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <SyncButtons className={styles.refresh} onDone={fetchAll} />
+          <button onClick={fetchAll} className={styles.refresh} title="Re-read (no Robinhood pull)" disabled={loading}>
+            <RefreshCw size={18} className={loading ? styles.spinner : undefined} />
+          </button>
+        </div>
       </section>
 
       <GoalsStrip

@@ -6,6 +6,24 @@ logins, verify it, feed it through the bridge into the app, and report
 what changed. The authoritative recipe is `docs/ROBINHOOD_MCP_SYNC.md`
 — consult it if anything below seems stale (it wins on conflict).
 
+## Modes (2026-09-18)
+
+Neel: "rather than one sync button, we have multiple sync buttons." The
+headless wrapper (`scripts/scheduled_refresh.sh`, `REFRESH_MODE`) and the
+page's buttons (`POST /strategies/sync?mode=…`) run this skill in one of:
+
+- **full** — everything below. The scheduled runs.
+- **state** — account state: steps 1–7 for all six accounts (positions,
+  cash, and FILLS — the fills are the money view: every STO/BTC, premium
+  earned, assignments). Skip 3b, 8, 9. Report starts `SYNC OK`.
+- **prices** — live prices only. No per-account calls, no assignment
+  detection. `GET /strategies/sync/tracked-symbols` gives the list (held
+  + allocation targets + policy core/inventory); `get_equity_quotes` for
+  all of them, step 3b for implied vol, one bundle with `accounts: []`
+  and `equity_marks` + `implied_vols`, bridge `--save`. Report starts
+  `PRICES OK`. Never a scan email.
+- **chains** — option chains for tracked symbols. Not built yet.
+
 ## Prerequisites (check, don't assume)
 
 - Both MCP servers must be authorized in this session:

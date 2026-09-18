@@ -26,7 +26,7 @@ export function useDataAsOfPoll(onChange: () => void, intervalMs = 120_000) {
         const r = await fetch(`${API_BASE}/strategies/data-as-of`, { headers: getAuthHeaders() })
         if (!r.ok) return
         const d = await r.json()
-        const stamp = `${d.positions}|${d.cash}`
+        const stamp = `${d.positions}|${d.cash}|${d.prices ?? ''}`   // prices: a prices-only sync must also re-draw
         if (last.current === null) { last.current = stamp; return }   // first read = baseline
         if (stamp !== last.current && !cancelled) { last.current = stamp; cb.current() }
       } catch { /* network blip — try again next tick */ }

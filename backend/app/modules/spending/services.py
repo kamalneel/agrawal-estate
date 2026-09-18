@@ -539,6 +539,11 @@ def get_spending_summary(db: Session, year: int, month: Optional[int] = None) ->
     total = -sum(r["amount"] for r in rows)
     recurring = -sum(r["amount"] for r in rows if not r["is_non_monthly"])
     non_monthly = total - recurring
+    # Gross and net (playbook: never net-only for flow data). September 2026
+    # read $22K net against $37.7K charged because a $15,448 employer
+    # reimbursement netted in; the headline must say both.
+    gross = -sum(r["amount"] for r in rows if r["amount"] < 0)
+    netted = sum(r["amount"] for r in rows if r["amount"] > 0)
 
     # Monthly series — recurring and non-monthly split so the trend chart
     # can stack them and still sum to the headline.
@@ -667,6 +672,8 @@ def get_spending_summary(db: Session, year: int, month: Optional[int] = None) ->
         "period_complete": bool(lcm and (not month or (year, month) <= lcm)),
         "monarch_through": through.isoformat() if through else None,
         "total_spending": round(total, 2),
+        "gross_spending": round(gross, 2),
+        "netted_inflows": round(netted, 2),
         "recurring_spending": round(recurring, 2),
         "non_monthly_spending": round(non_monthly, 2),
         "avg_monthly": round(recurring / months_with_data, 2) if months_with_data else 0,

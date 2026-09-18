@@ -8,6 +8,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { RefreshCw, AlertTriangle, ChevronDown, Settings } from 'lucide-react'
+import { SyncButtons } from '../components/SyncButton'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { formatCurrency } from '../components/charts'
@@ -162,7 +163,8 @@ export default function V7Preview() {
         </div>
         <div className={styles.headerBtns}>
           <button className={clsx(styles.refresh, showKnobs && styles.refreshActive)} onClick={() => setShowKnobs(v => !v)} title="Knobs — every number the engine uses"><Settings size={16} /></button>
-          <button className={styles.refresh} onClick={load} title="Rebuild"><RefreshCw size={16} /></button>
+          <SyncButtons className={styles.refresh} onDone={load} />
+          <button className={styles.refresh} onClick={load} title="Rebuild from the data already synced"><RefreshCw size={16} /></button>
         </div>
       </header>
 

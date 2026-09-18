@@ -23,7 +23,8 @@ interface AccountRow { account: string; display: string; total: number; count: n
 interface Summary {
   year: number; month: number | null; period_complete: boolean;
   monarch_through: string | null;
-  total_spending: number; recurring_spending: number; non_monthly_spending: number;
+  total_spending: number; gross_spending: number; netted_inflows: number;
+  recurring_spending: number; non_monthly_spending: number;
   avg_monthly: number; months_with_data: number; transaction_count: number;
   monthly: MonthlyPoint[]; categories: CategoryRow[];
   non_monthly_breakdown: NonMonthlyRow[]; top_merchants: MerchantRow[];
@@ -265,6 +266,13 @@ export default function Spending() {
                 {!summary.period_complete && ` (partial, through ${dataThrough ? fmtDate(dataThrough) : '—'})`}
               </div>
               <div className={styles.headlineValue}>{fmt(summary.total_spending)}</div>
+              {summary.netted_inflows >= 100 && (
+                <div className={styles.headlineSplit}>
+                  <span>Charged <strong>{fmt(summary.gross_spending)}</strong></span>
+                  <span>Refunds and reimbursements <strong className={styles.positive}>−{fmt(summary.netted_inflows)}</strong></span>
+                  <span>Net <strong>{fmt(summary.total_spending)}</strong></span>
+                </div>
+              )}
               <div className={styles.headlineSplit}>
                 <span>Recurring <strong>{fmt(summary.recurring_spending)}</strong></span>
                 <span>Non-monthly <strong>{fmt(summary.non_monthly_spending)}</strong></span>

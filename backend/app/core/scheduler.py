@@ -1510,11 +1510,14 @@ def notify_after_sync(scan_type: Optional[str] = None) -> Dict[str, Any]:
       failed sync the email still goes out (on the data already in the
       app) with a red banner and a SYNC FAILED subject — a missed
       decision point is worse than a stale one.
-    - no scan_type: a short "Sync complete" (or "Sync FAILED") email —
-      the report plus the queue's urgent/high counts and today's
-      premium — so Neel can confirm every run looks right.
+    - no scan_type: nothing on success. Neel, 2026-09-18: "you are also
+      sending me a separate sync email. This is not needed." A FAILED
+      off-slot sync still emails — a dead sync must never be silent
+      (playbook: check-freshness-and-ask-first).
     """
     sync = read_refresh_status()
+    if not scan_type and sync.get("ok"):
+        return {"sent": None, "sync_ok": True, "reason": "off-slot success, no email by request"}
     if scan_type:
         sched = _scheduler or RecommendationScheduler()
         try:

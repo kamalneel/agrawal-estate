@@ -2096,7 +2096,11 @@ async def ingest_price_history(payload: dict, db: Session = Depends(get_db)):
             VALUES (:sym, :d, :c, :src, :iv)
             ON CONFLICT (symbol, price_date)
             DO UPDATE SET close_price = EXCLUDED.close_price, source = EXCLUDED.source,
-                          implied_vol = COALESCE(EXCLUDED.implied_vol, symbol_price_history.implied_vol)
+                          implied_vol = COALESCE(EXCLUDED.implied_vol, symbol_price_history.implied_vol),
+                          -- "last written": a second live-quote sync on the same day
+                          -- must advance the page's prices stamp (data-as-of).
+                          created_at = CASE WHEN EXCLUDED.source = 'robinhood_mcp_live_quote'
+                                            THEN NOW() ELSE symbol_price_history.created_at END
         """), {"sym": b["symbol"].upper(), "d": b["date"], "c": b["close"], "src": source,
                 "iv": b.get("implied_vol")})
         upserted += 1

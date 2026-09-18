@@ -6996,7 +6996,89 @@ async def get_data_as_of(db: Session = Depends(get_db)):
     from sqlalchemy import text as _text
     pos = db.execute(_text("SELECT MAX(snapshot_date) FROM sold_options_snapshots")).scalar()
     cash = db.execute(_text("SELECT MAX(snapshot_date) FROM account_cash_balance_history")).scalar()
-    return {"positions": str(pos) if pos else None, "cash": str(cash) if cash else None}
+    # prices: the newest live quote the bridge wrote (a prices-only sync
+    # advances this without touching positions or cash).
+    prices = db.execute(_text(
+        "SELECT MAX(created_at) FROM symbol_price_history WHERE source = 'robinhood_mcp_live_quote'"
+    )).scalar()
+    return {"positions": str(pos) if pos else None, "cash": str(cash) if cash else None,
+            "prices": str(prices) if prices else None}
+
+
+@router.get("/sync/status")
+async def get_sync_status():
+    """What the last Robinhood sync did and whether one is running now —
+    data/refresh_status.json as written by scripts/scheduled_refresh.sh,
+    plus the lock directory the script holds while it runs."""
+    from app.core.config import settings
+    from app.core.scheduler import read_refresh_status
+    st = read_refresh_status() or {}
+    lock = settings.DATA_DIR / "refresh.lock"
+    st["running"] = bool(st.get("running")) and lock.exists()
+    return st
+
+
+@router.get("/sync/tracked-symbols")
+async def get_tracked_symbols(db: Session = Depends(get_db)):
+    """The symbols a prices sync must quote (Neel, 2026-09-18): everything
+    held in any account, plus every symbol in data/allocation_targets.json
+    and data/investment_policy.json (core + inventory)."""
+    import json as _json
+    from app.core.config import settings
+    from sqlalchemy import text as _text
+    held = {r[0] for r in db.execute(_text(
+        "SELECT DISTINCT symbol FROM investment_holdings WHERE symbol IS NOT NULL AND quantity > 0"
+    )).fetchall()}
+    wanted = set()
+    try:
+        alloc = _json.loads((settings.DATA_DIR / "allocation_targets.json").read_text())
+        for b in (alloc.get("buckets") or {}).values():
+            wanted |= set((b.get("targets") or {}).keys())
+    except Exception:
+        pass
+    try:
+        pol = _json.loads((settings.DATA_DIR / "investment_policy.json").read_text())
+        wanted |= set(pol.get("core") or []) | set(pol.get("inventory") or [])
+        ignore = set(pol.get("ignore") or [])
+    except Exception:
+        ignore = set()
+    syms = sorted((held | wanted) - ignore - {"CASH", ""})
+    return {"symbols": syms, "held": sorted(held - ignore), "wanted": sorted(wanted - held - ignore)}
+
+
+@router.post("/sync", status_code=202)
+async def start_sync(mode: str = Query("full", pattern="^(full|state|prices|chains)$")):
+    """Pull from Robinhood now — the page's Sync button (Neel, 2026-09-18:
+    "enhance the role of the refresh button to pull from Robinhood").
+
+    The pull can only run inside a Claude Code session (the Robinhood MCP
+    servers are OAuth'd to Claude Code, not to this backend), so this
+    spawns scripts/scheduled_refresh.sh detached, exactly as launchd does
+    every hour. The script takes a lock, records progress in
+    data/refresh_status.json, syncs, and then POSTs /notify/after-sync —
+    which emails only the four decision-point scans and any FAILED run;
+    a successful manual run is silent (Neel, 2026-09-18). Poll
+    /sync/status; when `running` clears, re-fetch the queue. Returns 409
+    if a sync is already in flight.
+    """
+    import subprocess
+    from app.core.config import settings
+    script = settings.DATA_DIR.parent / "scripts" / "scheduled_refresh.sh"
+    if (settings.DATA_DIR / "refresh.lock").exists():
+        raise HTTPException(status_code=409, detail="A sync is already running")
+    if not script.exists():
+        raise HTTPException(status_code=500, detail=f"{script} not found")
+    if mode == "chains":
+        raise HTTPException(status_code=501, detail="Option-chain sync is not built yet")
+    env = dict(os.environ, REFRESH_TRIGGER="manual", REFRESH_MODE=mode)
+    subprocess.Popen(["/bin/zsh", str(script)], cwd=str(settings.DATA_DIR.parent),
+                     env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return {"started": True, "mode": mode,
+            "detail": {"state": "Account sync started; about 5 minutes.",
+                       "prices": "Price sync started; about a minute.",
+                       "full": "Full sync started; about 5 minutes."}[mode]
+            + " The page updates when it lands."}
 
 
 @router.get("/v7/preview")
