@@ -65,6 +65,9 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text as _text
+import logging
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 
 from app.shared.services.notifications import get_notification_service
@@ -186,8 +189,52 @@ def _share_delta(db: Session, account_id: str, symbol: str, since: date, until: 
         ORDER BY snapshot_date ASC LIMIT 1
     """), {"acct": account_id, "sym": symbol, "d": until}).fetchone()
     if after_row is None:
-        return None
+        # No row for THIS symbol — but did the account get its holdings
+        # snapshot for the window at all? If other symbols have rows on
+        # those dates, the position is genuinely gone (rows only exist
+        # for quantity > 0), so "after" is 0, not unknown. 2026-09-19:
+        # MSFT $450 call assigned Neel's last 100 MSFT shares; with no
+        # MSFT row ever again the detection would have sat in
+        # pending_confirmation forever.
+        any_row = db.execute(_text("""
+            SELECT 1 FROM investment_holdings_history
+            WHERE account_id = :acct
+              AND snapshot_date BETWEEN :d AND :d + INTERVAL '5 days'
+            LIMIT 1
+        """), {"acct": account_id, "d": until}).fetchone()
+        return (0.0 - before) if any_row else None
     return float(after_row.quantity) - before
+
+
+def confirm_pending_assignments(db: Session, ids: Optional[List[int]] = None) -> Dict:
+    """Neel's reply to the "Confirm N assignments?" email, as an action.
+    Nothing reads that inbox — the email says "reply to confirm" but the
+    only way a pending row was ever resolved was the next holdings
+    snapshot. This is the explicit path (2026-09-19: "yes, I confirm
+    those are the assignments done"): promote the given pending rows
+    (all of them when ids is None) to confirmed, source
+    'robinhood_mcp_inferred', same as a share-count corroboration would.
+    Lots and tax notices were already handled at detection time."""
+    where = "t.transaction_type = 'OASGN' AND t.source = 'robinhood_mcp_inferred_pending_confirmation'"
+    params: Dict = {}
+    if ids:
+        where += " AND t.id = ANY(:ids)"
+        params["ids"] = list(ids)
+    rows = db.execute(_text(f"""
+        SELECT t.id, a.account_name, t.symbol, t.description, t.transaction_date
+        FROM investment_transactions t JOIN investment_accounts a ON a.account_id = t.account_id
+        WHERE {where}
+    """), params).fetchall()
+    if rows:
+        db.execute(_text(f"""
+            UPDATE investment_transactions t SET source = 'robinhood_mcp_inferred' WHERE {where}
+        """), params)
+        db.commit()
+    confirmed = [{"id": r.id, "account": r.account_name, "symbol": r.symbol,
+                  "description": r.description, "date": str(r.transaction_date)} for r in rows]
+    logger.info(f"[ASSIGN] confirmed {len(confirmed)} pending assignment(s) by Neel: "
+                + "; ".join(f"{c['account']} {c['description']}" for c in confirmed))
+    return {"confirmed": confirmed, "count": len(confirmed)}
 
 
 def _looks_like_roll(prev: Dict[Tuple, int], curr: Dict[Tuple, int], vanished_key: Tuple) -> bool:
@@ -408,8 +455,11 @@ def _send_tax_lot_notices(n_detected: int) -> None:
 def _send_confirmation_email(records: List[Dict]) -> None:
     """One consolidated email per run for every signal-3-unconfirmed
     detection (never one email per record — a historical backlog would
-    otherwise flood the inbox). Reply-to routes back to the assistant
-    inbox so a single reply can confirm/dispute all of them."""
+    otherwise flood the inbox). Nothing reads replies (2026-09-19: Neel
+    replied and asked whether it arrived — it hadn't); confirmation is
+    confirm_pending_assignments() via the /v6/assignments/confirm
+    endpoint, or the next holdings snapshot corroborating the share
+    count."""
     if not records:
         return
     svc = get_notification_service()
@@ -434,8 +484,9 @@ def _send_confirmation_email(records: List[Dict]) -> None:
         f"but the share-count check didn't land cleanly for {'it' if len(records) == 1 else 'each'}:\n\n"
         + "\n".join(lines) +
         f"\n\n{'This is' if len(records) == 1 else 'These are'} already showing in Assignment Loss "
-        f"/ the Exit Recovery ledger. Reply to confirm, or flag any that were actually something "
-        f"else (e.g. a manual exercise or an untracked close)."
+        f"/ the Exit Recovery ledger. Nobody reads replies to this address — tell Claude "
+        f"\"confirm the assignments\" (POST /strategies/v6/assignments/confirm), or flag any that "
+        f"were actually something else (e.g. a manual exercise or an untracked close)."
     )
     svc.send_alert(title=title, message=message, priority="medium")
 

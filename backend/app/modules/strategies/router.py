@@ -7141,6 +7141,27 @@ async def get_v6_assignment_loss(db: Session = Depends(get_db)):
     return get_assignment_loss(db)
 
 
+@router.post("/v6/assignments/confirm")
+async def post_confirm_assignments(ids: Optional[List[int]] = None, db: Session = Depends(get_db)):
+    """Record Neel's reply to the "Confirm N assignments?" email. Promotes
+    the listed pending_confirmation OASGN rows (all pending rows when no
+    ids are given) to confirmed. GET /v6/assignments/pending lists them."""
+    from app.modules.strategies.assignment_detection_service import confirm_pending_assignments
+    return confirm_pending_assignments(db, ids)
+
+
+@router.get("/v6/assignments/pending")
+async def get_pending_assignments(db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT t.id, a.account_name, t.symbol, t.description, t.quantity, t.transaction_date
+        FROM investment_transactions t JOIN investment_accounts a ON a.account_id = t.account_id
+        WHERE t.transaction_type = 'OASGN' AND t.source = 'robinhood_mcp_inferred_pending_confirmation'
+        ORDER BY t.transaction_date, a.account_name, t.symbol
+    """)).fetchall()
+    return [{"id": r.id, "account": r.account_name, "symbol": r.symbol, "description": r.description,
+             "contracts": float(r.quantity), "date": str(r.transaction_date)} for r in rows]
+
+
 @router.post("/v6/detect-assignments")
 async def post_v6_detect_assignments(db: Session = Depends(get_db)):
     """MCP-only assignment detection (no CSV) — run as part of every
