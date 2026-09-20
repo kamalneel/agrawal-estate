@@ -392,7 +392,6 @@ def build_v7_queue(db: Session) -> Dict:
     holdings, price, acct_type, acct_id = _holdings(db)
     options = _open_options(db, today)
     cash = _cash(db)
-    reentry = _recent_call_assignments(db, today - timedelta(days=14))
     closes = _closes(db)
     ivs = _implied_vols(db)
     lines = {MARGIN_ID_TO_NAME.get(k_, k_): v_ for k_, v_ in pol["margin"]["lines"].items()}
@@ -775,18 +774,65 @@ def build_v7_queue(db: Session) -> Dict:
                          "Rule B would close this on the dip, but the shares would sit uncovered across an earnings "
                          "date. The cover stays.")
         else:
-            if itm and o["dte"] is not None and o["dte"] <= int(K(pol, 'st_let_assign_dte')):
-                card(2, "LET ASSIGN", acct, sym,
-                     f"{sym} ${k:,.0f} call ITM at expiry — let the shares go",
-                     f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${spot - k:,.2f} in the money",
-                     "Short-term book: assignment is acceptable; re-enter with a put afterwards.",
-                     assumption="Neel has not stated the stuck-call rule for short-term names. Preview assumes let-assign.")
-            elif itm:
-                card(2, "HOLD", acct, sym,
-                     f"{sym} ${k:,.0f} call ITM — hold, decide at expiry",
-                     f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${spot - k:,.2f} in the money",
-                     "Short-term book. If still ITM at expiry it is let go (see assumption).",
-                     assumption="Short-term stuck-call rule not stated; preview holds until expiry.")
+            if itm:
+                # Short-term ITM call (Neel, 2026-09-20). Assignment is the
+                # normal exit in this book — no planned_assignments entry —
+                # but not the automatic one. Thursday of expiry week:
+                #   1. the same-strike roll pays nothing → LET ASSIGN (rule 1,
+                #      never pay a debit, same as long-term);
+                #   2. it pays a credit → RSI decides. Overbought (≥ st_assign_rsi)
+                #      means the run is likely to come back under the strike —
+                #      be patient, ROLL. Not stretched means no reason to expect
+                #      it back, and the same money earns more as a put on the
+                #      next-ranked name — LET ASSIGN and redeploy.
+                # Before Thursday: WAIT, same as the long-term roll timing
+                # (the credit grows through the week; the dip may settle it).
+                intrinsic = spot - k
+                tv = (mark - intrinsic) if mark is not None else None
+                vol_, _src = vol_of(sym)
+                nxt_tv = call_premium(spot, k, vol_, (o["dte"] or 0) + 7, 1, RATE_ATM_WEEKLY) / 100.0 - intrinsic
+                roll_credit_ps = (nxt_tv - tv) if tv is not None else nxt_tv
+                roll_credit = int(round(max(roll_credit_ps, 0) * 100 * n))
+                rsi_ctx = _rsi(db, acct_id.get(acct), sym)
+                rsi = rsi_ctx.get("rsi") if rsi_ctx else None
+                assign_rsi = K(pol, "st_assign_rsi")
+                dte = o["dte"] if o["dte"] is not None else 5
+                floor_hit = tv is not None and tv <= K(pol, 'roll_tv_floor')
+                due = dte <= 1 or floor_hit
+                proceeds = k * 100 * n
+                rsi_txt = f"RSI {rsi:.0f}" if rsi is not None else "no RSI on file"
+                if roll_credit_ps <= 0.05:
+                    verdict, why_v = "LET ASSIGN", (f"the same-strike roll pays nothing (next week's time value ≈ this week's) — "
+                                                   f"never pay a debit to keep short-term shares")
+                elif rsi is not None and rsi >= assign_rsi:
+                    verdict, why_v = "ROLL", (f"{rsi_txt} ≥ {assign_rsi:.0f}: overbought, the run is likely to come back under "
+                                             f"${k:,.0f} — patience pays, roll for the ${roll_credit:,} credit")
+                else:
+                    verdict, why_v = "LET ASSIGN", (f"{rsi_txt} < {assign_rsi:.0f}: not stretched, no reason to expect it back under "
+                                                   f"${k:,.0f}; the ${roll_credit:,} roll credit is less than ${proceeds:,.0f} earns "
+                                                   f"back in the put ranking")
+                detail = (f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
+                          + (f" · time value left ${tv:,.2f}" if tv is not None else "")
+                          + f" · roll credit est ${roll_credit:,} · {rsi_txt}"
+                          + (f" · frees ${proceeds:,.0f}" if verdict == "LET ASSIGN" else ""))
+                why = ("Short-term ITM call: assignment is the normal exit here, not a failure — but only when the roll "
+                       "pays nothing or the name is not overbought. " + why_v + ". Rule 1 still holds: never a debit. "
+                       f"After assignment the name simply re-enters the put ranking (yield vs. share of the book).")
+                if due:
+                    card(2, verdict, acct, sym,
+                         (f"{sym} ${k:,.0f} call ITM — let the shares go {_fmt_exp(o['expiration'])}" if verdict == "LET ASSIGN"
+                          else f"{sym} ${k:,.0f} call ITM — roll {'now' if floor_hit else 'today'}, same strike"),
+                         detail, why, earn=roll_credit if verdict == "ROLL" else None,
+                         context={"intrinsic": intrinsic, "time_value": tv, "rsi": rsi, "roll_credit": roll_credit,
+                                  "verdict": verdict, "proceeds": proceeds})
+                else:
+                    roll_date = o["expiration"] - timedelta(days=1) if o["expiration"] else None
+                    card(2, "WAIT", acct, sym,
+                         f"{sym} ${k:,.0f} call ITM — Thursday {_fmt_exp(roll_date)}: "
+                         + ("let it assign as things stand" if verdict == "LET ASSIGN" else "roll, as things stand"),
+                         detail, why + " Decided on Thursday with that day's RSI and credit; until then the dip can settle it for free.",
+                         context={"intrinsic": intrinsic, "time_value": tv, "rsi": rsi, "roll_credit": roll_credit,
+                                  "verdict": verdict, "proceeds": proceeds})
             else:
                 # Winning short-term call: the same Rules A/B as the long-term
                 # book (2026-09-17 — CBRS $215 and RKLB $70 at expiry drew
@@ -916,21 +962,10 @@ def build_v7_queue(db: Session) -> Dict:
              earn=roll_credit if action == "ROLL" else None,
              context={"intrinsic": intrinsic, "time_value": tv, "cost_to_own": cost_to_own, "room": room})
 
-    # ---------------- Layer 1: re-entry puts on long-term names ----------------
-    for a in reentry:
-        if a["symbol"] not in long_term:
-            continue
-        spot = price.get(a["symbol"])
-        if not spot:
-            continue
-        n = a["contracts"]
-        order = atm_order(n, spot)
-        card(1, "SELL PUT", a["account"], a["symbol"],
-             f"{a['symbol']}: {n * 100:,} shares were called away {a['date']:%-m/%-d} — sell {n} put{'s' if n > 1 else ''} to re-enter",
-             f"strike ~${order['strike']:,.0f} · est ${order['est_premium']:,} this week · (called at ${a['strike']:,.0f})",
-             "The one put allowed on a long-term name: re-entry after a call assignment. If assigned, the "
-             "shares are simply held — no aggressive calls.",
-             earn=order["est_premium"])
+    # (Re-entry puts after a call assignment were a dedicated Layer-1 card
+    # until 2026-09-20. Neel: re-entry is not automatic — the called-away
+    # name goes back into the put ranking like any other and is picked when
+    # it earns the slot on yield AND does not unbalance the book.)
 
     # ---------------- Layer 3: short-term puts ----------------
     total_value = sum(h["qty"] * price.get(s, 0) for (_, s), h in holdings.items())

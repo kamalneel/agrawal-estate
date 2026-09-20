@@ -73,7 +73,8 @@
     },
     "puts": {
       "rule": "Neel 2026-09-17: 'we should be selling puts on anything and everything as long as it has high volatility and I can earn.' Puts are allowed on long-term names; the put universe is every holding, ranked by return per unit of risk. If assigned, the shares are held (long-term book). The earlier 'no puts on long-term names' rule (2026-09-13) is retired.",
-      "buy_gaps": "Filled by buying shares from trim proceeds; a put on a long-term name that assigns is a fine way to fill one too."
+      "buy_gaps": "Filled by buying shares from trim proceeds; a put on a long-term name that assigns is a fine way to fill one too.",
+      "reentry": "Retired 2026-09-20 as a separate card: a called-away long-term name is a put candidate like any other (ranking + capacity), not an automatic re-entry."
     }
   },
   "short_term": {
@@ -100,7 +101,8 @@
       "bounce_wait": "Neel 2026-09-15: Rule B's bounce-wait applies to the short-term book too — after a dip buy-back, wait +bounce_pct or bounce_days before selling the next call."
     },
     "stuck_calls": {
-      "assumption": "Not discussed. V7 preview: an ITM short-term call at expiry is LET ASSIGN (the shares are short-term; re-enter with a put). To confirm with Neel."
+      "rule": "Neel, 2026-09-20. An ITM short-term call is decided on the Thursday of expiry week: if the same-strike roll pays no credit → LET ASSIGN (never pay a debit). If it pays: RSI ≥ st_assign_rsi → ROLL (overbought; patience — the run is likely to come back under the strike); RSI below → LET ASSIGN (not stretched; the same money earns more as a put on the next-ranked name). Assignment is the normal exit in this book — no planned_assignments entry.",
+      "after_assignment": "Not an automatic re-entry. The name goes back into the put ranking (which put makes money; would assignment unbalance the 20% book — the per-name cap) and is picked when it earns the slot. SOXL/INTC capped today, CBRS/MRVL not."
     },
     "puts": {
       "rule": "Sell puts on short-term names against cash (cash-secured) or margin cash, to maximise option income.",
@@ -385,16 +387,6 @@
       "min": 20,
       "max": 60
     },
-    "st_let_assign_dte": {
-      "value": 2,
-      "label": "Short-term ITM: let assign within",
-      "group": "Short-term calls",
-      "description": "An ITM short-term call this close to expiry is let go (assumption — not yet confirmed by Neel).",
-      "unit": "days",
-      "step": 1,
-      "min": 0,
-      "max": 5
-    },
     "put_rsi_favourable": {
       "value": 50,
       "label": "Put entry: RSI favourable below",
@@ -584,6 +576,16 @@
       "step": 25,
       "min": 0,
       "max": 1000
+    },
+    "st_assign_rsi": {
+      "value": 65,
+      "label": "Short-term ITM call: roll above RSI",
+      "group": "Short-term calls",
+      "description": "Thursday of expiry week, roll paying a credit: RSI at or above this → ROLL (overbought, the run is likely to come back under the strike — be patient); below → LET ASSIGN (not stretched, the same money earns more as a put on the next-ranked name). No credit → always LET ASSIGN. Neel, 2026-09-20; 65 is the starting point.",
+      "unit": "RSI",
+      "step": 1,
+      "min": 0,
+      "max": 100
     }
   }
 }

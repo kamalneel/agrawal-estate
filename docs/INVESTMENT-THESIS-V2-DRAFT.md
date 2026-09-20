@@ -391,3 +391,30 @@ the working history of V7; the spec is docs/OPTIONS-STRATEGY-V7-SPEC.md.
 - MSFT $450 assigns Friday instead of AAPL $322.50 (Neel): MSFT is $50
   ITM, a same-strike roll costs a debit (rule 1); AAPL rolls for +$425.
   Tax: MSFT gain $6,510 (~$2.4K) vs AAPL $41,605 (~$13.8K). Frees $45K.
+
+## 2026-09-19/20 (weekend) — V7 cleanup, one rule at a time
+
+Neel: "there are too many rules and therefore there will be conflicts …
+ask me one question, get clear clarity, and then you be responsible for
+cleanup and getting to a sane place." Claude's audit found the file had
+become a transcript (every rule with its date and its retired
+predecessor) and four places stating rules that disagreed. Cleanup runs
+one question at a time; each answer is encoded and the retired text
+moves here.
+
+- **Re-entry after a call assignment is not automatic.** The dedicated
+  Layer-1 "sell a put to re-enter" card is gone. A called-away name goes
+  back into the put ranking like any other, judged on (1) which put
+  makes money and (2) whether assignment would unbalance the 20% book —
+  the per-name cap. Neel's example: SOXL (600 sh) and INTC would
+  unbalance; CBRS and MRVL would not. Healthy state = 80/20 with the
+  $400K of margin lines selling puts.
+- **Short-term ITM call, settled** (was an unconfirmed assumption): on
+  the Thursday of expiry week, no roll credit → LET ASSIGN (never pay a
+  debit); credit and RSI ≥ 65 → ROLL (overbought, the run is likely to
+  come back under the strike — patience); credit and RSI < 65 → LET
+  ASSIGN (not stretched; the same money earns more as a put on the
+  next-ranked name). Knob `st_assign_rsi` = 65, "a good starting point,
+  we fine-tune it as we go." INTC $100 ×4 in Retirement (RSI 63, $504
+  credit) → let assign Thursday, $40K back to the ranking. Replaces
+  `st_let_assign_dte`.
