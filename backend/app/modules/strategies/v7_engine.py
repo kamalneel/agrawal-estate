@@ -221,6 +221,27 @@ def _acct_rank(name: str) -> int:
     return CANONICAL_ORDER.index(name) if name in CANONICAL_ORDER else 99
 
 
+def _assignment_tax(db: Session, account_id: str, account_type: str, symbol: str,
+                    shares: float, strike: float, on: date) -> Dict:
+    """What letting `shares` go at `strike` costs in tax — the 'repercussion'
+    (Neel, 2026-09-20): zero outside the two taxable brokerages; in them,
+    the gain on the lots the account's disposal method delivers (Highest
+    Cost since 2026-09-14), at the rough LT/ST rates the lot notices use.
+    Negative when the top lots are under water (TSLA's $435/$375 lots)."""
+    if (account_type or "").lower() != "brokerage":
+        return {"taxable": False, "gain": 0.0, "tax": 0.0, "lots": []}
+    from app.modules.tax.assignment_tax_notice_service import _open_lots, lot_scenarios, account_method
+    lots = _open_lots(db, account_id, symbol)
+    if not lots:
+        return {"taxable": True, "gain": None, "tax": None, "lots": []}
+    sc = lot_scenarios(lots, shares, strike, on)
+    key = "highest_cost" if account_method(account_id, on) == "highest_cost" else "fifo"
+    pick = sc[key]
+    tax = sc["rough_tax_high"] if key == "highest_cost" else sc["rough_tax_fifo"]
+    return {"taxable": True, "gain": pick["gain"], "lt_gain": pick["lt_gain"], "st_gain": pick["st_gain"],
+            "tax": tax, "method": key, "lots": pick["lots"], "short": pick["short"]}
+
+
 def _rsi(db: Session, account_id: str, symbol: str) -> Optional[Dict]:
     try:
         e = get_entry_timing(db, account_id, symbol)
@@ -655,29 +676,89 @@ def build_v7_queue(db: Session) -> Dict:
                     roll_date = exp_d - timedelta(days=0 if stretch else 1) if exp_d else None
                     roll_day = (f"{'Friday morning' if stretch else 'Thursday'} {_fmt_exp(roll_date)}") if roll_date else "Thursday"
                     due_today = dte <= (0 if stretch else 1)
+                    # WHETHER to keep rolling (Neel, 2026-09-20). "Whatever
+                    # goes up comes down" — but how long it takes is the
+                    # question, and the technicals answer it. RSI high: the
+                    # come-down is near, roll and wait. RSI not high and the
+                    # roll paying next to nothing: the come-down is a
+                    # months-long one, and rolling for zero for months is
+                    # dead money — so weigh the cost of leaving: the tax on
+                    # the lots Highest Cost delivers. Zero in the sheltered
+                    # accounts, negative when the top lots are under water
+                    # (TSLA $335: −$10K lot), large when every lot is old
+                    # and cheap (AAPL $315: ~$310K of gain). Cheap to leave
+                    # → LET ASSIGN and the name re-enters via the put
+                    # ranking; expensive → carry it. MSFT $450 on 9/18 was
+                    # the worked example: $40 ITM, zero credit, RSI not
+                    # high, ~$2.4K of tax on $45K — leave.
+                    vol_, _src = vol_of(sym)
+                    nxt_tv = call_premium(spot, k, vol_, dte + 7, 1, RATE_TIER1_WEEKLY) / 100.0 - intrinsic
+                    credit_ps = (nxt_tv - tv) if tv is not None else nxt_tv
+                    roll_credit = int(round(max(credit_ps, 0) * 100 * n))
+                    proceeds = k * 100 * n
+                    taxc = _assignment_tax(db, acct_id.get(acct), acct_type.get(acct, ""), sym, n * 100, k, exp_d or today)
+                    tax = taxc.get("tax")
+                    tax_pct = (tax / proceeds * 100) if (tax is not None and proceeds) else None
+                    assign_rsi = K(pol, "assign_rsi")
+                    thin = credit_ps <= K(pol, "roll_thin_credit_ps")
+                    max_tax_pct = K(pol, "lt_assign_max_tax_pct")
+                    rsi_txt = f"RSI {rsi:.0f}" if rsi is not None else "no RSI on file"
+                    if taxc["taxable"] and tax is not None:
+                        tax_txt = (f"tax ≈ {'−' if tax < 0 else ''}${abs(tax):,.0f} ({tax_pct:+.1f}% of ${proceeds:,.0f}; "
+                                   f"gain {'−' if taxc['gain'] < 0 else ''}${abs(taxc['gain']):,.0f}, "
+                                   f"{'Highest Cost' if taxc['method'] == 'highest_cost' else 'FIFO'} lots)")
+                    elif taxc["taxable"]:
+                        tax_txt = "tax unknown — no lots on file"
+                    else:
+                        tax_txt = "no tax — sheltered account"
+                    if rsi is not None and rsi >= assign_rsi:
+                        verdict, why_v = "ROLL", (f"{rsi_txt} ≥ {assign_rsi:.0f}: overbought, the come-down is near — "
+                                                 f"roll and wait for it")
+                    elif not thin:
+                        verdict, why_v = "ROLL", (f"the same-strike roll still pays ${credit_ps:.2f}/share "
+                                                 f"(> ${K(pol, 'roll_thin_credit_ps'):.2f} thin-credit line) — carrying it is paid for")
+                    elif tax is None and taxc["taxable"]:
+                        verdict, why_v = "ROLL", "the tax cost of leaving is unknown (no lots on file) — carry it until it is"
+                    elif tax_pct is None or tax_pct <= max_tax_pct:
+                        verdict, why_v = "LET ASSIGN", (f"{rsi_txt} < {assign_rsi:.0f} and the roll pays ${max(credit_ps, 0):.2f}/share: "
+                                                       f"the come-down is a long one and rolling for nothing is dead money; "
+                                                       f"leaving is cheap ({tax_txt}, under the {max_tax_pct:.0f}% line) — let the shares go, "
+                                                       f"${proceeds:,.0f} returns to the put ranking, and a put on {sym} is the way back in")
+                    else:
+                        verdict, why_v = "ROLL", (f"{rsi_txt} < {assign_rsi:.0f} and the roll pays ${max(credit_ps, 0):.2f}/share — "
+                                                 f"a long wait — but leaving is expensive ({tax_txt}, over the {max_tax_pct:.0f}% line): carry it")
+                    verdict_ctx = {"verdict": verdict, "credit_ps": round(credit_ps, 2), "roll_credit": roll_credit,
+                                   "tax": tax, "tax_pct": round(tax_pct, 1) if tax_pct is not None else None,
+                                   "proceeds": proceeds, "taxable": taxc["taxable"]}
                     if floor_hit:
                         action, when = "ROLL", f"now — time value ${tv:,.2f} is at the ${K(pol, 'roll_tv_floor'):.2f} early-exercise floor"
+                        # the floor forces a decision today: same verdict, just now
+                        if verdict == "LET ASSIGN":
+                            action = "LET ASSIGN"
                     elif due_today:
-                        action, when = "ROLL", "today" + (" (morning, not afternoon)" if dte == 0 else "")
+                        action = verdict
+                        when = "today" + (" (morning, not afternoon)" if dte == 0 else "")
                     else:
                         action, when = "WAIT", roll_day
                     tv_txt = f" · time value left ${tv:,.2f}" if tv is not None else ""
-                    card(1, action, acct, sym,
-                         f"{sym} ${k:,.0f} call ITM — roll {when}, same strike" if action == "ROLL"
-                         else f"{sym} ${k:,.0f} call ITM — roll {roll_day}, not yet",
-                         f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
-                         + tv_txt + f" · roll credit est ${roll_credit:,}"
-                         + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
-                         "Rule 1: never pay intrinsic to get out; roll weekly at the same strike for a credit. "
-                         "The credit is next week's time value minus this week's, and this week's decays fastest "
-                         "at the end — so later in the week pays more, and every un-rolled day is a day the dip "
-                         "can settle it for free (an early roll leaves an at-the-money call to buy back at max "
-                         "time value when the dip comes). Thursday by default, Friday morning when RSI is high, "
-                         f"immediately once the expiring contract's time value is ≤ ${K(pol, 'roll_tv_floor'):.2f} "
-                         "(nothing left to wait for, early-exercise risk rising). Never Friday afternoon.",
+                    detail = (f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
+                              + tv_txt + f" · roll credit est ${roll_credit:,} · {rsi_txt} · {tax_txt}")
+                    if action == "LET ASSIGN":
+                        title = f"{sym} ${k:,.0f} call ITM — let {n * 100:,} shares go {_fmt_exp(o['expiration'])}"
+                    elif action == "ROLL":
+                        title = f"{sym} ${k:,.0f} call ITM — roll {when}, same strike"
+                    else:
+                        title = (f"{sym} ${k:,.0f} call ITM — {roll_day}: "
+                                 + ("let it assign, as things stand" if verdict == "LET ASSIGN" else "roll, as things stand"))
+                    card(1, action, acct, sym, title, detail,
+                         why_v + ". Rule 1 still holds: never pay a debit to get out. "
+                         + ("Decided on Thursday with that day's RSI, credit and lots; until then the dip can settle it for free. "
+                            if action == "WAIT" else "")
+                         + "Roll timing: Thursday by default, Friday morning when RSI is high, immediately at the "
+                         f"${K(pol, 'roll_tv_floor'):.2f} time-value floor; never Friday afternoon.",
                          earn=roll_credit if action == "ROLL" else None,
                          context={"intrinsic": intrinsic, "time_value": tv, "roll_day": roll_day, "rsi": rsi,
-                                  "floor_hit": floor_hit})
+                                  "floor_hit": floor_hit, **verdict_ctx})
             else:
                 # OTM: the dip buy-back / profit take
                 rw = _runaway_status(pol, sym, spot, today)
@@ -796,7 +877,7 @@ def build_v7_queue(db: Session) -> Dict:
                 roll_credit = int(round(max(roll_credit_ps, 0) * 100 * n))
                 rsi_ctx = _rsi(db, acct_id.get(acct), sym)
                 rsi = rsi_ctx.get("rsi") if rsi_ctx else None
-                assign_rsi = K(pol, "st_assign_rsi")
+                assign_rsi = K(pol, "assign_rsi")
                 dte = o["dte"] if o["dte"] is not None else 5
                 floor_hit = tv is not None and tv <= K(pol, 'roll_tv_floor')
                 due = dte <= 1 or floor_hit

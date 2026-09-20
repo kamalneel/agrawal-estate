@@ -3,7 +3,7 @@
   "source": "docs/INVESTMENT-THESIS-V2-DRAFT.md, rounds 1-11, 2026-09-13. Every rule here was stated by Neel in that conversation; anything Claude inferred is marked assumption.",
   "as_of": "2026-09-13",
   "long_term": {
-    "rule": "Market cap $1T or more, or an explicit override. Never sold. Income from dividends and covered calls. No puts, except to re-enter after a call assignment.",
+    "rule": "Market cap $1T or more, or an explicit override. Income from dividends and covered calls; puts from bucket C. Shares leave only by call assignment — proposed by rule 5 when carrying an ITM call is dead money and leaving is cheap in tax, or decided by Neel in planned_assignments.",
     "symbols": [
       "TSLA",
       "AAPL",
@@ -63,7 +63,8 @@
       "rule_2": "Buy back on the dip — time value is not penalty. If spot is under the strike mid-week and the call is mostly time value, close it and sell fresh calls on the bounce.",
       "rule_3": "The roll immediately before an ex-dividend date goes 3-4 weeks out, same strike, so time value on the day before ex-div exceeds the dividend and early exercise does not take the shares.",
       "operating_assumption": "What goes up comes down. The system does not plan for a stock that runs $330 -> $350 -> $370 without a dip.",
-      "rule_4_when_to_roll": "Neel, 2026-09-15. Roll THURSDAY by default; Friday morning if RSI > 70; immediately if the expiring contract's time value is <= $0.10/share (early-exercise floor) or the ex-dividend rule applies. Never Friday afternoon. Why: the same-strike credit is TV(next) - TV(this); TV(this) decays fastest in its last days so the credit grows through the week (AAPL $315: ~$0.75 Tue -> ~$0.98 Thu), and every un-rolled day is a day the dip can settle it for free. Rolling out early (or 2 weeks) leaves an at-the-money call to buy back at maximum time value when the dip comes - the fatter 2-week credit is the market paying for exactly that risk. Down moves early in the week are waited out, not rolled."
+      "rule_4_when_to_roll": "Neel, 2026-09-15. Roll THURSDAY by default; Friday morning if RSI > 70; immediately if the expiring contract's time value is <= $0.10/share (early-exercise floor) or the ex-dividend rule applies. Never Friday afternoon. Why: the same-strike credit is TV(next) - TV(this); TV(this) decays fastest in its last days so the credit grows through the week (AAPL $315: ~$0.75 Tue -> ~$0.98 Thu), and every un-rolled day is a day the dip can settle it for free. Rolling out early (or 2 weeks) leaves an at-the-money call to buy back at maximum time value when the dip comes - the fatter 2-week credit is the market paying for exactly that risk. Down moves early in the week are waited out, not rolled.",
+      "rule_5_when_to_stop_rolling": "Neel, 2026-09-20. 'Whatever goes up comes down' — but how long it takes is the question, and the technicals answer it. Thursday of expiry week: RSI ≥ assign_rsi → ROLL (the come-down is near). RSI below and the roll paying ≥ roll_thin_credit_ps → ROLL (carrying is paid for). RSI below and the roll paying nothing → the come-down is months away and rolling for zero is dead money: weigh the cost of leaving = tax on the lots Highest Cost delivers (zero in sheltered accounts; negative when the top lots are under water; large when every lot is old and cheap). Tax ≤ lt_assign_max_tax_pct of proceeds → LET ASSIGN, the money returns to the put ranking and a put on the name is the way back in. Above → carry it. Worked examples 9/18: MSFT $450 (~5%) left, TSLA $335 (negative) left, AAPL $315 (~21%) carried. The engine proposes; planned_assignments remains Neel's explicit override either way."
     },
     "puts": {
       "rule": "Neel 2026-09-17: 'we should be selling puts on anything and everything as long as it has high volatility and I can earn.' Puts are allowed on long-term names; the put universe is every holding, ranked by return per unit of risk. If assigned, the shares are held (long-term book). The earlier 'no puts on long-term names' rule (2026-09-13) is retired.",
@@ -572,12 +573,32 @@
       "min": 0,
       "max": 1000
     },
-    "st_assign_rsi": {
+    "assign_rsi": {
       "value": 65,
-      "label": "Short-term ITM call: roll above RSI",
-      "group": "Short-term calls",
-      "description": "Thursday of expiry week, roll paying a credit: RSI at or above this → ROLL (overbought, the run is likely to come back under the strike — be patient); below → LET ASSIGN (not stretched, the same money earns more as a put on the next-ranked name). No credit → always LET ASSIGN. Neel, 2026-09-20; 65 is the starting point.",
+      "label": "ITM call: roll while RSI is at least",
+      "group": "Stuck calls",
+      "description": "Both books, Thursday of expiry week. RSI at or above this → the come-down is near: ROLL and wait. Below → the come-down is a long one; short-term book lets it assign, long-term book weighs the tax cost of leaving (lt_assign_max_tax_pct). Neel, 2026-09-20; 65 is the starting point.",
       "unit": "RSI",
+      "step": 1,
+      "min": 0,
+      "max": 100
+    },
+    "roll_thin_credit_ps": {
+      "value": 0.5,
+      "label": "Roll credit counts as 'nothing' below",
+      "group": "Stuck calls",
+      "description": "$/share. A same-strike roll paying at least this is worth carrying whatever RSI says (the call is close to the money, one dip frees it). Below it, with RSI not high, the tax test decides for long-term names. MSFT $450 on 9/18 paid ~$0.",
+      "unit": "$/share",
+      "step": 0.05,
+      "min": 0,
+      "max": 5
+    },
+    "lt_assign_max_tax_pct": {
+      "value": 10,
+      "label": "Long-term: let assign when tax on the lots is at most",
+      "group": "Stuck calls",
+      "description": "% of the assignment proceeds. Tax on the lots the account's disposal method delivers (Highest Cost in both brokerages), at the rough LT 33% / ST 48% rates; zero in sheltered accounts; negative when the top lots are under water. MSFT $450: ~5% → leave. AAPL $315: ~21% → carry. TSLA $335: negative → leave. Neel, 2026-09-20.",
+      "unit": "%",
       "step": 1,
       "min": 0,
       "max": 100

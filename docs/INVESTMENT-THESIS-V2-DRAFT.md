@@ -436,3 +436,21 @@ moves here.
   2026-09-20). "Undecided" since 9/13 is closed; there is no buy program
   in V7 — the way into A is a put from bucket C that assigns. Daily
   closes since June loaded for all three.
+- **When to stop rolling a long-term ITM call — settled** (Neel,
+  2026-09-20): "whatever goes up comes down, and whatever goes down goes
+  up — but *when*, and does it make sense to wait that long? That
+  judgment is the technicals'." RSI high → the come-down is near, roll.
+  RSI not high and the roll paying next to nothing → the come-down is
+  months away and rolling for zero is dead money; weigh the cost of
+  leaving, which is **tax only**: zero in the four sheltered accounts;
+  in the two brokerages, the gain on the lots Highest Cost delivers —
+  negative for TSLA (the $435/$375 lots), ~21% of proceeds for AAPL
+  (every lot ~$108). MSFT $450 on 9/18 was the worked example: $40 ITM,
+  zero credit, RSI not high, ~$2.4K tax on $45K → left it, puts on MSFT
+  are the way back. Encoded as rule 5 with three knobs: `assign_rsi` 65
+  (both books; replaces `st_assign_rsi`), `roll_thin_credit_ps` $0.50,
+  `lt_assign_max_tax_pct` 10%. The engine now *proposes* the trim with
+  the tax figure on the card; planned_assignments stays as Neel's
+  override. First run: AAPL $315/$322.50/$325 all "roll — tax 21%";
+  IBIT $39 at the floor with RSI 68 → roll now (would be "let assign,
+  tax −6.5%" once RSI drops under 65).
