@@ -454,3 +454,13 @@ moves here.
   override. First run: AAPL $315/$322.50/$325 all "roll — tax 21%";
   IBIT $39 at the floor with RSI 68 → roll now (would be "let assign,
   tax −6.5%" once RSI drops under 65).
+- **ITM short put — settled** (Neel, 2026-09-20: "roll, the bounce is
+  coming"): the mirror of the call rule. RSI ≤ `put_roll_rsi` (35) →
+  oversold, ROLL; roll paying ≥ $0.50/share → ROLL; otherwise the
+  recovery is far → take the shares if the account has the room
+  (long-term name: held; short-term / put-only: into B, then calls).
+  Roll credits are now priced as of Thursday (TV 8 days − TV 1 day):
+  the AVGO $380 put had paid $230/$717/$140/$185/$65 on five weekly
+  rolls while $18–32 ITM and the engine had said $0.
+- Sheltered accounts take the same long-term verdict with tax at zero
+  ("yes, let it assign in the sheltered accounts too").

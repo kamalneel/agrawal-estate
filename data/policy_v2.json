@@ -104,7 +104,8 @@
       "rule": "Puts are bucket C, not part of the 20%. Universe = every name in either book plus put_only; ranked by return per unit of risk; sized to each account's undeployed line. Per-name balance check: no new put on a short-term name that would be >= st_max_symbol_pct_of_book of the short-term book if assigned.",
       "strike_assumption": "Settled 2026-09-16: put delta is the mirror of the call rule (depressed/oversold → closer put, extended → farther), vol-scaled; candidates ranked by weekly yield ÷ volatility with a depressed bonus.",
       "entry": "V6 Tier-2 entry kept: RSI < 50 favourable, > 65 unfavourable.",
-      "throttle": "Retired 2026-09-20: a short-term book at or above 20% no longer blocks new puts — the put bucket is bounded by the margin lines; B drifting over 20% is a layer-4 notice, and short-term calls assigning is how it comes back."
+      "throttle": "Retired 2026-09-20: a short-term book at or above 20% no longer blocks new puts — the put bucket is bounded by the margin lines; B drifting over 20% is a layer-4 notice, and short-term calls assigning is how it comes back.",
+      "itm_rule": "Neel, 2026-09-20 — mirror of the stuck-call rule, both books and put-only names. Thursday of expiry week: RSI ≤ put_roll_rsi (oversold, the bounce is coming) → ROLL; roll paying ≥ roll_thin_credit_ps → ROLL (carrying is paid for); otherwise the recovery is far → take the shares if the account has the room (long-term name: held, bought below the strike; short-term / put-only: into B, then calls). Never pay intrinsic. planned_assignments overrides."
     }
   },
   "split_target": {
@@ -599,6 +600,16 @@
       "group": "Stuck calls",
       "description": "% of the assignment proceeds. Tax on the lots the account's disposal method delivers (Highest Cost in both brokerages), at the rough LT 33% / ST 48% rates; zero in sheltered accounts; negative when the top lots are under water. MSFT $450: ~5% → leave. AAPL $315: ~21% → carry. TSLA $335: negative → leave. Neel, 2026-09-20.",
       "unit": "%",
+      "step": 1,
+      "min": 0,
+      "max": 100
+    },
+    "put_roll_rsi": {
+      "value": 35,
+      "label": "ITM put: roll while RSI is at most",
+      "group": "Stuck calls",
+      "description": "Mirror of assign_rsi. Thursday of expiry week: RSI at or below this → oversold, the bounce is coming: ROLL. Above, with the roll paying under roll_thin_credit_ps → the recovery is far: take the shares if the account has the room. AVGO $380 on 2026-09-20: RSI 35, credit ~$95 → roll. Neel, 2026-09-20.",
+      "unit": "RSI",
       "step": 1,
       "min": 0,
       "max": 100

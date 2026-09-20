@@ -1029,9 +1029,6 @@ def build_v7_queue(db: Session) -> Dict:
             continue
         floor_hit = tv is not None and tv <= K(pol, "put_roll_tv_floor")
         due = dte <= 1
-        action = "ROLL" if (floor_hit or due) else "WAIT"
-        when = (f"now — time value ${tv:,.2f} at the floor" if floor_hit else "today" if due
-                else f"Thursday {_fmt_exp(o['expiration'] - timedelta(days=1)) if o['expiration'] else ''}")
         acct_c = cash.get(acct, {})
         line = lines.get(acct)
         # brokerage: line + cash − collateral − drawn; IRA: cash_balance is
@@ -1039,24 +1036,59 @@ def build_v7_queue(db: Session) -> Dict:
         room = (line + acct_c.get("cash", 0) - acct_c.get("collateral", 0) - acct_c.get("margin_used", 0)) if line else acct_c.get("cash", 0)
         credit_ps_p = same_strike_roll_credit_ps(spot, k, vol_of(sym)[0], dte, "put")
         roll_credit = int(round(max(credit_ps_p, 0) * 100 * n))
-        card(layer, action, acct, sym,
-             f"{sym} ${k:,.0f} put ITM — roll {when}, same strike" if action == "ROLL"
-             else f"{sym} ${k:,.0f} put ITM — roll {when}, not yet",
+        # WHETHER to keep rolling (Neel, 2026-09-20) — the mirror of the
+        # call rule. RSI low = oversold, "the bounce is coming": roll and
+        # wait for it. RSI not low and the roll paying next to nothing:
+        # the recovery is far; take the shares (long-term name: bought
+        # below the strike, held; short-term / put-only: into B, then
+        # calls) — if the account has the room. Rolling a real credit is
+        # always fine (AVGO $380 paid $65-$717 a week while $18-32 ITM).
+        rsi_ctx = _rsi(db, acct_id.get(acct), sym)
+        rsi = rsi_ctx.get("rsi") if rsi_ctx else None
+        roll_rsi = K(pol, "put_roll_rsi")
+        thin = credit_ps_p <= K(pol, "roll_thin_credit_ps")
+        rsi_txt = f"RSI {rsi:.0f}" if rsi is not None else "no RSI on file"
+        fits = room is None or cost_to_own <= room
+        if rsi is not None and rsi <= roll_rsi:
+            verdict, why_v = "ROLL", f"{rsi_txt} ≤ {roll_rsi:.0f}: oversold, the bounce is coming — roll and wait for it"
+        elif not thin:
+            verdict, why_v = "ROLL", (f"the same-strike roll still pays ${credit_ps_p:.2f}/share "
+                                     f"(> ${K(pol, 'roll_thin_credit_ps'):.2f} thin-credit line) — carrying it is paid for")
+        elif not fits:
+            verdict, why_v = "ROLL", (f"{rsi_txt} > {roll_rsi:.0f} and the roll pays ${max(credit_ps_p, 0):.2f}/share — "
+                                     f"the recovery is far, but taking ${cost_to_own:,.0f} of shares does not fit the "
+                                     f"${room:,.0f} of room: roll")
+        else:
+            verdict, why_v = "LET ASSIGN", (f"{rsi_txt} > {roll_rsi:.0f} and the roll pays ${max(credit_ps_p, 0):.2f}/share: "
+                                           f"the recovery is far and rolling for nothing is dead money — take the "
+                                           f"{n * 100:,} shares at ${k:,.0f} (${cost_to_own:,.0f} of ${room:,.0f} room)"
+                                           + (", they are long-term shares bought below the strike" if book == "long"
+                                              else ", into the short-term book, then calls on them"))
+        if floor_hit:
+            action = "LET ASSIGN" if verdict == "LET ASSIGN" else "ROLL"
+            when = f"now — time value ${tv:,.2f} at the floor"
+        elif due:
+            action, when = verdict, "today"
+        else:
+            action, when = "WAIT", f"Thursday {_fmt_exp(o['expiration'] - timedelta(days=1)) if o['expiration'] else ''}"
+        if action == "LET ASSIGN":
+            title = f"{sym} ${k:,.0f} put ITM — take {n * 100:,} shares {_fmt_exp(o['expiration'])} for ${cost_to_own:,.0f}"
+        elif action == "ROLL":
+            title = f"{sym} ${k:,.0f} put ITM — roll {when}, same strike"
+        else:
+            title = f"{sym} ${k:,.0f} put ITM — {when}: " + ("take the shares, as things stand" if verdict == "LET ASSIGN" else "roll, as things stand")
+        card(layer, action, acct, sym, title,
              f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
              + (f" · time value left ${tv:,.2f}" if tv is not None else "")
-             + f" · roll credit est ${roll_credit:,} · assignment would take ${cost_to_own:,.0f}"
-             + (f" of ${room:,.0f} capacity" if room is not None else ""),
-             ("Long-term name: " if book == "long" else "Short-term name: ")
-             + "the mirror of the stuck-call rule. Never pay intrinsic to get out; roll the same strike for a credit "
-               "on the Thursday of its expiry week (the expiring contract's time value bleeds out first), immediately "
-               f"once time value is ≤ ${K(pol, 'put_roll_tv_floor'):.2f} (early-assignment risk). The alternative is "
-               "assignment"
-             + (" — on a long-term name the shares are simply held" if book == "long" else " — short-term book, then calls on the shares")
-             + f"; that takes ${cost_to_own:,.0f}"
-             + (f" and this account has ${room:,.0f} of room" if room is not None else "")
-             + ". To take it, record the contract in planned_assignments.",
+             + f" · roll credit est ${roll_credit:,} · {rsi_txt} · assignment would take ${cost_to_own:,.0f}"
+             + (f" of ${room:,.0f} room" if room is not None else ""),
+             why_v + ". Never pay intrinsic to get out. "
+             + ("Decided on Thursday with that day's RSI and credit. " if action == "WAIT" else "")
+             + f"Roll timing: Thursday of expiry week, immediately once time value is ≤ ${K(pol, 'put_roll_tv_floor'):.2f} "
+               "(early-assignment risk); never Friday afternoon. planned_assignments overrides either way.",
              earn=roll_credit if action == "ROLL" else None,
-             context={"intrinsic": intrinsic, "time_value": tv, "cost_to_own": cost_to_own, "room": room})
+             context={"intrinsic": intrinsic, "time_value": tv, "cost_to_own": cost_to_own, "room": room,
+                      "rsi": rsi, "roll_credit": roll_credit, "verdict": verdict})
 
     # (Re-entry puts after a call assignment were a dedicated Layer-1 card
     # until 2026-09-20. Neel: re-entry is not automatic — the called-away
