@@ -298,6 +298,22 @@ def call_delta(spot: float, strike: float, vol: Optional[float], dte: int) -> Op
     return _ncdf((math.log(spot / strike) + 0.5 * sd * sd) / sd)
 
 
+def same_strike_roll_credit_ps(spot: float, strike: float, vol: Optional[float], dte_now: int, kind: str) -> float:
+    """Credit per share for rolling an ITM call or put one week at the same
+    strike, priced AS OF THE ROLL DAY (Thursday, 1 day left), not today:
+    time value of the new contract (8 days) minus what is left in the
+    expiring one (1 day). Neel, 2026-09-20: the AVGO $380 put paid $230 /
+    $717 / $140 / $185 / $65 on five weekly rolls while $18-32 in the money
+    — the earlier estimate (next week minus TODAY's remaining time value)
+    said $0. With r = 0 an ITM put's time value equals the same-strike
+    call's value (parity), so both kinds price off call_premium."""
+    dte_roll = 1 if dte_now is None or dte_now > 1 else max(dte_now, 1)
+    def tv(d: int) -> float:
+        c = call_premium(spot, strike, vol, d, 1, RATE_ATM_WEEKLY) / 100.0
+        return c - max(spot - strike, 0.0) if kind == "call" else c
+    return tv(dte_roll + 7) - tv(dte_roll)
+
+
 def strike_for_delta(spot: float, delta_pct: float, vol: Optional[float], dte: int, fallback_otm: float) -> float:
     """Call strike at the target delta from the name's own volatility and
     the days to expiry: spot · exp(σ√T · z). Falls back to a flat distance
@@ -692,8 +708,7 @@ def build_v7_queue(db: Session) -> Dict:
                     # the worked example: $40 ITM, zero credit, RSI not
                     # high, ~$2.4K of tax on $45K — leave.
                     vol_, _src = vol_of(sym)
-                    nxt_tv = call_premium(spot, k, vol_, dte + 7, 1, RATE_TIER1_WEEKLY) / 100.0 - intrinsic
-                    credit_ps = (nxt_tv - tv) if tv is not None else nxt_tv
+                    credit_ps = same_strike_roll_credit_ps(spot, k, vol_, dte, "call")
                     roll_credit = int(round(max(credit_ps, 0) * 100 * n))
                     proceeds = k * 100 * n
                     taxc = _assignment_tax(db, acct_id.get(acct), acct_type.get(acct, ""), sym, n * 100, k, exp_d or today)
@@ -872,8 +887,7 @@ def build_v7_queue(db: Session) -> Dict:
                 intrinsic = spot - k
                 tv = (mark - intrinsic) if mark is not None else None
                 vol_, _src = vol_of(sym)
-                nxt_tv = call_premium(spot, k, vol_, (o["dte"] or 0) + 7, 1, RATE_ATM_WEEKLY) / 100.0 - intrinsic
-                roll_credit_ps = (nxt_tv - tv) if tv is not None else nxt_tv
+                roll_credit_ps = same_strike_roll_credit_ps(spot, k, vol_, o["dte"], "call")
                 roll_credit = int(round(max(roll_credit_ps, 0) * 100 * n))
                 rsi_ctx = _rsi(db, acct_id.get(acct), sym)
                 rsi = rsi_ctx.get("rsi") if rsi_ctx else None
@@ -1023,8 +1037,8 @@ def build_v7_queue(db: Session) -> Dict:
         # brokerage: line + cash − collateral − drawn; IRA: cash_balance is
         # already net of collateral (the bridge writes buying power there)
         room = (line + acct_c.get("cash", 0) - acct_c.get("collateral", 0) - acct_c.get("margin_used", 0)) if line else acct_c.get("cash", 0)
-        roll_credit = call_premium(spot, k, vol_of(sym)[0], 7, n, RATE_ATM_WEEKLY) - int((tv or 0) * 100 * n)
-        roll_credit = max(roll_credit, 0)
+        credit_ps_p = same_strike_roll_credit_ps(spot, k, vol_of(sym)[0], dte, "put")
+        roll_credit = int(round(max(credit_ps_p, 0) * 100 * n))
         card(layer, action, acct, sym,
              f"{sym} ${k:,.0f} put ITM — roll {when}, same strike" if action == "ROLL"
              else f"{sym} ${k:,.0f} put ITM — roll {when}, not yet",
