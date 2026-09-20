@@ -432,3 +432,7 @@ moves here.
   closes since June loaded so they rank with RSI and realized vol; the
   sync prices them with IV from now on. First ranking: PANW #2 in Jaya's
   Brokerage (2 puts ~$330, delta 25, 1.3%/wk).
+- **TSM, AMZN, META: out of the long-term book, into put-only** (Neel,
+  2026-09-20). "Undecided" since 9/13 is closed; there is no buy program
+  in V7 — the way into A is a put from bucket C that assigns. Daily
+  closes since June loaded for all three.

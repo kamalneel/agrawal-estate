@@ -384,7 +384,7 @@ def _fmt_exp(d: Optional[date]) -> str:
 def build_v7_queue(db: Session) -> Dict:
     today = date.today()
     pol = load_policy_v2()
-    long_term = set(pol["long_term"]["symbols"]) | set(pol["long_term"].get("undecided", []))
+    long_term = set(pol["long_term"]["symbols"])
     short_term = set(pol["short_term"]["symbols"])
     put_only = set(pol.get("put_only", {}).get("symbols", []))   # bucket C's own names (2026-09-20)
     exdiv = pol.get("ex_dividend_estimates", {})
@@ -1173,7 +1173,7 @@ def build_v7_queue(db: Session) -> Dict:
                   "short_term_value": round(st_value), "short_term_put_collateral": round(st_put_collateral)},
         "accounts": state_accounts,
         "lists": {"long_term": sorted(long_term), "short_term": sorted(short_term),
-                  "undecided": pol["long_term"].get("undecided", [])},
+                  "put_only": sorted(put_only)},
         "layers": [
             {"n": 1, "name": "Long-term calls", "items": layers[1]},
             {"n": 2, "name": "Short-term calls", "items": layers[2]},

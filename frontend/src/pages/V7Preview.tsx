@@ -45,7 +45,7 @@ interface Preview {
     total_value: number; short_term_value: number; short_term_put_collateral: number
   }
   accounts: { account: string; line: number | null; margin_used: number; collateral: number; cash: number; as_of: string }[]
-  lists: { long_term: string[]; short_term: string[]; undecided: string[] }
+  lists: { long_term: string[]; short_term: string[]; put_only: string[] }
   layers: Layer[]
   counts: Record<string, number>
 }
@@ -301,7 +301,7 @@ export default function V7Preview() {
       </div>
 
       <p className={styles.footnote}>
-        Strikes and premiums are the same heuristics V6 uses — estimates, not quotes. Cards marked <em>assumption</em> encode a rule Neel has not stated yet; they are listed in data/policy_v2.json. Undecided names: {data.lists.undecided.join(', ')}.
+        Strikes and premiums are the same heuristics V6 uses — estimates, not quotes. Cards marked <em>assumption</em> encode a rule Neel has not stated yet; they are listed in data/policy_v2.json. Put-only names (bucket C): {data.lists.put_only.join(', ')}.
       </p>
     </div>
   )

@@ -30,12 +30,6 @@
       "TSLA": 1440000000000.0,
       "AMD": 843000000000.0
     },
-    "undecided": [
-      "TSM",
-      "AMZN",
-      "META"
-    ],
-    "undecided_note": "In V6 core with TSM/AMZN buy targets. Asked 2026-09-13 whether they stay as share-purchase targets; not yet answered. V7 preview treats them as long-term if held, and emits no buy for them.",
     "buckets": {
       "physical_ai": [
         "AAPL",
@@ -75,7 +69,8 @@
       "rule": "Neel 2026-09-17: 'we should be selling puts on anything and everything as long as it has high volatility and I can earn.' Puts are allowed on long-term names; the put universe is every holding, ranked by return per unit of risk. If assigned, the shares are held (long-term book). The earlier 'no puts on long-term names' rule (2026-09-13) is retired.",
       "buy_gaps": "Filled by buying shares from trim proceeds; a put on a long-term name that assigns is a fine way to fill one too.",
       "reentry": "Retired 2026-09-20 as a separate card: a called-away long-term name is a put candidate like any other (ranking + capacity), not an automatic re-entry."
-    }
+    },
+    "decided_out": "TSM, AMZN, META — out of the long-term book (Neel, 2026-09-20); moved to put_only. No buy program in V7: the way into A is a put from bucket C that assigns."
   },
   "short_term": {
     "rule": "A named list. No long thesis. Return from calls on owned shares and puts sold against cash and margin. Chosen because their volatility pays.",
@@ -592,11 +587,17 @@
     "rule": "Bucket C's own names — puts on symbols in neither book (Neel, 2026-09-20: 'things that I will come up with'). If assigned, the shares are short-term book by default.",
     "symbols": [
       "PANW",
-      "CRWD"
+      "CRWD",
+      "TSM",
+      "AMZN",
+      "META"
     ],
     "added": {
       "PANW": "Neel 2026-09-20",
-      "CRWD": "Neel 2026-09-20"
+      "CRWD": "Neel 2026-09-20",
+      "TSM": "Neel 2026-09-20 — was 'undecided' long-term since 9/13",
+      "AMZN": "Neel 2026-09-20 — was 'undecided' long-term since 9/13",
+      "META": "Neel 2026-09-20 — was 'undecided' long-term since 9/13"
     }
   }
 }
