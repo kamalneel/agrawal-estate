@@ -386,6 +386,7 @@ def build_v7_queue(db: Session) -> Dict:
     pol = load_policy_v2()
     long_term = set(pol["long_term"]["symbols"]) | set(pol["long_term"].get("undecided", []))
     short_term = set(pol["short_term"]["symbols"])
+    put_only = set(pol.get("put_only", {}).get("symbols", []))   # bucket C's own names (2026-09-20)
     exdiv = pol.get("ex_dividend_estimates", {})
     ignore = _load_policy_ignore_list()
 
@@ -972,8 +973,15 @@ def build_v7_queue(db: Session) -> Dict:
     st_value = sum(h["qty"] * price.get(s, 0) for (_, s), h in holdings.items() if s in short_term)
     st_put_collateral = sum(o["strike"] * 100 * o["contracts"] for o in options
                             if o["type"] == "put" and o["symbol"] in short_term)
+    # Three buckets (Neel, 2026-09-20): A long-term shares (80%), B short-
+    # term shares (20%), C the put bucket — the margin lines, puts on A + B
+    # + a put-only list. The 20% is SHARES ONLY; put collateral never
+    # counts toward it, whichever name it is on. `st_exposure` (shares +
+    # short-term put collateral) survives only as the what-if for the
+    # per-name balance check below: "if this put assigns, how much of B
+    # is this one name?"
     st_exposure = st_value + st_put_collateral
-    st_pct = (st_exposure / (total_value + st_put_collateral) * 100) if total_value else 0.0
+    st_pct = (st_value / total_value * 100) if total_value else 0.0
     cap_pct = K(pol, "short_term_cap_pct")
 
     # Existing exposure per short-term name (holdings + put collateral,
@@ -982,10 +990,10 @@ def build_v7_queue(db: Session) -> Dict:
     # says (Neel, 2026-09-16: 800 SOXL on the way and V7 asked for more).
     st_by_sym: Dict[str, float] = {}
     for (_, s_), h_ in holdings.items():
-        if s_ in short_term:
+        if s_ in short_term or s_ in put_only:
             st_by_sym[s_] = st_by_sym.get(s_, 0.0) + h_["qty"] * price.get(s_, 0)
     for o in options:
-        if o["type"] == "put" and o["symbol"] in short_term:
+        if o["type"] == "put" and (o["symbol"] in short_term or o["symbol"] in put_only):
             st_by_sym[o["symbol"]] = st_by_sym.get(o["symbol"], 0.0) + o["strike"] * 100 * o["contracts"]
     book_total = max(st_exposure, 1.0)
     max_sym_pct = K(pol, "st_max_symbol_pct_of_book")
@@ -1009,14 +1017,16 @@ def build_v7_queue(db: Session) -> Dict:
     # short-term book); a long-term name that assigns just grows the
     # long-term book, which is what it is for.
     held_syms = {s_ for (_, s_) in holdings.keys() if s_ not in ignore}
-    put_universe = sorted((long_term | short_term) & (held_syms | set(price)))
+    put_universe = sorted((long_term | short_term | put_only) & (held_syms | set(price)))
     for sym in put_universe:
         spot = price.get(sym)
         if not spot:
             continue
-        book = "short" if sym in short_term else "long"
-        sym_pct = st_by_sym.get(sym, 0.0) / book_total * 100 if book == "short" else 0.0
-        if book == "short" and sym_pct >= max_sym_pct:
+        # put-only names (bucket C's own list) land in the short-term book
+        # if assigned, so they take the same balance check
+        book = "short" if sym in short_term else "put-only" if sym in put_only else "long"
+        sym_pct = st_by_sym.get(sym, 0.0) / book_total * 100 if book != "long" else 0.0
+        if book != "long" and sym_pct >= max_sym_pct:
             concentrated.append(f"{sym} {sym_pct:.0f}%")
             continue
         any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None) or "neel_brokerage"
@@ -1082,13 +1092,10 @@ def build_v7_queue(db: Session) -> Dict:
         capacity += freeing_today.get(acct, 0.0)
         if capacity < K(pol, "put_min_capacity"):
             continue
-        if st_pct >= cap_pct:
-            card(3, "HOLD", acct, "—",
-                 f"No new short-term put — short-term book is {st_pct:.1f}% of the portfolio (cap {cap_pct}%)",
-                 f"undeployed capacity ${capacity:,.0f}",
-                 "The 20% cap, not judgement per name, is what bounds the risk to the long-term shares that "
-                 "secure the margin. Capacity waits until a short-term position leaves.")
-            continue
+        # (Until 2026-09-20 a short-term book at or above 20% blocked every
+        # new put. The put bucket is its own thing now, bounded by the
+        # margin lines; what keeps B in shape is the per-name balance
+        # check and the Layer-4 notice when B drifts over.)
         # best yield that FITS, sized to the capacity, then the next with what is left
         picks, remaining = [], capacity
         for p in put_candidates:
@@ -1108,7 +1115,9 @@ def build_v7_queue(db: Session) -> Dict:
             card(3, "SELL PUT", acct, p["symbol"],
                  f"{p['symbol']}: sell {n} put{'s' if n > 1 else ''} at ~${p['strike']:,.0f} (delta {p['delta']}, #{rank} by return/risk"
                  + (", depressed" if p["depressed"] else "")
-                 + (f", {p['book_pct']:.0f}% of the short-term book)" if p["book"] == "short" else ", long-term name)"),
+                 + (f", {p['book_pct']:.0f}% of the short-term book)" if p["book"] == "short"
+                    else f", put-only name — {p['book_pct']:.0f}% of the short-term book if assigned)" if p["book"] == "put-only"
+                    else ", long-term name)"),
                  f"exp {_fmt_exp(put_exp)} · collateral ${p['strike'] * 100 * n:,.0f} of ${capacity:,.0f} undeployed"
                  + (" (margin-backed)" if line else " (cash-secured)")
                  + f" · est ${est:,} · {p['yield_wk']:.1f}%/wk on collateral · {p['why']}",
@@ -1146,8 +1155,9 @@ def build_v7_queue(db: Session) -> Dict:
     if st_pct > cap_pct:
         card(4, "NOTICE", "Portfolio", "—",
              f"Short-term book is {st_pct:.1f}% — above the {cap_pct}% target",
-             f"short-term ${st_value:,.0f} held + ${st_put_collateral:,.0f} put collateral of ${total_value:,.0f}",
-             "80/20 is the healthy state. No new short-term puts until it drifts back; nothing else to do.")
+             f"short-term shares ${st_value:,.0f} of ${total_value:,.0f} (put collateral on short-term names, not counted: ${st_put_collateral:,.0f})",
+             "80/20 is the healthy state, shares only. It drifts back as short-term calls assign (their normal exit); "
+             "the per-name balance check keeps new puts from piling onto the names already large in the book.")
 
     for L in layers.values():
         L.sort(key=lambda c: (_acct_rank(c["account"]), c["symbol"]))

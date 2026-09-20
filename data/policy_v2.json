@@ -105,23 +105,23 @@
       "after_assignment": "Not an automatic re-entry. The name goes back into the put ranking (which put makes money; would assignment unbalance the 20% book — the per-name cap) and is picked when it earns the slot. SOXL/INTC capped today, CBRS/MRVL not."
     },
     "puts": {
-      "rule": "Sell puts on short-term names against cash (cash-secured) or margin cash, to maximise option income.",
+      "rule": "Puts are bucket C, not part of the 20%. Universe = every name in either book plus put_only; ranked by return per unit of risk; sized to each account's undeployed line. Per-name balance check: no new put on a short-term name that would be >= st_max_symbol_pct_of_book of the short-term book if assigned.",
       "strike_assumption": "Settled 2026-09-16: put delta is the mirror of the call rule (depressed/oversold → closer put, extended → farther), vol-scaled; candidates ranked by weekly yield ÷ volatility with a depressed bonus.",
       "entry": "V6 Tier-2 entry kept: RSI < 50 favourable, > 65 unfavourable.",
-      "throttle": "No new short-term put once short-term exposure (holdings + put collateral) is at or above the 20% target."
+      "throttle": "Retired 2026-09-20: a short-term book at or above 20% no longer blocks new puts — the put bucket is bounded by the margin lines; B drifting over 20% is a layer-4 notice, and short-term calls assigning is how it comes back."
     }
   },
   "split_target": {
     "long_term_pct": 80,
     "short_term_pct": 20,
-    "_note": "short_term_pct is mirrored by the knob short_term_cap_pct; the knob wins in the engine."
+    "_note": "Shares only (Neel, 2026-09-20): A long-term shares 80%, B short-term shares 20%. Put collateral never counts toward either. short_term_pct is mirrored by the knob short_term_cap_pct; the knob wins in the engine."
   },
   "margin": {
     "lines": {
       "neel_brokerage": 250000,
       "jaya_brokerage": 150000
     },
-    "use": "Margin is for puts, and puts are for the short-term book.",
+    "use": "The put bucket (C). The two lines — $250K Neel, $150K Jaya — are what sells puts, on long-term names, short-term names and the put_only list alike. Margin drawn by SHARES is the abnormal state (layer 4).",
     "recovery": "When margin is drawn by shares (not puts), the system says 'Margin drawn by $X — sell about $X of stock to return to normal' and stops. Which position is Neel's call. No urgency: the only cost is put income (~2%/mo) becoming call income (~1%/mo) on that amount."
   },
   "ex_dividend_estimates": {
@@ -431,7 +431,7 @@
       "value": 20,
       "label": "Short-term book cap",
       "group": "Books",
-      "description": "No new short-term put once the short-term book (holdings + put collateral) is at or above this share of the portfolio.",
+      "description": "Target share of the portfolio held as short-term SHARES (bucket B). Above it, a layer-4 notice; no longer blocks puts (2026-09-20).",
       "unit": "%",
       "step": 1,
       "min": 5,
@@ -586,6 +586,17 @@
       "step": 1,
       "min": 0,
       "max": 100
+    }
+  },
+  "put_only": {
+    "rule": "Bucket C's own names — puts on symbols in neither book (Neel, 2026-09-20: 'things that I will come up with'). If assigned, the shares are short-term book by default.",
+    "symbols": [
+      "PANW",
+      "CRWD"
+    ],
+    "added": {
+      "PANW": "Neel 2026-09-20",
+      "CRWD": "Neel 2026-09-20"
     }
   }
 }

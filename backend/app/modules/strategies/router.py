@@ -7042,6 +7042,11 @@ async def get_tracked_symbols(db: Session = Depends(get_db)):
         ignore = set(pol.get("ignore") or [])
     except Exception:
         ignore = set()
+    try:   # V7's lists, including bucket C's put-only names (PANW/CRWD, 2026-09-20)
+        p2 = _json.loads((settings.DATA_DIR / "policy_v2.json").read_text())
+        wanted |= set(p2["long_term"]["symbols"]) | set(p2["short_term"]["symbols"]) | set(p2.get("put_only", {}).get("symbols", []))
+    except Exception:
+        pass
     syms = sorted((held | wanted) - ignore - {"CASH", ""})
     return {"symbols": syms, "held": sorted(held - ignore), "wanted": sorted(wanted - held - ignore)}
 

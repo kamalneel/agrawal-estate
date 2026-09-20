@@ -215,7 +215,7 @@ export default function V7Preview() {
           <div className={styles.stateLabel}>Short-term book</div>
           <div className={styles.stateValue}>{split.short_term_pct.toFixed(1)}%</div>
           <div className={styles.stateSub}>
-            target {split.target.short_term_pct}% · {formatCurrency(split.short_term_value)} held + {formatCurrency(split.short_term_put_collateral)} put collateral · {data.lists.short_term.join(' ')}
+            target {split.target.short_term_pct}% · {formatCurrency(split.short_term_value)} in shares (put collateral is bucket C, not counted) · {data.lists.short_term.join(' ')}
           </div>
         </div>
         {data.accounts.filter(a => a.line).map(a => (

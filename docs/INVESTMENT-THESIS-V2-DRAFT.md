@@ -418,3 +418,17 @@ moves here.
   we fine-tune it as we go." INTC $100 ×4 in Retirement (RSI 63, $504
   credit) → let assign Thursday, $40K back to the ranking. Replaces
   `st_let_assign_dte`.
+- **Three buckets, not two** (Neel: "I am not understanding this
+  question — let me give my point of view"): **A** long-term shares
+  (80%), **B** short-term shares (20%), **C** the put bucket — the $400K
+  of margin lines, selling puts on A + B + a put-only list of names in
+  neither book ("things that I will come up with"). The 20% is shares
+  only; put collateral never counts toward it. Encoded: the 20% throttle
+  on new puts is retired (bucket C is bounded by the lines; B over 20% is
+  a layer-4 notice and short-term calls assigning is how it comes back);
+  `put_only` list added to `policy_v2.json`; a put-only name that
+  assigns lands in B and takes the same per-name balance check.
+- **Bucket C's first two names: PANW, CRWD** (Neel, 2026-09-20). Daily
+  closes since June loaded so they rank with RSI and realized vol; the
+  sync prices them with IV from now on. First ranking: PANW #2 in Jaya's
+  Brokerage (2 puts ~$330, delta 25, 1.3%/wk).
