@@ -986,7 +986,8 @@ def build_v7_queue(db: Session) -> Dict:
         if o["type"] != "put" or o["symbol"] not in price:
             continue
         sym, acct, spot, k, n = o["symbol"], o["account"], price[o["symbol"]], o["strike"], o["contracts"]
-        book = "long" if sym in long_term else "short" if sym in short_term else None
+        # put-only names (bucket C) are handled like short-term ones here
+        book = "long" if sym in long_term else "short" if (sym in short_term or sym in put_only) else None
         if spot >= k:
             # Out of the money. At expiry: roll on the last MORNING — the
             # expiring put's time value bleeds out overnight, the new one
