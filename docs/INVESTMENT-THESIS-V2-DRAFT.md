@@ -464,3 +464,24 @@ moves here.
   rolls while $18–32 ITM and the engine had said $0.
 - Sheltered accounts take the same long-term verdict with tax at zero
   ("yes, let it assign in the sheltered accounts too").
+
+## 2026-09-21 (Monday, trading)
+
+- **SPCX runaway thesis released** after 5 trading days, flat ($151.87
+  vs $151.88). Neel: "the runaway moment came from Intel and AMD
+  instead." Entries now carry `released`; the engine honours it.
+- **Layer-4 margin notice stays as a standing reminder** (Neel).
+- META $700 put sold in Jaya's Brokerage (9/25, +$594); META +10% the
+  same morning to $732 — already $33 OTM.
+- **Runaway baseline, from INTC and AMD 9/14 → 9/18** (for the
+  definition of "runaway"):
+  INTC $97.19 → $108.60 (+11.7% in 4 sessions; +4.0%, +7.7% on the
+  16th/17th, volume 120M → 150M → 175M vs ~90M; RSI 50 → 62).
+  AMD $493.41 → $559.82 (+13.5%; +6.4%, +2.7% on the 17th/18th, volume
+  22M → 28M → 32M vs ~17M; RSI 51 → 65).
+  SPCX same window: $148.15 → $152.71 (+3.1%), RSI 62.
+  Common shape: RSI started ~50 (neutral, not overbought), two
+  consecutive big up days with volume 1.5–2× the prior average, ending
+  around RSI 62–65 — still under the 70 that would make the engine
+  "wait". Rolling for credit vs. letting the call go is the question the
+  new rule 5 answers; the runaway declaration is for BEFORE the move.

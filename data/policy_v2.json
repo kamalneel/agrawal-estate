@@ -188,7 +188,9 @@
         "symbol": "SPCX",
         "declared": "2026-09-14",
         "price_at_declaration": 151.88,
-        "reason": "Bought back the $152.50 calls (2 in Neel's Brokerage) at $3.01 expecting a run on non-technical grounds; RSI 67 at the time. Do not re-cap until +5% ($159.47) or 2026-09-28."
+        "reason": "Bought back the $152.50 calls (2 in Neel's Brokerage) at $3.01 expecting a run on non-technical grounds; RSI 67 at the time. Do not re-cap until +5% ($159.47) or 2026-09-28.",
+        "released": "2026-09-21",
+        "outcome": "Released by Neel after 5 trading days: SPCX flat ($151.87 vs $151.88). The run came in INTC and AMD instead."
       }
     ]
   },

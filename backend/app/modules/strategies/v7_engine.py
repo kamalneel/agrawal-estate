@@ -404,8 +404,10 @@ def _runaway_status(pol: Dict, sym: str, spot: Optional[float], today: date) -> 
         deadline_days = int(K(pol, "runaway_release_days"))
         moved = spot is not None and spot >= target
         expired = days >= deadline_days
+        released = bool(e.get("released"))   # Neel called it off early (SPCX, 2026-09-21)
         return {"entry": e, "target": target, "days": days, "deadline_days": deadline_days,
-                "resolved": moved or expired, "how": "moved" if moved else "expired" if expired else None,
+                "resolved": moved or expired or released,
+                "how": "released" if released else "moved" if moved else "expired" if expired else None,
                 "p0": p0}
     return None
 
