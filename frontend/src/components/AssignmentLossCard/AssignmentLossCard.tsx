@@ -55,13 +55,23 @@ interface AssignmentLossData {
   events: AssignmentEvent[]
   by_month: Record<string, number>
   this_month_loss: number
+  this_month_puts: number
+  this_month_calls: number
   total_loss: number
+  total_puts: number
+  total_calls: number
   total_premium_on_assigned_contracts: number
   skipped_no_price_data: number
 }
 
 function fmt(v: number): string {
   return `$${Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}
+
+/** Loss is positive; a gain is negative. Render as −$X (loss) / +$X (gain). */
+function signed(v: number): string {
+  if (!v) return '$0'
+  return `${v > 0 ? '−' : '+'}${fmt(v)}`
 }
 
 function monthLabel(key: string): string {
@@ -161,9 +171,9 @@ export function AssignmentLossCard() {
       <h2 className={styles.title}>Assignment Loss</h2>
       <p className={styles.subtitle}>
         Puts: strike vs. market price at the moment of forced assignment (a put creates a new lot, so market-that-moment
-        is the real comparison). Calls: cost basis vs. strike — what the shares cost vs. what they sold for, signed
-        (a call assigned above cost is a real gain, shown as one). Both exclude premium — that is already counted as
-        options income on the Income page, and netting it here would count the same dollars twice.
+        is the real comparison). Calls: what the shares cost vs. what they sold for — the highest-cost lots go first,
+        in every account — signed (a call assigned above cost is a real gain, shown as one). Shown as puts + calls.
+        Both exclude premium — that is already counted as options income on the Income page.
       </p>
 
       <div className={styles.card}>
@@ -172,13 +182,13 @@ export function AssignmentLossCard() {
           <div className={clsx(styles.statValue, data.this_month_loss === 0 ? styles.muted : data.this_month_loss > 0 ? styles.neg : styles.pos)}>
             {data.this_month_loss === 0 ? '$0' : `${data.this_month_loss > 0 ? '-' : '+'}${fmt(data.this_month_loss)}`}
           </div>
-          <div className={styles.statLabel}>this month</div>
+          <div className={styles.statLabel}>this month · puts {signed(data.this_month_puts)} + calls {signed(data.this_month_calls)}</div>
         </div>
         <div>
           <div className={clsx(styles.statValue, data.total_loss >= 0 ? styles.neg : styles.pos)}>
             {data.total_loss >= 0 ? '-' : '+'}{fmt(data.total_loss)}
           </div>
-          <div className={styles.statLabel}>all-time</div>
+          <div className={styles.statLabel}>all-time · puts {signed(data.total_puts)} + calls {signed(data.total_calls)}</div>
         </div>
         <div>
           <div className={clsx(styles.statValue, styles.pos)}>{fmt(data.total_premium_on_assigned_contracts)}</div>

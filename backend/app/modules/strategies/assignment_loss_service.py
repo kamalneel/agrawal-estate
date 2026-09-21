@@ -20,13 +20,21 @@ money" for a call is cost_basis vs. strike — what you originally paid
 for the shares vs. what you were forced to sell them for. So for calls:
 loss = (cost_basis_per_share - strike) * shares — SIGNED (not clamped
 at zero like puts): positive = real loss, negative = the assignment was
-actually profitable vs. cost and is shown as such, not hidden. Plain
-average cost, not FIFO/lot-selection (Neel: "I'm not using this for tax
-calculation... this is to truly calculate if I lost money or made
-money") — average-cost accounting means a partial sale never changes
-the remaining shares' average cost, so summing every BUY through the
-assignment date is correct regardless of what else happened to the
-position in between.
+actually profitable vs. cost and is shown as such, not hidden.
+
+Cost basis for calls (redefined 2026-09-20): the HIGHEST-COST lots first,
+in every account — "we know at what price we bought that Tesla based on
+the last purchase; the assumption will be that we sold the one we bought
+at the highest price, not the average or the lowest" (Neel, after the
+9/18 TSLA assignments showed +$63K on average cost while the $435/$375
+lots delivered made them a −$28K loss). Lots come from the lot engine
+(stock_lot, plus what it already consumed for this sale), consumed
+highest cost first; `cost_basis_per_share` is the average of the lots
+actually consumed. Falls back to the old average-cost figure (source
+'live' / 'reconstructed') only when no lots are on file. The 2026-08-08
+average-cost definition is superseded.
+
+The headline is shown as puts + calls (Neel, 2026-09-20): `by_type`.
 
 Both loss figures are deliberately GROSS — not netted against premium,
 which is already counted once, elsewhere, as income; netting here would
@@ -131,8 +139,25 @@ def get_assignment_loss(db: Session) -> Dict:
             # income in the options stream — precisely what the module
             # docstring forbids. The table is still populated for
             # verification; it just cannot be this figure.
-            cb, cb_source, _ = _cost_basis_near(db, r.account_id, r.symbol, r.transaction_date)
+            # Highest-cost lots first (Neel, 2026-09-20). Lots as the book
+            # stood before this sale, consumed dearest-first; the per-share
+            # figure is the average of what was consumed.
+            cb = cb_source = None
             incomplete = False
+            try:
+                from app.modules.tax.assignment_tax_notice_service import _lots_before_sale, _consume
+                lots = _lots_before_sale(db, r.account_id, r.symbol, r.transaction_date)
+                if lots:
+                    high = _consume(sorted(lots, key=lambda l: (-l[2], l[0])), shares, strike, r.transaction_date)
+                    used = sum(l["shares"] for l in high["lots"])
+                    if used > 0:
+                        cb = sum(l["shares"] * l["cost_per_share"] for l in high["lots"]) / used
+                        cb_source = "highest_cost_lots"
+                        incomplete = high["short"] > 1e-6
+            except Exception:
+                cb = None
+            if cb is None:
+                cb, cb_source, _ = _cost_basis_near(db, r.account_id, r.symbol, r.transaction_date)
             if cb is None:
                 cb, incomplete = _reconstruct_cost_basis(
                     db, r.account_id, r.symbol, r.transaction_date, shares)
@@ -189,15 +214,24 @@ def get_assignment_loss(db: Session) -> Dict:
         })
 
     by_month: Dict[str, float] = {}
+    by_month_type: Dict[str, Dict[str, float]] = {}
     for e in events:
         by_month[e["month"]] = by_month.get(e["month"], 0.0) + e["loss"]
+        bt = by_month_type.setdefault(e["month"], {"put": 0.0, "call": 0.0})
+        bt[e["option_type"]] += e["loss"]
 
     cur_month = date.today().strftime("%Y-%m")
+    cur_t = by_month_type.get(cur_month, {"put": 0.0, "call": 0.0})
     return {
         "events": sorted(events, key=lambda e: e["date"], reverse=True),
         "by_month": {k: round(v, 2) for k, v in sorted(by_month.items())},
+        "by_month_type": {k: {t: round(v, 2) for t, v in d.items()} for k, d in sorted(by_month_type.items())},
         "this_month_loss": round(by_month.get(cur_month, 0.0), 2),
+        "this_month_puts": round(cur_t["put"], 2),
+        "this_month_calls": round(cur_t["call"], 2),
         "total_loss": round(sum(by_month.values()), 2),
+        "total_puts": round(sum(d["put"] for d in by_month_type.values()), 2),
+        "total_calls": round(sum(d["call"] for d in by_month_type.values()), 2),
         "total_premium_on_assigned_contracts": round(sum(e["premium_collected"] for e in events), 2),
         "skipped_no_price_data": skipped_no_data,
     }
