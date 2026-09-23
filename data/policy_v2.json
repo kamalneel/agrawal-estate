@@ -154,7 +154,17 @@
   },
   "planned_assignments": {
     "_note": "Calls Neel has DECIDED to let assign — the long-term book's one exit: a trim he chose, usually to repay margin (layer 4 says 'sell about $X'; this is where the pick is recorded). The engine says LET ASSIGN for these instead of ROLL, and reminds about tax lots. Remove an entry once it has assigned.",
-    "entries": [],
+    "entries": [
+      {
+        "account": "Jaya's Brokerage",
+        "symbol": "GOOG",
+        "strike": 345.0,
+        "expiration": "2026-10-02",
+        "contracts": 1,
+        "reason": "Exit-by-call (Neel, 2026-09-23): GOOG leaves the book, GOOGL takes its place. Rather than sell 100 sh at ~$342.61, roll the open $355 call DOWN to $345 (same 10/2 expiry) for ~$329 credit; assignment at $345 plus $965 of premium banked on the contract is an effective $354.65/share vs $346.48 selling at market today. Delta 0.46, so near-even odds; if it does not assign, roll down again the following week. Basis $372.50 (2026-07-16) -> a ~$2,750 short-term loss to harvest.",
+        "decided": "2026-09-23"
+      }
+    ],
     "completed": [
       {
         "account": "Jaya's Brokerage",
