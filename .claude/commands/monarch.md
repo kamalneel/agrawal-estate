@@ -65,7 +65,7 @@ decision or a question.
 | Split merchants | one merchant under two or more categories in the period | apply the standing decision or add an override |
 | Uncategorized | rows with no category | seed known chains in `import_rh_spending_csv.SEED_CATEGORIES`; leave unknowns visible |
 | Missing recurring | a complete month without Home Rent | data defect until proven otherwise (project-kb rule) |
-| Subscriptions | same merchant, monthly cadence, steady amount (run the detector in the audit doc) | list every one with $/yr and last charge; **flag any Neel has not confirmed he still wants** |
+| Subscriptions | the Recurring charges section on the page (`/spending/recurring`) | rows marked "unclear" need a decision; a cancelled one that bills again is red. Marketplace orders (AMAZON MKTPL, unique order codes) are never subscriptions even when the amount repeats — $9.99 + tax = $10.96 on many products (Neel, 2026-09-22) |
 | New merchants > $500 | first-ever appearance | name them in the report |
 
 ## Standing decisions

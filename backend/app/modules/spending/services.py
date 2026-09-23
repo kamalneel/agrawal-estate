@@ -846,6 +846,10 @@ def _recurring_key(merchant: Optional[str]) -> str:
     return " ".join(words[:2])
 
 
+#: Statement stamps of a one-off marketplace order (unique order code per
+#: charge). Excluded from recurrence detection entirely.
+MARKETPLACE_ORDER_NEEDLES = ("amazon mktpl", "amazon.com*", "amzn mktp")
+
 #: Cadenced spend that is a habit, not a subscription: the weekly bagel,
 #: the Tuesday coffee. Real money, but nothing to cancel in an app.
 HABIT_LABELS = {"Restaurants & Bars", "Coffee Shops", "Blue Bottle", "Groceries"}
@@ -949,6 +953,15 @@ def recurring_charges(db: Session, months: int = 15) -> dict:
     for r in rows:
         k = _recurring_key(r["merchant"])
         if not k:
+            continue
+        stmt = (r["original_statement"] or "").lower()
+        # Marketplace orders are one-off purchases whatever the amount
+        # repeats: "$9.99 after tax is $10.96, and there are a lot of
+        # products whose price is $9.99" (Neel, 2026-09-22). Five different
+        # $9.99 items over five months read as a subscription. Real Amazon
+        # subscriptions bill as "Amazon Prime", "AMZN Digital", "Kindle" —
+        # never with a per-order code.
+        if any(n in stmt for n in MARKETPLACE_ORDER_NEEDLES):
             continue
         by_merchant[k].append(r)
         by_merchant_amount[(k, round(-r["amount"], 2))].append(r)

@@ -1,14 +1,4 @@
 {
-  "amazon @10.96": {
-    "date": "2026-09-22",
-    "decision": "check",
-    "note": "Neel, 2026-09-22: not on his Subscribe & Save (only dog food, quarterly, $46.97). Unknown repeat order."
-  },
-  "amazon @2.98": {
-    "date": "2026-09-22",
-    "decision": "check",
-    "note": "Neel, 2026-09-22: not on his Subscribe & Save. Unknown repeat order."
-  },
   "anthropic @100.00": {
     "date": "2026-09-22",
     "decision": "keep",
@@ -62,10 +52,22 @@
     "name": "iCloud+ storage",
     "note": "Neel, 2026-09-22: long term \u2014 Apple storage"
   },
+  "audible": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Audible",
+    "note": "Neel, 2026-09-22: intentional"
+  },
   "cinemark @12.99": {
     "date": "2026-09-22",
     "decision": "keep",
     "name": "Cinemark Movie Club",
+    "note": "Neel, 2026-09-22: intentional"
+  },
+  "cursor @20.00": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Cursor",
     "note": "Neel, 2026-09-22: intentional"
   },
   "disney": {
@@ -78,6 +80,12 @@
     "date": "2026-09-11",
     "decision": "cancel",
     "note": "Yahoo Finance Bronze, $9.95/mo. Neel: cancelled."
+  },
+  "gold annual": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Robinhood Gold (annual)",
+    "note": "Neel, 2026-09-22: intentional"
   },
   "google one @1.99": {
     "date": "2026-09-22",
@@ -103,10 +111,28 @@
     "name": "Netflix",
     "note": "Neel, 2026-09-22: long term"
   },
+  "news laundry": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "News Laundry",
+    "note": "Neel, 2026-09-22: intentional"
+  },
   "spotify": {
     "date": "2026-09-22",
     "decision": "keep",
     "name": "Spotify",
     "note": "Neel, 2026-09-22: long term"
+  },
+  "stratechery": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Stratechery",
+    "note": "Neel, 2026-09-22: intentional"
+  },
+  "youtube": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "YouTube Premium",
+    "note": "Neel, 2026-09-22: intentional"
   }
 }
