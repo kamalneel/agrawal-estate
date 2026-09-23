@@ -69,10 +69,14 @@ discrepancy, unresolved — see the sync doc).
 3b. **At-the-money implied vol, per symbol** (added 2026-09-16 — the V7
    engine prices strikes and premiums from it; realized vol was 3× off
    on NVDA). For every symbol in `equity_marks`: pick the nearest Friday
-   with ≥ 3 days left; strike = spot rounded to the chain's increment
-   ($5 above $200, $2.50 for $50–200, $1 below $50 — try the next
-   increment up if the strike does not exist); `get_option_instruments(
-   chain_symbol, expiration_dates, type=call, strike_price)`; then one
+   with ≥ 3 days left; then `get_option_instruments(chain_symbol,
+   expiration_dates, type=call)` for that one expiry and pick the LISTED
+   strike nearest spot. (Do not compute the strike from an assumed
+   increment — the old rule guessed "$5 above $200, $2.50 for $50–200,
+   $1 below $50" and real chains disagree: SOXL lists $1 steps near $140,
+   GOOG lists $2.50 steps at $342.50. The 2026-09-23 prices run called
+   the rule garbled and improvised. Listing the expiry is one call and is
+   always right.) Then one
    `get_option_quotes` batch for all of them and read
    `implied_volatility`. Write `"implied_vols": {SYMBOL: 0.32, …}` into
    both bundles (fraction, not percent). A symbol with no strike found is
