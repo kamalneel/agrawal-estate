@@ -389,6 +389,27 @@ def _trading_days_between(a: date, b: date) -> int:
     return n
 
 
+def _up_day_worth_it(up_day: bool, mark: Optional[float], n: int, est_new: int,
+                     pol: Dict) -> Tuple[bool, str]:
+    """The up-day early roll only pays when the expiring call is nearly
+    worthless. Neel, 2026-09-23 (ZM $95, 2 days out, $3.10 OTM): "most of
+    the cost at the moment is of the time value" — closing it cost $42 of
+    a $136 new premium, 31%, while simply waiting collects that $42 as
+    decay. The refinement was built on "theta timing is a wash", which
+    holds only when there is little time value left to give up. Below the
+    knob, roll; above it, wait for expiry."""
+    if not up_day:
+        return False, ""
+    cost = (mark or 0.0) * 100 * n
+    if est_new <= 0:
+        return up_day, ""
+    pct = cost / est_new * 100
+    if pct <= K(pol, "up_day_roll_max_tv_pct"):
+        return True, f"closing costs ${cost:,.0f}, {pct:.0f}% of the new premium"
+    return False, (f"up day, but closing this call costs ${cost:,.0f} — {pct:.0f}% of the ${est_new:,} new premium "
+                   f"(over the {K(pol, 'up_day_roll_max_tv_pct'):.0f}% line): that time value is collected by waiting")
+
+
 def _runaway_status(pol: Dict, sym: str, spot: Optional[float], today: date) -> Optional[Dict]:
     """Active runaway thesis on `sym`, or None. Resolved when the price is
     up release_pct from the declaration or release_days trading days have
@@ -837,6 +858,7 @@ def build_v7_queue(db: Session) -> Dict:
                     vol, vol_src = vol_of(sym)
                     nxt = strike_for_delta(spot, td, vol, 7, 0.055)
                     est = call_premium(spot, nxt, vol, 7, n, RATE_TIER1_WEEKLY)
+                    up_day, tv_note = _up_day_worth_it(up_day, mark, n, est, pol)
                     roll_now = dte == 0 or up_day
                     if rw and not rw["resolved"]:
                         # Under a runaway thesis the roll's second leg — a new call —
@@ -962,6 +984,7 @@ def build_v7_queue(db: Session) -> Dict:
                     d_n, why_n = _short_term_delta(rsi, pol, vol_n, vs_n)
                     nxt = strike_for_delta(spot, d_n, vol_n, 7, 0.025)
                     est = call_premium(spot, nxt, vol_n, 7, n, RATE_ATM_WEEKLY)
+                    up_day, tv_note = _up_day_worth_it(up_day, mark, n, est, pol)
                     roll_now = dte == 0 or up_day
                     card(2, "ROLL" if roll_now else "WAIT", acct, sym,
                          (f"{sym} ${k:,.0f} call — up {move:+.1f}% today: roll now, sell next week's delta {d_n} (~${nxt:,.0f})" if up_day
@@ -971,7 +994,8 @@ def build_v7_queue(db: Session) -> Dict:
                          + (f" · today {move:+.1f}%" if move is not None else ""),
                          ("Rule A, up-day refinement: in the last days of a winning call the price path decides; an up day is "
                           "the moment to set the next strike. " if up_day else
-                          "Rule A: a winning call is left to expire and the next one sold the same Friday — no Monday lost. ")
+                          (tv_note + ". " if tv_note else
+                           "Rule A: a winning call is left to expire and the next one sold the same Friday — no Monday lost. "))
                          + "Short-term book: the next call at the delta 20-40 rule.",
                          earn=est if roll_now else None,
                          context={"captured_pct": round(captured, 1) if captured is not None else None, "rsi": rsi})
@@ -1128,6 +1152,21 @@ def build_v7_queue(db: Session) -> Dict:
     book_total = max(st_exposure, 1.0)
     max_sym_pct = K(pol, "st_max_symbol_pct_of_book")
 
+    # Skew ceiling on the put book itself (Neel, 2026-09-23): "even
+    # distribution is not a huge goal — the problem would have been if it
+    # was heavily skewed. If 50% of the put money was going to Zoom that
+    # would be wrong; I don't see a problem with the current." So the
+    # ranking stays purely profit-driven and this is a veto, not another
+    # variable to balance: no name may pass put_max_symbol_pct_of_put_book
+    # of all put collateral. ZM was 15% of $367K with two more cards
+    # queued that would have taken it to 27%.
+    put_by_sym: Dict[str, float] = {}
+    for o in options:
+        if o["type"] == "put":
+            put_by_sym[o["symbol"]] = put_by_sym.get(o["symbol"], 0.0) + o["strike"] * 100 * o["contracts"]
+    put_book_total = sum(put_by_sym.values())
+    max_put_pct = K(pol, "put_max_symbol_pct_of_put_book")
+
     # Put candidates, one rule for every name (Neel, 2026-09-16): the put
     # delta is the mirror of the call rule — a depressed / oversold name
     # gets a CLOSER put (its further downside is the weaker case), an
@@ -1157,7 +1196,11 @@ def build_v7_queue(db: Session) -> Dict:
         book = "short" if sym in short_term else "put-only" if sym in put_only else "long"
         sym_pct = st_by_sym.get(sym, 0.0) / book_total * 100 if book != "long" else 0.0
         if book != "long" and sym_pct >= max_sym_pct:
-            concentrated.append(f"{sym} {sym_pct:.0f}%")
+            concentrated.append(f"{sym} {sym_pct:.0f}% of book B")
+            continue
+        put_pct = put_by_sym.get(sym, 0.0) / put_book_total * 100 if put_book_total else 0.0
+        if put_pct >= max_put_pct:
+            concentrated.append(f"{sym} {put_pct:.0f}% of the put book")
             continue
         any_acct = next((h["account_id"] for (_, s), h in holdings.items() if s == sym), None) or "neel_brokerage"
         rsi_ctx = _rsi(db, any_acct, sym)
@@ -1236,6 +1279,16 @@ def build_v7_queue(db: Session) -> Dict:
                 if already / book_total * 100 >= max_sym_pct:
                     continue  # picked elsewhere this run, now at the cap
             n = min(int(remaining // (p["strike"] * 100)), int(K(pol, "put_max_contracts")))
+            # trim so this name stays under the put-book skew ceiling, counting
+            # what earlier accounts already took this run
+            held_put = put_by_sym.get(p["symbol"], 0.0) + reserved.get(p["symbol"], 0.0)
+            while n > 0:
+                add = p["strike"] * 100 * n
+                if (held_put + add) / max(put_book_total + add, 1.0) * 100 <= max_put_pct:
+                    break
+                n -= 1
+            if n == 0:
+                continue
             picks.append((p, n)); remaining -= p["strike"] * 100 * n
             reserved[p["symbol"]] = reserved.get(p["symbol"], 0.0) + p["strike"] * 100 * n
             if len(picks) == 2 or remaining < K(pol, "put_min_capacity"):
@@ -1256,7 +1309,7 @@ def build_v7_queue(db: Session) -> Dict:
                  "by the name's own volatility, so risk is in the delta. Candidates are then ranked by weekly yield on "
                  f"collateral at that delta (×{K(pol, 'put_depressed_bonus'):.2f} when ≥{K(pol, 'mr_threshold_pct'):.0f}% below the 10-day average), "
                  "and the best yield that fits the account's capacity is sized to it: "
-                 f"{ranking_txt}. Names at or above {max_sym_pct:.0f}% of the book are skipped"
+                 f"{ranking_txt}. Names at or above {max_sym_pct:.0f}% of book B, or {max_put_pct:.0f}% of the put book, are skipped"
                  + (f" (today: {', '.join(concentrated)})" if concentrated else "") + ". "
                  "Capacity = margin line + cash − open collateral − margin already drawn.",
                  earn=est,

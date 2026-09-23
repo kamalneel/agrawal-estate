@@ -497,3 +497,26 @@ moves here.
   weekly roll needs. One position, 100 sh in Jaya's Brokerage.
 - planned_assignments cleaned: the three 9/18 entries moved to
   `completed`.
+- **Up-day early roll needs a time-value guard** (Neel, 2026-09-23, on a
+  ZM $95 card): "is there risk of the call at 95 getting assigned? If
+  not then shouldn't we wait another day — most of the cost at the
+  moment is of the time value." Right: ZM $91.90, the call $3.10 OTM
+  with 2 days left, delta 0.21, and every cent of its $0.28-0.42 is time
+  value that decays to zero by Friday. The refinement was built on
+  "theta timing is a wash", which only holds when the expiring call is
+  near worthless. New knob `up_day_roll_max_tv_pct` = **15%**: take the
+  up-day roll only when closing costs at most that share of the new
+  call's premium. Set low deliberately — the decay you give up is
+  near-certain, the better strike is a coin flip. (ZM: 21% on the 6:40
+  mark, 31% live, and the bid $0.13 / ask $0.70 spread makes the real
+  cost worse — it waits.)
+- **Skew ceiling on the put book**, not a balancing objective (Neel:
+  "even distribution is not a huge goal — the problem would have been if
+  it was heavily skewed. If 50% of the put money was going to Zoom that
+  would be wrong; I don't see a problem with the current"). The ranking
+  stays purely return/risk; new knob
+  `put_max_symbol_pct_of_put_book` = **35%** is a veto, and sizing trims
+  contracts to stay under it. Put book today $367K: META 19.1%, PANW
+  19.1%, ZM 14.7%, AVGO 10.4%, GOOGL 9.8%, SOXL 8.2%, MRVL 6.3%, CBRS
+  5.2%, SPCX 4.1%, RKLB 3.3%. Today's two ZM cards take it to ~24% —
+  under the ceiling, so they stand.
