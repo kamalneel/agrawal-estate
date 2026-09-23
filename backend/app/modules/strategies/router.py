@@ -7020,35 +7020,68 @@ async def get_sync_status():
 
 @router.get("/sync/tracked-symbols")
 async def get_tracked_symbols(db: Session = Depends(get_db)):
-    """The symbols a prices sync must quote (Neel, 2026-09-18): everything
-    held in any account, plus every symbol in data/allocation_targets.json
-    and data/investment_policy.json (core + inventory)."""
+    """The symbols EVERY sync must quote — the one list, so a name cannot
+    be tracked by the engine and invisible to the pull.
+
+    Rebuilt 2026-09-23 after Neel asked why AMZN, CRWD, TSM and MSFT were
+    still on 9/18 closes after a 6:40 full sync. Two causes:
+
+    1. The /refresh skill quoted only symbols the synced accounts HOLD or
+       have options on, so bucket C names he does not own yet, and names
+       just assigned away (MSFT), were never priced. Only `prices` mode
+       read this endpoint. Step 3 of the skill now reads it too.
+    2. This list itself carried names nothing can ever refresh: FIG and
+       HOOD are held only in Alisha's Brokerage, which the skill
+       deliberately never syncs, and MGTNW / TQQQ are leftovers of V6's
+       `investment_policy.json` inventory (MGTNW has never had a single
+       price row). They sat here looking tracked and permanently stale.
+
+    So the list is now: what the SYNCED accounts hold, plus every open
+    option's underlying, plus V7's three groups (long-term, short-term,
+    put-only) — which is exactly what the engine reasons about. Anything
+    dropped is returned in `excluded` rather than silently disappearing.
+    """
     import json as _json
     from app.core.config import settings
     from sqlalchemy import text as _text
-    held = {r[0] for r in db.execute(_text(
-        "SELECT DISTINCT symbol FROM investment_holdings WHERE symbol IS NOT NULL AND quantity > 0"
-    )).fetchall()}
-    wanted = set()
+
+    # Accounts the /refresh skill actually pulls. Alisha's is excluded by
+    # the skill (known share-count discrepancy, unresolved), so symbols
+    # only she holds can never be made fresh — see docs/ROBINHOOD_MCP_SYNC.md.
+    NEVER_SYNCED = {"Alisha's Brokerage"}
+    rows = db.execute(_text("""
+        SELECT DISTINCT h.symbol, a.account_name
+        FROM investment_holdings h
+        JOIN investment_accounts a ON a.account_id = h.account_id AND a.source = h.source
+        WHERE a.is_active = 'Y' AND h.quantity > 0 AND h.symbol IS NOT NULL
+    """)).fetchall()
+    held = {r.symbol for r in rows if r.account_name not in NEVER_SYNCED}
+    unsyncable = {r.symbol for r in rows if r.account_name in NEVER_SYNCED} - held
+
+    # underlyings of open short options — always needed for marks
+    held |= {r[0] for r in db.execute(_text("""
+        SELECT DISTINCT so.symbol FROM sold_options so
+        WHERE so.snapshot_id IN (SELECT MAX(id) FROM sold_options_snapshots GROUP BY account_name)
+    """)).fetchall() if r[0]}
+
+    wanted, ignore = set(), set()
     try:
-        alloc = _json.loads((settings.DATA_DIR / "allocation_targets.json").read_text())
-        for b in (alloc.get("buckets") or {}).values():
-            wanted |= set((b.get("targets") or {}).keys())
-    except Exception:
-        pass
-    try:
-        pol = _json.loads((settings.DATA_DIR / "investment_policy.json").read_text())
-        wanted |= set(pol.get("core") or []) | set(pol.get("inventory") or [])
-        ignore = set(pol.get("ignore") or [])
-    except Exception:
-        ignore = set()
-    try:   # V7's lists, including bucket C's put-only names (PANW/CRWD, 2026-09-20)
         p2 = _json.loads((settings.DATA_DIR / "policy_v2.json").read_text())
-        wanted |= set(p2["long_term"]["symbols"]) | set(p2["short_term"]["symbols"]) | set(p2.get("put_only", {}).get("symbols", []))
+        wanted = (set(p2["long_term"]["symbols"]) | set(p2["short_term"]["symbols"])
+                  | set(p2.get("put_only", {}).get("symbols", [])))
     except Exception:
         pass
+    try:
+        ignore = set(_json.loads((settings.DATA_DIR / "investment_policy.json").read_text()).get("ignore") or [])
+    except Exception:
+        pass
+
     syms = sorted((held | wanted) - ignore - {"CASH", ""})
-    return {"symbols": syms, "held": sorted(held - ignore), "wanted": sorted(wanted - held - ignore)}
+    return {"symbols": syms,
+            "held": sorted(held - ignore),
+            "wanted": sorted(wanted - held - ignore),
+            "excluded": {"only_in_unsynced_accounts": sorted(unsyncable - wanted),
+                         "ignored": sorted(ignore)}}
 
 
 @router.post("/sync", status_code=202)

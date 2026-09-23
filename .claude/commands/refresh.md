@@ -15,7 +15,8 @@ page's buttons (`POST /strategies/sync?mode=…`) run this skill in one of:
 - **full** — everything below. The scheduled runs.
 - **state** — account state: steps 1–7 for all six accounts (positions,
   cash, and FILLS — the fills are the money view: every STO/BTC, premium
-  earned, assignments). Skip 3b, 8, 9. Report starts `SYNC OK`.
+  earned, assignments). Step 3 still quotes every tracked symbol.
+  Skip 3b, 8, 9. Report starts `SYNC OK`.
 - **prices** — live prices only. No per-account calls, no assignment
   detection. `GET /strategies/sync/tracked-symbols` gives the list (held
   + allocation targets + policy core/inventory); `get_equity_quotes` for
@@ -57,8 +58,14 @@ discrepancy, unresolved — see the sync doc).
    `get_equity_orders(created_at_gte=activity_since)`.
 3. **Across accounts** (either login): `get_option_instruments(ids=…)`
    for every unique position option_id; `get_option_quotes` for marks
-   (≤20 ids per call); `get_equity_quotes` for every held/underlying
-   symbol.
+   (≤20 ids per call); `get_equity_quotes` for **every tracked symbol** —
+   `curl -s localhost:8000/api/v1/strategies/sync/tracked-symbols` returns
+   the list (what the synced accounts hold + open option underlyings +
+   V7's long-term / short-term / put-only groups), ≤20 per call.
+   *Not just what the accounts hold* (fixed 2026-09-23): AMZN, CRWD, TSM
+   and MSFT sat on five-day-old closes for days because nothing you own
+   points at them, while the V7 put ranking prices strikes off them every
+   run. Every tracked symbol goes into `equity_marks`.
 3b. **At-the-money implied vol, per symbol** (added 2026-09-16 — the V7
    engine prices strikes and premiums from it; realized vol was 3× off
    on NVDA). For every symbol in `equity_marks`: pick the nearest Friday

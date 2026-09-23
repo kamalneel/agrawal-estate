@@ -88,7 +88,7 @@ case "$MODE" in
   state)
     OK_MARK="SYNC OK"; WATCHDOG_S=1200
     PROMPT="/refresh
-Headless ACCOUNT-STATE run (mode=state). Do steps 1, 2, 3, 4, 5, 6 and 7 of the skill for all six accounts: positions, cash, orders since activity_since, instruments and quotes needed for the paste, the collateral gate, bridge preview then --save for both logins, assignment detection, post-verify. SKIP step 3b (implied vol), step 8 and step 9. Write the two bundle JSON files to $BUNDLES (not a scratchpad). Finish with a report of at most 12 lines that starts with the line SYNC OK, or SYNC FAILED followed by why."
+Headless ACCOUNT-STATE run (mode=state). Do steps 1, 2, 3, 4, 5, 6 and 7 of the skill for all six accounts: positions, cash, orders since activity_since, instruments and quotes needed for the paste, the collateral gate, bridge preview then --save for both logins, assignment detection, post-verify. Step 3 must quote EVERY tracked symbol from /strategies/sync/tracked-symbols, not only the ones the accounts hold. SKIP step 3b (implied vol), step 8 and step 9. Write the two bundle JSON files to $BUNDLES (not a scratchpad). Finish with a report of at most 12 lines that starts with the line SYNC OK, or SYNC FAILED followed by why."
     ;;
   prices)
     OK_MARK="PRICES OK"; WATCHDOG_S=600
@@ -109,7 +109,7 @@ PY
   *)
     MODE="full"; OK_MARK="SYNC OK"; WATCHDOG_S=1200
     PROMPT="/refresh
-Scheduled headless run. Write the two bundle JSON files to $BUNDLES (not a scratchpad). Do every step of the skill including assignment detection and the post-verify. Skip the price-history and earnings-calendar refreshes unless the skill's own conditions say to run them. Finish with a report of at most 15 lines that starts with the line SYNC OK, or SYNC FAILED followed by why, if any gate or save did not pass."
+Scheduled headless run. Write the two bundle JSON files to $BUNDLES (not a scratchpad). Do every step of the skill including assignment detection and the post-verify. Step 3 must quote EVERY tracked symbol from /strategies/sync/tracked-symbols (not only what the accounts hold) and step 3b must compute implied vol for every one of them. Skip the price-history and earnings-calendar refreshes unless the skill's own conditions say to run them. Finish with a report of at most 15 lines that starts with the line SYNC OK, or SYNC FAILED followed by why, if any gate or save did not pass."
     ;;
 esac
 
