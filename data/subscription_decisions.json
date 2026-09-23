@@ -1,8 +1,36 @@
 {
+  "amazon @10.96": {
+    "date": "2026-09-22",
+    "decision": "check",
+    "note": "Neel, 2026-09-22: not on his Subscribe & Save (only dog food, quarterly, $46.97). Unknown repeat order."
+  },
+  "amazon @2.98": {
+    "date": "2026-09-22",
+    "decision": "check",
+    "note": "Neel, 2026-09-22: not on his Subscribe & Save. Unknown repeat order."
+  },
+  "anthropic @100.00": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Claude Max",
+    "note": "Neel, 2026-09-22: intentional"
+  },
+  "anthropic @20.00": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Claude Pro (second plan)",
+    "note": "Neel, 2026-09-22: intentional"
+  },
   "apple @1.99": {
     "date": "2026-09-18",
     "decision": "keep",
     "name": "Limitless Copy Paste"
+  },
+  "apple @11.98": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Apple (intentional)",
+    "note": "Neel, 2026-09-22: intentional"
   },
   "apple @12.99": {
     "date": "2026-09-18",
@@ -11,9 +39,10 @@
     "note": "Neel, 2026-09-18: cancelled on the iPhone"
   },
   "apple @2.99": {
-    "date": "2026-09-18",
-    "decision": "check",
-    "note": "Neel, 2026-09-18: not Limitless (that is $1.99) \u2014 unknown"
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Apple (intentional)",
+    "note": "Neel, 2026-09-22: intentional"
   },
   "apple @20.00": {
     "date": "2026-09-18",
@@ -28,9 +57,16 @@
     "note": "Neel, 2026-09-18: valid, keep"
   },
   "apple @9.99": {
-    "date": "2026-09-18",
+    "date": "2026-09-22",
     "decision": "keep",
-    "name": "iCloud+"
+    "name": "iCloud+ storage",
+    "note": "Neel, 2026-09-22: long term \u2014 Apple storage"
+  },
+  "cinemark @12.99": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Cinemark Movie Club",
+    "note": "Neel, 2026-09-22: intentional"
   },
   "disney": {
     "date": "2026-09-21",
@@ -42,5 +78,35 @@
     "date": "2026-09-11",
     "decision": "cancel",
     "note": "Yahoo Finance Bronze, $9.95/mo. Neel: cancelled."
+  },
+  "google one @1.99": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Google One 100GB (second plan)",
+    "note": "Neel, 2026-09-22: intentional"
+  },
+  "google one @9.99": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Google One 2TB storage",
+    "note": "Neel, 2026-09-22: long term \u2014 Google storage"
+  },
+  "namecheap": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "NameCheap domains",
+    "note": "Neel, 2026-09-22: intentional"
+  },
+  "netflix": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Netflix",
+    "note": "Neel, 2026-09-22: long term"
+  },
+  "spotify": {
+    "date": "2026-09-22",
+    "decision": "keep",
+    "name": "Spotify",
+    "note": "Neel, 2026-09-22: long term"
   }
 }

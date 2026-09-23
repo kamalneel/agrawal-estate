@@ -821,8 +821,10 @@ def save_decision(key: str, decision: str, note: Optional[str] = None,
     the charge actually is when the statement does not say (every Apple
     charge is "APPLE.COM/BILL"; Neel read the names off his iPhone)."""
     import json
-    if decision not in ("keep", "cancel", "check", "clear"):
-        raise ValueError("decision must be keep, cancel, check or clear")
+    # short_term: "trying something for the short term" (Neel, 2026-09-22).
+    # After SHORT_TERM_REVISIT_DAYS the row asks to be revisited.
+    if decision not in ("keep", "cancel", "check", "short_term", "clear"):
+        raise ValueError("decision must be keep, cancel, check, short_term or clear")
     d = load_decisions()
     if decision == "clear":
         d.pop(key, None)
@@ -844,6 +846,10 @@ def _recurring_key(merchant: Optional[str]) -> str:
     return " ".join(words[:2])
 
 
+#: Cadenced spend that is a habit, not a subscription: the weekly bagel,
+#: the Tuesday coffee. Real money, but nothing to cancel in an app.
+HABIT_LABELS = {"Restaurants & Bars", "Coffee Shops", "Blue Bottle", "Groceries"}
+
 #: Recurring lines that are living costs, not subscriptions. Shown second
 #: in the review; they are not cancel candidates.
 FIXED_COST_LABELS = {
@@ -852,6 +858,10 @@ FIXED_COST_LABELS = {
     "Neel's Medication", "Massage", "Dog sitter", "Household Help",
     "Home Utility", "Taxes", "Financial Fees",
 }
+
+
+#: A "short term" subscription older than this asks to be looked at again.
+SHORT_TERM_REVISIT_DAYS = 90
 
 
 def recurring_charges(db: Session, months: int = 15) -> dict:
@@ -916,7 +926,9 @@ def recurring_charges(db: Session, months: int = 15) -> dict:
             "merchant": last["merchant"],
             "category": last["label"],
             # fixed living cost vs. a subscription you could forget about
-            "kind": "fixed" if last["label"] in FIXED_COST_LABELS else "subscription",
+            "kind": ("fixed" if last["label"] in FIXED_COST_LABELS
+                     else "habit" if last["label"] in HABIT_LABELS
+                     else "subscription"),
             "account": ACCOUNT_NAMES.get(last["account"], last["account"]),
             "cadence": cad,
             "charge": round(charge, 2),
@@ -979,6 +991,8 @@ def recurring_charges(db: Session, months: int = 15) -> dict:
         e["display"] = e["name"] or e["merchant"]
         e["decision"] = dec["decision"] if dec else None
         e["decision_date"] = dec["date"] if dec else None
+        e["revisit"] = bool(dec and dec["decision"] == "short_term"
+                            and (today - date.fromisoformat(dec["date"])).days > SHORT_TERM_REVISIT_DAYS)
         e["note"] = dec.get("note") if dec else None
         last = date.fromisoformat(e["last"])
         # "charged after cancel": a cancelled charge that billed again.

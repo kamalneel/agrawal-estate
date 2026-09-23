@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { CreditCard, RefreshCw, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CreditCard, RefreshCw, Search, ChevronLeft, ChevronRight, Check, X, HelpCircle, Clock } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -63,9 +63,9 @@ interface Txn {
 interface TxnPage { transactions: Txn[]; total: number; total_amount: number; page: number; total_pages: number }
 interface Filters { categories: string[]; accounts: { account: string; display: string }[]; merchants: string[] }
 interface RecurringCharge {
-  key: string; merchant: string; display: string; name: string | null; category: string; account: string; kind: 'fixed' | 'subscription';
+  key: string; merchant: string; display: string; name: string | null; category: string; account: string; kind: 'fixed' | 'subscription' | 'habit';
   cadence: string; charge: number; per_year: number; count: number; first: string; last: string;
-  decision: 'keep' | 'cancel' | 'check' | null; decision_date: string | null; note: string | null;
+  decision: 'keep' | 'cancel' | 'check' | 'short_term' | null; decision_date: string | null; note: string | null; revisit?: boolean;
   charged_after_cancel: boolean; stopped: boolean; price_changed?: boolean; price_history?: number[] | null;
 }
 interface Recurring { as_of: string; months: number; charges: RecurringCharge[]; total_per_year: number; undecided: number }
@@ -167,7 +167,7 @@ export default function Spending() {
   useEffect(() => { setPage(1); }, [search, filterCategory, filterAccount, filterType, year, month]);
 
   useEffect(() => { getJson<Recurring>(`${API}/recurring`).then(setRecurring); }, []);
-  const decide = async (key: string, decision: 'keep' | 'cancel' | 'check' | 'clear') => {
+  const decide = async (key: string, decision: 'keep' | 'cancel' | 'check' | 'short_term' | 'clear') => {
     try {
       const r = await fetch(`${API}/recurring/decision`, {
         method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
@@ -540,14 +540,24 @@ export default function Spending() {
             {recurring && (() => {
               const active = recurring.charges.filter(c => !c.stopped);
               const subs = active.filter(c => c.kind === 'subscription');
-              const fixed = active.filter(c => c.kind === 'fixed');
+              const fixed = active.filter(c => c.kind === 'fixed' || c.kind === 'habit');
               const stopped = recurring.charges.filter(c => c.stopped);
               const Row = ({ c }: { c: RecurringCharge }) => (
                 <tr key={c.key} className={c.charged_after_cancel ? styles.rowSelected : undefined}>
                   <td className={styles.left}>
+                    {/* Intentional or unclear, at a glance (Neel, 2026-09-22):
+                        green check = kept on purpose, red cross = cancelled,
+                        amber ? = being checked, "unclear" = not yet decided. */}
+                    <span style={{ display: 'inline-block', width: 18, verticalAlign: 'middle', marginRight: 6 }} title={c.decision ?? 'unclear'}>
+                      {c.decision === 'keep' && <Check size={16} style={{ color: 'var(--color-positive)' }} />}
+                      {c.decision === 'cancel' && <X size={16} style={{ color: 'var(--color-negative)' }} />}
+                      {c.decision === 'check' && <HelpCircle size={16} style={{ color: 'var(--color-warning)' }} />}
+                      {c.decision === 'short_term' && <Clock size={16} style={{ color: 'var(--color-info)' }} />}
+                    </span>
                     {c.display}
                     {c.name && <span className={`${styles.muted} ${styles.small}`}> · {c.merchant} {c.key.includes('@') ? c.key.split('@')[1] : ''}</span>}
-                    {c.decision === null && <span className={`${styles.badge} ${styles.badgeWarn}`} style={{ marginLeft: 'var(--space-2)' }}>new</span>}
+                    {c.decision === null && <span className={`${styles.badge} ${styles.badgeWarn}`} style={{ marginLeft: 'var(--space-2)' }}>unclear</span>}
+                    {c.revisit && <span className={`${styles.badge} ${styles.badgeWarn}`} style={{ marginLeft: 'var(--space-2)' }} title="Marked short term more than 90 days ago — still wanted?">revisit</span>}
                     {c.charged_after_cancel && <span className={`${styles.flag} ${styles.flagCritical}`} style={{ marginLeft: 'var(--space-2)' }}>charged after cancel</span>}
                   </td>
                   <td className={styles.left}><span className={styles.badge}>{c.category}</span></td>
@@ -558,9 +568,9 @@ export default function Spending() {
                   <td className={styles.negative}>{fmt(c.per_year)}</td>
                   <td className={`${styles.muted} ${styles.small}`}>{fmtDate(c.last)}</td>
                   <td className={`${styles.left} ${styles.small}`} style={{ whiteSpace: 'nowrap' }}>
-                    {(['keep', 'cancel', 'check'] as const).map(d => (
+                    {(['keep', 'short_term', 'check', 'cancel'] as const).map(d => (
                       <button key={d} className={`${styles.pill} ${c.decision === d ? styles.active : ''}`} style={{ padding: '2px 8px', marginRight: 4 }}
-                        onClick={() => decide(c.key, c.decision === d ? 'clear' : d)}>{d}</button>
+                        onClick={() => decide(c.key, c.decision === d ? 'clear' : d)}>{d === 'short_term' ? 'short term' : d}</button>
                     ))}
                   </td>
                 </tr>
@@ -573,7 +583,7 @@ export default function Spending() {
                   <h3 className={styles.cardTitle}>Recurring charges</h3>
                   <p className={styles.cardSubtitle}>
                     Steady, cadenced charges over the last {recurring.months} months · {fmt(subs.reduce((s, c) => s + c.per_year, 0))}/yr in subscriptions, {fmt(fixed.reduce((s, c) => s + c.per_year, 0))}/yr in fixed costs
-                    {recurring.undecided > 0 && ` · ${recurring.undecided} not yet decided`} · a cancelled charge that bills again turns red on the headline
+                    {recurring.undecided > 0 && ` · ${recurring.undecided} unclear`} · a cancelled charge that bills again turns red on the headline
                   </p>
                   <div className={styles.tableContainer}>
                     <table className={styles.table}>
@@ -582,7 +592,7 @@ export default function Spending() {
                     </table>
                   </div>
                   <details open={showFixed} onToggle={e => setShowFixed((e.target as HTMLDetailsElement).open)} style={{ marginTop: 'var(--space-3)' }}>
-                    <summary className={`${styles.muted} ${styles.small}`} style={{ cursor: 'pointer' }}>Fixed living costs ({fixed.length}) — rent, school, insurance, phone, gym, car</summary>
+                    <summary className={`${styles.muted} ${styles.small}`} style={{ cursor: 'pointer' }}>Fixed living costs and habits ({fixed.length}) — rent, school, insurance, phone, gym, car, the weekly bagel</summary>
                     <div className={styles.tableContainer}><table className={styles.table}><Head /><tbody>{fixed.map(c => <Row key={c.key} c={c} />)}</tbody></table></div>
                   </details>
                   <details open={showStopped} onToggle={e => setShowStopped((e.target as HTMLDetailsElement).open)} style={{ marginTop: 'var(--space-2)' }}>
