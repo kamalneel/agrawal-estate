@@ -269,14 +269,18 @@ COUNTERPARTY_RULES: list[tuple] = [
     # (overdraft protection). Monarch reads "ODP" as Office Depot and filed
     # a $2,313 transfer as Shopping on 2026-04-10.
     ("Transfer", CategoryKind.TRANSFER, ("odp transfer",)),
-    # Employer reimbursements. Neel, 2026-09-11: "AdamX deposits are all
-    # reimbursements from my work, not a salary ... we won't know which
-    # [purchases] are reimbursed, those are small amounts, so just
-    # wholesale deduct it from my credit card expense." So the deposit is
-    # a SPENDING-kind inflow that nets (NETTING_LABELS) — one visible
-    # negative line in the month it lands — and never income.
-    ("Work expenses (reimbursed)", CategoryKind.SPENDING,
-     ("adamxai", "adamx inc"), "in"),
+    # Employer money, two kinds, told apart by the ACH sender name.
+    # "AdamXai" (Mercury) small deposits reimburse expenses Neel paid
+    # personally; we cannot tell which ("small amounts"), so they net
+    # wholesale as one negative line (Neel, 2026-09-11).
+    ("Work expenses (reimbursed)", CategoryKind.SPENDING, ("adamxai",), "in"),
+    # "AdamX Inc" is the ANNUAL miscellaneous payment — about $15,000 a
+    # year, not salary, not a reimbursement (Neel, 2026-09-18: "I'll have
+    # that payment every year ... this one is for 2025, it just came
+    # late"). Income, never netted against spending. Monarch filed it as
+    # "Business Income"; the first pass here had it netting September's
+    # spend down to $5K, which was wrong.
+    ("AdamX annual payment", CategoryKind.INCOME, ("adamx inc",), "in"),
     # A friend: money to or from him settles shared dinners and activities
     # (Neel, 2026-09-11). Outflows are spending; inflows NET against it
     # (see NETTING_LABELS) — he is paying his half back, not paying Neel.

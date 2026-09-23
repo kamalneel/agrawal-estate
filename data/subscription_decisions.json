@@ -1,4 +1,43 @@
 {
+  "apple @1.99": {
+    "date": "2026-09-18",
+    "decision": "keep",
+    "name": "Limitless Copy Paste"
+  },
+  "apple @12.99": {
+    "date": "2026-09-18",
+    "decision": "cancel",
+    "name": "Apple TV+",
+    "note": "Neel, 2026-09-18: cancelled on the iPhone"
+  },
+  "apple @2.99": {
+    "date": "2026-09-18",
+    "decision": "check",
+    "note": "Neel, 2026-09-18: not Limitless (that is $1.99) \u2014 unknown"
+  },
+  "apple @20.00": {
+    "date": "2026-09-18",
+    "decision": "cancel",
+    "name": "Perplexity Pro (via Apple)",
+    "note": "Neel, 2026-09-18: cancelled on the iPhone"
+  },
+  "apple @7.49": {
+    "date": "2026-09-18",
+    "decision": "keep",
+    "name": "Sadhguru app",
+    "note": "Neel, 2026-09-18: valid, keep"
+  },
+  "apple @9.99": {
+    "date": "2026-09-18",
+    "decision": "keep",
+    "name": "iCloud+"
+  },
+  "disney": {
+    "date": "2026-09-21",
+    "decision": "cancel",
+    "name": "Disney+",
+    "note": "Neel, 2026-09-18: cancelled; Disney says no charge after Sep 21, 2026. A Sep 21 charge is expected; anything later is a problem."
+  },
   "finance bronze": {
     "date": "2026-09-11",
     "decision": "cancel",

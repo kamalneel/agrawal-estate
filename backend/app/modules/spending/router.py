@@ -84,7 +84,7 @@ def recurring_decision(payload: dict, db: Session = Depends(get_db)):
     decision = keep | cancel | check | clear. A 'cancel' with a date means
     any later charge from that merchant is flagged on the headline."""
     try:
-        services.save_decision(payload["key"], payload["decision"], payload.get("note"))
+        services.save_decision(payload["key"], payload["decision"], payload.get("note"), payload.get("name"))
     except (KeyError, ValueError) as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=str(e))

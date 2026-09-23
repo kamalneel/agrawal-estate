@@ -529,13 +529,18 @@ def get_spending_transactions(
     }
 
 
-def _cancelled_since() -> dict[str, date]:
-    """merchant-key -> date Neel cancelled it. Page decisions first, then
-    the seed list in models (kept for history)."""
-    out = dict(CANCELLED_SUBSCRIPTIONS)
+def _cancelled_since() -> list[tuple[str, Optional[float], date, str]]:
+    """(merchant needle, exact amount or None, cancel date, display name)
+    for everything Neel cancelled. Page decisions first, then the seed list
+    in models. A key like "apple @20.00" is one subscription among several
+    on the same merchant, so it matches on amount too."""
+    out = [(k, None, d, k) for k, d in CANCELLED_SUBSCRIPTIONS.items()]
     for key, d in load_decisions().items():
-        if d.get("decision") == "cancel":
-            out[key] = date.fromisoformat(d["date"])
+        if d.get("decision") != "cancel":
+            continue
+        needle, _, amt = key.partition(" @")
+        out.append((needle, float(amt) if amt else None, date.fromisoformat(d["date"]),
+                    d.get("name") or key))
     return out
 
 
@@ -654,12 +659,13 @@ def get_spending_summary(db: Session, year: int, month: Optional[int] = None) ->
         # Cancellations come from the Recurring charges review on the page
         # (data/subscription_decisions.json) plus the seed in models.
         "cancelled_but_charged": [
-            {"date": r["date"].isoformat(), "merchant": r["merchant"],
+            {"date": r["date"].isoformat(), "merchant": name,
              "amount": round(-r["amount"], 2)}
             for r in rows
-            if r["amount"] < 0 and any(
-                k in (r["merchant"] or "").lower() and r["date"] > since
-                for k, since in _cancelled_since().items())
+            for needle, amt, since, name in _cancelled_since()
+            if r["amount"] < 0 and r["date"] > since
+            and needle in (r["merchant"] or "").lower()
+            and (amt is None or abs(-r["amount"] - amt) < 0.005)
         ],
     }
     # Missing-recurring detector, complete months only: a month without rent
@@ -809,7 +815,11 @@ def load_decisions() -> dict:
         return {}
 
 
-def save_decision(key: str, decision: str, note: Optional[str] = None) -> dict:
+def save_decision(key: str, decision: str, note: Optional[str] = None,
+                  name: Optional[str] = None) -> dict:
+    """Record keep / cancel / check for one recurring key. `name` is what
+    the charge actually is when the statement does not say (every Apple
+    charge is "APPLE.COM/BILL"; Neel read the names off his iPhone)."""
     import json
     if decision not in ("keep", "cancel", "check", "clear"):
         raise ValueError("decision must be keep, cancel, check or clear")
@@ -817,8 +827,10 @@ def save_decision(key: str, decision: str, note: Optional[str] = None) -> dict:
     if decision == "clear":
         d.pop(key, None)
     else:
+        prev = d.get(key, {})
         d[key] = {"decision": decision, "date": date.today().isoformat(),
-                  **({"note": note} if note else {})}
+                  **({"note": note} if note else ({"note": prev["note"]} if prev.get("note") else {})),
+                  **({"name": name} if name else ({"name": prev["name"]} if prev.get("name") else {}))}
     _decisions_path().write_text(json.dumps(d, indent=2, sort_keys=True))
     return d
 
@@ -875,12 +887,29 @@ def recurring_charges(db: Session, months: int = 15) -> dict:
         gaps = [(b["date"] - a["date"]).days for a, b in zip(xs, xs[1:])]
         amts = [-r["amount"] for r in xs]
         spread = (max(amts) - min(amts)) / max(amts) if max(amts) else 1
+        price_changed = False
         if spread > 0.3:
-            return
+            # Not a steady amount — but a subscription whose price keeps
+            # changing bills on the same day of month regardless. Disney+
+            # went $9.99 -> $11.99 -> $4.99 -> $12.99 -> $19.99 in a year,
+            # always on the 21st/27th, and read as "stopped" until this.
+            # Judge the billing day on the recent charges, tolerating one
+            # stray (a mid-cycle add-on), and call it price-changed only if
+            # those recent amounts actually differ.
+            recent = xs[-6:]
+            if len(xs) < 6:
+                return
+            days = sorted(r["date"].day for r in recent)
+            med_day = days[len(days) // 2]
+            if sum(1 for d in days if abs(d - med_day) <= 4) < len(days) - 1:
+                return
+            recent_amts = [-r["amount"] for r in recent]
+            price_changed = (max(recent_amts) - min(recent_amts)) / max(recent_amts) > 0.05
         cad, per_year = cadence(gaps, len(xs))
         if not cad:
             return
-        charge = statistics.median(amts)
+        # a price-changed series is priced at its LATEST amount, not the median
+        charge = amts[-1] if price_changed else statistics.median(amts)
         last = xs[-1]
         entry = {
             "key": key,
@@ -896,6 +925,8 @@ def recurring_charges(db: Session, months: int = 15) -> dict:
             "first": xs[0]["date"].isoformat(),
             "last": last["date"].isoformat(),
             "exact_amount": exact_amount,
+            "price_changed": price_changed,
+            "price_history": ([round(a, 2) for a in amts[-6:]] if price_changed else None),
         }
         # keep the bigger picture per key: whole-merchant beats exact-amount
         if key not in found or (not exact_amount and found[key]["exact_amount"]):
@@ -912,17 +943,40 @@ def recurring_charges(db: Session, months: int = 15) -> dict:
     for k, xs in by_merchant.items():
         if len(xs) >= 2:
             consider(k, xs, exact_amount=False)
+    def day_clusters(xs: list) -> list[list]:
+        """Split one (merchant, amount) series by billing day of month.
+        Two $9.99 Apple subscriptions — iCloud on the 17th and another on
+        the 6th — interleave into gaps of 11 and 20 days and look like
+        noise together; apart, each is plainly monthly."""
+        clusters: list[list] = []
+        for r in sorted(xs, key=lambda r: r["date"].day):
+            for c in clusters:
+                if abs(c[0]["date"].day - r["date"].day) <= 4:
+                    c.append(r)
+                    break
+            else:
+                clusters.append([r])
+        return sorted(clusters, key=lambda c: (max(r["date"] for r in c), len(c)), reverse=True)
+
     for (k, amt), xs in by_merchant_amount.items():
         # One merchant can carry several subscriptions (Apple: $20, $12.99,
         # $11.98, $7.49, $2.99, $1.99 a month) — each fixed amount is its
         # own line, keyed "apple @12.99".
         if len(xs) >= 3 and amt <= 500 and k not in found:
+            before = len(found)
             consider(f"{k} @{amt:.2f}", xs, exact_amount=True)
+            if len(found) == before and len(xs) >= 6:
+                # same amount, several billing days -> several subscriptions
+                for i, c in enumerate(day_clusters(xs)):
+                    if len(c) >= 3:
+                        consider(f"{k} @{amt:.2f}" + ("" if i == 0 else f" #{i + 1}"), c, exact_amount=True)
 
     today = date.today()
     out = []
     for e in found.values():
         dec = decisions.get(e["key"])
+        e["name"] = (dec or {}).get("name")
+        e["display"] = e["name"] or e["merchant"]
         e["decision"] = dec["decision"] if dec else None
         e["decision_date"] = dec["date"] if dec else None
         e["note"] = dec.get("note") if dec else None

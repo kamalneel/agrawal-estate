@@ -63,10 +63,10 @@ interface Txn {
 interface TxnPage { transactions: Txn[]; total: number; total_amount: number; page: number; total_pages: number }
 interface Filters { categories: string[]; accounts: { account: string; display: string }[]; merchants: string[] }
 interface RecurringCharge {
-  key: string; merchant: string; category: string; account: string; kind: 'fixed' | 'subscription';
+  key: string; merchant: string; display: string; name: string | null; category: string; account: string; kind: 'fixed' | 'subscription';
   cadence: string; charge: number; per_year: number; count: number; first: string; last: string;
   decision: 'keep' | 'cancel' | 'check' | null; decision_date: string | null; note: string | null;
-  charged_after_cancel: boolean; stopped: boolean;
+  charged_after_cancel: boolean; stopped: boolean; price_changed?: boolean; price_history?: number[] | null;
 }
 interface Recurring { as_of: string; months: number; charges: RecurringCharge[]; total_per_year: number; undecided: number }
 
@@ -285,10 +285,28 @@ export default function Spending() {
           <div className={styles.headline}>
             <div>
               <div className={styles.headlineLabel}>
-                Total spend — {periodLabel}
+                Monthly spend — {periodLabel}
                 {!summary.period_complete && ` (partial, through ${dataThrough ? fmtDate(dataThrough) : '—'})`}
               </div>
-              <div className={styles.headlineValue}>{fmt(summary.total_spending)}</div>
+              {/* The big number is the month-to-month spend. Annual and
+                  one-time items (taxes, insurance, trips) appear only when
+                  there are any, as an addend in another colour — most
+                  months there are none (Neel, 2026-09-18). */}
+              <div className={styles.headlineValue} style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+                <span>{fmt(summary.recurring_spending)}</span>
+                {summary.non_monthly_spending > 0 && (
+                  <span style={{ color: 'var(--color-warning)', fontSize: 'var(--text-3xl)', cursor: 'pointer' }}
+                    title={`Annual and one-time this period — click for the transactions:\n${summary.non_monthly_breakdown.map(n => `${n.label}: ${fmt(n.total)}`).join('\n')}`}
+                    onClick={() => { setFilterType('non_monthly'); setFilterCategory(''); txnRef.current?.scrollIntoView({ behavior: 'smooth' }); }}>
+                    + {fmt(summary.non_monthly_spending)}
+                  </span>
+                )}
+                {summary.non_monthly_spending < 0 && (
+                  <span style={{ color: 'var(--color-positive)', fontSize: 'var(--text-3xl)' }} title="Net refund on annual and one-time items this period">
+                    − {fmt(Math.abs(summary.non_monthly_spending))}
+                  </span>
+                )}
+              </div>
               {summary.netted_inflows >= 100 && (
                 <div className={styles.headlineSplit}>
                   <span>Charged <strong>{fmt(summary.gross_spending)}</strong></span>
@@ -297,8 +315,9 @@ export default function Spending() {
                 </div>
               )}
               <div className={styles.headlineSplit}>
-                <span>Recurring <strong>{fmt(summary.recurring_spending)}</strong></span>
-                <span>Non-monthly <strong>{fmt(summary.non_monthly_spending)}</strong></span>
+                {summary.non_monthly_spending !== 0 && (
+                  <span className={styles.muted}>with annual and one-time: {fmt(summary.total_spending)}</span>
+                )}
                 {!isMonth && summary.months_with_data > 0 && (
                   <span>Avg recurring <strong>{fmt(summary.avg_monthly)}</strong>/mo over {summary.months_with_data} months</span>
                 )}
@@ -422,35 +441,6 @@ export default function Spending() {
               </div>
             )}
 
-            {/* Annual and one-time — kept apart from month-to-month spend so
-                neither muddies the other (Neel, 2026-09-18). Sums with the
-                recurring categories to the headline. */}
-            {summary.non_monthly_breakdown.length > 0 && (
-              <div className={styles.card}>
-                <h3 className={styles.cardTitle}>Annual and one-time — {periodLabel}</h3>
-                <p className={styles.cardSubtitle}>Taxes, insurance, trips and one-offs · counted in the total, left out of the recurring average</p>
-                <div className={styles.tableContainer}>
-                  <table className={styles.table}>
-                    <thead><tr><th className={styles.left}>Item</th><th>#</th><th>Amount</th></tr></thead>
-                    <tbody>
-                      {summary.non_monthly_breakdown.map(n => (
-                        <tr key={n.label} className={styles.rowClickable} onClick={() => { if (n.type === 'category') pickCategory(n.label); else { setFilterType('non_monthly'); txnRef.current?.scrollIntoView({ behavior: 'smooth' }); } }}>
-                          <td className={styles.left}>{n.label}{n.type === 'trip' && <span className={styles.badge} style={{ marginLeft: 'var(--space-2)' }}>trip</span>}</td>
-                          <td className={styles.muted}>{n.count}</td>
-                          <td className={n.total < 0 ? styles.positive : styles.negative}>{fmt(n.total)}</td>
-                        </tr>
-                      ))}
-                      <tr className={styles.totalRow}>
-                        <td className={styles.left}>Annual and one-time total</td>
-                        <td></td>
-                        <td className={styles.negative}>{fmt(summary.non_monthly_spending)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
             {/* L3 — composition */}
             <div className={styles.twoColumn}>
               <div className={styles.card}>
@@ -492,7 +482,7 @@ export default function Spending() {
                       </tr>
                       {nonMonthlyCats.length > 0 && (
                         <tr className={styles.groupRow}><td className={styles.left} colSpan={4}>
-                          + annual and one-time {fmt(summary.non_monthly_spending)} (section above) = {fmt(summary.total_spending)}
+                          + annual and one-time {fmt(summary.non_monthly_spending)} ({nonMonthlyCats.map(c => c.category).join(', ')}) = {fmt(summary.total_spending)}
                         </td></tr>
                       )}
                     </tbody>
@@ -555,13 +545,16 @@ export default function Spending() {
               const Row = ({ c }: { c: RecurringCharge }) => (
                 <tr key={c.key} className={c.charged_after_cancel ? styles.rowSelected : undefined}>
                   <td className={styles.left}>
-                    {c.merchant}
+                    {c.display}
+                    {c.name && <span className={`${styles.muted} ${styles.small}`}> · {c.merchant} {c.key.includes('@') ? c.key.split('@')[1] : ''}</span>}
                     {c.decision === null && <span className={`${styles.badge} ${styles.badgeWarn}`} style={{ marginLeft: 'var(--space-2)' }}>new</span>}
                     {c.charged_after_cancel && <span className={`${styles.flag} ${styles.flagCritical}`} style={{ marginLeft: 'var(--space-2)' }}>charged after cancel</span>}
                   </td>
                   <td className={styles.left}><span className={styles.badge}>{c.category}</span></td>
                   <td className={styles.muted}>{c.cadence}</td>
-                  <td>{fmtFull(c.charge)}</td>
+                  <td title={c.price_changed && c.price_history ? `Price has changed: ${c.price_history.map(a => fmtFull(a)).join(' → ')}` : undefined}>
+                    {fmtFull(c.charge)}{c.price_changed && <span className={`${styles.badge} ${styles.badgeWarn}`} style={{ marginLeft: 4 }}>price changed</span>}
+                  </td>
                   <td className={styles.negative}>{fmt(c.per_year)}</td>
                   <td className={`${styles.muted} ${styles.small}`}>{fmtDate(c.last)}</td>
                   <td className={`${styles.left} ${styles.small}`} style={{ whiteSpace: 'nowrap' }}>

@@ -101,12 +101,18 @@ then in code.
   card — same person, same line. Dipti was domestic help →
   Household Help. Ankur Richhariya is a friend; money either way settles
   shared dinners/activities → Split bills, inflows net.
-- **AdamX** is Neel's employer. Deposits from AdamX (Mercury ACH, "AdamX
-  Inc") are reimbursements of expenses Neel paid personally, never salary
-  or income. We cannot tell which purchases were reimbursed ("small
-  amounts"), so the deposit is deducted wholesale: it appears as one
-  negative "Work expenses (reimbursed)" line in the month it lands and
-  nets against spending. Adamx-tagged spend sits under the same line.
+- **AdamX** is Neel's employer. Two different inflows, told apart by the
+  sender name on the ACH:
+  - "AdamXai" (Mercury) small deposits are reimbursements of expenses Neel
+    paid personally. We cannot tell which purchases ("small amounts"), so
+    they net wholesale as one negative "Work expenses (reimbursed)" line.
+  - "AdamX Inc" is the **annual miscellaneous payment**, about $15,000 a
+    year, not salary and not a reimbursement (Neel, 2026-09-18). It is
+    INCOME, label "AdamX annual payment", and belongs to the year it is
+    for: the 2026-09-09 $15,448 is the 2025 payment, arrived late; the
+    2026 one is expected later in 2026. Never net it against spending.
+  Open: the 2025-02-25 $10,000 from AdamXai — the 2024 annual payment, or
+  a reimbursement?
 - **Zelle payees that are spending:** Fariba → Dog sitter; Lianxiang Liu
   → Massage (the weekly tip); Liseldí Domínguez → Household Help (the
   house cleaner, monthly from 2026-09). Pranay's $630.35 on 2026-09-11

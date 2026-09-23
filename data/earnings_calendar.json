@@ -1,6 +1,6 @@
 {
   "description": "Next earnings dates for held/wheel symbols, pulled from the Robinhood MCP earnings calendar during /refresh (see docs/ROBINHOOD_MCP_SYNC.md). The v6 action-queue engine annotates every item whose symbol reports within the lookahead window \u2014 earnings inflate option premium and IV crushes after the call, so entry/roll timing decisions need this in view. 'verified' = company-confirmed date vs estimate.",
-  "updated": "2026-09-14",
+  "updated": "2026-09-21",
   "lookahead_days": 16,
   "earnings": {
     "MU": {
