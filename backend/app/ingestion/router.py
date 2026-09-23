@@ -312,9 +312,12 @@ def trigger_refresh_now():
 def get_data_freshness(db: Session = Depends(get_db)):
     """Data-freshness summary for the header indicator.
 
-    The scheduled MCP refresh (launchd com.neelpersonal.rh-refresh) runs
-    weekdays at 5:40 / 11:40 / 19:40 PT. Freshness = did the newest data
-    land at-or-after the most recent scheduled slot (15 min grace). The
+    The scheduled MCP refresh (launchd com.agrawal.estate.refresh) runs
+    weekdays at 6:40 / 7:50 / 9:05 / 10:05 / 11:50 / 13:05 / 19:50 PT —
+    keep `slot_times` below in step with
+    scripts/com.agrawal.estate.refresh.plist. Freshness = did the newest
+    data land at-or-after the most recent scheduled slot (15 min grace,
+    and a run takes ~6 min). The
     overall timestamp is the WEAKEST source (min), so one silently-failing
     feed can't hide behind the others.
     """
@@ -336,12 +339,15 @@ def get_data_freshness(db: Session = Depends(get_db)):
         "activity": _scalar("SELECT MAX(created_at) FROM ingestion_log WHERE status = 'success'"),
     }
 
-    # Most recent scheduled refresh slot: weekdays 6:32/7:40/11:40/13:10 PT
-    # (Neel's decision-point schedule, 2026-07-14 — post-open, coffee,
-    # pre-close decision, post-close capture), walked back from now, then
-    # converted to naive UTC for comparison.
+    # Most recent scheduled refresh slot, walked back from now, then
+    # converted to naive UTC for comparison. Sync -> wait -> email
+    # (2026-09-17): the four decision-point slots each send their scan
+    # email when the run lands; 9:05/10:05 keep the morning fresh and
+    # 13:05 is the post-close snapshot. Was the retired July schedule
+    # (6:32/7:40/11:40/13:10) until 2026-09-23 — the pill was judging
+    # freshness against slots nothing runs on any more.
     now_pt = datetime.now(PT)
-    slot_times = [(6, 32), (7, 40), (11, 40), (13, 10)]
+    slot_times = [(6, 40), (7, 50), (9, 5), (10, 5), (11, 50), (13, 5), (19, 50)]
     day = now_pt.date()
     last_expected_pt = None
     for _ in range(8):  # never more than a weekend + holiday of walking back
@@ -375,7 +381,8 @@ def get_data_freshness(db: Session = Depends(get_db)):
         "last_expected_run": _iso_utc(last_expected_utc),
         "status": "fresh" if fresh else "stale",
         "hours_since": round((now_utc - overall).total_seconds() / 3600, 1) if overall else None,
-        "schedule": "weekdays 6:32 / 7:40 / 11:40 / 13:10 PT (post-close capture at 13:10 is final for the day)",
+        "schedule": "weekdays 6:40 / 7:50 / 9:05 / 10:05 / 11:50 / 13:05 / 19:50 PT "
+                    "(13:05 is the post-close snapshot; 6:40 / 7:50 / 11:50 / 19:50 also send the scan email)",
     }
 
 

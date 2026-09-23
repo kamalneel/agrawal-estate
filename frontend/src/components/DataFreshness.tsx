@@ -2,14 +2,19 @@
  * Global data-freshness pill (every page, bottom-right).
  *
  * Answers "is what I'm looking at current?" — green when the newest synced
- * data landed at/after the most recent scheduled MCP refresh slot
- * (weekdays 5:40/11:40/19:40 PT), amber when a slot appears to have been
- * missed (Mac asleep, Robinhood token expired, backend down).
+ * data landed at/after the most recent scheduled MCP refresh slot, amber
+ * when a slot appears to have been missed (Mac asleep, Robinhood token
+ * expired, backend down). The slots come from the backend
+ * (/ingestion/freshness `schedule`), so this comment does not go stale;
+ * they live in scripts/com.agrawal.estate.refresh.plist.
  * Hover for the per-source breakdown.
  *
- * Click = run the same full MCP sync the schedule runs (POST
+ * Click = run the same FULL MCP sync the schedule runs (POST
  * /ingestion/refresh-now kicks the launchd job); the pill shows
  * "Refreshing…" and polls until the data timestamps advance (~5-6 min).
+ * The per-page "Sync accounts" / "Sync prices" buttons (SyncButton.tsx)
+ * are the narrower, cheaper versions of the same pull — note that only
+ * "Sync prices" covers tracked symbols you do not hold.
  */
 import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, AlertTriangle } from 'lucide-react'
@@ -106,7 +111,7 @@ export function DataFreshness() {
         `Cash: ${fmtTime(data.sources.cash)}`,
         `Prices/holdings: ${fmtTime(data.sources.holdings)}`,
         `Last activity import: ${fmtTime(data.sources.activity)}`,
-        stale ? `Expected a run at ${fmtTime(data.last_expected_run)} — check ~/Library/Logs/rh-refresh.log (MCP token? Mac asleep?)` : '',
+        stale ? `Expected a run at ${fmtTime(data.last_expected_run)} — check logs/refresh/ (MCP token? Mac asleep?)` : '',
         'Click to refresh now',
       ].filter(Boolean).join('\n')
 
