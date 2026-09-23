@@ -485,3 +485,15 @@ moves here.
   around RSI 62–65 — still under the 70 that would make the engine
   "wait". Rolling for credit vs. letting the call go is the question the
   new rule 5 answers; the runaway declaration is for BEFORE the move.
+
+## 2026-09-23 (Wednesday, trading)
+
+- **AAPL in Jaya's Brokerage: keep and roll** (Neel, "change of heart").
+  Matches rule 5 as built — the $325 call is $14.29 ITM with RSI 68 and
+  a 21.5% tax cost on the lots ($8.26 and $220.50), both above the
+  lines, so the engine already said roll. No change.
+- **GOOG out, GOOGL in** (Neel): same company, GOOGL is the more
+  volatile and far more liquid of the two classes, which is what the
+  weekly roll needs. One position, 100 sh in Jaya's Brokerage.
+- planned_assignments cleaned: the three 9/18 entries moved to
+  `completed`.

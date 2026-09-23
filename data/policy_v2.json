@@ -71,7 +71,10 @@
       "buy_gaps": "Filled by buying shares from trim proceeds; a put on a long-term name that assigns is a fine way to fill one too.",
       "reentry": "Retired 2026-09-20 as a separate card: a called-away long-term name is a put candidate like any other (ranking + capacity), not an automatic re-entry."
     },
-    "decided_out": "TSM, AMZN, META — out of the long-term book (Neel, 2026-09-20); moved to put_only. No buy program in V7: the way into A is a put from bucket C that assigns."
+    "decided_out": "TSM, AMZN, META — out of the long-term book (Neel, 2026-09-20); moved to put_only. No buy program in V7: the way into A is a put from bucket C that assigns.",
+    "exiting": {
+      "GOOG": "Neel, 2026-09-23: exit GOOG and hold GOOGL instead — same company, GOOGL carries slightly more volatility (IV 31.4% vs 31.3%, 20-day realized 23.8% vs 22.8%) and much deeper option liquidity, which is what the weekly roll needs. Only position: 100 sh in Jaya's Brokerage, basis $372.50 (bought 2026-07-16). Remove GOOG from the long-term list once the shares are gone."
+    }
   },
   "short_term": {
     "rule": "A named list. No long thesis. Return from calls on owned shares and puts sold against cash and margin. Chosen because their volatility pays.",
@@ -151,7 +154,8 @@
   },
   "planned_assignments": {
     "_note": "Calls Neel has DECIDED to let assign — the long-term book's one exit: a trim he chose, usually to repay margin (layer 4 says 'sell about $X'; this is where the pick is recorded). The engine says LET ASSIGN for these instead of ROLL, and reminds about tax lots. Remove an entry once it has assigned.",
-    "entries": [
+    "entries": [],
+    "completed": [
       {
         "account": "Jaya's Brokerage",
         "symbol": "TSLA",
@@ -159,7 +163,8 @@
         "expiration": "2026-09-18",
         "contracts": 3,
         "reason": "TSLA trim 2,000 -> 1,600 (planned since 2026-08-09); ~$102K repays most of Jaya's $131K margin. Highest Cost delivers the $435/$396.89/$375 lots (-$18K short-term loss, not +$76K FIFO gain).",
-        "decided": "2026-09-13"
+        "decided": "2026-09-13",
+        "assigned": "2026-09-18"
       },
       {
         "account": "Neel's Brokerage",
@@ -168,7 +173,8 @@
         "expiration": "2026-09-18",
         "contracts": 1,
         "reason": "Swapped for the AAPL $322.50 plan (Neel, 2026-09-17): MSFT is $50 ITM and a same-strike roll costs a debit (rule 1: never pay to roll), while AAPL $322.50 rolls for +$425. Assignment frees $45K of margin; gain $6,510 (~$2,400 tax, Highest Cost delivers the $492.67 and $418 lots first) vs AAPL's $41,605. Leaves 0 MSFT against a 200-share long-term target — re-entry put allowed afterwards.",
-        "decided": "2026-09-17"
+        "decided": "2026-09-17",
+        "assigned": "2026-09-18"
       },
       {
         "account": "Neel's Brokerage",
@@ -177,7 +183,8 @@
         "expiration": "2026-09-18",
         "contracts": 1,
         "reason": "Free the margin (Neel, 2026-09-17). $20 ITM, a same-strike roll pays nothing. Frees $33,500; Highest Cost delivers the $435 lot from the 6/25 put assignment — a −$10,000 short-term loss to harvest (FIFO would have been +$24,900 long-term).",
-        "decided": "2026-09-17"
+        "decided": "2026-09-17",
+        "assigned": "2026-09-18"
       }
     ]
   },
