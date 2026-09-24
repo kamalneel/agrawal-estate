@@ -123,6 +123,10 @@ for pair in 400:6am_main 470:8am_post_open 710:12pm_midday 1190:8pm_evening; do
   if (( NOW >= slot - 10 && NOW <= slot + 10 )); then SCAN=${pair##*:}; fi
 done
 [[ -n "${1:-}" ]] && SCAN="$1"     # ./scheduled_refresh.sh 8pm_evening  forces one
+# A manual run is silent by default (Neel, 2026-09-18). REFRESH_EMAIL=1 asks
+# for the action-queue email anyway — "I just synced, tell me what to do now"
+# (Neel, 2026-09-24).
+[[ "${REFRESH_EMAIL:-0}" == "1" && -z "$SCAN" ]] && SCAN="manual"
 [[ "$MODE" == "prices" ]] && SCAN=""   # a prices pull never triggers a scan email
 
 echo "$(date) start mode=$MODE scan=${SCAN:-none}" >> "$LOG"

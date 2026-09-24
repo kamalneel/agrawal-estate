@@ -1484,6 +1484,7 @@ class RecommendationScheduler:
 # each one (2026-09-17): the wrapper syncs at 6:40 / 7:50 / 11:50 / 19:50
 # and the email follows the moment the run completes (~6 min later).
 SCAN_LABELS = {
+    "manual":        "Manual scan (after a sync you started)",
     "6am_main":      "Scan 1 — Wake-up Triage (after the 6:40 AM sync)",
     "8am_post_open": "Scan 2 — Coffee Break (after the 7:50 AM sync)",
     "12pm_midday":   "Scan 3 — Pre-Close Decisions (after the 11:50 AM sync)",
