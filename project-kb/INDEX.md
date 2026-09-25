@@ -8,6 +8,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 
 ### Communication
 - [Preferences Captured Over Time](playbook/universal/communication/preferences-captured-over-time.md) — communication style is iteratively captured, not pre-specified; covers email, notifications, content, personal messages
+- [Deliverables Stay Local](playbook/universal/communication/deliverables-stay-local.md) — reports are PDFs under data/documents/reports or docs in docs/, never a claude.ai Artifact or hosted page; short prose, tables, "Inferred" tags
 
 ### Design
 - [Always Use Design Tokens](playbook/universal/design/always-use-design-tokens.md) — never hardcode colors/spacing, use CSS variables from tokens.css
@@ -20,12 +21,15 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [A Bookkeeping Category Is a Ledger, Not an Income Stream](playbook/universal/finance/category-is-a-ledger-not-a-stream.md) — define income by counterparty+direction+kind; never wire a Monarch category straight to an income card
 - [Attribute Income to the Period It Is For](playbook/universal/finance/attribute-income-to-its-stated-period.md) — count a payment in the month its memo names, not the day it cleared; reconcile to the contract
 - [Run Counterparty and Refund Rules Before the Category-Kind Filter](playbook/universal/finance/classify-by-rule-before-category-kind.md) — a kind filter on the raw category silently deleted $18K of rent and $13K of refunds; one classify() for every consumer
+- [Dollar Growth Is Flow-Adjusted, Like the Percent](playbook/universal/finance/dollar-growth-is-flow-adjusted.md) — gain = ending − beginning − net flows, stored on the metric row; balance change is not growth; averages compound
 - [Every Call Assignment in a Taxable Account Gets a Tax-Lot Notice](playbook/universal/finance/call-assignment-tax-lot-notice.md) — Robinhood assigns on the account default (FIFO) and corrects lots only until 9 PM ET on settlement; set Highest Cost, notice every time, lot engine must match
 
 ### Process
 - [Three Authoritative Data Sources](playbook/universal/process/three-authoritative-data-sources.md) — all data enters via PDF/CSV statements, activity CSVs, or Robinhood paste
 - [Check Data Freshness First, and Ask For What Is Missing](playbook/universal/process/check-freshness-and-ask-first.md) — stale data looks like a real number; check MAX(date) per stream up front and request the file or reconnect, don't wait to be corrected
 - [A Recurring Line That Vanishes Is a Data Defect](playbook/universal/process/missing-recurring-line-is-a-defect.md) — check expected lines mechanically and flag the gap in red; know the cadence first (school bills Sep–May)
+- [Check Derived Tables Before Declaring "No Data"](playbook/universal/process/check-derived-tables-before-declaring-no-data.md) — w2_records, tax returns, margin table, processed folders and the ingestion log before "not on file"; the 2024 W-2s were there all along
+- [Verify a Suspected Gap Against the Source Before Asking](playbook/universal/process/verify-a-gap-against-the-source-before-asking.md) — a zero is a hypothesis: check the broker's realized-trade record and the archived export; Mar–Apr 2025 options were real quiet, not a missing import
 - [Test a Strategy Engine Live, Beside the Old One](playbook/universal/process/test-a-strategy-engine-live-beside-the-old-one.md) — preview page beside the live one; one observation at a time during trading; explain, one question, agree, encode as a knob, push
 - [Reconcile the Forecast to the Filed Document Line by Line](playbook/universal/process/reconcile-forecast-to-the-filed-return.md) — table, formula check on the document's inputs, waterfall, classify each gap (bug / data / assumption / formula / definition)
 
@@ -39,6 +43,9 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Market Data Source Order](playbook/universal/technical/market-data-source-order.md) — Robinhood MCP first, Schwab second, Yahoo never on must-succeed paths (repeated rate-limit failures)
 - [Validate a Parser Against the Source Document's Own Totals](playbook/universal/technical/validate-parser-against-source-totals.md) — sum extracted rows against the statement's printed summary and abort on mismatch; a row regex fails silently
 - [Derived Tables Need an Explicit Rebuild Trigger](playbook/universal/technical/derived-tables-need-a-rebuild-trigger.md) — hook the rebuild to whoever actually writes the source rows; a manual script is not a trigger
+- [One Definition Per Stored Series](playbook/universal/technical/one-definition-per-stored-series.md) — every writer of a value column produces the same quantity, components stored explicitly; portfolio_value switched from net to securities-only when daily rows took over and margin read as growth
+- [A Forced Recompute Clears the Cache First](playbook/universal/technical/forced-recompute-clears-the-cache.md) — upsert-only caches keep rows that stopped being produced; force deletes all, or key rows on a settings hash
+- [Route Statement Pages by Account Number, Never Ship a No-Op Parser](playbook/universal/technical/route-statement-pages-by-account-number.md) — Robinhood PDFs are combined statements; map each page's account number; a parser that returns nothing on purpose is a silent gap
 - [A Synthesised Series Needs a Control Total Inside the Period](playbook/universal/technical/synthesised-series-need-in-period-control-totals.md) — a backfill that reconciled only at the seam was $217K–$458K high for ten months; check every in-period statement and abort on a miss
 - [Lot Quantities Are Post-Split Units](playbook/universal/technical/lot-quantities-are-post-split-units.md) — stock_lot scales open lots at a split; replay transactions for as-of-day share counts and price them raw
 - [Filter to Taxable Accounts at Every Source That Feeds a Tax Number](playbook/universal/technical/filter-taxable-accounts-at-every-tax-source.md) — shared engines include all accounts by design; the tax path passes an explicit scope (87K IRA-gain leak, TY2025)
