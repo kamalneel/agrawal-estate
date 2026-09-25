@@ -7084,6 +7084,40 @@ async def get_tracked_symbols(db: Session = Depends(get_db)):
                          "ignored": sorted(ignore)}}
 
 
+@router.get("/chains")
+async def get_option_chains_stored(symbol: Optional[str] = None, expiration: Optional[str] = None,
+                                   db: Session = Depends(get_db)):
+    """The stored option chain (level 3 of the sync). No symbol: a coverage
+    summary — what is on file, how many contracts and how old. With a
+    symbol: the contracts themselves, optionally one expiry."""
+    if not symbol:
+        rows = db.execute(text("""
+            SELECT symbol, COUNT(*) n, COUNT(DISTINCT expiration_date) exps,
+                   MIN(expiration_date) first_exp, MAX(expiration_date) last_exp, MAX(as_of) as_of
+            FROM option_chain_quotes GROUP BY symbol ORDER BY symbol
+        """)).fetchall()
+        return {"symbols": [{"symbol": r.symbol, "contracts": r.n, "expiries": r.exps,
+                             "first_expiry": str(r.first_exp), "last_expiry": str(r.last_exp),
+                             "as_of": str(r.as_of)} for r in rows],
+                "total_contracts": sum(r.n for r in rows)}
+    q = """SELECT * FROM option_chain_quotes WHERE symbol = :s"""
+    params: Dict[str, Any] = {"s": symbol.upper()}
+    if expiration:
+        q += " AND expiration_date = :e"
+        params["e"] = expiration
+    q += " ORDER BY expiration_date, option_type, strike_price"
+    rows = db.execute(text(q), params).fetchall()
+    def f(v):
+        return float(v) if v is not None else None
+    return {"symbol": symbol.upper(), "count": len(rows),
+            "contracts": [{"expiration": str(r.expiration_date), "strike": f(r.strike_price),
+                           "type": r.option_type, "bid": f(r.bid), "ask": f(r.ask), "mark": f(r.mark),
+                           "delta": f(r.delta), "implied_vol": f(r.implied_vol),
+                           "open_interest": r.open_interest, "volume": r.volume,
+                           "underlying_price": f(r.underlying_price), "as_of": str(r.as_of)}
+                          for r in rows]}
+
+
 @router.post("/sync", status_code=202)
 async def start_sync(mode: str = Query("full", pattern="^(full|state|prices|chains)$")):
     """Pull from Robinhood now — the page's Sync button (Neel, 2026-09-18:
@@ -7106,8 +7140,6 @@ async def start_sync(mode: str = Query("full", pattern="^(full|state|prices|chai
         raise HTTPException(status_code=409, detail="A sync is already running")
     if not script.exists():
         raise HTTPException(status_code=500, detail=f"{script} not found")
-    if mode == "chains":
-        raise HTTPException(status_code=501, detail="Option-chain sync is not built yet")
     env = dict(os.environ, REFRESH_TRIGGER="manual", REFRESH_MODE=mode)
     subprocess.Popen(["/bin/zsh", str(script)], cwd=str(settings.DATA_DIR.parent),
                      env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -7115,6 +7147,7 @@ async def start_sync(mode: str = Query("full", pattern="^(full|state|prices|chai
     return {"started": True, "mode": mode,
             "detail": {"state": "Account sync started; about 5 minutes.",
                        "prices": "Price sync started; about a minute.",
+                       "chains": "Option-chain sync started; about 10 minutes.",
                        "full": "Full sync started; about 5 minutes."}[mode]
             + " The page updates when it lands."}
 

@@ -2115,6 +2115,70 @@ async def ingest_price_history(payload: dict, db: Session = Depends(get_db)):
     return {"success": True, "upserted": upserted}
 
 
+@router.post("/option-chains")
+async def ingest_option_chains(payload: dict, db: Session = Depends(get_db)):
+    """Replace the live option-chain snapshot for the symbols in this
+    payload: {source, as_of, quotes: [{symbol, expiration, strike, type,
+    bid, ask, mark, delta, gamma, theta, vega, implied_vol,
+    open_interest, volume, underlying_price}]}.
+
+    Level 3 of the sync (built 2026-09-24). Contracts for a symbol that
+    are NOT in the payload are deleted, so a strike that stopped being
+    listed cannot linger and be quoted at a stale price — the whole point
+    is that the engine reads real prices, and a stale one is worse than
+    none. Only symbols present in the payload are touched.
+    """
+    from sqlalchemy import text as _text
+    from datetime import datetime
+    quotes = payload.get("quotes") or []
+    source = payload.get("source") or "robinhood_mcp"
+    as_of = payload.get("as_of") or datetime.now().isoformat(timespec="seconds")
+    if not quotes:
+        raise HTTPException(status_code=400, detail="no quotes")
+
+    symbols = {str(q["symbol"]).upper() for q in quotes}
+    db.execute(_text("DELETE FROM option_chain_quotes WHERE symbol = ANY(:syms)"),
+               {"syms": sorted(symbols)})
+
+    def _num(v):
+        try:
+            return float(v) if v is not None and v != "" else None
+        except (TypeError, ValueError):
+            return None
+
+    rows = 0
+    for q in quotes:
+        t = str(q.get("type", "")).lower()
+        if t not in ("call", "put"):
+            continue
+        db.execute(_text("""
+            INSERT INTO option_chain_quotes
+              (symbol, expiration_date, strike_price, option_type, bid, ask, mark,
+               delta, gamma, theta, vega, implied_vol, open_interest, volume,
+               underlying_price, as_of, source)
+            VALUES (:sym, :exp, :k, :t, :bid, :ask, :mark, :delta, :gamma, :theta,
+                    :vega, :iv, :oi, :vol, :under, :as_of, :src)
+            ON CONFLICT (symbol, expiration_date, strike_price, option_type)
+            DO UPDATE SET bid = EXCLUDED.bid, ask = EXCLUDED.ask, mark = EXCLUDED.mark,
+                          delta = EXCLUDED.delta, gamma = EXCLUDED.gamma,
+                          theta = EXCLUDED.theta, vega = EXCLUDED.vega,
+                          implied_vol = EXCLUDED.implied_vol,
+                          open_interest = EXCLUDED.open_interest, volume = EXCLUDED.volume,
+                          underlying_price = EXCLUDED.underlying_price,
+                          as_of = EXCLUDED.as_of, source = EXCLUDED.source
+        """), {"sym": str(q["symbol"]).upper(), "exp": q["expiration"],
+               "k": _num(q["strike"]), "t": t,
+               "bid": _num(q.get("bid")), "ask": _num(q.get("ask")), "mark": _num(q.get("mark")),
+               "delta": _num(q.get("delta")), "gamma": _num(q.get("gamma")),
+               "theta": _num(q.get("theta")), "vega": _num(q.get("vega")),
+               "iv": _num(q.get("implied_vol")), "oi": q.get("open_interest"),
+               "vol": q.get("volume"), "under": _num(q.get("underlying_price")),
+               "as_of": as_of, "src": source})
+        rows += 1
+    db.commit()
+    return {"success": True, "upserted": rows, "symbols": sorted(symbols), "as_of": as_of}
+
+
 @router.post("/cost-basis")
 async def ingest_cost_basis(payload: dict, db: Session = Depends(get_db)):
     """Upsert per-account, per-symbol average cost per share:

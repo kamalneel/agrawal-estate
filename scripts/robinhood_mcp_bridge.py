@@ -402,6 +402,34 @@ def sync_price_history(api: str, bundle: dict, save: bool) -> None:
         print(f"  preview only — would upsert {len(bars)} symbols")
 
 
+def sync_option_chains(api: str, bundle: dict, save: bool) -> None:
+    """Persist the live option chain (level 3 of the sync, 2026-09-24).
+
+    `option_chains` in the bundle is a flat list of contracts:
+    [{symbol, expiration, strike, type, bid, ask, mark, delta, gamma,
+      theta, vega, implied_vol, open_interest, volume, underlying_price}].
+    Before this, the engine knew the mark on contracts we already hold and
+    nothing else, so every strike and premium on a card was a
+    Black-Scholes estimate off one ATM implied vol. Optional: a bundle
+    without the key simply skips this.
+    """
+    quotes = bundle.get("option_chains") or []
+    if not quotes:
+        return
+    syms = sorted({q["symbol"].upper() for q in quotes})
+    exps = sorted({q["expiration"] for q in quotes})
+    print(f"\n=== option chains ({len(quotes)} contracts, {len(syms)} symbols, "
+          f"{len(exps)} expiries as of {bundle['as_of']}) ===")
+    print(f"  symbols: {' '.join(syms)}")
+    print(f"  expiries: {' '.join(exps)}")
+    if save:
+        result = post(api, "/ingestion/option-chains",
+                      {"source": "robinhood_mcp", "as_of": bundle["as_of"], "quotes": quotes})
+        print(f"  upserted: {result.get('upserted')} contracts for {len(result.get('symbols') or [])} symbols")
+    else:
+        print(f"  preview only — would upsert {len(quotes)} contracts")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("bundle", type=Path)
@@ -414,6 +442,7 @@ def main() -> None:
     for account in bundle["accounts"]:
         sync_account(args.api, account, bundle, args.save)
     sync_price_history(args.api, bundle, args.save)
+    sync_option_chains(args.api, bundle, args.save)
 
     if args.save:
         scan = post(args.api, "/ingestion/scan", {})

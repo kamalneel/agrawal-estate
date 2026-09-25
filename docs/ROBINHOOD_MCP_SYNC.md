@@ -282,3 +282,35 @@ has none within 5 days). Why: NVDA's realized vol was 52% against a
 market 32% — the engine's delta-15 strike landed at $235 (market delta
 0.05) instead of $227.50, and the premium estimate read $855 against a
 real ~$450.
+
+## Option chains — level 3 (2026-09-24)
+
+Neel, 2026-09-18: "three kinds of sync — account state, live prices,
+option chains." Levels 1 and 2 shipped that week; this is level 3, built
+after the 2026-09-23 audit made the gap concrete — a full sync knew the
+mark on contracts we already held and **nothing about any other strike**,
+so every strike and premium on a card was a Black-Scholes estimate off
+one at-the-money implied vol. That is how NVDA's delta-15 strike came out
+at $235 against the market's $227.50, and why no card could warn about
+SOXL's $2.90-wide bid/ask.
+
+**What it pulls** (`REFRESH_MODE=chains`, or the "Sync chains" button):
+every tracked symbol × four expiries — the next two Fridays plus the next
+two monthlies out to ~45 days — keeping strikes within 20% of spot, both
+calls and puts. Roughly 4–5k contracts. ~10 minutes.
+
+**Where it lands**: `option_chain_quotes` (bid, ask, mark, delta, gamma,
+theta, vega, IV, open interest, volume, underlying price, as_of), one row
+per live contract, **replaced in place per symbol** on each run — a strike
+that stops being listed is deleted rather than left to be quoted stale.
+`POST /ingestion/option-chains`; read with `GET /strategies/chains`
+(no symbol = coverage summary).
+
+**What the engine does with it** (`v7_engine._chains`, `chain_pick`,
+`chain_quote`): a new call or put now takes the **listed strike whose
+delta is closest to the target** and prices it at the contract's own
+mark, instead of computing both. Cards say `quoted` when the number came
+from the chain, and show `WIDE bid X/ask Y` when the book is more than
+25% of mark wide. A chain older than 30 hours is ignored — a stale quote
+is worse than an estimate, because the estimate at least uses today's
+spot. So with no chain on file everything falls back exactly as before.

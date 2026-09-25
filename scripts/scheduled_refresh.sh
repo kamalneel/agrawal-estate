@@ -96,15 +96,16 @@ Headless ACCOUNT-STATE run (mode=state). Do steps 1, 2, 3, 4, 5, 6 and 7 of the 
 Headless PRICES-ONLY run (mode=prices). Do NOT call any per-account tool (no get_portfolio, no positions, no orders) and do NOT run assignment detection. Steps: (a) GET http://127.0.0.1:8000/api/v1/strategies/sync/tracked-symbols with curl — it returns the symbol list to price. (b) get_equity_quotes for all of them (either login). (c) Skill step 3b for every symbol: at-the-money implied vol from one call quote at the nearest Friday with >= 3 days left. (d) Write ONE bundle to $BUNDLES/bundle_prices.json with as_of (ISO timestamp now), source_login, instruments: [], option_marks: {}, equity_marks: {SYMBOL: price}, implied_vols: {SYMBOL: fraction}, accounts: []. (e) Run python3 scripts/robinhood_mcp_bridge.py $BUNDLES/bundle_prices.json --save. Finish with a report of at most 8 lines that starts with the line PRICES OK (then the count of symbols priced and how many carry implied vol), or PRICES FAILED followed by why."
     ;;
   chains)
-    echo "$(date) mode=chains is not implemented yet" >> "$LOG"
-    backend/venv/bin/python - <<PY
-import json, datetime, pathlib
-pathlib.Path("data/refresh_status.json").write_text(json.dumps({
-  "ran_at": datetime.datetime.now().isoformat(timespec="seconds"), "ok": False, "running": False,
-  "mode": "chains", "trigger": "${REFRESH_TRIGGER:-scheduled}", "cost_usd": 0, "log": "$LOG",
-  "report": "CHAINS NOT BUILT — option-chain sync is not implemented yet."}, indent=2))
-PY
-    exit 0
+    OK_MARK="CHAINS OK"; WATCHDOG_S=1800
+    PROMPT="/refresh
+Headless OPTION-CHAIN run (mode=chains). Do NOT call any per-account tool (no get_portfolio, no positions, no orders) and do NOT run assignment detection. Steps:
+(a) GET http://127.0.0.1:8000/api/v1/strategies/sync/tracked-symbols with curl for the symbol list, and get_equity_quotes for all of them to get each spot.
+(b) For each symbol, get_option_chains(underlying_symbol) and pick FOUR expirations: the next two Fridays with >= 1 day left, plus the next two monthly expirations (the third Friday of a month) that are further out, up to about 45 days. Skip an expiration that does not exist for that symbol.
+(c) For each symbol+expiration, get_option_instruments(chain_symbol, expiration_dates, type=call) and again for puts; keep only strikes within 20% of that symbol's spot.
+(d) get_option_quotes for those instrument ids, at most 20 ids per call. Read bid_price, ask_price, mark_price, delta, gamma, theta, vega, implied_volatility, open_interest, volume.
+(e) Write ONE bundle to \$BUNDLES/bundle_chains.json with as_of (ISO timestamp now), source_login, instruments: {}, option_marks: {}, equity_marks: {SYMBOL: spot}, accounts: [], and option_chains: a flat list of {symbol, expiration (YYYY-MM-DD), strike (number), type ('call'|'put'), bid, ask, mark, delta, gamma, theta, vega, implied_vol (fraction), open_interest, volume, underlying_price}.
+(f) Run python3 scripts/robinhood_mcp_bridge.py \$BUNDLES/bundle_chains.json --save.
+This is a lot of calls — batch aggressively and do not stop early; a partial chain is fine as long as you report which symbols were covered. Finish with a report of at most 10 lines starting with the line CHAINS OK (contracts written, symbols covered, expiries) or CHAINS FAILED followed by why."
     ;;
   *)
     MODE="full"; OK_MARK="SYNC OK"; WATCHDOG_S=1200

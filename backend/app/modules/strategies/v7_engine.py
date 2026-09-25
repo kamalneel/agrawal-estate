@@ -101,6 +101,71 @@ def _holdings(db: Session) -> Tuple[Dict[Tuple[str, str], Dict], Dict[str, float
     return holdings, price, acct_type, acct_id
 
 
+def _chains(db: Session, max_age_hours: int = 30) -> Dict[Tuple[str, str], List[Dict]]:
+    """The live option chain, keyed (symbol, 'call'|'put'), each a list of
+    contracts sorted by expiry then strike. Level 3 of the sync
+    (2026-09-24): before this the engine knew the mark on contracts we
+    already held and nothing else, so every strike and premium on a card
+    was a Black-Scholes estimate off one at-the-money implied vol — that
+    is how NVDA's delta-15 strike came out $7.50 above the market's.
+
+    Stale snapshots are ignored rather than trusted: a chain older than
+    max_age_hours is worse than no chain, because the estimate at least
+    uses today's spot."""
+    rows = db.execute(text("""
+        SELECT symbol, option_type, expiration_date, strike_price, bid, ask, mark,
+               delta, implied_vol, open_interest, volume, as_of
+        FROM option_chain_quotes
+        WHERE as_of >= NOW() - (:h || ' hours')::interval
+        ORDER BY symbol, option_type, expiration_date, strike_price
+    """), {"h": max_age_hours}).fetchall()
+    out: Dict[Tuple[str, str], List[Dict]] = {}
+    for r in rows:
+        out.setdefault((r.symbol, r.option_type), []).append({
+            "expiration": r.expiration_date, "strike": float(r.strike_price),
+            "bid": float(r.bid) if r.bid is not None else None,
+            "ask": float(r.ask) if r.ask is not None else None,
+            "mark": float(r.mark) if r.mark is not None else None,
+            "delta": float(r.delta) if r.delta is not None else None,
+            "iv": float(r.implied_vol) if r.implied_vol is not None else None,
+            "oi": r.open_interest, "volume": r.volume, "as_of": r.as_of,
+        })
+    return out
+
+
+def chain_pick(chains: Dict, sym: str, kind: str, exp: date, target_delta_pct: float) -> Optional[Dict]:
+    """The listed contract closest to the target delta at that expiry —
+    what the market actually offers, not what Black-Scholes computes.
+    Returns None when the chain has nothing for that symbol/expiry, and
+    the caller falls back to the estimate."""
+    rows = [c for c in chains.get((sym, kind), [])
+            if c["expiration"] == exp and c["delta"] is not None]
+    if not rows:
+        return None
+    want = target_delta_pct / 100.0
+    return min(rows, key=lambda c: abs(abs(c["delta"]) - want))
+
+
+def chain_quote(chains: Dict, sym: str, kind: str, exp: date, strike: float) -> Optional[Dict]:
+    """The listed contract at this exact strike and expiry, if quoted."""
+    for c in chains.get((sym, kind), []):
+        if c["expiration"] == exp and abs(c["strike"] - strike) < 0.005:
+            return c
+    return None
+
+
+def spread_note(c: Optional[Dict]) -> str:
+    """'bid 0.13 / ask 0.70' when the quote is wide enough to matter — the
+    SOXL and ZM rolls that kept cancelling unfilled were wide books, and a
+    card that only showed a mark could not say so."""
+    if not c or c.get("bid") is None or c.get("ask") is None or not c.get("mark"):
+        return ""
+    width = c["ask"] - c["bid"]
+    if width <= 0 or width / max(c["mark"], 0.01) < 0.25:
+        return ""
+    return f" · WIDE bid ${c['bid']:,.2f}/ask ${c['ask']:,.2f}"
+
+
 def _implied_vols(db: Session, max_age_days: int = 5) -> Dict[str, float]:
     """Latest stored at-the-money implied vol per symbol (fraction), if it
     is recent. The sync writes it alongside the close (skill step 3b)."""
@@ -451,6 +516,7 @@ def build_v7_queue(db: Session) -> Dict:
     ignore = _load_policy_ignore_list()
 
     holdings, price, acct_type, acct_id = _holdings(db)
+    chains = _chains(db)
     options = _open_options(db, today)
     cash = _cash(db)
     closes = _closes(db)
@@ -605,15 +671,20 @@ def build_v7_queue(db: Session) -> Dict:
                     ([f"{vs_lt:+.1f}% vs 10-day average"] if depressed_sma else [])
                     + ([f"RSI {rsi:.0f} < {K(pol, 'lt_wait_rsi'):.0f}"] if oversold else []))
                     + " — oversold; a call sold here caps the recovery") if wait else ""
-            strike = strike_for_delta(spot, target_delta, vol, dte_new, 0.055)
+            picked = chain_pick(chains, sym, "call", exp, target_delta)
+            strike = picked["strike"] if picked else strike_for_delta(spot, target_delta, vol, dte_new, 0.055)
             floor = ""
             if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:
-                strike, floor = cost_ps, " (raised to cost-basis floor)"
-            est = call_premium(spot, strike, vol, dte_new, n, RATE_TIER1_WEEKLY)
+                strike, floor, picked = cost_ps, " (raised to cost-basis floor)", chain_quote(chains, sym, "call", exp, cost_ps)
+            est = (int(round(picked["mark"] * 100 * n)) if picked and picked["mark"]
+                   else call_premium(spot, strike, vol, dte_new, n, RATE_TIER1_WEEKLY))
+            quoted = " · quoted" if picked and picked["mark"] else ""
             action = "WAIT" if wait else "SELL"
             card(1, action, acct, sym,
                  f"{sym}: {'hold off — ' if wait else ''}sell {n} call{'s' if n > 1 else ''} at delta {delta_txt}",
-                 f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,}"
+                 f"strike ${strike:,.2f}{floor} · exp {_fmt_exp(exp)} · est ${est:,}{quoted}"
+                 + (f" (delta {abs(picked['delta']):.2f})" if picked and picked["delta"] else "")
+                 + spread_note(picked)
                  + (f" · {vol_src} {vol * 100:.0f}%" if vol else "")
                  + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
                  resolved_note + (f"{wait_reason}. " if wait else "")
@@ -627,15 +698,20 @@ def build_v7_queue(db: Session) -> Dict:
             vs_sma = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
             delta, rsi_note = _short_term_delta(rsi, pol, vol, vs_sma)
             dte_new = max((exp - today).days, 1)
-            strike = strike_for_delta(spot, delta, vol, dte_new, 0.025)
+            picked = chain_pick(chains, sym, "call", exp, delta)
+            strike = picked["strike"] if picked else strike_for_delta(spot, delta, vol, dte_new, 0.025)
             floor = ""
             if K(pol, "cost_floor_enabled") and cost_ps and strike < cost_ps:
-                strike, floor = cost_ps, " (raised to cost-basis floor)"
+                strike, floor, picked = cost_ps, " (raised to cost-basis floor)", chain_quote(chains, sym, "call", exp, cost_ps)
             rate = RATE_TIER1_WEEKLY + (RATE_ATM_WEEKLY - RATE_TIER1_WEEKLY) * (delta - 10) / 40
-            est = call_premium(spot, strike, vol, dte_new, n, rate)
+            est = (int(round(picked["mark"] * 100 * n)) if picked and picked["mark"]
+                   else call_premium(spot, strike, vol, dte_new, n, rate))
+            quoted = " · quoted" if picked and picked["mark"] else ""
             card(2, "SELL", acct, sym,
                  f"{sym}: sell {n} call{'s' if n > 1 else ''} at delta {delta}",
-                 f"strike ~${strike:,.0f}{floor} · exp {_fmt_exp(exp)} · est ${est:,} · {rsi_note}",
+                 f"strike ${strike:,.2f}{floor} · exp {_fmt_exp(exp)} · est ${est:,}{quoted}"
+                 + (f" (delta {abs(picked['delta']):.2f})" if picked and picked["delta"] else "")
+                 + spread_note(picked) + f" · {rsi_note}",
                  bounce_note + "Short-term book, one rule for every name: RSI picks a base delta (20/30/40), "
                  "being ≥ threshold below the 10-day average forces 20 (the bounce is the trade), then the "
                  "delta is scaled by the name's own 20-day realized volatility against the reference — a name "
@@ -780,7 +856,8 @@ def build_v7_queue(db: Session) -> Dict:
                         action, when = "WAIT", roll_day
                     tv_txt = f" · time value left ${tv:,.2f}" if tv is not None else ""
                     detail = (f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
-                              + tv_txt + f" · roll credit est ${roll_credit:,} · {rsi_txt} · {tax_txt}")
+                              + tv_txt + f" · roll credit est ${roll_credit:,} · {rsi_txt} · {tax_txt}"
+                              + spread_note(chain_quote(chains, sym, "call", o["expiration"], k)))
                     if action == "LET ASSIGN":
                         title = f"{sym} ${k:,.0f} call ITM — let {n * 100:,} shares go {_fmt_exp(o['expiration'])}"
                     elif action == "ROLL":
@@ -1224,15 +1301,25 @@ def build_v7_queue(db: Session) -> Dict:
             ref = K(pol, "vol_reference_pct") / 100
             delta = int(round(max(K(pol, "st_delta_min"), min(K(pol, "st_delta_max"), base * ref / vol))))
             why += f" × {ref * 100:.0f}%/{vol * 100:.0f}% vol → delta {delta}"
-            T = put_dte / 365
-            strike = float(round(spot * math.exp(-vol * math.sqrt(T) * _z_for_delta(delta / 100))))
-            call_px = call_premium(spot, strike, vol, put_dte, 1, RATE_ATM_WEEKLY) / 100
-            put_px = max(call_px - spot + strike, 0.0)   # put-call parity, r = 0
+            picked = chain_pick(chains, sym, "put", put_exp, delta)
+            if picked and picked["mark"]:
+                strike, put_px = picked["strike"], picked["mark"]
+                why += f" → quoted ${strike:,.2f} (delta {abs(picked['delta']):.2f})"
+            else:
+                T = put_dte / 365
+                strike = float(round(spot * math.exp(-vol * math.sqrt(T) * _z_for_delta(delta / 100))))
+                call_px = call_premium(spot, strike, vol, put_dte, 1, RATE_ATM_WEEKLY) / 100
+                put_px = max(call_px - spot + strike, 0.0)   # put-call parity, r = 0
         else:
             delta = base
-            why += " (no vol on file — ATM)"
-            strike = float(round(spot))
-            put_px = weekly_premium(1, spot, RATE_ATM_WEEKLY) / 100
+            picked = chain_pick(chains, sym, "put", put_exp, delta)
+            if picked and picked["mark"]:
+                strike, put_px = picked["strike"], picked["mark"]
+                why += f" (no vol on file) → quoted ${strike:,.2f} (delta {abs(picked['delta']):.2f})"
+            else:
+                why += " (no vol on file — ATM)"
+                strike = float(round(spot))
+                put_px = weekly_premium(1, spot, RATE_ATM_WEEKLY) / 100
         yld_wk = put_px / strike * 100 * 7 / put_dte if strike else 0.0
         # Score = weekly yield on collateral at the rule's delta. Risk is
         # already in the delta (a 40 is a 40 on every name, and volatile
@@ -1247,7 +1334,8 @@ def build_v7_queue(db: Session) -> Dict:
             score *= K(pol, "put_depressed_bonus")
         put_candidates.append({"symbol": sym, "spot": spot, "rsi": rsi, "vol": vol, "vs_sma": vs_sma, "book": book,
                                "book_pct": sym_pct, "delta": delta, "why": why, "strike": strike,
-                               "put_px": put_px, "yield_wk": yld_wk, "score": score, "depressed": depressed})
+                               "put_px": put_px, "yield_wk": yld_wk, "score": score, "depressed": depressed,
+                               "quote": picked})
     put_candidates.sort(key=lambda c: -c["score"])
     ranking_txt = " > ".join(f"{c['symbol']} {c['score']:.2f}%/wk" for c in put_candidates)
 
@@ -1303,7 +1391,9 @@ def build_v7_queue(db: Session) -> Dict:
                     else ", long-term name)"),
                  f"exp {_fmt_exp(put_exp)} · collateral ${p['strike'] * 100 * n:,.0f} of ${capacity:,.0f} undeployed"
                  + (" (margin-backed)" if line else " (cash-secured)")
-                 + f" · est ${est:,} · {p['yield_wk']:.1f}%/wk on collateral · {p['why']}",
+                 + f" · est ${est:,}" + (" · quoted" if p.get("quote") else "")
+                 + spread_note(p.get("quote"))
+                 + f" · {p['yield_wk']:.1f}%/wk on collateral · {p['why']}",
                  "Layer 3: puts on every name you hold, both books, against cash and margin. The put delta is the mirror of the "
                  "call rule — a depressed or oversold name gets a closer put, an extended one a farther put — scaled "
                  "by the name's own volatility, so risk is in the delta. Candidates are then ranked by weekly yield on "

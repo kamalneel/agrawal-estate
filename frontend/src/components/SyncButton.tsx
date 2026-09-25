@@ -10,7 +10,7 @@ import { getAuthHeaders } from '../contexts/AuthContext'
  *
  *   state  — positions, cash and fills for all six accounts (~5 min)
  *   prices — live quotes + implied vol for every tracked symbol (~1 min)
- *   chains — option chains for tracked symbols (not built yet)
+ *   chains — option chains for tracked symbols (~10 min)
  *
  * The page re-fetches when a sync lands (useDataAsOfPoll); this component
  * only starts runs and reports state. Only a failed run emails.
@@ -35,7 +35,7 @@ const LABEL: Record<SyncMode, string> = { state: 'Sync accounts', prices: 'Sync 
 const HELP: Record<SyncMode, string> = {
   state: 'Positions, cash and fills for all six accounts. About 5 minutes.',
   prices: 'Live stock prices and implied vol for every tracked symbol (held, allocation targets, policy). About a minute.',
-  chains: 'Option chains for tracked symbols. Not built yet.',
+  chains: 'Option chains for every tracked symbol — the next two Fridays plus two monthlies, strikes within 20% of spot. About 10 minutes.',
   full: 'Everything the scheduled run does. About 5 minutes.',
 }
 
@@ -99,9 +99,9 @@ export function SyncButtons({ className, modes = ['state', 'prices', 'chains'], 
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} title={busyMode ? note : last}>
       {modes.map(m => (
-        <button key={m} className={className} onClick={() => start(m)} disabled={busyMode !== null || m === 'chains'}
+        <button key={m} className={className} onClick={() => start(m)} disabled={busyMode !== null}
           title={busyMode ? note : `${HELP[m]}${last ? ` · ${last}` : ''}`}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: 'auto', padding: '0 10px', whiteSpace: 'nowrap', opacity: m === 'chains' ? 0.5 : 1 }}>
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: 'auto', padding: '0 10px', whiteSpace: 'nowrap' }}>
           <RefreshCw size={14} style={busyMode === m ? { animation: 'spin 1s linear infinite' } : undefined} />
           <span style={{ fontSize: 'var(--text-xs)' }}>{busyMode === m ? 'Syncing…' : LABEL[m]}</span>
         </button>
