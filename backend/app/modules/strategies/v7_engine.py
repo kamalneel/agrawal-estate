@@ -363,16 +363,26 @@ def call_delta(spot: float, strike: float, vol: Optional[float], dte: int) -> Op
     return _ncdf((math.log(spot / strike) + 0.5 * sd * sd) / sd)
 
 
-def same_strike_roll_credit_ps(spot: float, strike: float, vol: Optional[float], dte_now: int, kind: str) -> float:
+def same_strike_roll_credit_ps(spot: float, strike: float, vol: Optional[float], dte_now: int,
+                               kind: str, rolling_now: bool = False) -> float:
     """Credit per share for rolling an ITM call or put one week at the same
-    strike, priced AS OF THE ROLL DAY (Thursday, 1 day left), not today:
+    strike.
+
+    `rolling_now` prices it TODAY — for a card that says roll now (the
+    time-value floor), where quoting Thursday's credit is simply the wrong
+    trade. Neel, 2026-09-25: the AAPL $315 x15 floor card read "roll credit
+    est $75" while the real one-week roll was $0.67/share = $1,005, a 13x
+    understatement, because the estimate assumed a Thursday roll with 1 day
+    left when the contract actually had 7.
+
+    Otherwise priced AS OF THE ROLL DAY (Thursday, 1 day left), not today:
     time value of the new contract (8 days) minus what is left in the
     expiring one (1 day). Neel, 2026-09-20: the AVGO $380 put paid $230 /
     $717 / $140 / $185 / $65 on five weekly rolls while $18-32 in the money
     — the earlier estimate (next week minus TODAY's remaining time value)
     said $0. With r = 0 an ITM put's time value equals the same-strike
     call's value (parity), so both kinds price off call_premium."""
-    dte_roll = 1 if dte_now is None or dte_now > 1 else max(dte_now, 1)
+    dte_roll = max(dte_now or 1, 1) if rolling_now else (1 if dte_now is None or dte_now > 1 else max(dte_now, 1))
     def tv(d: int) -> float:
         c = call_premium(spot, strike, vol, d, 1, RATE_ATM_WEEKLY) / 100.0
         return c - max(spot - strike, 0.0) if kind == "call" else c
@@ -807,7 +817,8 @@ def build_v7_queue(db: Session) -> Dict:
                     # the worked example: $40 ITM, zero credit, RSI not
                     # high, ~$2.4K of tax on $45K — leave.
                     vol_, _src = vol_of(sym)
-                    credit_ps = same_strike_roll_credit_ps(spot, k, vol_, dte, "call")
+                    floor_now = tv is not None and tv <= K(pol, 'roll_tv_floor')
+                    credit_ps = same_strike_roll_credit_ps(spot, k, vol_, dte, "call", rolling_now=floor_now)
                     roll_credit = int(round(max(credit_ps, 0) * 100 * n))
                     proceeds = k * 100 * n
                     taxc = _assignment_tax(db, acct_id.get(acct), acct_type.get(acct, ""), sym, n * 100, k, exp_d or today)
@@ -1138,7 +1149,8 @@ def build_v7_queue(db: Session) -> Dict:
         # brokerage: line + cash − collateral − drawn; IRA: cash_balance is
         # already net of collateral (the bridge writes buying power there)
         room = (line + acct_c.get("cash", 0) - acct_c.get("collateral", 0) - acct_c.get("margin_used", 0)) if line else acct_c.get("cash", 0)
-        credit_ps_p = same_strike_roll_credit_ps(spot, k, vol_of(sym)[0], dte, "put")
+        credit_ps_p = same_strike_roll_credit_ps(spot, k, vol_of(sym)[0], dte, "put",
+                                                 rolling_now=(tv is not None and tv <= K(pol, "put_roll_tv_floor")))
         roll_credit = int(round(max(credit_ps_p, 0) * 100 * n))
         # WHETHER to keep rolling (Neel, 2026-09-20) — the mirror of the
         # call rule. RSI low = oversold, "the bounce is coming": roll and
