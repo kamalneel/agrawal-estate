@@ -1,6 +1,6 @@
 # Buy-Borrow-Die Page — Data Audit, 2026-09-24
 
-Status: **F1–F4 and F7–F9 fixed 2026-09-25; F6 checked and closed as not a gap** (each section carries what
+Status: **F1–F4, F7–F9 and F13 fixed 2026-09-25; F6 checked and closed as not a gap** (each section carries what
 changed and the before/after numbers); F5 resolved by F1's Jan 2025 baseline.
 Everything else is still open. Audited against the live API
 (`/strategies/buy-borrow-die/*`), the tables it reads (`portfolio_snapshots`,
@@ -272,6 +272,27 @@ combined 16% (`assumed_combined_return`) for the growth card and
 Real margin nets Jaya's cash against Neel's borrowing. Dec 2025: Jaya +$72,500
 cash, Neel −$10,437 margin → page shows $0 borrowed while Neel was paying
 interest on $10K. Design choice, but it understates interest-bearing debt.
+
+### F13 — Pure growth skipped negative options months (found by Neel, fixed 2026-09-25)
+
+The three yearly cards must satisfy combined $ = pure $ + options income.
+For 2026 they did not: −$31,485 + $114,505 ≠ $139,207. The gap, $56,187,
+was May 2026's net options figure, a month where buybacks exceeded
+premium. `_compute_pure_growth_*` added options income to the flow list
+only `if income > 0`, so a negative month was dropped and pure growth was
+understated by that amount. Now every non-zero month is a flow.
+
+| 2026 card | Before | After |
+|---|---|---|
+| Pure growth | −1.95%, −$31,485 | +1.57%, +$24,702 |
+| Options income | 6.64%, $114,505 | unchanged |
+| Combined | 9.24%, $139,207 | unchanged; = 24,702 + 114,505 |
+
+Why the percentages do not add exactly (1.57 + 6.64 = 8.21 vs 9.24): the
+combined and pure rates are Modified Dietz on a denominator reduced by the
+$262K withdrawn during the year, while the income yield divides by the
+January baseline alone. The dollars are the check; they now agree to the
+dollar.
 
 ### Minor
 

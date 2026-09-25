@@ -601,10 +601,13 @@ class BbdPerformanceService:
             flows = self._get_external_cash_flows_for_period(period_start, period_end)
             flows = [f for f in flows if f['account_id'] in paired_ids]
 
-            # Treat options income as external inflow so Modified Dietz strips it from market return
+            # Treat options income as an external flow so Modified Dietz strips it
+            # from the market return. Negative months (buybacks exceeded premium,
+            # e.g. May 2026 at −$56K) are outflows and must be included too;
+            # skipping them broke combined = pure + income (BBD audit F13).
             for m in year_months:
                 income = monthly_options.get(m, 0)
-                if income > 0:
+                if income != 0:
                     m_yr, m_mo = int(m[:4]), int(m[5:7])
                     flows.append({'account_id': '_options', 'date': date(m_yr, m_mo, 15), 'amount': income})
 
@@ -658,7 +661,7 @@ class BbdPerformanceService:
             flows = [f for f in flows if f['account_id'] in paired_ids]
 
             income = monthly_options.get(cur_key, 0)
-            if income > 0:
+            if income != 0:  # negative months are outflows; see the yearly note
                 flows.append({'account_id': '_options', 'date': date(yr, mo, 15), 'amount': income})
 
             actual_pct = self._modified_dietz_return(baseline_val, actual_val, flows, period_start, period_end)
