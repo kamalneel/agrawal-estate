@@ -98,14 +98,14 @@ Headless PRICES-ONLY run (mode=prices). Do NOT call any per-account tool (no get
   chains)
     OK_MARK="CHAINS OK"; WATCHDOG_S=1800
     PROMPT="/refresh
-Headless OPTION-CHAIN run (mode=chains). Do NOT call any per-account tool (no get_portfolio, no positions, no orders) and do NOT run assignment detection. Steps:
-(a) GET http://127.0.0.1:8000/api/v1/strategies/sync/tracked-symbols with curl for the symbol list, and get_equity_quotes for all of them to get each spot.
-(b) For each symbol, get_option_chains(underlying_symbol) and pick FOUR expirations: the next two Fridays with >= 1 day left, plus the next two monthly expirations (the third Friday of a month) that are further out, up to about 45 days. Skip an expiration that does not exist for that symbol.
-(c) For each symbol+expiration, get_option_instruments(chain_symbol, expiration_dates, type=call) and again for puts; keep only strikes within 20% of that symbol's spot.
-(d) get_option_quotes for those instrument ids, at most 20 ids per call. Read bid_price, ask_price, mark_price, delta, gamma, theta, vega, implied_volatility, open_interest, volume.
-(e) Write ONE bundle to \$BUNDLES/bundle_chains.json with as_of (ISO timestamp now), source_login, instruments: {}, option_marks: {}, equity_marks: {SYMBOL: spot}, accounts: [], and option_chains: a flat list of {symbol, expiration (YYYY-MM-DD), strike (number), type ('call'|'put'), bid, ask, mark, delta, gamma, theta, vega, implied_vol (fraction), open_interest, volume, underlying_price}.
-(f) Run python3 scripts/robinhood_mcp_bridge.py \$BUNDLES/bundle_chains.json --save.
-This is a lot of calls — batch aggressively and do not stop early; a partial chain is fine as long as you report which symbols were covered. Finish with a report of at most 10 lines starting with the line CHAINS OK (contracts written, symbols covered, expiries) or CHAINS FAILED followed by why."
+Headless OPTION-CHAIN run (mode=chains). Do NOT call any per-account tool, do NOT run assignment detection, and do NOT spawn subagents — do the work yourself, in this session. Budget: about 100 MCP calls. If you are running out of room, STOP EARLY, save what you have, and say which symbols you covered; a partial chain is a success, an abandoned one is not.
+(a) curl -s 'http://127.0.0.1:8000/api/v1/strategies/sync/tracked-symbols?for=chains' — it returns the symbols with an open option position, and their spot prices. Use exactly that list.
+(b) For each symbol: get_option_chains(underlying_symbol) once, and take TWO expirations — the next two Fridays with >= 1 day left.
+(c) For each symbol+expiration: get_option_instruments(chain_symbol, expiration_dates, type=call) and the same for puts — one call each, they return the whole strike ladder. Keep strikes within 15% of that symbol's spot.
+(d) get_option_quotes for those ids, 20 per call. Read bid_price, ask_price, mark_price, delta, gamma, theta, vega, implied_volatility, open_interest, volume.
+(e) Write ONE bundle to \$BUNDLES/bundle_chains.json: as_of (ISO now), source_login, instruments {}, option_marks {}, equity_marks {SYMBOL: spot}, accounts [], option_chains: flat list of {symbol, expiration YYYY-MM-DD, strike, type 'call'|'put', bid, ask, mark, delta, gamma, theta, vega, implied_vol (fraction), open_interest, volume, underlying_price}.
+(f) python3 scripts/robinhood_mcp_bridge.py \$BUNDLES/bundle_chains.json --save
+Finish with at most 10 lines starting CHAINS OK (contracts written, symbols covered, expiries) or CHAINS FAILED and why."
     ;;
   *)
     MODE="full"; OK_MARK="SYNC OK"; WATCHDOG_S=1200
@@ -138,6 +138,7 @@ echo "$(date) start mode=$MODE scan=${SCAN:-none}" >> "$LOG"
 WATCHDOG=$!
 RESULT=$(claude -p "$PROMPT" \
   --allowedTools "mcp__robinhood-trading-jaya,mcp__robinhood-trading-neel,Skill,ToolSearch,Read,Write,Bash(python3 scripts/robinhood_mcp_bridge.py:*),Bash(curl:*),Bash(backend/venv/bin/python:*),Bash(cd:*),Bash(mkdir:*),Bash(ls:*),Bash(cat:*)" \
+  --disallowedTools "Task,Agent,WebSearch,WebFetch" \
   --max-turns 120 --output-format json 2>>"$LOG")
 STATUS=$?
 kill $WATCHDOG 2>/dev/null
@@ -158,6 +159,12 @@ summary = {"ran_at": datetime.datetime.now().isoformat(timespec="seconds"), "ok"
            "cost_usd": cost, "log": log, "report": text[-3000:]}
 pathlib.Path("data/refresh_status.json").write_text(json.dumps(summary, indent=2))
 print(("OK " if not err else "FAILED ") + f"cost=${cost}")
+# A run that costs many times the normal $1.50-2 is a bug, not a price —
+# the 2026-09-24 chains run spent $63.70 fanning out into 15 subagents and
+# wrote nothing. Say so in the status so it cannot pass unnoticed.
+if isinstance(cost, (int, float)) and cost > 10:
+    summary["cost_alarm"] = f"${cost:.2f} — far above the ~$2 a normal run costs; check the log"
+    pathlib.Path("data/refresh_status.json").write_text(json.dumps(summary, indent=2))
 PY
 
 # the email — a scan, or a failure notice — comes from the backend, which reads

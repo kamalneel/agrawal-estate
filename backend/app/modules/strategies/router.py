@@ -7019,7 +7019,8 @@ async def get_sync_status():
 
 
 @router.get("/sync/tracked-symbols")
-async def get_tracked_symbols(db: Session = Depends(get_db)):
+async def get_tracked_symbols(for_: Optional[str] = Query(None, alias="for"),
+                              db: Session = Depends(get_db)):
     """The symbols EVERY sync must quote — the one list, so a name cannot
     be tracked by the engine and invisible to the pull.
 
@@ -7077,6 +7078,30 @@ async def get_tracked_symbols(db: Session = Depends(get_db)):
         pass
 
     syms = sorted((held | wanted) - ignore - {"CASH", ""})
+
+    if for_ == "chains":
+        # Option chains are expensive to pull (2026-09-24: an all-symbols
+        # run spent $63.70 and wrote nothing). Quote only what is actually
+        # being decided this week: symbols with an open option position,
+        # plus the short-term / put-only names the put ranking chooses
+        # between. Everything else keeps using the ATM-IV estimate, which
+        # is what it had before chains existed.
+        open_opts = {r[0] for r in db.execute(_text("""
+            SELECT DISTINCT symbol FROM sold_options
+            WHERE snapshot_id IN (SELECT MAX(id) FROM sold_options_snapshots GROUP BY account_name)
+        """)).fetchall() if r[0]}
+        # Open positions only. Adding the whole put-ranking universe put it
+        # back at 20 symbols (~160 MCP calls); a new put's estimate is
+        # decent now that implied vol is real, while a roll's strike,
+        # premium and SPREAD are where a wrong number costs money.
+        pick = sorted(open_opts & set(syms))
+        spots = {r[0]: float(r[1]) for r in db.execute(_text("""
+            SELECT DISTINCT ON (symbol) symbol, close_price FROM symbol_price_history
+            WHERE symbol = ANY(:s) ORDER BY symbol, price_date DESC
+        """), {"s": pick}).fetchall()}
+        return {"symbols": pick, "spots": spots, "count": len(pick),
+                "why": "symbols with an open option position — where a wrong strike, premium or spread costs money"}
+
     return {"symbols": syms,
             "held": sorted(held - ignore),
             "wanted": sorted(wanted - held - ignore),
