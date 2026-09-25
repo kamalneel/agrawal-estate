@@ -465,6 +465,14 @@ class BbdPerformanceMetric(Base):
     baseline_value = Column(Numeric(18, 2), nullable=True)
     variance_percent = Column(Numeric(10, 4), nullable=True)
     variance_value = Column(Numeric(18, 2), nullable=True)
+    #: External cash in/out during the period for the paired accounts
+    #: (deposits +, withdrawals −). pure_growth also counts options premium
+    #: as an inflow. None where flows do not apply (weekly, yield, borrowing).
+    net_flows = Column(Numeric(18, 2), nullable=True)
+    #: Dollar growth: actual_value − baseline_value − net_flows for growth
+    #: metrics (the money the market made, not the change in balance);
+    #: the income itself for options_yield. See docs/BBD-CALCULATIONS.md.
+    gain_value = Column(Numeric(18, 2), nullable=True)
     data_completeness = Column(String(20), default='complete')
     computed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

@@ -25,11 +25,46 @@ All constants in `backend/app/modules/strategies/bbd_performance_service.py`.
 
 ---
 
+## Portfolio value — one definition for every row (2026-09-25)
+
+`portfolio_snapshots.portfolio_value` is the account's **net liquidation
+value**, the same quantity Robinhood prints as "Portfolio Value" on a
+statement and returns as `total_value` from the API:
+
+```
+portfolio_value  = securities_value + cash_balance
+securities_value = market value of shares  −  mark-to-market of short options
+cash_balance     = signed cash: sweep + brokerage cash, MINUS margin borrowed
+                   (negative when the account is on margin; IRAs: total IRA cash)
+```
+
+Every writer must produce this quantity:
+
+| Writer | securities_value | cash_balance |
+|---|---|---|
+| Statement PDF import (`ingestion/services.save_portfolio_snapshot`) | statement "Total Securities" | statement cash − margin |
+| Daily 8:15 PM snapshot (`investments/snapshot_service.take_daily_snapshot`) | holdings × live price − open short-option marks (`sold_options`, latest paste) | `account_cash_balances` from the last MCP refresh: brokerage `cash − margin_used`, IRA `margin_total` |
+| MCP refresh, holdings paste and cash save (`ingestion/router.py` → `snapshot_service.refresh_today_snapshot`) | stored holdings market value − open short-option marks | same `account_cash_balances` rule; each save recomputes today's row so paste and cash agree whichever lands last |
+| Backfill (`backend/scripts/backfill_snapshot_cash.py`) | derived from the two sources above | `margin_monthly_balances` (statement month-ends) or `account_cash_balance_history` (daily since 2026-06-09) |
+
+Why: until 2026-09-25 the daily writer stored securities only, with
+`cash_balance = 0`, while statement rows stored net liquidation value. The
+series switched definition when daily rows took over (Nov 2025 for Neel,
+Jan 2026 for Jaya). Margin borrowed then read as growth: 2026 YTD showed
++22% on securities-only values against roughly +8% on net values. See
+[BBD-PAGE-AUDIT-2026-09.md](BBD-PAGE-AUDIT-2026-09.md) F1.
+
+Statement rows (`ingestion_id` set) are authoritative for a month-end and
+are preferred over daily rows in the same month.
+
+---
+
 ## Section 1: Growth (Assumptions vs Reality)
 
 ### Data Source
 - `portfolio_snapshots` table, filtered to dates >= 2025-01-01
-- For each (account, month), takes the latest `statement_date` snapshot
+- For each (account, month), takes the statement-sourced row if one exists
+  (`ingestion_id` not null), else the latest `statement_date` snapshot
 - **Same-store pairing**: Only sums accounts present in BOTH the start and end months being compared, to avoid false growth from accounts being opened/closed
 
 ### Monthly Growth Calculation (Modified Dietz Return)
@@ -56,14 +91,31 @@ Weekly does NOT use Modified Dietz (no flow adjustment).
 - Yearly: 8.0%
 - `expected_value = baseline * (1 + expected_rate)`
 
+### Dollar growth (2026-09-25, audit F3)
+
+Every growth row stores the period's **net external flows** for the paired
+accounts (deposits +, withdrawals −; `pure_growth` also counts options
+premium collected as an inflow) and
+
+```
+gain_value = actual_value − baseline_value − net_flows
+```
+
+That is the money the market made in the period, which is what a dollar
+card must show. `actual_value − baseline_value` alone is the change in
+balance and is wrong whenever money moved: 2025 showed "+$47,809" beside a
++25% return because $238K had been withdrawn. Weekly rows (simple return,
+no flow adjustment) leave `net_flows` null and `gain_value` = balance change.
+`options_yield` rows set `gain_value` to the income itself.
+
 ### Summary Cards
 | Card | Formula |
 |---|---|
 | Avg Monthly Growth % | Compound yearly returns, derive monthly: `((1+compound)^(1/total_months) - 1) * 100` |
-| Avg Monthly Growth $ | `total_dollar_change / total_months` |
+| Avg Monthly Growth $ | `sum(gain_value over yearly metrics) / total_months` |
 | Cumulative Growth % | `product(1 + each_year_pct/100) - 1`, compounded across all years |
-| Cumulative Growth $ | Sum of `(actual_value - baseline_value)` across all yearly metrics |
-| {Year} Growth | From yearly `portfolio_growth` metric in DB |
+| Cumulative Growth $ | Sum of `gain_value` across all yearly metrics |
+| {Year} Growth | From yearly `portfolio_growth` metric in DB: `actual_percent` and `gain_value` |
 | Target Monthly | `(1.08^(1/12) - 1) * 100` ≈ 0.6434% |
 | Target Annual | 8.0% |
 
@@ -144,7 +196,7 @@ Expected line (max sustainable BBD withdrawal):
 | Margin Utilization % | `cumulative_margin / margin_available * 100` |
 | Avg Monthly Spending | `sum(all_monthly_spending) / count(months)` |
 | {Year} Expenses | Sum of monthly spending for that year |
-| Interest Accrued | `current_margin_balance - sum(all_spending)` (the difference is simulated interest) |
+| Margin interest charged | Sum of the ledger's "Aggregated Margin Rate" charges for the brokerage accounts, de-duplicated on (account, date, amount); `margin_interest_ytd` for the current year, `margin_interest_since_cutoff` since 2025-01-01. (Replaced `current_margin_balance − sum(all_spending)`, which only meant something while margin was simulated — audit F8.) |
 
 ### Color Logic (Inverted)
 - Green: actual utilization <= expected (lower is better)

@@ -1,17 +1,20 @@
 """
 Robinhood PDF Statement Parser.
 
-NOTE: Robinhood account statement PDFs provide NO VALUE to this system.
+Extracts the month-end **Account Summary** from a Robinhood statement as one
+ACCOUNT_SUMMARY record per account section: the statement's own Portfolio
+Value, Total Securities and cash lines, dated the statement period end.
+That is the authoritative month-end value for `portfolio_snapshots`
+(docs/BBD-CALCULATIONS.md, "Portfolio value") and, for margin accounts, the
+signed brokerage cash line that feeds `margin_monthly_balances`.
 
-All data we need is already available from better sources:
-- Current holdings → Paste data (real-time)
-- Portfolio value → Calculated from holdings + Shor API (real-time prices)
-- Transaction history → CSV exports
-- Dividend income → CSV exports
-- Options positions → Paste data
+Everything else on a statement (holdings, transactions, dividends) is not
+read here — those come from the MCP refresh and activity CSVs. Income rows
+from statements are handled by `backend/scripts/import_robinhood_statement_pdf.py`.
 
-This parser intentionally does NOT extract any data from Robinhood PDFs.
-It recognizes them only to skip them gracefully with a clear message.
+History: until 2026-09-25 this parser returned nothing ("Robinhood PDFs
+provide no value"), which is why 2026 had no statement month-ends and the
+BBD page ran on securities-only daily rows (BBD audit F1).
 """
 
 import re
@@ -23,16 +26,37 @@ from decimal import Decimal
 from app.ingestion.parsers.base import BaseParser, ParseResult, ParsedRecord, RecordType
 
 
+#: Statement account number → app account. Statements print the RHS account
+#: number; Neel's brokerage also appears as 5XE31773 in the trading API.
+#: Untracked accounts (Alisha's, the joint account, the Agentic and Airbnb
+#: cash accounts) are deliberately absent: a statement for one of them is
+#: reported and skipped, never written under the wrong account.
+STATEMENT_ACCOUNTS = {
+    "701552176": ("jaya_brokerage", "Jaya", "brokerage"),
+    "534052659": ("jaya_ira", "Jaya", "ira"),
+    "704155779": ("jaya_roth_ira", "Jaya", "roth_ira"),
+    "170317739": ("neel_brokerage", "Neel", "brokerage"),
+    "5XE31773": ("neel_brokerage", "Neel", "brokerage"),
+    "439569591": ("neel_retirement", "Neel", "retirement"),
+    "514429901": ("neel_roth_ira", "Neel", "roth_ira"),
+}
+
+#: securities + cash must reproduce the printed Portfolio Value this closely,
+#: or the file is rejected (playbook: validate a parser against the source
+#: document's own totals).
+TOTALS_TOLERANCE = 1.00
+
+
 class RobinhoodPDFParser(BaseParser):
     """
     Parser for Robinhood PDF account statements.
-    
+
     Robinhood statements contain:
     1. Account holder name on page 1
     2. Account type and number on page 1
-    3. Portfolio Summary table on page 3+
+    3. Account Summary (Portfolio Value / Total Securities / cash lines) on page 1
     """
-    
+
     source_name = "robinhood"
     supported_extensions = [".pdf"]
     
@@ -71,29 +95,123 @@ class RobinhoodPDFParser(BaseParser):
         return False
     
     def parse(self, file_path: Path) -> ParseResult:
+        """One ACCOUNT_SUMMARY record per account section found in the PDF.
+
+        A section is any page carrying an "<type> Account #:<number>" header
+        together with an Account Summary block. Statements are normally one
+        account per file; the loop also handles combined files.
         """
-        Robinhood account statement PDFs provide no value - skip them.
-        
-        All Robinhood data is better obtained from:
-        - Paste data: Current holdings and options (real-time)
-        - CSV exports: Transaction history-and dividend income
-        - Shor API: Real-time prices for portfolio valuation
-        """
+        import pdfplumber
+
+        records: list[ParsedRecord] = []
+        warnings: list[str] = []
+        errors: list[str] = []
+        metadata: dict[str, Any] = {"file_type": "pdf_statement", "source": "robinhood", "accounts": []}
+
+        with pdfplumber.open(file_path) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                text = page.extract_text() or ""
+                header = re.search(
+                    r'(Individual|Traditional IRA|Roth IRA|Retirement)\s+Account\s*#[:\s]*([A-Z0-9]+)', text)
+                if not header or 'Portfolio Value' not in text:
+                    continue
+
+                account_number = header.group(2)
+                period_end = self._extract_statement_date(text)
+                summary = self._extract_account_summary(text)
+                label = f"{file_path.name} p{page_num + 1} account #{account_number}"
+
+                mapped = STATEMENT_ACCOUNTS.get(account_number)
+                if not mapped:
+                    warnings.append(
+                        f"{label}: not a tracked account (closing value "
+                        f"{summary.get('portfolio_value')}); skipped")
+                    continue
+                account_id, owner, account_type = mapped
+
+                if period_end is None or summary.get("portfolio_value") is None:
+                    errors.append(f"{label}: could not read statement period or Portfolio Value")
+                    continue
+
+                pv = summary["portfolio_value"]
+                sec = summary.get("securities_value")
+                cash = summary.get("cash_balance")
+                if sec is not None and cash is not None and abs((sec + cash) - pv) > TOTALS_TOLERANCE:
+                    errors.append(
+                        f"{label}: Total Securities {sec:,.2f} + cash {cash:,.2f} = {sec + cash:,.2f} "
+                        f"does not match Portfolio Value {pv:,.2f}; file rejected")
+                    continue
+
+                data = {
+                    "source": self.source_name,
+                    "account_id": account_id,
+                    "owner": owner,
+                    "account_type": account_type,
+                    "account_number": account_number,
+                    "statement_date": period_end.date(),
+                    "portfolio_value": pv,
+                    "cash_balance": cash,
+                    "securities_value": sec,
+                }
+                if account_type == "brokerage":
+                    # Signed "Brokerage Cash Balance" line (negative = margin) for margin_monthly_balances
+                    data["brokerage_cash_opening"] = summary.get("brokerage_cash_opening")
+                    data["brokerage_cash_closing"] = summary.get("brokerage_cash_closing")
+                records.append(ParsedRecord(record_type=RecordType.ACCOUNT_SUMMARY, data=data, source_row=page_num + 1))
+                metadata["accounts"].append({"account_id": account_id, "statement_date": period_end.date().isoformat(),
+                                             "portfolio_value": pv})
+
+        if not records and not errors:
+            warnings.append(f"{file_path.name}: no tracked account summary found")
+
         return ParseResult(
-            success=True,  # Not an error, just nothing to extract
+            success=not errors,
             source_name=self.source_name,
             file_path=file_path,
-            records=[],
-            warnings=["Robinhood account statement PDFs are skipped - no useful data. "
-                     "Use paste data for holdings and CSV exports for transactions."],
-            errors=[],
-            metadata={
-                "file_type": "pdf_statement",
-                "source": "robinhood",
-                "skipped": True,
-                "reason": "Robinhood PDFs provide no value; data available from better sources",
-            }
+            records=records,
+            warnings=warnings,
+            errors=errors,
+            metadata=metadata,
         )
+
+    # Amounts print as "$1,234.56" or "($1,234.56)" (negative, e.g. margin).
+    _AMOUNT = re.compile(r'(\()?\$([\d,]+\.\d{2})(\))?')
+
+    def _amounts(self, line: str) -> list:
+        out = []
+        for open_p, num, close_p in self._AMOUNT.findall(line):
+            v = float(num.replace(',', ''))
+            out.append(-v if (open_p and close_p) else v)
+        return out
+
+    def _extract_account_summary(self, text: str) -> dict:
+        """Closing-balance column of the Account Summary block.
+
+        Brokerage:  cash = Brokerage Cash Balance (signed) + Deposit Sweep Balance
+        IRA:        cash = Net Account Balance
+        Each line prints "Opening Closing"; the closing value is the last amount.
+        """
+        out: dict[str, Any] = {}
+        sweep = None
+        for raw in text.split('\n'):
+            line = raw.strip()
+            amts = self._amounts(line)
+            if not amts:
+                continue
+            if line.startswith('Portfolio Value'):
+                out["portfolio_value"] = amts[-1] if len(amts) >= 2 else amts[0]
+            elif line.startswith('Total Securities'):
+                out["securities_value"] = amts[-1] if len(amts) >= 2 else amts[0]
+            elif line.startswith('Brokerage Cash Balance'):
+                out["brokerage_cash_opening"] = amts[0] if len(amts) >= 2 else None
+                out["brokerage_cash_closing"] = amts[-1] if len(amts) >= 2 else amts[0]
+            elif line.startswith('Deposit Sweep Balance'):
+                sweep = amts[-1] if len(amts) >= 2 else amts[0]
+            elif line.startswith('Net Account Balance'):
+                out["cash_balance"] = amts[-1] if len(amts) >= 2 else amts[0]
+        if "brokerage_cash_closing" in out:
+            out["cash_balance"] = out["brokerage_cash_closing"] + (sweep or 0.0)
+        return out
     
     def _extract_account_info(self, text: str) -> Tuple[str, str, str]:
         """Extract owner name, account type, and account number from first page text."""

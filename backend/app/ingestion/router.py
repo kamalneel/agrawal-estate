@@ -1383,54 +1383,16 @@ async def save_robinhood_paste(
             logger.info(f"Deleting options snapshot {snapshot.id} for {account_name} - options section is empty (all options cleared)")
             db.delete(snapshot)
     
-    # Update portfolio snapshot with new data
+    # Update today's portfolio snapshot — same definition as the 8:15 PM daily
+    # snapshot (net liquidation: holdings − short-option marks + signed cash).
     if (save_stocks and (stocks_saved > 0 or stocks_updated > 0)) or (save_options and options_saved > 0):
+        from app.modules.investments.snapshot_service import refresh_today_snapshot
         account_id = _normalize_account_id(account_name)
-        
-        # Calculate total portfolio value from current holdings
-        holdings = db.query(InvestmentHolding).filter(
-            InvestmentHolding.account_id == account_id,
-            InvestmentHolding.source == 'robinhood'
-        ).all()
-        
-        total_portfolio_value = sum(
-            float(h.market_value) if h.market_value else 0
-            for h in holdings
-        )
-        
-        # Get owner and account_type
-        parts = account_id.split('_')
-        owner = parts[0].title() if parts else 'Unknown'
-        account_type = '_'.join(parts[1:]) if len(parts) > 1 else 'brokerage'
-        
-        today = date.today()
-        
-        # Find existing snapshot for today or most recent
-        existing_snapshot = db.query(PortfolioSnapshot).filter(
-            PortfolioSnapshot.source == 'robinhood',
-            PortfolioSnapshot.account_id == account_id,
-            PortfolioSnapshot.statement_date == today
-        ).first()
-        
-        if existing_snapshot:
-            existing_snapshot.portfolio_value = Decimal(str(round(total_portfolio_value, 2)))
-            existing_snapshot.securities_value = Decimal(str(round(total_portfolio_value, 2)))
-            existing_snapshot.updated_at = datetime.utcnow()
-            logger.info(f"Updated snapshot for {account_name}: ${total_portfolio_value:,.2f}")
-        else:
-            # Create new snapshot for today
-            new_snapshot = PortfolioSnapshot(
-                source='robinhood',
-                account_id=account_id,
-                owner=owner,
-                account_type=account_type,
-                statement_date=today,
-                portfolio_value=Decimal(str(round(total_portfolio_value, 2))),
-                securities_value=Decimal(str(round(total_portfolio_value, 2))),
-                cash_balance=Decimal('0')
-            )
-            db.add(new_snapshot)
-            logger.info(f"Created snapshot for {account_name}: ${total_portfolio_value:,.2f}")
+        db.flush()  # holdings/options written above must be visible to the recompute
+        snap = refresh_today_snapshot(db, account_id)
+        if snap:
+            logger.info(f"Updated snapshot for {account_name}: ${snap['portfolio_value']:,.2f} "
+                        f"(cash {snap['cash_balance']:,.2f})")
     
     db.commit()
     
@@ -1833,6 +1795,15 @@ async def save_robinhood_cash(data: dict, db: Session = Depends(get_db)):
         db.add(hist)
 
     db.commit()
+
+    # Cash changed, so today's snapshot row (net liquidation value) changes too.
+    try:
+        from app.modules.investments.snapshot_service import refresh_today_snapshot
+        if refresh_today_snapshot(db, _normalize_account_id(account_name)):
+            db.commit()
+    except Exception as e:  # never fail the cash save over the derived row
+        db.rollback()
+        logger.warning(f"Could not refresh today's snapshot for {account_name}: {e}")
 
     return {
         "success":            True,

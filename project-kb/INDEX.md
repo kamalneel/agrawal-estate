@@ -78,6 +78,7 @@ Auto-maintained master index. Updated by Claude when entries are added or remove
 - [Spending Page Audit 2026-09](../docs/SPENDING-PAGE-AUDIT-2026-09.md) — the incidents behind the rules above (rent as Transfer, refunds as income, dead outflows), what was fixed, what is still open
 - [2025 Tax Return Reconciliation](../docs/2025-TAX-RETURN-RECONCILIATION.md) — filed return vs forecast line by line: 54% miss, waterfall, root causes classified, prioritized fixes
 - [2026 Tax Estimate](../docs/2026-TAX-ESTIMATE.md) — as of 2026-09-12: paid to date from paystubs, YTD liability, full-year scenarios, safe-harbor payments due 9/15 and 1/15
+- [BBD Page Audit 2026-09](../docs/BBD-PAGE-AUDIT-2026-09.md) — F1 (one portfolio-value definition: net liquidation, signed cash) and F2 (stale cache row) fixed 2026-09-25; still open: margin table stale since Apr 2026, growth $ ignores flows, hard-coded 2025 expenses card, early-2025 options gaps
 - [Cleanup Backlog](../docs/CLEANUP-BACKLOG.md) — running list for the cleanup phase: broken tsc build, yfinance migration, dead engines (v2–v4), plaid, god files, docs archive
 
 ## Strategy Spec Docs (V6)

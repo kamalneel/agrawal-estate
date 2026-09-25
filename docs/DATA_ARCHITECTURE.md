@@ -36,6 +36,14 @@ If you (the AI assistant) are asked to directly insert, update, or delete record
 | Cost Basis | Monthly | For tax purposes |
 | Cash Balance | Monthly | Accurate cash position |
 
+**Portfolio value has one definition** for every row in `portfolio_snapshots`,
+whether it came from a statement or the daily snapshot: net liquidation value,
+`securities_value + cash_balance`, where `cash_balance` is signed (negative
+when the account is on margin) and `securities_value` includes the
+mark-to-market of open short options. Statement rows (`ingestion_id` set) are
+authoritative for a month-end. Definition and writers: see
+`docs/BBD-CALCULATIONS.md`, "Portfolio value".
+
 **How to Import:** Upload via Data Import page or drop in `/data/inbox/investments/`
 
 ### 2. Activity Report CSV

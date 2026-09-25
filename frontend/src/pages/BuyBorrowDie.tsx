@@ -1006,6 +1006,8 @@ export default function BuyBorrowDie() {
                             <th>Period</th>
                             <th>Baseline</th>
                             <th>Actual</th>
+                            <th title="Money in/out during the period (deposits +, withdrawals −)">Flows</th>
+                            <th title="Actual − Baseline − Flows: what the market made, not the balance change">Gain</th>
                             <th>Expected</th>
                             <th>Actual %</th>
                             <th>Expected %</th>
@@ -1022,6 +1024,10 @@ export default function BuyBorrowDie() {
                               <td><strong>{m.period_label}</strong></td>
                               <td>{m.baseline_value !== null ? formatFullCurrency(m.baseline_value) : '-'}</td>
                               <td>{m.actual_value !== null ? formatFullCurrency(m.actual_value) : '-'}</td>
+                              <td>{m.net_flows !== null && m.net_flows !== undefined ? formatFullCurrency(m.net_flows) : '-'}</td>
+                              <td className={(m.gain_value ?? 0) >= 0 ? styles.positive : styles.negative}>
+                                {m.gain_value !== null && m.gain_value !== undefined ? formatFullCurrency(m.gain_value) : '-'}
+                              </td>
                               <td>{m.expected_value !== null ? formatFullCurrency(m.expected_value) : '-'}</td>
                               <td className={m.actual_percent >= (m.expected_percent || 0) ? styles.positive : styles.negative}>
                                 {m.actual_percent !== null ? `${m.actual_percent.toFixed(2)}%` : '-'}
@@ -1063,14 +1069,18 @@ export default function BuyBorrowDie() {
                   <span className={styles.summaryValue}>{s.current_margin_balance !== null ? formatFullCurrency(s.current_margin_balance) : 'N/A'}</span>
                   <span className={styles.summaryNote}>
                     {s.current_margin_utilization_pct !== null ? `${s.current_margin_utilization_pct.toFixed(1)}% utilization` : ''}
-                    {s.total_interest_accrued ? ` (incl. ${formatFullCurrency(s.total_interest_accrued)} interest)` : ''}
+                    {s.margin_interest_ytd ? ` · ${formatFullCurrency(s.margin_interest_ytd)} interest charged this year` : ''}
                   </span>
                 </div>
-                <div className={styles.summaryCard}>
-                  <span className={styles.summaryLabel}>2025 Expenses</span>
-                  <span className={styles.summaryValue}>{s.annual_spending?.['2025'] ? formatFullCurrency(s.annual_spending['2025']) : 'N/A'}</span>
-                  <span className={styles.summaryNote}>Total annual spending</span>
-                </div>
+                {Object.keys(s.annual_spending || {}).sort().map((yr) => (
+                  <div key={`spend-${yr}`} className={styles.summaryCard}>
+                    <span className={styles.summaryLabel}>{yr} Expenses</span>
+                    <span className={styles.summaryValue}>{formatFullCurrency(s.annual_spending[yr])}</span>
+                    <span className={styles.summaryNote}>
+                      {yr === String(new Date().getFullYear()) ? 'Year to date' : 'Total annual spending'}
+                    </span>
+                  </div>
+                ))}
                 <div className={styles.summaryCard}>
                   <span className={styles.summaryLabel}>Avg Monthly Spending</span>
                   <span className={styles.summaryValue}>{s.avg_monthly_borrowing_amt !== null ? `${formatFullCurrency(s.avg_monthly_borrowing_amt)}/mo` : 'N/A'}</span>

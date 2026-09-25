@@ -51,11 +51,21 @@ class BbdPerformanceService:
     # ── Public API ────────────────────────────────────────────────
 
     def compute_all(self, force: bool = False) -> int:
-        """Compute missing metrics for all period/metric combos. Returns count of rows upserted."""
-        # Delete metrics before cutoff date
-        self.db.query(BbdPerformanceMetric).filter(
-            BbdPerformanceMetric.period_start < self.DATA_CUTOFF_DATE,
-        ).delete()
+        """Compute missing metrics for all period/metric combos. Returns count of rows upserted.
+
+        force=True clears the whole cache first, so a row the recompute no
+        longer produces cannot survive. Without this, the Jan 2025 monthly
+        growth row computed on 2026-02-06 (baseline included non-brokerage
+        accounts, expected rate 8%) outlived every later change to filters
+        and assumptions because upserts skip existing rows and the cutoff
+        delete below never reached it (BBD audit F2)."""
+        if force:
+            self.db.query(BbdPerformanceMetric).delete()
+        else:
+            # Delete metrics before cutoff date
+            self.db.query(BbdPerformanceMetric).filter(
+                BbdPerformanceMetric.period_start < self.DATA_CUTOFF_DATE,
+            ).delete()
         self.db.flush()
 
         count = 0
@@ -92,6 +102,15 @@ class BbdPerformanceService:
         This avoids the problem of compounding monthly rates with different
         account sets, and avoids first-to-last pairing missing transferred accounts.
         """
+        def _gain(m: Dict[str, Any]) -> Optional[float]:
+            """Dollar growth of a metric row: gain_value (flow-adjusted), or the
+            balance change for rows computed before gain_value existed."""
+            if m.get('gain_value') is not None:
+                return m['gain_value']
+            if m.get('actual_value') is not None and m.get('baseline_value') is not None:
+                return m['actual_value'] - m['baseline_value']
+            return None
+
         yearly_growth = self.get_metrics('portfolio_growth', 'year')
         yearly_pure_growth = self.get_metrics('pure_growth', 'year')
         monthly_pure_growth = self.get_metrics('pure_growth', 'month')
@@ -116,8 +135,8 @@ class BbdPerformanceService:
             total_months = 0
             for m in valid_yearly:
                 compound *= (1 + m['actual_percent'] / 100)
-                if m.get('actual_value') is not None and m.get('baseline_value') is not None:
-                    total_dollar_change += (m['actual_value'] - m['baseline_value'])
+                if _gain(m) is not None:
+                    total_dollar_change += _gain(m)
                 # Count months in this year's period
                 ps = date.fromisoformat(m['period_start'])
                 pe = date.fromisoformat(m['period_end'])
@@ -128,7 +147,10 @@ class BbdPerformanceService:
             cumulative_growth_pct = round((compound - 1) * 100, 2)
             cumulative_growth_amt = round(total_dollar_change, 2)
             if total_months > 0:
-                avg_monthly_growth_pct = round(cumulative_growth_pct / total_months, 4)
+                # Compound monthly rate, per the spec — the rate that, applied
+                # every month, reproduces the cumulative return. Dividing the
+                # cumulative % by the month count overstated it (BBD audit F4).
+                avg_monthly_growth_pct = round((compound ** (1 / total_months) - 1) * 100, 4)
                 avg_monthly_growth_amt = round(total_dollar_change / total_months, 2)
 
         # ── Pure Growth (market appreciation only) ──
@@ -146,8 +168,8 @@ class BbdPerformanceService:
             total_months = 0
             for m in valid_pure_yearly:
                 compound *= (1 + m['actual_percent'] / 100)
-                if m.get('actual_value') is not None and m.get('baseline_value') is not None:
-                    total_dollar_change += (m['actual_value'] - m['baseline_value'])
+                if _gain(m) is not None:
+                    total_dollar_change += _gain(m)
                 ps = date.fromisoformat(m['period_start'])
                 pe = date.fromisoformat(m['period_end'])
                 actual_end = min(pe, date.today())
@@ -156,12 +178,12 @@ class BbdPerformanceService:
             cumulative_pure_growth_pct = round((compound - 1) * 100, 2)
             cumulative_pure_growth_amt = round(total_dollar_change, 2)
             if total_months > 0:
-                avg_monthly_pure_growth_pct = round(cumulative_pure_growth_pct / total_months, 4)
+                avg_monthly_pure_growth_pct = round((compound ** (1 / total_months) - 1) * 100, 4)
                 avg_monthly_pure_growth_amt = round(total_dollar_change / total_months, 2)
 
         annual_pure_growth = {}
         for m in yearly_pure_growth:
-            dollar_change = round(m['actual_value'] - m['baseline_value'], 2) if m.get('actual_value') is not None and m.get('baseline_value') is not None else None
+            dollar_change = round(_gain(m), 2) if _gain(m) is not None else None
             annual_pure_growth[m['period_label']] = {
                 'percent': m['actual_percent'],
                 'amount': dollar_change,
@@ -190,7 +212,7 @@ class BbdPerformanceService:
         # ── Annual Growth (% and $) by year ──
         annual_growth = {}
         for m in yearly_growth:
-            dollar_change = round(m['actual_value'] - m['baseline_value'], 2) if m.get('actual_value') is not None and m.get('baseline_value') is not None else None
+            dollar_change = round(_gain(m), 2) if _gain(m) is not None else None
             annual_growth[m['period_label']] = {
                 'percent': m['actual_percent'],
                 'amount': dollar_change,
@@ -227,11 +249,27 @@ class BbdPerformanceService:
         current_margin_utilization_pct = float(latest_margin.actual_percent) if latest_margin and latest_margin.actual_percent else None
         margin_available = float(latest_margin.baseline_value) if latest_margin and latest_margin.baseline_value else None
 
-        # Total interest accrued = cumulative_margin - sum of all spending
-        total_interest_accrued = None
-        if current_margin_balance is not None and spend_values:
-            total_spent = sum(spend_values)
-            total_interest_accrued = round(max(0.0, current_margin_balance - total_spent), 2)
+        # Margin interest actually charged, from the ledger ("Aggregated Margin
+        # Rate" rows). The old formula, margin balance − total spending, only
+        # made sense while margin was simulated from spending; with real
+        # balances it was always 0 (BBD audit F8). The same charge can appear
+        # under two transaction types (OTHER and MARGIN_INTEREST) on one date,
+        # so rows are de-duplicated on (account, date, amount).
+        interest_rows = self.db.query(
+            InvestmentTransaction.account_id,
+            InvestmentTransaction.transaction_date,
+            InvestmentTransaction.amount,
+        ).filter(
+            InvestmentTransaction.account_id.in_(self.BROKERAGE_ACCOUNTS),
+            InvestmentTransaction.description.ilike('%margin%'),
+            InvestmentTransaction.amount < 0,
+            InvestmentTransaction.transaction_date >= self.DATA_CUTOFF_DATE,
+        ).distinct().all()
+        this_year = date.today().year
+        margin_interest_since_cutoff = round(-sum(float(r.amount) for r in interest_rows), 2)
+        margin_interest_ytd = round(-sum(float(r.amount) for r in interest_rows
+                                         if r.transaction_date.year == this_year), 2)
+        total_interest_accrued = margin_interest_since_cutoff
 
         # Annual borrowing from yearly metrics
         yearly_borrowing = self.get_metrics('margin_borrowing', 'year')
@@ -272,7 +310,9 @@ class BbdPerformanceService:
             'margin_available': margin_available,
             'current_margin_balance': current_margin_balance,
             'current_margin_utilization_pct': current_margin_utilization_pct,
-            'total_interest_accrued': total_interest_accrued,
+            'total_interest_accrued': total_interest_accrued,  # margin interest charged since DATA_CUTOFF_DATE
+            'margin_interest_ytd': margin_interest_ytd,
+            'margin_interest_since_cutoff': margin_interest_since_cutoff,
             'avg_monthly_borrowing_amt': avg_monthly_borrowing_amt,
             'annual_spending': {yr: round(amt, 2) for yr, amt in annual_spending.items()},
             'annual_borrowing': annual_borrowing,
@@ -383,6 +423,7 @@ class BbdPerformanceService:
                 expected_value=expected_val, expected_percent=expected_pct,
                 baseline_value=baseline_val,
                 data_completeness=completeness, force=force,
+                net_flows=sum(f['amount'] for f in flows),
             )
             count += 1
         return count
@@ -430,6 +471,7 @@ class BbdPerformanceService:
                 expected_value=expected_val, expected_percent=monthly_rate,
                 baseline_value=baseline_val,
                 data_completeness=completeness, force=force,
+                net_flows=sum(f['amount'] for f in flows),
             )
             count += 1
         return count
@@ -577,6 +619,7 @@ class BbdPerformanceService:
                 expected_value=expected_val, expected_percent=expected_pct,
                 baseline_value=baseline_val,
                 data_completeness=completeness, force=force,
+                net_flows=sum(f['amount'] for f in flows),  # includes options premium as inflow
             )
             count += 1
         return count
@@ -628,6 +671,7 @@ class BbdPerformanceService:
                 expected_value=expected_val, expected_percent=monthly_rate,
                 baseline_value=baseline_val,
                 data_completeness=completeness, force=force,
+                net_flows=sum(f['amount'] for f in flows),  # includes options premium as inflow
             )
             count += 1
         return count
@@ -1013,40 +1057,52 @@ class BbdPerformanceService:
     # ── Data sources ──────────────────────────────────────────────
 
     def _get_real_margin_data(self) -> Dict[str, float]:
-        """Return total margin borrowed per month from real Robinhood statements.
+        """Return total margin borrowed per month across the brokerage accounts.
         Returns {YYYY-MM: margin_borrowed} where margin_borrowed >= 0.
-        Nets across all brokerage accounts: if Neel borrows $130K but Jaya has
-        $10K cash, the true combined margin is $120K, not $130K."""
-        rows = self.db.query(MarginMonthlyBalance).filter(
-            MarginMonthlyBalance.account_name.in_(self.BROKERAGE_ACCOUNTS)
-        ).all()
 
-        # Sum ALL balances (positive and negative) per month, then clamp to 0
+        Source is the signed month-end cash in `portfolio_snapshots`
+        (statement row preferred, else the month's latest daily row, which
+        carries the MCP refresh's cash — docs/BBD-CALCULATIONS.md, "Portfolio
+        value"). So the current month reads today's real balance instead of
+        the last statement carried forward: on 2026-09-25 the forward-fill
+        showed $227K (August) against $34K actually borrowed (BBD audit F7).
+        `margin_monthly_balances` fills any month that has no cash-bearing
+        snapshot row.
+
+        Nets across accounts: if Neel borrows $130K but Jaya holds $10K cash,
+        the combined margin reads $120K (design question F12)."""
         net_by_month: Dict[str, float] = {}
-        for row in rows:
+
+        # 1. Statement table as the base (brokerage cash line, signed).
+        for row in self.db.query(MarginMonthlyBalance).filter(
+            MarginMonthlyBalance.account_name.in_(self.BROKERAGE_ACCOUNTS)
+        ).all():
             month_key = f"{row.year}-{row.month:02d}"
-            net_by_month[month_key] = net_by_month.get(month_key, 0.0) + float(row.closing_balance or 0)
+            net_by_month.setdefault(month_key, {})[row.account_name] = float(row.closing_balance or 0)
 
-        result: Dict[str, float] = {k: max(0.0, -v) for k, v in net_by_month.items()}
+        # 2. Snapshot cash overrides: per (account, month) the statement row,
+        #    else the latest daily row, exactly as _get_account_month_values.
+        rows = self.db.query(
+            PortfolioSnapshot.account_id,
+            PortfolioSnapshot.statement_date,
+            PortfolioSnapshot.cash_balance,
+            PortfolioSnapshot.ingestion_id,
+        ).filter(
+            PortfolioSnapshot.account_id.in_(self.BROKERAGE_ACCOUNTS),
+            PortfolioSnapshot.statement_date >= self.DATA_CUTOFF_DATE,
+            PortfolioSnapshot.cash_balance.isnot(None),
+        ).order_by(PortfolioSnapshot.statement_date).all()
+        best: Dict[tuple, tuple] = {}
+        for r in rows:
+            month_key = r.statement_date.strftime('%Y-%m')
+            candidate = (1 if r.ingestion_id is not None else 0, r.statement_date, float(r.cash_balance))
+            if (r.account_id, month_key) not in best or candidate[:2] > best[(r.account_id, month_key)][:2]:
+                best[(r.account_id, month_key)] = candidate
+        for (account_id, month_key), (_, _, cash) in best.items():
+            net_by_month.setdefault(month_key, {})[account_id] = cash
 
-        # Forward-fill gaps up to the current month using the last known balance
-        if result:
-            today = date.today()
-            last_key = max(result.keys())
-            last_val = result[last_key]
-            yr, mo = int(last_key[:4]), int(last_key[5:7])
-            while True:
-                mo += 1
-                if mo > 12:
-                    mo = 1
-                    yr += 1
-                fill_key = f"{yr}-{mo:02d}"
-                if fill_key > f"{today.year}-{today.month:02d}":
-                    break
-                if fill_key not in result:
-                    result[fill_key] = last_val
-
-        return result
+        # 3. Net across accounts, clamp: positive net cash means no margin.
+        return {k: max(0.0, -sum(v.values())) for k, v in net_by_month.items()}
 
     def _get_brokerage_month_values(self, account_months: Dict[str, Dict[str, float]]) -> Dict[str, float]:
         """Get total brokerage portfolio value per month (neel + jaya brokerage only).
@@ -1071,42 +1127,35 @@ class BbdPerformanceService:
     def _get_account_month_values(self) -> Dict[str, Dict[str, float]]:
         """Get per-account, per-month portfolio values.
         Returns {account_id: {YYYY-MM: value}}.
-        Uses the portfolio_value at the latest statement_date within each month
-        (not max value, which inflates totals by summing peak days across accounts).
-        Filtered to DATA_CUTOFF_DATE onwards."""
-        # Subquery: find latest statement_date per (account_id, source, month)
-        latest_dates = self.db.query(
-            PortfolioSnapshot.account_id,
-            PortfolioSnapshot.source,
-            func.to_char(PortfolioSnapshot.statement_date, 'YYYY-MM').label('month'),
-            func.max(PortfolioSnapshot.statement_date).label('max_date'),
-        ).filter(
-            PortfolioSnapshot.statement_date >= self.DATA_CUTOFF_DATE,
-        ).group_by(
-            PortfolioSnapshot.account_id,
-            PortfolioSnapshot.source,
-            func.to_char(PortfolioSnapshot.statement_date, 'YYYY-MM'),
-        ).subquery()
 
-        # Main query: get portfolio_value at that latest date
+        One row per (account, month): the statement-sourced row when one
+        exists (ingestion_id set — statement imports and the statement-value
+        backfill), otherwise the latest statement_date in the month. Never the
+        max value, which would sum peak days across accounts. Every row carries
+        net liquidation value (docs/BBD-CALCULATIONS.md, "Portfolio value").
+        Filtered to DATA_CUTOFF_DATE onwards."""
         rows = self.db.query(
             PortfolioSnapshot.account_id,
             PortfolioSnapshot.source,
-            latest_dates.c.month,
-            PortfolioSnapshot.portfolio_value.label('value'),
-        ).join(
-            latest_dates,
-            and_(
-                PortfolioSnapshot.account_id == latest_dates.c.account_id,
-                PortfolioSnapshot.source == latest_dates.c.source,
-                PortfolioSnapshot.statement_date == latest_dates.c.max_date,
-            )
-        ).order_by(latest_dates.c.month).all()
+            PortfolioSnapshot.statement_date,
+            PortfolioSnapshot.portfolio_value,
+            PortfolioSnapshot.ingestion_id,
+        ).filter(
+            PortfolioSnapshot.statement_date >= self.DATA_CUTOFF_DATE,
+        ).order_by(PortfolioSnapshot.statement_date).all()
 
-        account_months: Dict[str, Dict[str, float]] = {}
+        # (key, month) -> (rank, date, value); rank 1 = statement row, 0 = daily
+        best: Dict[tuple, tuple] = {}
         for r in rows:
             key = f"{r.account_id}_{r.source}"
-            account_months.setdefault(key, {})[r.month] = float(r.value)
+            month = r.statement_date.strftime('%Y-%m')
+            candidate = (1 if r.ingestion_id is not None else 0, r.statement_date, float(r.portfolio_value))
+            if (key, month) not in best or candidate[:2] > best[(key, month)][:2]:
+                best[(key, month)] = candidate
+
+        account_months: Dict[str, Dict[str, float]] = {}
+        for (key, month), (_, _, value) in best.items():
+            account_months.setdefault(key, {})[month] = value
         return account_months
 
     def _get_paired_portfolio_values(self, month_a: str, month_b: str) -> tuple:
@@ -1341,9 +1390,15 @@ class BbdPerformanceService:
         self, period_type: str, period_start: date, period_end: date,
         metric_type: str, actual_value: float, actual_percent: float,
         expected_value: float, expected_percent: float, baseline_value: float,
-        data_completeness: str, force: bool,
+        data_completeness: str, force: bool, net_flows: Optional[float] = None,
     ):
-        """Insert or update a metric row."""
+        """Insert or update a metric row.
+
+        net_flows: external cash in/out in the period for the paired accounts
+        (pure_growth also passes options premium as an inflow). gain_value is
+        derived here so every reader gets the same dollar figure:
+        growth metrics → actual − baseline − net_flows; options_yield → the
+        income itself; others → None."""
         existing = self.db.query(BbdPerformanceMetric).filter(
             BbdPerformanceMetric.period_type == period_type,
             BbdPerformanceMetric.period_start == period_start,
@@ -1352,6 +1407,12 @@ class BbdPerformanceService:
 
         variance_pct = actual_percent - expected_percent
         variance_val = actual_value - expected_value
+        if metric_type in ('portfolio_growth', 'pure_growth'):
+            gain_value = actual_value - baseline_value - (net_flows or 0.0)
+        elif metric_type == 'options_yield':
+            gain_value = actual_value
+        else:
+            gain_value = None
 
         if existing:
             # Only update if force, or if it was partial/current period
@@ -1364,6 +1425,8 @@ class BbdPerformanceService:
             existing.baseline_value = round(baseline_value, 2)
             existing.variance_percent = round(variance_pct, 4)
             existing.variance_value = round(variance_val, 2)
+            existing.net_flows = round(net_flows, 2) if net_flows is not None else None
+            existing.gain_value = round(gain_value, 2) if gain_value is not None else None
             existing.data_completeness = data_completeness
             existing.computed_at = datetime.utcnow()
             existing.updated_at = datetime.utcnow()
@@ -1380,6 +1443,8 @@ class BbdPerformanceService:
                 baseline_value=round(baseline_value, 2),
                 variance_percent=round(variance_pct, 4),
                 variance_value=round(variance_val, 2),
+                net_flows=round(net_flows, 2) if net_flows is not None else None,
+                gain_value=round(gain_value, 2) if gain_value is not None else None,
                 data_completeness=data_completeness,
             )
             self.db.add(row)
@@ -1705,5 +1770,7 @@ class BbdPerformanceService:
             'baseline_value': float(row.baseline_value) if row.baseline_value is not None else None,
             'variance_percent': float(row.variance_percent) if row.variance_percent is not None else None,
             'variance_value': float(row.variance_value) if row.variance_value is not None else None,
+            'net_flows': float(row.net_flows) if row.net_flows is not None else None,
+            'gain_value': float(row.gain_value) if row.gain_value is not None else None,
             'data_completeness': row.data_completeness,
         }

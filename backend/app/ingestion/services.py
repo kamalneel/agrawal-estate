@@ -1448,17 +1448,33 @@ def save_portfolio_snapshot(db: Session, record: ParsedRecord, ingestion_id: Opt
         PortfolioSnapshot.statement_date == statement_date,
     ).first()
     
+    def _differs(a, b) -> bool:
+        if a is None or b is None:
+            return (a is None) != (b is None)
+        return abs(Decimal(str(a)) - Decimal(str(b))) > Decimal("0.01")
+
     if existing:
-        # Update existing snapshot if values changed
-        if existing.portfolio_value != portfolio_value:
+        # A statement replaces whatever sat on that date (a daily row or a
+        # backfilled value) whenever any of the three figures differ, and the
+        # row takes this ingestion's id so it counts as statement-sourced.
+        if (_differs(existing.portfolio_value, portfolio_value)
+                or _differs(existing.cash_balance, data.get("cash_balance"))
+                or _differs(existing.securities_value, data.get("securities_value"))):
             existing.portfolio_value = portfolio_value
             existing.cash_balance = data.get("cash_balance")
             existing.securities_value = data.get("securities_value")
             existing.owner = data.get("owner")
             existing.account_type = data.get("account_type")
+            existing.ingestion_id = ingestion_id
+            _save_margin_balance(db, data)
+            return "updated"
+        _save_margin_balance(db, data)
+        if existing.ingestion_id is None:
+            # Same figures as the daily row, but now confirmed by a statement.
+            existing.ingestion_id = ingestion_id
             return "updated"
         return "skipped"  # Same values, no update needed
-    
+
     # Create new snapshot
     snapshot = PortfolioSnapshot(
         source=source,
@@ -1475,7 +1491,32 @@ def save_portfolio_snapshot(db: Session, record: ParsedRecord, ingestion_id: Opt
     # Flush immediately so subsequent queries in the same transaction can see this record
     # This prevents duplicate key errors when multiple files have the same snapshot date
     db.flush()
+    _save_margin_balance(db, data)
     return "created"
+
+
+def _save_margin_balance(db: Session, data: dict) -> None:
+    """Upsert margin_monthly_balances from a brokerage statement's signed
+    "Brokerage Cash Balance" line (negative = margin borrowed). Only records
+    carrying `brokerage_cash_closing` (margin accounts) write here; the BBD
+    Borrow section reads this table for real margin per month."""
+    if data.get("brokerage_cash_closing") is None:
+        return
+    from app.modules.strategies.models import MarginMonthlyBalance
+    d = data["statement_date"]
+    row = db.query(MarginMonthlyBalance).filter(
+        MarginMonthlyBalance.account_name == data["account_id"],
+        MarginMonthlyBalance.year == d.year,
+        MarginMonthlyBalance.month == d.month,
+    ).first()
+    if row is None:
+        row = MarginMonthlyBalance(account_name=data["account_id"], year=d.year, month=d.month)
+        db.add(row)
+    row.opening_balance = data.get("brokerage_cash_opening")
+    row.closing_balance = data["brokerage_cash_closing"]
+    row.portfolio_value = data["portfolio_value"]
+    row.source = "statement"
+    db.flush()
 
 
 def save_spending_transactions(
