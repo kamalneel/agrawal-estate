@@ -49,9 +49,17 @@ discrepancy, unresolved — see the sync doc).
 
 ## Steps
 
-1. **activity_since per account** (day AFTER latest imported row):
+1. **activity_since per account** = the latest imported row's date
+   ITSELF, not the day after:
    `SELECT account_id, MAX(transaction_date) FROM investment_transactions
    WHERE source='robinhood' GROUP BY account_id;`
+   Re-fetching that day is safe — dedup is count-based (CSV count minus
+   DB count per type), so already-imported fills drop out as duplicates.
+   "Day after" was the old rule and it loses same-day fills: an account
+   that already traded this morning gets activity_since = tomorrow, so
+   the afternoon's fills are never fetched. Two runs flagged the
+   workaround before it was made the rule (2026-09-19, and the 2026-09-25
+   failure that stranded Jaya's IRA MU sale and four ZM buys).
 2. **Per account, on its login**: `get_portfolio`, `get_equity_positions`,
    `get_option_positions(nonzero=true)`,
    `get_option_orders(created_at_gte=activity_since)`,
@@ -83,8 +91,19 @@ discrepancy, unresolved — see the sync doc).
    simply omitted — the engine falls back to realized vol for it.
 4. **Verify BEFORE saving** (hard gate, never skip): for each IRA,
    `cash − buying_power` must equal short-put collateral
-   (Σ strike × contracts × 100) **to the cent**. If it doesn't, stop and
-   investigate — do not save.
+   (Σ strike × contracts × 100) **to the cent**.
+
+   *Pending sell-put orders count too* (fixed 2026-09-25): Robinhood
+   reserves collateral the moment a sell-to-open put order is placed, not
+   when it fills — net of the limit premium. Jaya's IRA showed a
+   $17,660.00 gap with no short puts: an unfilled ZM $90 put ×2 at $1.70,
+   i.e. $18,000 − $340, exact to the cent. So before calling a mismatch a
+   failure, pull `get_option_orders(states=queued,confirmed)` for that
+   account and add Σ (strike × contracts × 100 − limit premium × contracts
+   × 100) for open sell-to-open puts. If that closes the gap to the cent,
+   the account is CORRECT — save it, and say in the report which pending
+   order explained it. Only an unexplained gap stops the save, and it
+   stops that account, never the whole run.
 5. **Write bundles** (schema: `scripts/rh_mcp_bundle_sample.json`; one
    bundle per login, into the session scratchpad) and run
    `python3 scripts/robinhood_mcp_bridge.py <bundle> ` (preview) — check
