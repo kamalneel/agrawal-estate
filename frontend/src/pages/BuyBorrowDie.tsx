@@ -133,6 +133,7 @@ export default function BuyBorrowDie() {
   const [assumptionSummary, setAssumptionSummary] = useState<any | null>(null);
   const [, setAssumptionLoading] = useState(false);
   const [assumptionComputing, setAssumptionComputing] = useState(false);
+  const [computeError, setComputeError] = useState<string | null>(null);
 
   // BBD settings (persisted DB assumptions)
   interface BbdSettings {
@@ -270,12 +271,22 @@ export default function BuyBorrowDie() {
 
   const computeAssumptions = async () => {
     setAssumptionComputing(true);
+    setComputeError(null);
     try {
       const response = await fetch('/api/v1/strategies/buy-borrow-die/assumptions/compute?force=true', {
         method: 'POST',
         headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       });
-      if (!response.ok) throw new Error('Compute failed');
+      if (!response.ok) {
+        // 409 = the growth identity check failed; the server kept the previous cache.
+        let message = `Compute failed (${response.status})`;
+        try {
+          const body = await response.json();
+          message = body?.detail?.message || body?.detail || message;
+        } catch { /* non-JSON error body */ }
+        setComputeError(String(message));
+        throw new Error(String(message));
+      }
       // Refresh all charts + summary
       await Promise.all([
         fetchMetricsFor(growthMode, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics),
@@ -768,6 +779,12 @@ export default function BuyBorrowDie() {
                 <RefreshCw size={16} className={assumptionComputing ? styles.spinner : ''} />
                 {assumptionComputing ? 'Refreshing...' : 'Refresh Data'}
               </button>
+              {computeError && (
+                <div className={styles.negative} role="alert" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginLeft: 'var(--space-3)', background: 'var(--color-negative-muted)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-md)' }}>
+                  <AlertTriangle size={16} />
+                  <span>Metrics not updated, previous numbers kept: {computeError}</span>
+                </div>
+              )}
               <button
                 className={styles.iconButton}
                 onClick={() => {

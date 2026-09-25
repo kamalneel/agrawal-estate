@@ -20,6 +20,25 @@ from app.modules.spending.models import SpendingTransaction
 from app.modules.income.models import RentalMonthlyIncome, W2Record, SalaryProjection
 
 
+class BbdIdentityError(RuntimeError):
+    """Raised when combined growth ≠ pure growth + options income for a period.
+
+    The three growth cards are built from the same values and flows, so for
+    every period `portfolio_growth.gain_value − pure_growth.gain_value` must
+    equal that period's options income to the dollar. A break means one of
+    the computations dropped or double-counted a flow (audit F13: negative
+    options months were skipped). `violations` lists each period."""
+
+    def __init__(self, violations: List[Dict[str, Any]]):
+        self.violations = violations
+        worst = max(violations, key=lambda v: abs(v['difference']))
+        super().__init__(
+            f"BBD growth identity broken in {len(violations)} period(s); worst "
+            f"{worst['period_type']} {worst['period_start']}: combined gain {worst['combined_gain']:,.2f} "
+            f"− pure gain {worst['pure_gain']:,.2f} − options income {worst['options_income']:,.2f} "
+            f"= {worst['difference']:,.2f}")
+
+
 class BbdPerformanceService:
     # Fallback defaults (used if DB row is missing)
     ASSUMED_ANNUAL_GROWTH = Decimal('0.08')
@@ -73,7 +92,44 @@ class BbdPerformanceService:
             period_types = ('year', 'month') if metric_type == 'margin_borrowing' else ('year', 'month', 'week')
             for period_type in period_types:
                 count += self._compute_metric(metric_type, period_type, force)
+
+        # Fail loudly rather than cache inconsistent cards. The caller's
+        # transaction rolls back, so the previous cache stays on the page.
+        violations = self.check_growth_identity()
+        if violations:
+            raise BbdIdentityError(violations)
         return count
+
+    def check_growth_identity(self, tolerance: float = 1.0) -> List[Dict[str, Any]]:
+        """For every year and month row: combined gain − pure gain must equal
+        the period's options income within `tolerance` dollars. Returns the
+        periods that break it (empty list = consistent). Weekly rows are
+        excluded: they are simple returns without flow adjustment."""
+        rows = self.db.query(BbdPerformanceMetric).filter(
+            BbdPerformanceMetric.period_type.in_(('year', 'month')),
+            BbdPerformanceMetric.metric_type.in_(('portfolio_growth', 'pure_growth', 'options_yield')),
+        ).all()
+        by_period: Dict[tuple, Dict[str, BbdPerformanceMetric]] = {}
+        for r in rows:
+            by_period.setdefault((r.period_type, r.period_start), {})[r.metric_type] = r
+
+        violations: List[Dict[str, Any]] = []
+        for (period_type, period_start), m in sorted(by_period.items()):
+            combined, pure, income = m.get('portfolio_growth'), m.get('pure_growth'), m.get('options_yield')
+            if not (combined and pure) or combined.gain_value is None or pure.gain_value is None:
+                continue
+            options_income = float(income.actual_value) if income and income.actual_value is not None else 0.0
+            difference = float(combined.gain_value) - float(pure.gain_value) - options_income
+            if abs(difference) > tolerance:
+                violations.append({
+                    'period_type': period_type,
+                    'period_start': period_start.isoformat(),
+                    'combined_gain': float(combined.gain_value),
+                    'pure_gain': float(pure.gain_value),
+                    'options_income': options_income,
+                    'difference': round(difference, 2),
+                })
+        return violations
 
     def get_metrics(
         self,

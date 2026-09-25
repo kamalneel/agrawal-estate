@@ -1133,16 +1133,27 @@ async def compute_bbd_assumptions(
     Incremental by default — only computes missing or partial periods.
     Set force=True to recompute everything.
     """
-    from app.modules.strategies.bbd_performance_service import BbdPerformanceService
+    from app.modules.strategies.bbd_performance_service import BbdPerformanceService, BbdIdentityError
 
     service = BbdPerformanceService(db)
-    count = service.compute_all(force=force)
+    try:
+        count = service.compute_all(force=force)
+    except BbdIdentityError as e:
+        # Inconsistent cards are never cached: roll back so the page keeps
+        # the previous numbers, and say exactly which periods broke.
+        db.rollback()
+        raise HTTPException(status_code=409, detail={
+            'status': 'identity_violation',
+            'message': str(e),
+            'violations': e.violations,
+        })
     db.commit()
 
     return {
         'status': 'ok',
         'periods_computed': count,
         'force': force,
+        'identity_check': 'combined growth = pure growth + options income, every year and month, within $1',
     }
 
 
