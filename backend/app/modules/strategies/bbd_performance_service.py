@@ -96,6 +96,14 @@ class BbdPerformanceService:
         for source in self.INCOME_SOURCES:
             for period_type in ('year', 'month'):
                 count += self._compute_options_yield(period_type, force, source=source)
+        # Expense (gross, and after salary & rent) and Net = combined growth − expense.
+        # Net reads the growth and expense rows, so it runs last.
+        for uncovered in (False, True):
+            for period_type in ('year', 'month'):
+                count += self._compute_expense(period_type, force, uncovered)
+        for uncovered in (False, True):
+            for period_type in ('year', 'month'):
+                count += self._compute_net(period_type, force, uncovered)
 
         # Fail loudly rather than cache inconsistent cards. The caller's
         # transaction rolls back, so the previous cache stays on the page.
@@ -133,6 +141,34 @@ class BbdPerformanceService:
                     'options_income': options_income,
                     'difference': round(difference, 2),
                 })
+
+        # Second identity: net = combined gain − expense, both variants.
+        net_rows = self.db.query(BbdPerformanceMetric).filter(
+            BbdPerformanceMetric.period_type.in_(('year', 'month')),
+            BbdPerformanceMetric.metric_type.in_(('portfolio_growth', 'expense_gross', 'expense_uncovered', 'net_gross', 'net')),
+        ).all()
+        by_p: Dict[tuple, Dict[str, BbdPerformanceMetric]] = {}
+        for r in net_rows:
+            by_p.setdefault((r.period_type, r.period_start), {})[r.metric_type] = r
+        for (period_type, period_start), m in sorted(by_p.items()):
+            g = m.get('portfolio_growth')
+            if not g or g.gain_value is None:
+                continue
+            for exp_type, net_type in (('expense_gross', 'net_gross'), ('expense_uncovered', 'net')):
+                e, n = m.get(exp_type), m.get(net_type)
+                if not (e and n) or n.actual_value is None:
+                    continue
+                difference = float(g.gain_value) - float(e.actual_value or 0) - float(n.actual_value)
+                if abs(difference) > tolerance:
+                    violations.append({
+                        'period_type': period_type,
+                        'period_start': period_start.isoformat(),
+                        'combined_gain': float(g.gain_value),
+                        'pure_gain': float(n.actual_value),      # reported in the net slot
+                        'options_income': float(e.actual_value or 0),  # reported in the expense slot
+                        'identity': f'{net_type} = combined − {exp_type}',
+                        'difference': round(difference, 2),
+                    })
         return violations
 
     def get_metrics(
@@ -294,6 +330,13 @@ class BbdPerformanceService:
             for m in self.get_metrics(f'income_{source}', 'year'):
                 annual_income_by_source.setdefault(m['period_label'], {})[source] = m['actual_value']
 
+        # ── One card set per amount-over-baseline metric, so the page's boxes
+        #    follow whatever the chart shows (income stream, expense, net) ──
+        cards: Dict[str, Dict[str, Any]] = {}
+        for mt in (['options_yield'] + [f'income_{s}' for s in self.INCOME_SOURCES]
+                   + ['expense_gross', 'expense_uncovered', 'net_gross', 'net']):
+            cards[mt] = self._card_set(mt)
+
         # ── Borrowing summary ──
         monthly_spending = self._get_monthly_spending()
         spend_values = list(monthly_spending.values())
@@ -372,6 +415,7 @@ class BbdPerformanceService:
             'annual_earnings': annual_earnings,
             'annual_income_by_source': annual_income_by_source,
             'income_sources': list(self.INCOME_SOURCES),
+            'cards': cards,
             'expected_monthly_earnings_pct': 1.0,
             'expected_annual_earnings_pct': 12.0,
             # Borrowing
@@ -386,6 +430,29 @@ class BbdPerformanceService:
             'annual_borrowing': annual_borrowing,
             'assumed_margin_rate_pct': 5.0,
         }
+
+    def _card_set(self, metric_type: str) -> Dict[str, Any]:
+        """Summary cards for one amount-over-baseline metric: average month,
+        cumulative, per year — the same formulas the Income cards use."""
+        monthly = [m for m in self.get_metrics(metric_type, 'month') if m.get('actual_value') is not None]
+        yearly = self.get_metrics(metric_type, 'year')
+        out: Dict[str, Any] = {
+            'avg_monthly_pct': None, 'avg_monthly_amt': None,
+            'cumulative_pct': None, 'cumulative_amt': None,
+            'annual': {m['period_label']: {'percent': m['actual_percent'], 'amount': m['actual_value'],
+                                           'baseline': m.get('baseline_value')} for m in yearly},
+            'expected_monthly_pct': monthly[0]['expected_percent'] if monthly else None,
+            'expected_annual_pct': yearly[0]['expected_percent'] if yearly else None,
+        }
+        if monthly:
+            total = sum(m['actual_value'] for m in monthly)
+            out['avg_monthly_pct'] = round(sum(m['actual_percent'] for m in monthly) / len(monthly), 4)
+            out['avg_monthly_amt'] = round(total / len(monthly), 2)
+            out['cumulative_amt'] = round(total, 2)
+            baselines = [m['baseline_value'] for m in monthly if m.get('baseline_value')]
+            if baselines:
+                out['cumulative_pct'] = round(total / (sum(baselines) / len(baselines)) * 100, 2)
+        return out
 
     # ── Core computation ──────────────────────────────────────────
 
@@ -749,13 +816,21 @@ class BbdPerformanceService:
 
     # ── Options Yield ─────────────────────────────────────────────
 
-    def _compute_options_yield(self, period_type: str, force: bool, source: Optional[str] = None) -> int:
-        """Income yield metrics on same-store portfolio baselines.
+    def _compute_options_yield(self, period_type: str, force: bool, source: Optional[str] = None,
+                               monthly_amounts: Optional[Dict[str, float]] = None,
+                               metric_type: Optional[str] = None,
+                               expected_monthly_rate: Optional[float] = None) -> int:
+        """"Amount over baseline" metrics on same-store portfolio baselines.
 
-        source=None → metric_type 'options_yield': ALL investment income
-        (options + dividends + interest), measured against the 1%/month
-        target. source='options' | 'dividends' | 'interest' → metric_type
-        'income_<source>' for graphing one stream; no target (expected 0)."""
+        Default: income. source=None → metric_type 'options_yield': ALL
+        investment income (options + dividends + interest) against the
+        1%/month target. source='options' | 'dividends' | 'interest' →
+        'income_<source>' for graphing one stream; no target (expected 0).
+
+        Any other monthly dollar series can be measured the same way by
+        passing monthly_amounts + metric_type (+ expected_monthly_rate): the
+        Expense modes use it with spending, so expense % shares income's
+        denominator and the cards compose."""
         account_months = {
             k: v for k, v in self._get_account_month_values().items()
             if any(k.startswith(acct) for acct in self.BROKERAGE_ACCOUNTS)
@@ -766,9 +841,11 @@ class BbdPerformanceService:
         sorted_months = sorted(all_months)
 
         if period_type == 'year':
-            return self._compute_options_yield_yearly(account_months, sorted_months, force, source)
+            return self._compute_options_yield_yearly(account_months, sorted_months, force, source,
+                                                      monthly_amounts, metric_type, expected_monthly_rate)
         elif period_type == 'month':
-            return self._compute_options_yield_monthly(account_months, sorted_months, force, source)
+            return self._compute_options_yield_monthly(account_months, sorted_months, force, source,
+                                                       monthly_amounts, metric_type, expected_monthly_rate)
         elif period_type == 'week':
             return self._compute_options_yield_weekly(account_months, sorted_months, force)
         return 0
@@ -777,11 +854,82 @@ class BbdPerformanceService:
     def _income_metric_type(source: Optional[str]) -> str:
         return 'options_yield' if source is None else f'income_{source}'
 
+    # ── Expense and Net ──────────────────────────────────────────
+
+    @staticmethod
+    def _expense_metric_type(uncovered: bool) -> str:
+        return 'expense_uncovered' if uncovered else 'expense_gross'
+
+    @staticmethod
+    def _net_metric_type(uncovered: bool) -> str:
+        return 'net' if uncovered else 'net_gross'
+
+    def _expense_series(self, uncovered: bool) -> Dict[str, float]:
+        """{YYYY-MM: expense}. Gross = the Spending page's monthly total.
+        Uncovered = spending minus salary and rent, i.e. the part the portfolio
+        has to fund — the BBD question. Negative months are a surplus."""
+        spend = self._get_monthly_spending()
+        if not uncovered:
+            return spend
+        other = self._get_monthly_income()
+        return {m: v - other.get(m, {}).get('salary', 0.0) - other.get(m, {}).get('rental', 0.0)
+                for m, v in spend.items()}
+
+    def _compute_expense(self, period_type: str, force: bool, uncovered: bool) -> int:
+        """Expense as amount-over-baseline, the same denominator as income
+        yield so the cards compose. Target = the Borrow section's sustainable
+        draw: portfolio × (combined return − margin rate) / 12 per month."""
+        rate = float(self.ASSUMED_COMBINED_RETURN - self.ASSUMED_ANNUAL_MARGIN_RATE) / 12
+        return self._compute_options_yield(
+            period_type, force,
+            monthly_amounts=self._expense_series(uncovered),
+            metric_type=self._expense_metric_type(uncovered),
+            expected_monthly_rate=rate,
+        )
+
+    def _compute_net(self, period_type: str, force: bool, uncovered: bool) -> int:
+        """Net = combined growth gain − expense, per period, on the combined
+        row's baseline. Above zero the portfolio out-earned the draw on it.
+        Asserted by check_growth_identity on every recompute."""
+        exp_type = self._expense_metric_type(uncovered)
+        growth = {r.period_start: r for r in self.db.query(BbdPerformanceMetric).filter(
+            BbdPerformanceMetric.metric_type == 'portfolio_growth',
+            BbdPerformanceMetric.period_type == period_type).all()}
+        expense = {r.period_start: r for r in self.db.query(BbdPerformanceMetric).filter(
+            BbdPerformanceMetric.metric_type == exp_type,
+            BbdPerformanceMetric.period_type == period_type).all()}
+        count = 0
+        for ps, g in growth.items():
+            e = expense.get(ps)
+            if e is None or g.gain_value is None or g.baseline_value is None:
+                continue
+            amount = float(g.gain_value) - float(e.actual_value or 0)
+            baseline = float(g.baseline_value)
+            self._upsert_metric(
+                period_type=period_type, period_start=ps, period_end=g.period_end,
+                metric_type=self._net_metric_type(uncovered),
+                actual_value=amount, actual_percent=(amount / baseline * 100) if baseline else 0.0,
+                expected_value=0.0, expected_percent=0.0, baseline_value=baseline,
+                data_completeness=g.data_completeness, force=force,
+            )
+            count += 1
+        return count
+
+    def _ratio_expected_rate(self, source: Optional[str], expected_monthly_rate: Optional[float]) -> float:
+        """Monthly target for an amount-over-baseline metric."""
+        if expected_monthly_rate is not None:
+            return expected_monthly_rate
+        return float(self.ASSUMED_MONTHLY_YIELD) if source is None else 0.0
+
     def _compute_options_yield_yearly(self, account_months: Dict[str, Dict[str, float]], sorted_months: List[str],
-                                      force: bool, source: Optional[str] = None) -> int:
-        """Yearly income yield: total income / same-store portfolio value."""
-        monthly_income = self._get_investment_income_monthly(source)
-        metric_type = self._income_metric_type(source)
+                                      force: bool, source: Optional[str] = None,
+                                      monthly_amounts: Optional[Dict[str, float]] = None,
+                                      metric_type: Optional[str] = None,
+                                      expected_monthly_rate: Optional[float] = None) -> int:
+        """Yearly amount / same-store portfolio value (income by default)."""
+        monthly_income = monthly_amounts if monthly_amounts is not None else self._get_investment_income_monthly(source)
+        metric_type = metric_type or self._income_metric_type(source)
+        monthly_rate = self._ratio_expected_rate(source, expected_monthly_rate)
         if not monthly_income:
             return 0
 
@@ -820,11 +968,8 @@ class BbdPerformanceService:
             completeness = 'partial' if yr == today.year else 'complete'
 
             actual_pct = (income / baseline_val) * 100
-            if source is None:
-                expected_pct = float(self.ASSUMED_MONTHLY_YIELD) * 12 * 100  # 12%
-                expected_val = baseline_val * float(self.ASSUMED_MONTHLY_YIELD) * 12
-            else:
-                expected_pct, expected_val = 0.0, 0.0  # the target applies to total income only
+            expected_pct = monthly_rate * 12 * 100
+            expected_val = baseline_val * monthly_rate * 12
 
             self._upsert_metric(
                 period_type='year', period_start=period_start, period_end=period_end,
@@ -838,12 +983,16 @@ class BbdPerformanceService:
         return count
 
     def _compute_options_yield_monthly(self, account_months: Dict[str, Dict[str, float]], sorted_months: List[str],
-                                       force: bool, source: Optional[str] = None) -> int:
-        """Monthly income yield: income / same-store portfolio value at start of month.
+                                       force: bool, source: Optional[str] = None,
+                                       monthly_amounts: Optional[Dict[str, float]] = None,
+                                       metric_type: Optional[str] = None,
+                                       expected_monthly_rate: Optional[float] = None) -> int:
+        """Monthly amount / same-store portfolio value at start of month (income by default).
         Iterates ALL months in the data range (not just months with income) so that
         expected values and baseline capital are always computed."""
-        monthly_income = self._get_investment_income_monthly(source)
-        metric_type = self._income_metric_type(source)
+        monthly_income = monthly_amounts if monthly_amounts is not None else self._get_investment_income_monthly(source)
+        metric_type = metric_type or self._income_metric_type(source)
+        monthly_rate = self._ratio_expected_rate(source, expected_monthly_rate)
         if not sorted_months:
             return 0
 
@@ -912,11 +1061,8 @@ class BbdPerformanceService:
 
             completeness = 'partial' if (yr == today.year and mo == today.month) else 'complete'
             actual_pct = (income / baseline_val) * 100
-            if source is None:
-                expected_pct = float(self.ASSUMED_MONTHLY_YIELD) * 100
-                expected_val = baseline_val * float(self.ASSUMED_MONTHLY_YIELD)
-            else:
-                expected_pct, expected_val = 0.0, 0.0
+            expected_pct = monthly_rate * 100
+            expected_val = baseline_val * monthly_rate
 
             self._upsert_metric(
                 period_type='month', period_start=period_start, period_end=period_end,
@@ -1525,8 +1671,8 @@ class BbdPerformanceService:
         variance_val = actual_value - expected_value
         if metric_type in ('portfolio_growth', 'pure_growth'):
             gain_value = actual_value - baseline_value - (net_flows or 0.0)
-        elif metric_type == 'options_yield':
-            gain_value = actual_value
+        elif metric_type == 'options_yield' or metric_type.startswith(('income_', 'expense_', 'net')):
+            gain_value = actual_value  # the amount itself: income, spending, or net
         else:
             gain_value = None
 

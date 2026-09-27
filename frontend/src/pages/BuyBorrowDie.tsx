@@ -120,11 +120,21 @@ export default function BuyBorrowDie() {
   const [optionsYieldPct, setOptionsYieldPct] = useState(1);
 
   // Assumptions vs Reality state — separate drill-down for each chart
-  const [growthMode, setGrowthMode] = useState<'pure_growth' | 'options_yield' | 'portfolio_growth'>('portfolio_growth');
-  // Income mode can graph one stream at a time; 'all' is what the target and the summary cards use.
+  const [growthMode, setGrowthMode] = useState<'pure_growth' | 'options_yield' | 'expense' | 'portfolio_growth' | 'net'>('portfolio_growth');
+  // Income mode can graph one stream at a time; 'all' is what the target uses.
   const [incomeSource, setIncomeSource] = useState<'all' | 'options' | 'dividends' | 'interest'>('all');
-  const growthMetricType = growthMode === 'options_yield' && incomeSource !== 'all' ? `income_${incomeSource}` : growthMode;
+  // Expense and Net: gross spending, or only the part salary and rent do not cover (the BBD question).
+  const [expenseBasis, setExpenseBasis] = useState<'gross' | 'uncovered'>('uncovered');
+  const growthMetricType =
+    growthMode === 'options_yield' && incomeSource !== 'all' ? `income_${incomeSource}`
+    : growthMode === 'expense' ? (expenseBasis === 'gross' ? 'expense_gross' : 'expense_uncovered')
+    : growthMode === 'net' ? (expenseBasis === 'gross' ? 'net_gross' : 'net')
+    : growthMode;
   const isIncomeSubSource = growthMode === 'options_yield' && incomeSource !== 'all';
+  const isExpenseMode = growthMode === 'expense';
+  // "Good" means at-or-above target, except for expense where lower is better.
+  const isGood = (actual: number | null | undefined, expected: number | null | undefined) =>
+    actual !== null && actual !== undefined && (isExpenseMode ? actual <= (expected ?? 0) : actual >= (expected ?? 0));
   const [growthPeriod, setGrowthPeriod] = useState<'year' | 'month' | 'week'>('month');
   const [growthDrillYear, setGrowthDrillYear] = useState<number | undefined>();
   const [growthDrillMonth, setGrowthDrillMonth] = useState<number | undefined>();
@@ -232,7 +242,7 @@ export default function BuyBorrowDie() {
   // Refresh assumptions data when drill-down changes
   useEffect(() => {
     fetchMetricsFor(growthMetricType, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics);
-  }, [growthMode, incomeSource, growthPeriod, growthDrillYear, growthDrillMonth]);
+  }, [growthMode, incomeSource, expenseBasis, growthPeriod, growthDrillYear, growthDrillMonth]);
 
   useEffect(() => {
     fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics);
@@ -749,15 +759,40 @@ export default function BuyBorrowDie() {
           <div className={styles.pageHeaderRow}>
             <div>
               <h2 className={styles.sectionHeader}>
-                {growthMode === 'pure_growth' ? 'Growth' : growthMode === 'options_yield' ? 'Income' : 'Income + Growth'}
+                {growthMode === 'pure_growth' ? 'Growth' : growthMode === 'options_yield' ? 'Income'
+                  : growthMode === 'expense' ? 'Expense' : growthMode === 'net' ? 'Net: Growth + Income − Expense' : 'Income + Growth'}
               </h2>
               <p className={styles.sectionSubtitle}>
-                {growthMode === 'pure_growth'
+                {growthMode === 'expense'
+                  ? (expenseBasis === 'gross'
+                      ? 'All family spending (the Spending page\'s definition), as a share of the brokerage portfolio. Target: the sustainable draw, portfolio × (combined return − margin rate) / 12 per month'
+                      : 'Spending not covered by salary and rent — the part the portfolio has to fund — as a share of the brokerage portfolio. Target: the sustainable draw')
+                  : growthMode === 'net'
+                  ? (expenseBasis === 'gross'
+                      ? 'Growth + income minus all spending. Above zero, the portfolio out-earned everything the family spent'
+                      : 'Growth + income minus the spending salary and rent did not cover. Above zero, the portfolio out-earned its draw — the Buy-Borrow-Die test')
+                  : growthMode === 'pure_growth'
                   ? `Market appreciation only (options income excluded) — assumed ${bbdSettings ? (bbdSettings.assumed_annual_growth * 100).toFixed(0) : 8}%/yr`
                   : growthMode === 'options_yield'
                   ? `All realized income in the brokerage accounts — options premium, dividends, interest — same definition as the Income page. Target ${bbdSettings ? (bbdSettings.assumed_monthly_yield * 100).toFixed(0) : 1}%/mo (${bbdSettings ? (bbdSettings.assumed_monthly_yield * 12 * 100).toFixed(0) : 12}%/yr) applies to the total`
                   : `Combined: market appreciation + investment income — assumed ${bbdSettings ? (bbdSettings.assumed_combined_return * 100).toFixed(0) : 16}%/yr`}
               </p>
+              {(growthMode === 'expense' || growthMode === 'net') && (
+                <div className={styles.segmentedControl} style={{ marginTop: 'var(--space-2)' }}>
+                  {([
+                    { key: 'uncovered', label: 'After salary & rent' },
+                    { key: 'gross', label: 'All spending' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.key}
+                      className={`${styles.segmentBtn} ${expenseBasis === opt.key ? styles.segmentBtnActive : ''}`}
+                      onClick={() => setExpenseBasis(opt.key)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               {growthMode === 'options_yield' && (
                 <div className={styles.segmentedControl} style={{ marginTop: 'var(--space-2)' }}>
                   {([
@@ -782,7 +817,9 @@ export default function BuyBorrowDie() {
                 {([
                   { key: 'pure_growth', label: 'Growth' },
                   { key: 'options_yield', label: 'Income' },
+                  { key: 'expense', label: 'Expense' },
                   { key: 'portfolio_growth', label: 'Growth + Income' },
+                  { key: 'net', label: 'Net' },
                 ] as const).map(opt => (
                   <button
                     key={opt.key}
@@ -875,7 +912,7 @@ export default function BuyBorrowDie() {
             const s = assumptionSummary;
 
             // Pick which summary fields to display based on mode
-            const modeConfig = growthMode === 'pure_growth'
+            const baseConfig = growthMode === 'pure_growth'
               ? {
                   avgMonthlyPct: s?.avg_monthly_pure_growth_pct,
                   avgMonthlyAmt: s?.avg_monthly_pure_growth_amt,
@@ -910,6 +947,27 @@ export default function BuyBorrowDie() {
                   cardLabel: 'Avg Monthly Income + Growth',
                   annualLabel: 'Income + Growth',
                 };
+            // Income streams, Expense and Net carry their own card set from the server
+            // (summary.cards[metric]) so the boxes follow the chart. Fixes the boxes
+            // staying on "all income" while the chart showed one stream (Neel, 2026-09-27).
+            const card = s?.cards?.[growthMetricType];
+            const usesCard = card && (isIncomeSubSource || growthMode === 'expense' || growthMode === 'net');
+            const modeConfig = usesCard
+              ? {
+                  avgMonthlyPct: card.avg_monthly_pct,
+                  avgMonthlyAmt: card.avg_monthly_amt,
+                  cumulativePct: card.cumulative_pct,
+                  cumulativeAmt: card.cumulative_amt,
+                  annualData: card.annual,
+                  expectedMonthly: card.expected_monthly_pct,
+                  expectedAnnual: card.expected_annual_pct,
+                  cardLabel: growthMode === 'expense' ? 'Avg Monthly Expense'
+                    : growthMode === 'net' ? 'Avg Monthly Net'
+                    : `Avg Monthly ${incomeSource[0].toUpperCase()}${incomeSource.slice(1)}`,
+                  annualLabel: growthMode === 'expense' ? 'Expense' : growthMode === 'net' ? 'Net'
+                    : `${incomeSource[0].toUpperCase()}${incomeSource.slice(1)}`,
+                }
+              : baseConfig;
 
             const years = s ? Object.keys(modeConfig.annualData || {}).sort() : [];
             const fmtPctAmt = (pct: number | null, amt: number | null) => {
@@ -921,7 +979,7 @@ export default function BuyBorrowDie() {
             const growthCards = s ? (
               <div className={styles.summaryGrid}>
                 {(() => { const v = fmtPctAmt(modeConfig.avgMonthlyPct, modeConfig.avgMonthlyAmt); return (
-                  <div className={`${styles.summaryCard} ${modeConfig.avgMonthlyPct !== null && modeConfig.avgMonthlyPct !== undefined && modeConfig.avgMonthlyPct >= (modeConfig.expectedMonthly ?? 0) ? styles.success : styles.danger}`}>
+                  <div className={`${styles.summaryCard} ${isGood(modeConfig.avgMonthlyPct, modeConfig.expectedMonthly) ? styles.success : styles.danger}`}>
                     <span className={styles.summaryLabel}>{modeConfig.cardLabel}</span>
                     <span className={styles.summaryValue}>{v.pctStr}</span>
                     <span className={styles.summaryNote}>{v.amtStr} / mo</span>
@@ -929,7 +987,7 @@ export default function BuyBorrowDie() {
                   </div>
                 ); })()}
                 {(() => { const v = fmtPctAmt(modeConfig.cumulativePct, modeConfig.cumulativeAmt); return (
-                  <div className={`${styles.summaryCard} ${modeConfig.cumulativePct !== null && modeConfig.cumulativePct !== undefined && modeConfig.cumulativePct > 0 ? styles.success : styles.danger}`}>
+                  <div className={`${styles.summaryCard} ${isExpenseMode ? styles.summaryCard : (modeConfig.cumulativePct !== null && modeConfig.cumulativePct !== undefined && modeConfig.cumulativePct > 0 ? styles.success : styles.danger)}`}>
                     <span className={styles.summaryLabel}>Cumulative {modeConfig.annualLabel}</span>
                     <span className={styles.summaryValue}>{v.pctStr}</span>
                     <span className={styles.summaryNote}>{v.amtStr}</span>
@@ -939,9 +997,9 @@ export default function BuyBorrowDie() {
                 {years.map(yr => {
                   const g = (modeConfig.annualData as any)?.[yr];
                   const gv = fmtPctAmt(g?.percent, g?.amount);
-                  const isGood = g?.percent !== null && g?.percent !== undefined && g?.percent >= (modeConfig.expectedAnnual ?? 0);
+                  const yearGood = isGood(g?.percent, modeConfig.expectedAnnual);
                   return (
-                    <div key={`growth-${yr}`} className={`${styles.summaryCard} ${isGood ? styles.success : styles.danger}`}>
+                    <div key={`growth-${yr}`} className={`${styles.summaryCard} ${yearGood ? styles.success : styles.danger}`}>
                       <span className={styles.summaryLabel}>{yr} {modeConfig.annualLabel}</span>
                       <span className={styles.summaryValue}>{gv.pctStr}</span>
                       <span className={styles.summaryNote}>{gv.amtStr}</span>
@@ -992,12 +1050,20 @@ export default function BuyBorrowDie() {
                     {growthMode === 'pure_growth' ? 'Growth — Actual vs Assumed (8%/yr)'
                       : growthMode === 'options_yield'
                       ? (isIncomeSubSource ? `Income — ${incomeSource[0].toUpperCase()}${incomeSource.slice(1)} only` : 'Income — Actual vs Assumed (12%/yr)')
+                      : growthMode === 'expense'
+                      ? `Expense — ${expenseBasis === 'gross' ? 'all spending' : 'after salary & rent'} vs sustainable draw`
+                      : growthMode === 'net'
+                      ? `Net — growth + income − ${expenseBasis === 'gross' ? 'all spending' : 'uncovered spending'} (target: above 0)`
                       : 'Income + Growth — Actual vs Assumed (16%/yr)'}
                   </h3>
                   <p className={styles.chartSubtitle}>
                     {growthMode === 'pure_growth' ? 'Market appreciation, realized or not — investment income stripped out — assumed ~0.64%/mo'
                       : growthMode === 'options_yield'
                       ? (isIncomeSubSource ? 'One income stream; the 1%/mo target applies to all income together' : 'Options + dividends + interest, brokerage accounts — assumed 1%/mo')
+                      : growthMode === 'expense'
+                      ? 'Share of the brokerage portfolio spent each period; lower is better. Dashed line = sustainable draw, ~0.92%/mo'
+                      : growthMode === 'net'
+                      ? 'Dollar gain minus spending, on the same baseline as income; positive months add to the portfolio'
                       : 'Combined return — assumed ~1.24%/mo'}
                     {growthPeriod !== 'week' ? ' — click a bar to drill down' : ''}
                   </p>
@@ -1058,7 +1124,7 @@ export default function BuyBorrowDie() {
                           {growthMetrics.map((m: any, idx: number) => (
                             <tr
                               key={idx}
-                              className={isIncomeSubSource ? '' : (m.actual_percent >= (m.expected_percent || 0) ? styles.positiveRow : styles.negativeRow)}
+                              className={isIncomeSubSource ? '' : (isGood(m.actual_percent, m.expected_percent) ? styles.positiveRow : styles.negativeRow)}
                               onClick={() => handleDrillDown(m, growthPeriod, setGrowthDrillYear, setGrowthDrillMonth, setGrowthPeriod)}
                               style={{ cursor: growthPeriod !== 'week' ? 'pointer' : 'default' }}
                             >
@@ -1070,7 +1136,7 @@ export default function BuyBorrowDie() {
                                 {m.gain_value !== null && m.gain_value !== undefined ? formatFullCurrency(m.gain_value) : '-'}
                               </td>
                               <td>{isIncomeSubSource ? '—' : (m.expected_value !== null ? formatFullCurrency(m.expected_value) : '-')}</td>
-                              <td className={isIncomeSubSource ? '' : (m.actual_percent >= (m.expected_percent || 0) ? styles.positive : styles.negative)}>
+                              <td className={isIncomeSubSource ? '' : (isGood(m.actual_percent, m.expected_percent) ? styles.positive : styles.negative)}>
                                 {m.actual_percent !== null ? `${m.actual_percent.toFixed(2)}%` : '-'}
                               </td>
                               <td>{isIncomeSubSource ? '—' : (m.expected_percent !== null ? `${m.expected_percent.toFixed(2)}%` : '-')}</td>

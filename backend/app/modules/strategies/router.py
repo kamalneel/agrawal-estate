@@ -1061,7 +1061,13 @@ async def get_bbd_assumption_metrics(
     elif metric_type == 'pure_growth':
         assumed_rate = '8%/year (market appreciation only)'
     elif metric_type == 'options_yield':
-        assumed_rate = '1%/month (12%/year)'
+        assumed_rate = '1%/month (12%/year), all investment income'
+    elif metric_type.startswith('income_'):
+        assumed_rate = 'no target for a single stream'
+    elif metric_type.startswith('expense_'):
+        assumed_rate = 'sustainable draw: portfolio × (combined − margin) / 12 per month'
+    elif metric_type.startswith('net'):
+        assumed_rate = 'break-even (0)'
     else:
         assumed_rate = '5% margin interest'
 

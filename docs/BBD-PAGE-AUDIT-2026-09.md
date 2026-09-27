@@ -348,6 +348,14 @@ which only some accounts have a row reads as a crash or a windfall (YTD
 cleanup backlog. The Dashboard's yearly investment value had the same
 per-date sum — see the dashboard fix in the same commit.
 
+### F16 — Cards did not follow the chart (Neel, 2026-09-27)
+
+With an income stream selected, the chart switched to that stream but the
+summary boxes stayed on all income. Fixed: the summary carries a card set
+per amount-over-baseline metric (`summary.cards[metric_type]`), and the
+page reads the set for whatever the chart shows — income streams, and the
+new Expense and Net modes.
+
 ### Minor
 
 - Yearly baselines use the Jan 31 snapshot, so January's move is excluded

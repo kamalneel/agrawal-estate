@@ -186,6 +186,33 @@ actual_percent = (sum_of_all_monthly_income_for_year / jan_portfolio_value) * 10
 
 ---
 
+## Section 2b: Expense and Net (2026-09-27)
+
+Two more modes on the growth section, so the page answers the whole BBD
+question: does the taxable portfolio earn more than the family draws on it?
+
+| Metric type | Amount per period | Baseline / % | Target |
+|---|---|---|---|
+| `expense_gross` | Spending page monthly total (`monthly_spending_totals`) | same as income yield (prior-month same-store value; Jan value for a year) | sustainable draw: portfolio × (combined − margin) / 12 per month, ≈0.92%/mo |
+| `expense_uncovered` | spending − salary − rent (`_get_monthly_income`); the part the portfolio must fund | same | same |
+| `net_gross` | `portfolio_growth.gain_value` − `expense_gross` | the combined row's baseline | 0 (break-even) |
+| `net` | `portfolio_growth.gain_value` − `expense_uncovered` | same | 0 |
+
+Expense reuses the income-yield machinery (`_compute_options_yield` with
+`monthly_amounts` + `metric_type` + `expected_monthly_rate`), so expense %
+shares income's denominator and the cards compose. Net is computed last
+from the stored growth and expense rows and **asserted**: net = combined
+gain − expense, every year and month, within $1, alongside combined =
+pure + income.
+
+Cards: `summary.cards[<metric_type>]` carries avg-monthly, cumulative and
+per-year figures for every amount-over-baseline metric (income streams,
+expense, net), so the boxes follow whichever series the chart shows.
+
+Read the numbers with the Borrow section in mind: gross expense includes
+one-offs (the Subaru, January's tax payments), so Net after salary & rent
+is the fair test and even that carries the car in 2026.
+
 ## Section 3: Borrow (Margin Simulation)
 
 ### Concept
