@@ -573,6 +573,10 @@ export function Investments() {
 
   const [stockGrowthData, setStockGrowthData] = useState<Record<string, { growth_ytd: number | null; growth_1y: number | null; growth_5y: number | null; holding_period_days: number | null }> | null>(_stockGrowthCache?.data ?? null)
   const [cashBreakdown, setCashBreakdown] = useState<{ total_true_cash: number; total_margin_used: number; total_options_collateral: number; total_options_mark?: number; accounts: (CashAccountData & { account_name: string; options_mark?: number })[] } | null>(null)
+  // Each account's latest portfolio_snapshots row — the series the BBD page and the
+  // statements use. Totals and the account table read this; live prices only drive "today".
+  type SnapshotAccount = { account_id: string; name: string; as_of: string; portfolio_value: number; securities_value: number; cash_balance: number; from_statement: boolean }
+  const [snapshotLatest, setSnapshotLatest] = useState<{ as_of: string | null; total_portfolio_value: number; total_securities_value: number; total_cash_balance: number; accounts: SnapshotAccount[] } | null>(null)
   const [acctTruePortHistory, setAcctTruePortHistory] = useState<{ date: string; stock_value: number; true_cash: number; true_portfolio: number; is_real: boolean }[]>([])
   const [acctRealDataStart, setAcctRealDataStart] = useState<string | null>(null)
   const [acctTruePortPeriod, setAcctTruePortPeriod] = useState<string | null>(null)
@@ -711,6 +715,10 @@ export function Investments() {
     fetch(`${API_BASE}/ingestion/robinhood-cash/balances`, { headers: getAuthHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(d => d && setCashBreakdown(d))
+      .catch(() => {})
+    fetch(`${API_BASE}/investments/snapshot/latest`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setSnapshotLatest(d))
       .catch(() => {})
     fetchPurePerformance()
     fetchPolicyDeviations()
@@ -1722,30 +1730,38 @@ export function Investments() {
           <h2>Brokerage Accounts ({accounts.length})</h2>
           <div className={styles.trueStripBody}>
             {(() => {
-              const trueCash = cashBreakdown?.total_true_cash ?? 0
-              // Net liquidation value: open short options are a liability, as on a
-              // statement and on the BBD page. Without it this ran ~$64K high.
+              // Totals come from the latest snapshot — the same rows the BBD page and the
+              // statements use (Neel, 2026-09-27: "investment page should read snapshot too").
+              // Live prices are shown only as today's movement.
+              const snap = snapshotLatest
+              const trueCash = snap ? snap.total_cash_balance : (cashBreakdown?.total_true_cash ?? 0)
               const optionsMark = cashBreakdown?.total_options_mark ?? 0
-              const truePortfolio = totalEquity + trueCash - optionsMark
+              const securities = snap ? snap.total_securities_value : totalEquity - optionsMark
+              const truePortfolio = snap ? snap.total_portfolio_value : totalEquity + trueCash - optionsMark
               const dayPct = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : null
               return (
                 <>
                   <span className={styles.trueStripValue}>{formatCurrency(truePortfolio)}</span>
-                  <span className={styles.trueStripDetail}>{formatCurrency(totalEquity)} stocks</span>
-                  {trueCash !== 0 && <span className={styles.trueStripDetail}>{signed(trueCash)} cash &amp; collateral</span>}
+                  {snap?.as_of && (
+                    <span className={styles.trueStripDetail} title="Latest snapshot; matches the BBD page and the statements">
+                      as of {new Date(snap.as_of + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </span>
+                  )}
+                  <span className={styles.trueStripDetail}>{formatCurrency(securities)} securities</span>
+                  {trueCash !== 0 && <span className={styles.trueStripDetail}>{signed(trueCash)} cash</span>}
                   {(cashBreakdown?.total_margin_used ?? 0) > 0 && (
                     <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }}>
                       −{formatCurrency(cashBreakdown!.total_margin_used)} margin
                     </span>
                   )}
                   {optionsMark > 0 && (
-                    <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }} title="Mark-to-market of open short options, as on a statement">
-                      −{formatCurrency(optionsMark)} open options
+                    <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }} title="Mark-to-market of open short options, already inside securities">
+                      incl. −{formatCurrency(optionsMark)} open options
                     </span>
                   )}
                   {dayPct != null && (
-                    <span className={styles.trueStripDetail} style={{ color: dayPct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-                      {dayPct >= 0 ? '+' : ''}{dayPct.toFixed(2)}% today
+                    <span className={styles.trueStripDetail} style={{ color: dayPct >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }} title="Live prices vs previous close; not yet in the snapshot">
+                      {dayPct >= 0 ? '+' : ''}{dayPct.toFixed(2)}% today (live)
                     </span>
                   )}
                 </>
@@ -1758,12 +1774,12 @@ export function Investments() {
             <thead>
               <tr>
                 <th>Account</th>
-                <th className={styles.num}>Value</th>
-                <th className={styles.num}>Stocks</th>
+                <th className={styles.num} title="Latest snapshot; matches the BBD page and the statements">Value</th>
+                <th className={styles.num} title="Shares minus open short-option marks, from the latest snapshot">Securities</th>
                 <th className={styles.num}>Cash</th>
                 <th className={styles.num}>Margin</th>
-                <th className={styles.num} title="Mark-to-market of open short options">Options</th>
-                <th className={styles.num}>Today</th>
+                <th className={styles.num} title="Mark-to-market of open short options (already inside Securities)">Options</th>
+                <th className={styles.num} title="Live prices vs previous close">Today</th>
                 <th className={styles.num}>Today %</th>
               </tr>
             </thead>
@@ -1772,11 +1788,14 @@ export function Investments() {
                 const cashData = cashBreakdown?.accounts?.find(
                   (a: any) => a.account_name.toLowerCase() === account.name.toLowerCase()
                 )
-                const trueCash = cashData?.true_cash ?? null
+                const snapAcct = snapshotLatest?.accounts?.find(s => s.account_id === account.id)
                 const margin = cashData?.margin_used ?? 0
                 const optMark = cashData?.options_mark ?? 0
-                // Net liquidation value, the same number as the statement and the BBD page
-                const value = trueCash != null ? account.value + trueCash - optMark : account.value
+                // Snapshot rows first (same numbers as the BBD page and the statements);
+                // fall back to live equity + refresh cash for an account with no snapshot.
+                const trueCash = snapAcct ? snapAcct.cash_balance : (cashData?.true_cash ?? null)
+                const stocks = snapAcct ? snapAcct.securities_value : account.value
+                const value = snapAcct ? snapAcct.portfolio_value : (trueCash != null ? account.value + trueCash - optMark : account.value)
                 const up = account.change >= 0
                 const changeColor = up ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)'
                 const taxable = isTaxableAccount(account.type)
@@ -1791,7 +1810,7 @@ export function Investments() {
                       <ChevronRight size={12} className={styles.betChevron} />
                     </td>
                     <td className={styles.num}>{formatCurrency(value)}</td>
-                    <td className={styles.num}>{formatCurrency(account.value)}</td>
+                    <td className={styles.num}>{formatCurrency(stocks)}</td>
                     <td className={styles.num}>{trueCash != null ? signed(trueCash) : '—'}</td>
                     <td className={styles.num} style={{ color: margin > 0 ? 'var(--color-negative, #FF5A5A)' : undefined }}>
                       {margin > 0 ? `−${formatCurrency(margin)}` : '—'}

@@ -479,6 +479,43 @@ async def list_transactions(
     }
 
 
+@router.get("/snapshot/latest")
+async def get_latest_snapshots(db: Session = Depends(get_db)):
+    """Each account's most recent portfolio_snapshots row — the one series every
+    page shares (docs/BBD-CALCULATIONS.md, "Portfolio value"). The Investments
+    page's totals and account table read this, so they equal the BBD page and
+    the statements to the cent; live prices are shown only as "today" movement.
+    """
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT DISTINCT ON (p.account_id)
+               p.account_id, a.account_name, a.account_type, p.statement_date,
+               p.portfolio_value, p.securities_value, p.cash_balance, p.ingestion_id
+        FROM portfolio_snapshots p
+        JOIN investment_accounts a ON a.account_id = p.account_id AND a.source = p.source
+        WHERE a.is_active = 'Y'
+        ORDER BY p.account_id, p.statement_date DESC
+    """)).fetchall()
+    accounts = []
+    for r in rows:
+        pv = float(r.portfolio_value)
+        cash = float(r.cash_balance) if r.cash_balance is not None else 0.0
+        sec = float(r.securities_value) if r.securities_value is not None else pv - cash
+        accounts.append({
+            "account_id": r.account_id, "name": r.account_name, "type": r.account_type,
+            "as_of": r.statement_date.isoformat(),
+            "portfolio_value": round(pv, 2), "securities_value": round(sec, 2), "cash_balance": round(cash, 2),
+            "from_statement": r.ingestion_id is not None,
+        })
+    return {
+        "as_of": max((a["as_of"] for a in accounts), default=None),
+        "total_portfolio_value": round(sum(a["portfolio_value"] for a in accounts), 2),
+        "total_securities_value": round(sum(a["securities_value"] for a in accounts), 2),
+        "total_cash_balance": round(sum(a["cash_balance"] for a in accounts), 2),
+        "accounts": accounts,
+    }
+
+
 @router.post("/snapshot/daily")
 async def trigger_daily_snapshot(db: Session = Depends(get_db)):
     """
