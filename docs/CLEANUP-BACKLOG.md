@@ -75,6 +75,13 @@ add items here as they surface. Last updated: 2026-07-04.
   real strikes/deltas/premiums from it instead of ATM-IV estimates. The
   "Sync chains" button is wired and greyed; `POST /strategies/sync?mode=chains`
   returns 501 until then.
+- **Dead, and wrong, portfolio endpoints.** `GET /investments/growth-summary`
+  and `GET /investments/performance` sum every account's `portfolio_snapshots`
+  rows per date with no same-store pairing, so any date on which only some
+  accounts have a row reads as a crash or a windfall (YTD "+74.86%" on
+  2026-09-27; a $1,209 total on 2025-12-09). No page calls them (checked
+  2026-09-27, BBD audit F15). Delete, or rebuild on per-account latest-row
+  carry-forward like the dashboard's yearly value now does.
 - **Spike: call the Robinhood MCP servers without a Claude session.** The
   OAuth tokens live in `~/.claude.json`; if a plain Python MCP client can
   use them, levels 1 and 2 become deterministic backend jobs — instant and

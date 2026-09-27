@@ -315,6 +315,39 @@ total only.
 | Growth | 1.57%, $24,702 | 1.45%, $22,836 |
 | Combined | 9.24%, $139,300 | unchanged |
 
+### F15 — Investments page and BBD page disagreed on account value (Neel, 2026-09-27)
+
+Neel asked that the two pages never show different numbers for the same
+thing. They did, for two reasons.
+
+**Definition.** The Investments page's "True Portfolio" was equity (holdings
+× live price) + true cash, ignoring the mark-to-market of open short
+options. Statements, Robinhood's own account value and the BBD page all
+count that liability inside "securities". On 2026-09-27 that put Neel's
+brokerage at $1,132,162 on the Investments page against $1,069,360 at
+Robinhood — $64K, the options mark. Fixed: `/robinhood-cash/balances`
+returns `options_mark` per account (same helper the daily snapshot uses),
+the Investments strip subtracts it ("− $X open options"), the per-account
+table has an Options column, and "True Portfolio (securities + cash − open
+options)" is the label.
+
+**Two series.** The Investments per-account history rebuilt value from
+`investment_holdings_history` plus carried-forward cash; the BBD page read
+`portfolio_snapshots`. Fixed: the history endpoint now reads
+`portfolio_snapshots`, so both pages are the same rows. Verified for
+Aug 31 and Sep 25 2026 on both brokerages: identical to the cent.
+
+**What still legitimately differs.** The Investments page prices holdings
+live (Yahoo at load time); the BBD page uses the evening snapshot. The gap
+is that day's price movement and closes at 8:15 PM.
+
+**Also found.** `/investments/growth-summary` and `/investments/performance`
+sum every account's rows per date with no same-store pairing, so a date on
+which only some accounts have a row reads as a crash or a windfall (YTD
+"+74.86%", a $1,209 day on 2025-12-09). No page calls them; noted in the
+cleanup backlog. The Dashboard's yearly investment value had the same
+per-date sum — see the dashboard fix in the same commit.
+
 ### Minor
 
 - Yearly baselines use the Jan 31 snapshot, so January's move is excluded

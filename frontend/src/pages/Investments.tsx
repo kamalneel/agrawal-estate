@@ -572,7 +572,7 @@ export function Investments() {
   const [error, setError] = useState<string | null>(null)
 
   const [stockGrowthData, setStockGrowthData] = useState<Record<string, { growth_ytd: number | null; growth_1y: number | null; growth_5y: number | null; holding_period_days: number | null }> | null>(_stockGrowthCache?.data ?? null)
-  const [cashBreakdown, setCashBreakdown] = useState<{ total_true_cash: number; total_margin_used: number; total_options_collateral: number; accounts: (CashAccountData & { account_name: string })[] } | null>(null)
+  const [cashBreakdown, setCashBreakdown] = useState<{ total_true_cash: number; total_margin_used: number; total_options_collateral: number; total_options_mark?: number; accounts: (CashAccountData & { account_name: string; options_mark?: number })[] } | null>(null)
   const [acctTruePortHistory, setAcctTruePortHistory] = useState<{ date: string; stock_value: number; true_cash: number; true_portfolio: number; is_real: boolean }[]>([])
   const [acctRealDataStart, setAcctRealDataStart] = useState<string | null>(null)
   const [acctTruePortPeriod, setAcctTruePortPeriod] = useState<string | null>(null)
@@ -1013,7 +1013,7 @@ export function Investments() {
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ display: 'inline-block', width: '20px', borderTop: '2px solid ' + CHART_GREEN }} />
-                    True Portfolio (equity + cash)
+                    True Portfolio (securities + cash − open options)
                   </span>
                 </div>
               )}
@@ -1723,7 +1723,10 @@ export function Investments() {
           <div className={styles.trueStripBody}>
             {(() => {
               const trueCash = cashBreakdown?.total_true_cash ?? 0
-              const truePortfolio = totalEquity + trueCash
+              // Net liquidation value: open short options are a liability, as on a
+              // statement and on the BBD page. Without it this ran ~$64K high.
+              const optionsMark = cashBreakdown?.total_options_mark ?? 0
+              const truePortfolio = totalEquity + trueCash - optionsMark
               const dayPct = totalEquity > 0 ? (totalChange / (totalEquity - totalChange)) * 100 : null
               return (
                 <>
@@ -1733,6 +1736,11 @@ export function Investments() {
                   {(cashBreakdown?.total_margin_used ?? 0) > 0 && (
                     <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }}>
                       −{formatCurrency(cashBreakdown!.total_margin_used)} margin
+                    </span>
+                  )}
+                  {optionsMark > 0 && (
+                    <span className={styles.trueStripDetail} style={{ color: 'var(--color-negative, #FF5A5A)' }} title="Mark-to-market of open short options, as on a statement">
+                      −{formatCurrency(optionsMark)} open options
                     </span>
                   )}
                   {dayPct != null && (
@@ -1754,6 +1762,7 @@ export function Investments() {
                 <th className={styles.num}>Stocks</th>
                 <th className={styles.num}>Cash</th>
                 <th className={styles.num}>Margin</th>
+                <th className={styles.num} title="Mark-to-market of open short options">Options</th>
                 <th className={styles.num}>Today</th>
                 <th className={styles.num}>Today %</th>
               </tr>
@@ -1765,7 +1774,9 @@ export function Investments() {
                 )
                 const trueCash = cashData?.true_cash ?? null
                 const margin = cashData?.margin_used ?? 0
-                const value = trueCash != null ? account.value + trueCash : account.value
+                const optMark = cashData?.options_mark ?? 0
+                // Net liquidation value, the same number as the statement and the BBD page
+                const value = trueCash != null ? account.value + trueCash - optMark : account.value
                 const up = account.change >= 0
                 const changeColor = up ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)'
                 const taxable = isTaxableAccount(account.type)
@@ -1784,6 +1795,9 @@ export function Investments() {
                     <td className={styles.num}>{trueCash != null ? signed(trueCash) : '—'}</td>
                     <td className={styles.num} style={{ color: margin > 0 ? 'var(--color-negative, #FF5A5A)' : undefined }}>
                       {margin > 0 ? `−${formatCurrency(margin)}` : '—'}
+                    </td>
+                    <td className={styles.num} style={{ color: optMark > 0 ? 'var(--color-negative, #FF5A5A)' : undefined }}>
+                      {optMark > 0 ? `−${formatCurrency(optMark)}` : '—'}
                     </td>
                     <td className={styles.num} style={{ color: changeColor }}>
                       {up ? '+' : '-'}{formatCurrency(Math.abs(account.change))}

@@ -24,6 +24,18 @@ keeps the *weekly* half: which strike this Friday, RSI gating, per-account
 selection, rolls. One rule of thumb: **Investments answers "what should my
 portfolio become"; Options Execution answers "what do I place today."**
 
+## Account value: one number across pages (2026-09-27)
+
+"True Portfolio" on this page is **net liquidation value** — securities
+(shares, minus the mark-to-market of open short options) plus signed cash
+(negative on margin) — the same quantity a Robinhood statement prints, the
+API returns as `total_value`, and the Buy-Borrow-Die page uses. It is
+defined once in [BBD-CALCULATIONS.md](BBD-CALCULATIONS.md) ("Portfolio
+value"). The per-account history chart reads `portfolio_snapshots`, the
+series every page shares; the live strip and table take equity from live
+prices, cash and open-option marks from the last MCP refresh. The two
+pages differ only by the day's price movement until the 8:15 PM snapshot.
+
 ## Why "pure" is exact, not approximated
 
 Current market value − cost basis is *structurally* independent of

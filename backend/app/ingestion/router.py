@@ -1833,6 +1833,12 @@ async def get_cash_balances(db: Session = Depends(get_db)):
     total_true_cash = 0.0
     total_margin_used = 0.0
     total_options_collateral = 0.0
+    total_options_mark = 0.0
+
+    from app.modules.investments.snapshot_service import _short_option_marks_by_account
+    from app.modules.investments.models import InvestmentAccount as _IA
+    _name_by_id = {a.account_id: a.account_name for a in db.query(_IA).all()}
+    marks_by_name = {_name_by_id.get(aid, aid): v for aid, v in _short_option_marks_by_account(db).items()}
 
     _BROKERAGE_ACCOUNTS = {"Neel's Brokerage", "Jaya's Brokerage", "Alisha's Brokerage"}
 
@@ -1848,6 +1854,12 @@ async def get_cash_balances(db: Session = Depends(get_db)):
         total_margin_used        += margin_used
         total_options_collateral += options_collateral
 
+        # Mark-to-market of open short options: a liability the statement and
+        # the BBD page both count inside "securities". Without it the
+        # Investments page ran ~$64K above Robinhood's own value for Neel.
+        options_mark = float(marks_by_name.get(row.account_name, 0))
+        total_options_mark += options_mark
+
         accounts.append({
             "account_name":       row.account_name,
             "cash":               cash,
@@ -1857,6 +1869,7 @@ async def get_cash_balances(db: Session = Depends(get_db)):
             "pending_orders":     pending_orders,
             "net_total":          float(row.net_total or 0),
             "true_cash":          round(true_cash, 2),
+            "options_mark":       round(options_mark, 2),
             "has_breakdown":      row.margin_used is not None or row.options_collateral is not None,
             "updated_at":         row.updated_at.isoformat() if row.updated_at else None,
         })
@@ -1866,6 +1879,9 @@ async def get_cash_balances(db: Session = Depends(get_db)):
         "total_true_cash":         round(total_true_cash, 2),
         "total_margin_used":       round(total_margin_used, 2),
         "total_options_collateral": round(total_options_collateral, 2),
+        "total_options_mark":      round(total_options_mark, 2),
+        "definition": "true portfolio = equity + true_cash − options_mark (net liquidation value, "
+                      "the same quantity as Robinhood's account value, the statements and the BBD page)",
     }
 
 
@@ -1975,8 +1991,17 @@ _ACCOUNT_CASH_NAME: dict[str, str | None] = {
 @router.get("/robinhood-cash/portfolio-history/by-account/{account_id}")
 async def get_account_portfolio_history(account_id: str, db: Session = Depends(get_db)):
     """
-    Per-account True Portfolio history: equity from investment_holdings_history
-    filtered to one account, plus per-account cash carry-forward from real snapshots.
+    Per-account True Portfolio history, read from `portfolio_snapshots` — the
+    one series every page shares (docs/BBD-CALCULATIONS.md, "Portfolio
+    value"): true_portfolio = portfolio_value (net liquidation), stock_value =
+    securities (shares, minus open short-option marks where recorded),
+    true_cash = signed cash.
+
+    Until 2026-09-27 this recomputed equity from investment_holdings_history
+    plus carried-forward cash, which ignored open options and could not agree
+    with the BBD page or a statement. A row is "real" when its cash came from
+    a statement (ingestion_id set) or from the MCP refresh (on/after the
+    account's first real cash date); earlier daily rows are equity-only.
     """
     from sqlalchemy import text
 
@@ -1993,59 +2018,31 @@ async def get_account_portfolio_history(account_id: str, db: Session = Depends(g
     else:
         real_data_start = None
 
-    sql = text("""
-        WITH stock_dates AS (
-            SELECT snapshot_date, SUM(market_value) AS stock_value
-            FROM investment_holdings_history
-            WHERE account_id = :account_id
-            GROUP BY snapshot_date
-        ),
-        cash_carried AS (
-            SELECT
-                s.snapshot_date,
-                s.stock_value,
-                CASE
-                    WHEN :cash_name IS NOT NULL AND :real_start IS NOT NULL
-                         AND s.snapshot_date >= :real_start THEN (
-                        SELECT true_cash
-                        FROM account_cash_balance_history
-                        WHERE account_name = :cash_name
-                          AND account_format != 'synthetic'
-                          AND snapshot_date <= s.snapshot_date
-                        ORDER BY snapshot_date DESC LIMIT 1
-                    )
-                    ELSE NULL
-                END AS true_cash
-            FROM stock_dates s
-        )
-        SELECT
-            snapshot_date,
-            stock_value,
-            COALESCE(true_cash, 0) AS true_cash,
-            stock_value + COALESCE(true_cash, 0) AS true_portfolio
-        FROM cash_carried
-        ORDER BY snapshot_date ASC
-    """)
+    rows = db.execute(text("""
+        SELECT statement_date, portfolio_value, cash_balance, securities_value, ingestion_id
+        FROM portfolio_snapshots
+        WHERE account_id = :account_id
+        ORDER BY statement_date ASC
+    """), {"account_id": account_id}).fetchall()
 
-    rows = db.execute(sql, {
-        "account_id": account_id,
-        "cash_name": cash_account_name,
-        "real_start": real_data_start,
-    }).fetchall()
+    history = []
+    for row in rows:
+        is_real = row.ingestion_id is not None or (
+            real_data_start is not None and str(row.statement_date) >= real_data_start)
+        cash = float(row.cash_balance) if (is_real and row.cash_balance is not None) else 0.0
+        securities = float(row.securities_value) if row.securities_value is not None else float(row.portfolio_value) - cash
+        history.append({
+            "date":           str(row.statement_date),
+            "stock_value":    round(securities, 2),
+            "true_cash":      round(cash, 2),
+            "true_portfolio": round(float(row.portfolio_value), 2) if is_real else round(securities, 2),
+            "is_real":        is_real,
+        })
 
     return {
         "account_id": account_id,
         "real_data_start": real_data_start,
-        "history": [
-            {
-                "date":           str(row.snapshot_date),
-                "stock_value":    float(row.stock_value or 0),
-                "true_cash":      float(row.true_cash or 0),
-                "true_portfolio": float(row.true_portfolio or 0),
-                "is_real":        real_data_start is not None and str(row.snapshot_date) >= real_data_start,
-            }
-            for row in rows
-        ]
+        "history": history,
     }
 
 

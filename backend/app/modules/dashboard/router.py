@@ -213,21 +213,24 @@ async def get_wealth_history(db: Session = Depends(get_db)):
             # Use the latest valuation for each property in each year
             yearly_real_estate[year] = float(val.value)
     
-    # Get historical investment values from portfolio snapshots
+    # Historical investment value per year = the sum, over accounts, of each
+    # account's LAST snapshot in that year. Summing all rows on a single date
+    # (the old way) read as a crash whenever only some accounts had a row that
+    # day — e.g. a lone statement date (BBD audit F15).
     yearly_investment_values = {}
-    monthly_snapshots = db.query(
-        PortfolioSnapshot.statement_date,
-        func.sum(PortfolioSnapshot.portfolio_value).label('total_value')
-    ).group_by(
-        PortfolioSnapshot.statement_date
-    ).order_by(
-        PortfolioSnapshot.statement_date
-    ).all()
-    
-    for snap in monthly_snapshots:
-        year = snap.statement_date.year
-        value = float(snap.total_value or 0)
-        yearly_investment_values[year] = value
+    from sqlalchemy import text as _text
+    year_rows = db.execute(_text("""
+        SELECT yr, SUM(portfolio_value) AS total_value
+        FROM (
+            SELECT DISTINCT ON (account_id, source, EXTRACT(year FROM statement_date))
+                   EXTRACT(year FROM statement_date)::int AS yr, portfolio_value
+            FROM portfolio_snapshots
+            ORDER BY account_id, source, EXTRACT(year FROM statement_date), statement_date DESC
+        ) last_per_account
+        GROUP BY yr ORDER BY yr
+    """)).fetchall()
+    for r in year_rows:
+        yearly_investment_values[int(r.yr)] = float(r.total_value or 0)
     
     # Get CURRENT values from the actual services
     current_investment_value = 0
