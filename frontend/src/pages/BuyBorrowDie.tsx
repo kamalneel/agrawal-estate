@@ -25,6 +25,7 @@ import {
 } from 'recharts';
 import styles from './BuyBorrowDie.module.css';
 import { getAuthHeaders } from '../contexts/AuthContext';
+import BbdBenchmark from './BbdBenchmark';
 
 interface TimelineDataPoint {
   month: string;
@@ -1151,6 +1152,9 @@ export default function BuyBorrowDie() {
             );
           })()}
         </div>
+
+        {/* ═══════════════ Section 2b: vs. index buy-and-hold ═══════════════ */}
+        <BbdBenchmark />
 
         {/* ═══════════════ Section 3: Borrow ═══════════════ */}
         <div className={styles.section}>

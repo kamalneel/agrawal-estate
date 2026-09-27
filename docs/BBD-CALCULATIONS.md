@@ -213,6 +213,20 @@ Read the numbers with the Borrow section in mind: gross expense includes
 one-offs (the Subaru, January's tax payments), so Net after salary & rent
 is the fair test and even that carries the car in 2026.
 
+## Section 2c: vs. index buy-and-hold (2026-09-27)
+
+Full spec: `BBD-BENCHMARK-SPEC.md`. A twin portfolio buys QQQ (or SPY)
+with the two brokerages' combined net liquidation value on the first
+month-end both accounts have a statement (2025-01-31) and receives every
+external cash flow the real accounts had, on the same day, at that day's
+close. Two twins: one sells shares to fund withdrawals, one borrows them
+at `ASSUMED_ANNUAL_MARGIN_RATE` compounding monthly. Compared at every
+month-end (statement-preferred `portfolio_snapshots`) and at the latest
+price date. Pre-tax; index dividends excluded. Service
+`bbd_benchmark_service.get_benchmark`; endpoint
+`GET /strategies/buy-borrow-die/benchmark?symbol=QQQ|SPY`; component
+`BbdBenchmark.tsx`.
+
 ## Section 3: Borrow (Margin Simulation)
 
 ### Concept

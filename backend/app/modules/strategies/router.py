@@ -1193,6 +1193,17 @@ async def get_taxable_capital_by_month(
     return {'months': {k: round(v, 2) for k, v in sorted(brokerage_months.items())}}
 
 
+@router.get("/buy-borrow-die/benchmark")
+async def get_bbd_benchmark(symbol: str = 'QQQ', db: Session = Depends(get_db)):
+    """The two brokerages vs a buy-and-hold twin of `symbol` with identical
+    cash flows — docs/BBD-BENCHMARK-SPEC.md."""
+    from app.modules.strategies.bbd_benchmark_service import get_benchmark
+    symbol = symbol.upper()
+    if symbol not in ('QQQ', 'SPY'):
+        raise HTTPException(status_code=400, detail="symbol must be QQQ or SPY")
+    return get_benchmark(db, symbol)
+
+
 @router.get("/buy-borrow-die/timeline")
 async def get_bbd_timeline(
     time_range: str = Query('data', regex='^(data|5y|10y|20y|30y|all)$'),
