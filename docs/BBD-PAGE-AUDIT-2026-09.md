@@ -294,6 +294,27 @@ $262K withdrawn during the year, while the income yield divides by the
 January baseline alone. The dollars are the check; they now agree to the
 dollar.
 
+### F14 — Income was options-only; now the Income page's definition (Neel, 2026-09-27)
+
+The Income mode counted options premium alone. It now counts all realized
+cash income in the brokerage accounts — options, dividends, interest
+(including margin-interest charges and stock lending) — classified by the
+Income page's own `_TXN_SOURCE_CASE`, so the two pages reconcile to the
+dollar per stream (2026: options $114,505, dividends $2,428, interest
+−$469). Realized stock-sale P/L stays in Growth on this page: a sale
+converts unrealized growth to realized and adds no new cash. Growth
+strips the whole income total, so combined = growth + income still holds
+and the assertion covers it. Per-stream rows (`income_options`,
+`income_dividends`, `income_interest`) back an All / Options / Dividends /
+Interest selector in the Income mode; the 1%/month target applies to the
+total only.
+
+| 2026 card | Options-only | All income |
+|---|---|---|
+| Income | 6.64%, $114,505 | 6.75%, $116,464 |
+| Growth | 1.57%, $24,702 | 1.45%, $22,836 |
+| Combined | 9.24%, $139,300 | unchanged |
+
 ### Minor
 
 - Yearly baselines use the Jan 31 snapshot, so January's move is excluded

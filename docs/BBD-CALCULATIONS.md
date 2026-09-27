@@ -125,11 +125,36 @@ no flow adjustment) leave `net_flows` null and `gain_value` = balance change.
 
 ---
 
-## Section 2: Earnings (Options Yield)
+## Section 2: Earnings (Income Yield)
+
+### Definition (2026-09-27, in sync with the Income page)
+
+Income on this page is **all realized cash income in the brokerage
+accounts**, classified exactly as the Income page classifies it
+(`income.unified_service._TXN_SOURCE_CASE`, reused, not copied):
+
+| Stream | Rows |
+|---|---|
+| options | STO, BTC, STC, BTO — premium net of buybacks |
+| dividends | DIVIDEND, CDIV and the reinvest/qualified variants |
+| interest | INTEREST, INT, MARGIN_INTEREST (negative), SLIP stock lending |
+
+Not income here: **realized stock-sale P/L**. The Income page counts it
+(definition-of-income rule); on this page a sale only turns unrealized
+growth into realized growth and adds no cash the portfolio did not already
+hold, so it belongs to Growth. The Income page's per-account totals for
+Neel's and Jaya's brokerages therefore equal this page's income *plus*
+their equity-sale P/L.
+
+Metric types: `options_yield` = all three streams together, measured
+against the 1%/month target (the name is kept for the frontend);
+`income_options`, `income_dividends`, `income_interest` = one stream each,
+for graphing, with no target (expected 0). `pure_growth` strips the total,
+so **combined = growth + income** holds and is asserted on every recompute.
 
 ### Data Source
-- `investment_transactions` table, types: STO, BTC, STC, BTO
-- Summed by month to get total options income
+- `investment_transactions` for `BROKERAGE_ACCOUNTS`, classified by
+  `_TXN_SOURCE_CASE`, summed by month
 - Baseline = same-store brokerage portfolio value at prior month
 
 ### Monthly Yield Calculation

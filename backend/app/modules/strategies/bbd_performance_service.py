@@ -92,6 +92,10 @@ class BbdPerformanceService:
             period_types = ('year', 'month') if metric_type == 'margin_borrowing' else ('year', 'month', 'week')
             for period_type in period_types:
                 count += self._compute_metric(metric_type, period_type, force)
+        # One income stream at a time, for graphing (income_options, income_dividends, income_interest)
+        for source in self.INCOME_SOURCES:
+            for period_type in ('year', 'month'):
+                count += self._compute_options_yield(period_type, force, source=source)
 
         # Fail loudly rather than cache inconsistent cards. The caller's
         # transaction rolls back, so the previous cache stays on the page.
@@ -284,6 +288,12 @@ class BbdPerformanceService:
                 'baseline': m.get('baseline_value'),
             }
 
+        # ── Annual income by stream, for the Income page reconciliation ──
+        annual_income_by_source: Dict[str, Dict[str, float]] = {}
+        for source in self.INCOME_SOURCES:
+            for m in self.get_metrics(f'income_{source}', 'year'):
+                annual_income_by_source.setdefault(m['period_label'], {})[source] = m['actual_value']
+
         # ── Borrowing summary ──
         monthly_spending = self._get_monthly_spending()
         spend_values = list(monthly_spending.values())
@@ -360,6 +370,8 @@ class BbdPerformanceService:
             'cumulative_earnings_pct': cumulative_earnings_pct,
             'cumulative_earnings_amt': cumulative_earnings_amt,
             'annual_earnings': annual_earnings,
+            'annual_income_by_source': annual_income_by_source,
+            'income_sources': list(self.INCOME_SOURCES),
             'expected_monthly_earnings_pct': 1.0,
             'expected_annual_earnings_pct': 12.0,
             # Borrowing
@@ -737,8 +749,13 @@ class BbdPerformanceService:
 
     # ── Options Yield ─────────────────────────────────────────────
 
-    def _compute_options_yield(self, period_type: str, force: bool) -> int:
-        """Compute options yield metrics using same-store portfolio baselines."""
+    def _compute_options_yield(self, period_type: str, force: bool, source: Optional[str] = None) -> int:
+        """Income yield metrics on same-store portfolio baselines.
+
+        source=None → metric_type 'options_yield': ALL investment income
+        (options + dividends + interest), measured against the 1%/month
+        target. source='options' | 'dividends' | 'interest' → metric_type
+        'income_<source>' for graphing one stream; no target (expected 0)."""
         account_months = {
             k: v for k, v in self._get_account_month_values().items()
             if any(k.startswith(acct) for acct in self.BROKERAGE_ACCOUNTS)
@@ -749,16 +766,22 @@ class BbdPerformanceService:
         sorted_months = sorted(all_months)
 
         if period_type == 'year':
-            return self._compute_options_yield_yearly(account_months, sorted_months, force)
+            return self._compute_options_yield_yearly(account_months, sorted_months, force, source)
         elif period_type == 'month':
-            return self._compute_options_yield_monthly(account_months, sorted_months, force)
+            return self._compute_options_yield_monthly(account_months, sorted_months, force, source)
         elif period_type == 'week':
             return self._compute_options_yield_weekly(account_months, sorted_months, force)
         return 0
 
-    def _compute_options_yield_yearly(self, account_months: Dict[str, Dict[str, float]], sorted_months: List[str], force: bool) -> int:
-        """Yearly options yield: total options income / same-store portfolio value."""
-        monthly_income = self._get_options_income_monthly()
+    @staticmethod
+    def _income_metric_type(source: Optional[str]) -> str:
+        return 'options_yield' if source is None else f'income_{source}'
+
+    def _compute_options_yield_yearly(self, account_months: Dict[str, Dict[str, float]], sorted_months: List[str],
+                                      force: bool, source: Optional[str] = None) -> int:
+        """Yearly income yield: total income / same-store portfolio value."""
+        monthly_income = self._get_investment_income_monthly(source)
+        metric_type = self._income_metric_type(source)
         if not monthly_income:
             return 0
 
@@ -797,12 +820,15 @@ class BbdPerformanceService:
             completeness = 'partial' if yr == today.year else 'complete'
 
             actual_pct = (income / baseline_val) * 100
-            expected_pct = float(self.ASSUMED_MONTHLY_YIELD) * 12 * 100  # 12%
-            expected_val = baseline_val * float(self.ASSUMED_MONTHLY_YIELD) * 12
+            if source is None:
+                expected_pct = float(self.ASSUMED_MONTHLY_YIELD) * 12 * 100  # 12%
+                expected_val = baseline_val * float(self.ASSUMED_MONTHLY_YIELD) * 12
+            else:
+                expected_pct, expected_val = 0.0, 0.0  # the target applies to total income only
 
             self._upsert_metric(
                 period_type='year', period_start=period_start, period_end=period_end,
-                metric_type='options_yield',
+                metric_type=metric_type,
                 actual_value=income, actual_percent=actual_pct,
                 expected_value=expected_val, expected_percent=expected_pct,
                 baseline_value=baseline_val,
@@ -811,11 +837,13 @@ class BbdPerformanceService:
             count += 1
         return count
 
-    def _compute_options_yield_monthly(self, account_months: Dict[str, Dict[str, float]], sorted_months: List[str], force: bool) -> int:
-        """Monthly options yield: income / same-store portfolio value at start of month.
+    def _compute_options_yield_monthly(self, account_months: Dict[str, Dict[str, float]], sorted_months: List[str],
+                                       force: bool, source: Optional[str] = None) -> int:
+        """Monthly income yield: income / same-store portfolio value at start of month.
         Iterates ALL months in the data range (not just months with income) so that
         expected values and baseline capital are always computed."""
-        monthly_income = self._get_options_income_monthly()
+        monthly_income = self._get_investment_income_monthly(source)
+        metric_type = self._income_metric_type(source)
         if not sorted_months:
             return 0
 
@@ -884,12 +912,15 @@ class BbdPerformanceService:
 
             completeness = 'partial' if (yr == today.year and mo == today.month) else 'complete'
             actual_pct = (income / baseline_val) * 100
-            expected_pct = float(self.ASSUMED_MONTHLY_YIELD) * 100
-            expected_val = baseline_val * float(self.ASSUMED_MONTHLY_YIELD)
+            if source is None:
+                expected_pct = float(self.ASSUMED_MONTHLY_YIELD) * 100
+                expected_val = baseline_val * float(self.ASSUMED_MONTHLY_YIELD)
+            else:
+                expected_pct, expected_val = 0.0, 0.0
 
             self._upsert_metric(
                 period_type='month', period_start=period_start, period_end=period_end,
-                metric_type='options_yield',
+                metric_type=metric_type,
                 actual_value=income, actual_percent=actual_pct,
                 expected_value=expected_val, expected_percent=expected_pct,
                 baseline_value=baseline_val,
@@ -1241,30 +1272,56 @@ class BbdPerformanceService:
         ).group_by('month').order_by('month').all()
         return {row.month: float(row.total) for row in rows}
 
+    #: Income sources on this page, in the Income page's own classification
+    #: (income.unified_service._TXN_SOURCE_CASE): options premium net of
+    #: buybacks, dividends, and interest (cash interest, stock lending, and
+    #: margin interest charges as negatives). Realized stock-sale P/L is NOT
+    #: income here — a sale turns unrealized growth into realized growth and
+    #: adds no cash the portfolio did not already hold — so it stays in Growth.
+    INCOME_SOURCES = ('options', 'dividends', 'interest')
+
+    def _income_rows(self, start: date, end: Optional[date] = None):
+        """(month, src, total) for the brokerage accounts, classified exactly as
+        the Income page classifies them, so the two pages cannot disagree."""
+        from sqlalchemy import bindparam, text as sql_text
+        from app.modules.income.unified_service import _TXN_SOURCE_CASE
+        sql = f"""
+            SELECT to_char(t.transaction_date, 'YYYY-MM') AS month,
+                   {_TXN_SOURCE_CASE} AS src,
+                   SUM(t.amount) AS total
+            FROM investment_transactions t
+            WHERE t.account_id IN :accounts
+              AND t.transaction_date >= :start
+              {"AND t.transaction_date <= :end" if end else ""}
+              AND {_TXN_SOURCE_CASE} IS NOT NULL
+            GROUP BY 1, 2
+        """
+        stmt = sql_text(sql).bindparams(bindparam('accounts', expanding=True))
+        params = {'accounts': list(self.BROKERAGE_ACCOUNTS), 'start': max(start, self.DATA_CUTOFF_DATE)}
+        if end:
+            params['end'] = end
+        return self.db.execute(stmt, params).fetchall()
+
+    def _get_investment_income_monthly(self, source: Optional[str] = None) -> Dict[str, float]:
+        """{YYYY-MM: income} for the brokerage accounts. source=None sums every
+        source in INCOME_SOURCES; 'options' | 'dividends' | 'interest' picks one."""
+        out: Dict[str, float] = {}
+        for r in self._income_rows(self.DATA_CUTOFF_DATE):
+            if r.src in self.INCOME_SOURCES and (source is None or r.src == source):
+                out[r.month] = out.get(r.month, 0.0) + float(r.total or 0)
+        return dict(sorted(out.items()))
+
+    def _get_investment_income_for_range(self, start: date, end: date, source: Optional[str] = None) -> float:
+        return sum(float(r.total or 0) for r in self._income_rows(start, end)
+                   if r.src in self.INCOME_SOURCES and (source is None or r.src == source))
+
     def _get_options_income_monthly(self) -> Dict[str, float]:
-        """Get monthly options income (YYYY-MM → net income). Brokerage accounts only."""
-        rows = self.db.query(
-            func.to_char(InvestmentTransaction.transaction_date, 'YYYY-MM').label('month'),
-            func.sum(InvestmentTransaction.amount).label('total')
-        ).filter(
-            InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
-            InvestmentTransaction.account_id.in_(self.BROKERAGE_ACCOUNTS),
-            InvestmentTransaction.transaction_date >= self.DATA_CUTOFF_DATE,
-        ).group_by('month').order_by('month').all()
-        return {row.month: float(row.total or 0) for row in rows}
+        """All investment income per month (name kept for callers; since
+        2026-09-27 this is options + dividends + interest, not options alone)."""
+        return self._get_investment_income_monthly(None)
 
     def _get_options_income_for_range(self, start: date, end: date) -> float:
-        """Get total options income for a date range. Brokerage accounts only."""
-        effective_start = max(start, self.DATA_CUTOFF_DATE)
-        result = self.db.query(
-            func.sum(InvestmentTransaction.amount)
-        ).filter(
-            InvestmentTransaction.transaction_type.in_(['STO', 'BTC', 'STC', 'BTO']),
-            InvestmentTransaction.account_id.in_(self.BROKERAGE_ACCOUNTS),
-            InvestmentTransaction.transaction_date >= effective_start,
-            InvestmentTransaction.transaction_date <= end,
-        ).scalar()
-        return float(result or 0)
+        return self._get_investment_income_for_range(start, end, None)
 
     def _get_monthly_income(self) -> Dict[str, Dict[str, float]]:
         """Aggregate all NON-RETIREMENT income sources into {YYYY-MM: {source: amount, total: sum}}.

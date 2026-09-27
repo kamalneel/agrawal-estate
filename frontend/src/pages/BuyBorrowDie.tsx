@@ -121,6 +121,10 @@ export default function BuyBorrowDie() {
 
   // Assumptions vs Reality state — separate drill-down for each chart
   const [growthMode, setGrowthMode] = useState<'pure_growth' | 'options_yield' | 'portfolio_growth'>('portfolio_growth');
+  // Income mode can graph one stream at a time; 'all' is what the target and the summary cards use.
+  const [incomeSource, setIncomeSource] = useState<'all' | 'options' | 'dividends' | 'interest'>('all');
+  const growthMetricType = growthMode === 'options_yield' && incomeSource !== 'all' ? `income_${incomeSource}` : growthMode;
+  const isIncomeSubSource = growthMode === 'options_yield' && incomeSource !== 'all';
   const [growthPeriod, setGrowthPeriod] = useState<'year' | 'month' | 'week'>('month');
   const [growthDrillYear, setGrowthDrillYear] = useState<number | undefined>();
   const [growthDrillMonth, setGrowthDrillMonth] = useState<number | undefined>();
@@ -173,7 +177,7 @@ export default function BuyBorrowDie() {
       setEditingSettings(false);
       // Refresh all assumptions data
       await Promise.all([
-        fetchMetricsFor(growthMode, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics),
+        fetchMetricsFor(growthMetricType, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics),
         fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics),
         fetchAssumptionSummary(),
       ]);
@@ -186,7 +190,7 @@ export default function BuyBorrowDie() {
 
   useEffect(() => {
     fetchTimeline();
-    fetchMetricsFor(growthMode, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics);
+    fetchMetricsFor(growthMetricType, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics);
     fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics);
     fetchAssumptionSummary();
     fetchBbdSettings();
@@ -227,8 +231,8 @@ export default function BuyBorrowDie() {
 
   // Refresh assumptions data when drill-down changes
   useEffect(() => {
-    fetchMetricsFor(growthMode, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics);
-  }, [growthMode, growthPeriod, growthDrillYear, growthDrillMonth]);
+    fetchMetricsFor(growthMetricType, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics);
+  }, [growthMode, incomeSource, growthPeriod, growthDrillYear, growthDrillMonth]);
 
   useEffect(() => {
     fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics);
@@ -289,7 +293,7 @@ export default function BuyBorrowDie() {
       }
       // Refresh all charts + summary
       await Promise.all([
-        fetchMetricsFor(growthMode, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics),
+        fetchMetricsFor(growthMetricType, growthPeriod, growthDrillYear, growthDrillMonth, setGrowthMetrics),
         fetchMetricsFor('margin_borrowing', borrowPeriod, borrowDrillYear, undefined, setBorrowMetrics),
         fetchAssumptionSummary(),
       ]);
@@ -751,9 +755,27 @@ export default function BuyBorrowDie() {
                 {growthMode === 'pure_growth'
                   ? `Market appreciation only (options income excluded) — assumed ${bbdSettings ? (bbdSettings.assumed_annual_growth * 100).toFixed(0) : 8}%/yr`
                   : growthMode === 'options_yield'
-                  ? `Options premium collected — assumed ${bbdSettings ? (bbdSettings.assumed_monthly_yield * 100).toFixed(0) : 1}%/mo (${bbdSettings ? (bbdSettings.assumed_monthly_yield * 12 * 100).toFixed(0) : 12}%/yr)`
-                  : `Combined: market appreciation + options income — assumed ${bbdSettings ? (bbdSettings.assumed_combined_return * 100).toFixed(0) : 16}%/yr`}
+                  ? `All realized income in the brokerage accounts — options premium, dividends, interest — same definition as the Income page. Target ${bbdSettings ? (bbdSettings.assumed_monthly_yield * 100).toFixed(0) : 1}%/mo (${bbdSettings ? (bbdSettings.assumed_monthly_yield * 12 * 100).toFixed(0) : 12}%/yr) applies to the total`
+                  : `Combined: market appreciation + investment income — assumed ${bbdSettings ? (bbdSettings.assumed_combined_return * 100).toFixed(0) : 16}%/yr`}
               </p>
+              {growthMode === 'options_yield' && (
+                <div className={styles.segmentedControl} style={{ marginTop: 'var(--space-2)' }}>
+                  {([
+                    { key: 'all', label: 'All income' },
+                    { key: 'options', label: 'Options' },
+                    { key: 'dividends', label: 'Dividends' },
+                    { key: 'interest', label: 'Interest' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.key}
+                      className={`${styles.segmentBtn} ${incomeSource === opt.key ? styles.segmentBtnActive : ''}`}
+                      onClick={() => setIncomeSource(opt.key)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
               <div className={styles.segmentedControl}>
@@ -968,13 +990,15 @@ export default function BuyBorrowDie() {
 
                   <h3 className={styles.chartTitle}>
                     {growthMode === 'pure_growth' ? 'Growth — Actual vs Assumed (8%/yr)'
-                      : growthMode === 'options_yield' ? 'Income — Actual vs Assumed (12%/yr)'
-                      : 'Income + Growth — Actual vs Assumed (20%/yr)'}
+                      : growthMode === 'options_yield'
+                      ? (isIncomeSubSource ? `Income — ${incomeSource[0].toUpperCase()}${incomeSource.slice(1)} only` : 'Income — Actual vs Assumed (12%/yr)')
+                      : 'Income + Growth — Actual vs Assumed (16%/yr)'}
                   </h3>
                   <p className={styles.chartSubtitle}>
-                    {growthMode === 'pure_growth' ? 'Market appreciation only — assumed ~0.64%/mo'
-                      : growthMode === 'options_yield' ? 'Options premium collected — assumed 1%/mo'
-                      : 'Combined return — assumed ~1.53%/mo'}
+                    {growthMode === 'pure_growth' ? 'Market appreciation, realized or not — investment income stripped out — assumed ~0.64%/mo'
+                      : growthMode === 'options_yield'
+                      ? (isIncomeSubSource ? 'One income stream; the 1%/mo target applies to all income together' : 'Options + dividends + interest, brokerage accounts — assumed 1%/mo')
+                      : 'Combined return — assumed ~1.24%/mo'}
                     {growthPeriod !== 'week' ? ' — click a bar to drill down' : ''}
                   </p>
 
@@ -1034,7 +1058,7 @@ export default function BuyBorrowDie() {
                           {growthMetrics.map((m: any, idx: number) => (
                             <tr
                               key={idx}
-                              className={m.actual_percent >= (m.expected_percent || 0) ? styles.positiveRow : styles.negativeRow}
+                              className={isIncomeSubSource ? '' : (m.actual_percent >= (m.expected_percent || 0) ? styles.positiveRow : styles.negativeRow)}
                               onClick={() => handleDrillDown(m, growthPeriod, setGrowthDrillYear, setGrowthDrillMonth, setGrowthPeriod)}
                               style={{ cursor: growthPeriod !== 'week' ? 'pointer' : 'default' }}
                             >
@@ -1045,11 +1069,11 @@ export default function BuyBorrowDie() {
                               <td className={(m.gain_value ?? 0) >= 0 ? styles.positive : styles.negative}>
                                 {m.gain_value !== null && m.gain_value !== undefined ? formatFullCurrency(m.gain_value) : '-'}
                               </td>
-                              <td>{m.expected_value !== null ? formatFullCurrency(m.expected_value) : '-'}</td>
-                              <td className={m.actual_percent >= (m.expected_percent || 0) ? styles.positive : styles.negative}>
+                              <td>{isIncomeSubSource ? '—' : (m.expected_value !== null ? formatFullCurrency(m.expected_value) : '-')}</td>
+                              <td className={isIncomeSubSource ? '' : (m.actual_percent >= (m.expected_percent || 0) ? styles.positive : styles.negative)}>
                                 {m.actual_percent !== null ? `${m.actual_percent.toFixed(2)}%` : '-'}
                               </td>
-                              <td>{m.expected_percent !== null ? `${m.expected_percent.toFixed(2)}%` : '-'}</td>
+                              <td>{isIncomeSubSource ? '—' : (m.expected_percent !== null ? `${m.expected_percent.toFixed(2)}%` : '-')}</td>
                             </tr>
                           ))}
                         </tbody>
