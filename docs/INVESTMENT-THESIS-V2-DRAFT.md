@@ -520,3 +520,32 @@ moves here.
   19.1%, ZM 14.7%, AVGO 10.4%, GOOGL 9.8%, SOXL 8.2%, MRVL 6.3%, CBRS
   5.2%, SPCX 4.1%, RKLB 3.3%. Today's two ZM cards take it to ~24% —
   under the ceiling, so they stand.
+
+## 2026-09-28 (Monday) — Rule B needs a delta floor
+
+Semis rotated into NVDA on its $150B buyback (NVDA +2.4%; AMD −4.2%,
+INTC −6.4%, SOXL −7.9%). The dip fired two Rule B buy-backs, and Neel
+asked of one: "For INTC, why not roll to 130 for exp 10/09 instead of
+buy back?" Live quotes said neither:
+
+| INTC $124 ×3, spot $115.60 | credit (3 contracts) |
+|---|---|
+| do nothing, let it expire Friday | keep everything |
+| roll to $130 10/9 | +$81 (delta 0.19 — too far out to pay) |
+| roll to $124 10/9 | +$419 |
+| roll to $120 10/9 (the delta rule's strike) | +$791 |
+| buy back (the card) | **−$320** |
+
+**Rule B was firing on a call that expiry clears for free.** It was
+written for a call near or above the money, where closing frees you to
+re-strike higher. INTC $124 was $8.40 OTM with 4 days left at delta
+0.18: paying $320 to remove a cap Friday removes for nothing, when
+holding keeps the $320 *and* still re-strikes that Friday. New knob
+**`rule_b_min_delta` = 25**: no dip buy-back below that delta. Same
+family as `up_day_roll_max_tv_pct` — both stop the engine paying real
+money for optionality that decay is about to hand over free.
+
+It also suppressed the TSLA $405 ×7 card, and correctly: delta **0.013**
+($359 spot against a $405 strike), $231 to close. Claude had said that
+one was still worth doing on a "TSLA has room to run" hunch — the
+arithmetic disagrees, and the arithmetic is the rule.

@@ -926,13 +926,25 @@ def build_v7_queue(db: Session) -> Dict:
                 # captured that closing is free (Neel, 2026-09-15: SPCX $160
                 # at 86% with 3 days left and 11% of room is Rule A's, not B's).
                 enough_time = dte >= int(K(pol, "rule_b_min_dte")) or (captured is not None and captured >= K(pol, "free_close_captured_pct"))
-                if dip and cheap and not er and dte >= 1 and enough_time:
+                rule_b_delta = call_delta(spot, k, vol_of(sym)[0], dte)
+                # A call already comfortably OUT of the money near expiry is
+                # going to expire on its own — closing it buys nothing
+                # (Neel, 2026-09-28, INTC $124 x3: $8.40 OTM with 4 days
+                # left, delta 0.21, and the card wanted $320 to remove a cap
+                # Friday removes for free; holding keeps the $320 AND still
+                # re-strikes that day). Rule B is for a call near or above
+                # the money, where closing frees you to re-strike higher.
+                worth_closing = (rule_b_delta is None
+                                 or rule_b_delta >= K(pol, "rule_b_min_delta") / 100)
+                if dip and cheap and not er and dte >= 1 and enough_time and worth_closing:
                     # Rule B: buy back on the dip, wait for the bounce, sell higher.
                     card(1, "BUY BACK", acct, sym,
                          f"{sym} ${k:,.0f} call — dip: buy back for ${cost:,.0f}, wait for the bounce, sell higher",
                          f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured (mark ${mark:,.2f} vs ${o['original']:,.2f}) · "
                          + (f"today {move:+.1f}%" if move is not None else "move n/a")
-                         + (f" · RSI {rsi:.0f}" if rsi is not None else "") + f" · exp {_fmt_exp(o['expiration'])}",
+                         + (f" · RSI {rsi:.0f}" if rsi is not None else "")
+                         + (f" · delta {rule_b_delta:.2f}" if rule_b_delta is not None else "")
+                         + f" · exp {_fmt_exp(o['expiration'])}",
                          f"Rule B: the stock is down and the call is cheap. Closing now costs ${cost:,.0f} and buys a higher "
                          f"strike: the next call goes on once {sym} is +{K(pol, 'bounce_pct'):.1f}% from today's close, or in "
                          f"{int(K(pol, 'bounce_days'))} trading days at the latest. Re-selling today would cap at the dip price.",
@@ -1056,7 +1068,17 @@ def build_v7_queue(db: Session) -> Dict:
                 cost = (mark or 0) * 100 * n
                 enough_time = dte >= int(K(pol, "rule_b_min_dte")) or (captured is not None and captured >= K(pol, "free_close_captured_pct"))
                 up_day = dte >= 1 and dte < int(K(pol, "rule_b_min_dte")) and move is not None and move >= K(pol, "rule_a_up_day_pct")
-                if dip and cheap and not er and dte >= 1 and enough_time:
+                rule_b_delta = call_delta(spot, k, vol_of(sym)[0], dte)
+                # A call already comfortably OUT of the money near expiry is
+                # going to expire on its own — closing it buys nothing
+                # (Neel, 2026-09-28, INTC $124 x3: $8.40 OTM with 4 days
+                # left, delta 0.21, and the card wanted $320 to remove a cap
+                # Friday removes for free; holding keeps the $320 AND still
+                # re-strikes that day). Rule B is for a call near or above
+                # the money, where closing frees you to re-strike higher.
+                worth_closing = (rule_b_delta is None
+                                 or rule_b_delta >= K(pol, "rule_b_min_delta") / 100)
+                if dip and cheap and not er and dte >= 1 and enough_time and worth_closing:
                     card(2, "BUY BACK", acct, sym,
                          f"{sym} ${k:,.0f} call — dip: buy back for ${cost:,.0f}, wait for the bounce, sell higher",
                          f"{n} contract{'s' if n > 1 else ''} · {captured:.0f}% captured (mark ${mark:,.2f} vs ${o['original']:,.2f}) · "
