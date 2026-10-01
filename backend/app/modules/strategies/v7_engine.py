@@ -1192,6 +1192,14 @@ def build_v7_queue(db: Session) -> Dict:
         # brokerage: line + cash − collateral − drawn; IRA: cash_balance is
         # already net of collateral (the bridge writes buying power there)
         room = (line + acct_c.get("cash", 0) - acct_c.get("collateral", 0) - acct_c.get("margin_used", 0)) if line else acct_c.get("cash", 0)
+        # THIS put's own collateral is already inside acct_c["collateral"],
+        # and on assignment it is released to pay for the shares — so the
+        # room that matters for taking assignment is room + cost_to_own,
+        # not room. Neel, 2026-10-01: the AVGO $380 card read "assignment
+        # would take $38,000 of $22,631 room" and so always chose ROLL,
+        # when the $38,000 was money already set aside for exactly that
+        # purchase. Capacity after assignment is unchanged.
+        room_for_assignment = room + cost_to_own
         credit_ps_p = same_strike_roll_credit_ps(spot, k, vol_of(sym)[0], dte, "put",
                                                  rolling_now=(tv is not None and tv <= K(pol, "put_roll_tv_floor")))
         roll_credit = int(round(max(credit_ps_p, 0) * 100 * n))
@@ -1207,7 +1215,7 @@ def build_v7_queue(db: Session) -> Dict:
         roll_rsi = K(pol, "put_roll_rsi")
         thin = credit_ps_p <= K(pol, "roll_thin_credit_ps")
         rsi_txt = f"RSI {rsi:.0f}" if rsi is not None else "no RSI on file"
-        fits = room is None or cost_to_own <= room
+        fits = room is None or cost_to_own <= room_for_assignment
         if rsi is not None and rsi <= roll_rsi:
             verdict, why_v = "ROLL", f"{rsi_txt} ≤ {roll_rsi:.0f}: oversold, the bounce is coming — roll and wait for it"
         elif not thin:
@@ -1216,11 +1224,12 @@ def build_v7_queue(db: Session) -> Dict:
         elif not fits:
             verdict, why_v = "ROLL", (f"{rsi_txt} > {roll_rsi:.0f} and the roll pays ${max(credit_ps_p, 0):.2f}/share — "
                                      f"the recovery is far, but taking ${cost_to_own:,.0f} of shares does not fit the "
-                                     f"${room:,.0f} of room: roll")
+                                     f"${room_for_assignment:,.0f} available once this put's own collateral is released: roll")
         else:
             verdict, why_v = "LET ASSIGN", (f"{rsi_txt} > {roll_rsi:.0f} and the roll pays ${max(credit_ps_p, 0):.2f}/share: "
                                            f"the recovery is far and rolling for nothing is dead money — take the "
-                                           f"{n * 100:,} shares at ${k:,.0f} (${cost_to_own:,.0f} of ${room:,.0f} room)"
+                                           f"{n * 100:,} shares at ${k:,.0f} (${cost_to_own:,.0f}, already reserved as this put's collateral; "
+                                           f"${room_for_assignment:,.0f} available)"
                                            + (", they are long-term shares bought below the strike" if book == "long"
                                               else ", into the short-term book, then calls on them"))
         if floor_hit:
@@ -1243,7 +1252,7 @@ def build_v7_queue(db: Session) -> Dict:
              f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
              + (f" · time value left ${tv:,.2f}" if tv is not None else "")
              + f" · roll credit est ${roll_credit:,} · {rsi_txt} · assignment would take ${cost_to_own:,.0f}"
-             + (f" of ${room:,.0f} room" if room is not None else ""),
+             + (f" of ${room_for_assignment:,.0f} available (its collateral is already reserved)" if room is not None else ""),
              why_v + ". Never pay intrinsic to get out. "
              + ("Decided on Thursday with that day's RSI and credit. " if action == "WAIT" else "")
              + f"Roll timing: Thursday of expiry week, immediately once time value is ≤ ${K(pol, 'put_roll_tv_floor'):.2f} "
