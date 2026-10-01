@@ -154,6 +154,22 @@ def chain_quote(chains: Dict, sym: str, kind: str, exp: date, strike: float) -> 
     return None
 
 
+def next_roll_expiry(chains: Dict, sym: str, kind: str, exp: Optional[date]) -> Optional[date]:
+    """Where a same-strike roll lands: the next expiry actually listed for
+    this symbol, falling back to one week out.
+
+    Neel asked twice which date a ROLL card meant — on AAPL $315
+    (2026-09-25) and AVGO $380 (2026-10-01): "I am unable to understand
+    what date you are asking me to roll this to." The card said "roll now,
+    same strike" and never named the target. One week is the rule, but
+    "+7 days" is not always a listed expiry (IBIT's 10/5 contract rolls to
+    10/9, not 10/12), so use the chain when it is on file."""
+    if exp is None:
+        return None
+    listed = sorted({c["expiration"] for c in chains.get((sym, kind), []) if c["expiration"] > exp})
+    return listed[0] if listed else exp + timedelta(days=7)
+
+
 def spread_note(c: Optional[Dict]) -> str:
     """'bid 0.13 / ask 0.70' when the quote is wide enough to matter — the
     SOXL and ZM rolls that kept cancelling unfilled were wide books, and a
@@ -770,7 +786,7 @@ def build_v7_queue(db: Session) -> Dict:
                 if exdiv_soon and (o["dte"] is None or o["expiration"] < ex_date + timedelta(days=int(K(pol, 'exdiv_roll_weeks')) * 7)):
                     out = ex_date + timedelta(days=int(K(pol, 'exdiv_roll_weeks')) * 7)
                     card(1, "ROLL", acct, sym,
-                         f"{sym} ${k:,.0f} call ITM — ex-dividend {_fmt_exp(ex_date)}: roll {int(K(pol, 'exdiv_roll_weeks'))} weeks out, same strike",
+                         f"{sym} ${k:,.0f} call ITM — ex-dividend {_fmt_exp(ex_date)}: same strike ${k:,.2f}, out to {_fmt_exp(out)}",
                          f"{n} contract{'s' if n > 1 else ''} · ${intrinsic:,.2f} in the money · "
                          f"time value ${tv:,.2f}" if tv is not None else f"{n} contract{'s' if n > 1 else ''} · ${intrinsic:,.2f} in the money",
                          f"Rule 3: a deep-ITM weekly's time value falls below the ${ex['dividend']:.2f} dividend and gets "
@@ -872,10 +888,13 @@ def build_v7_queue(db: Session) -> Dict:
                     if action == "LET ASSIGN":
                         title = f"{sym} ${k:,.0f} call ITM — let {n * 100:,} shares go {_fmt_exp(o['expiration'])}"
                     elif action == "ROLL":
-                        title = f"{sym} ${k:,.0f} call ITM — roll {when}, same strike"
+                        roll_to = next_roll_expiry(chains, sym, "call", exp_d)
+                        title = (f"{sym} ${k:,.0f} call ITM — roll {when}: same strike ${k:,.2f}, "
+                                 f"out to {_fmt_exp(roll_to)}")
                     else:
                         title = (f"{sym} ${k:,.0f} call ITM — {roll_day}: "
-                                 + ("let it assign, as things stand" if verdict == "LET ASSIGN" else "roll, as things stand"))
+                                 + ("let it assign, as things stand" if verdict == "LET ASSIGN"
+                                    else f"roll to {_fmt_exp(next_roll_expiry(chains, sym, 'call', exp_d))}, as things stand"))
                     card(1, action, acct, sym, title, detail,
                          why_v + ". Rule 1 still holds: never pay a debit to get out. "
                          + ("Decided on Thursday with that day's RSI, credit and lots; until then the dip can settle it for free. "
@@ -1041,7 +1060,8 @@ def build_v7_queue(db: Session) -> Dict:
                 if due:
                     card(2, verdict, acct, sym,
                          (f"{sym} ${k:,.0f} call ITM — let the shares go {_fmt_exp(o['expiration'])}" if verdict == "LET ASSIGN"
-                          else f"{sym} ${k:,.0f} call ITM — roll {'now' if floor_hit else 'today'}, same strike"),
+                          else f"{sym} ${k:,.0f} call ITM — roll {'now' if floor_hit else 'today'}: same strike "
+                               f"${k:,.2f}, out to {_fmt_exp(next_roll_expiry(chains, sym, 'call', o['expiration']))}"),
                          detail, why, earn=roll_credit if verdict == "ROLL" else None,
                          context={"intrinsic": intrinsic, "time_value": tv, "rsi": rsi, "roll_credit": roll_credit,
                                   "verdict": verdict, "proceeds": proceeds})
@@ -1049,7 +1069,8 @@ def build_v7_queue(db: Session) -> Dict:
                     roll_date = o["expiration"] - timedelta(days=1) if o["expiration"] else None
                     card(2, "WAIT", acct, sym,
                          f"{sym} ${k:,.0f} call ITM — Thursday {_fmt_exp(roll_date)}: "
-                         + ("let it assign as things stand" if verdict == "LET ASSIGN" else "roll, as things stand"),
+                         + ("let it assign as things stand" if verdict == "LET ASSIGN"
+                            else f"roll to {_fmt_exp(next_roll_expiry(chains, sym, 'call', o['expiration']))}, as things stand"),
                          detail, why + " Decided on Thursday with that day's RSI and credit; until then the dip can settle it for free.",
                          context={"intrinsic": intrinsic, "time_value": tv, "rsi": rsi, "roll_credit": roll_credit,
                                   "verdict": verdict, "proceeds": proceeds})
@@ -1212,9 +1233,12 @@ def build_v7_queue(db: Session) -> Dict:
         if action == "LET ASSIGN":
             title = f"{sym} ${k:,.0f} put ITM — take {n * 100:,} shares {_fmt_exp(o['expiration'])} for ${cost_to_own:,.0f}"
         elif action == "ROLL":
-            title = f"{sym} ${k:,.0f} put ITM — roll {when}, same strike"
+            title = (f"{sym} ${k:,.0f} put ITM — roll {when}: same strike ${k:,.2f}, "
+                     f"out to {_fmt_exp(next_roll_expiry(chains, sym, 'put', o['expiration']))}")
         else:
-            title = f"{sym} ${k:,.0f} put ITM — {when}: " + ("take the shares, as things stand" if verdict == "LET ASSIGN" else "roll, as things stand")
+            title = (f"{sym} ${k:,.0f} put ITM — {when}: "
+                     + ("take the shares, as things stand" if verdict == "LET ASSIGN"
+                        else f"roll to {_fmt_exp(next_roll_expiry(chains, sym, 'put', o['expiration']))}, as things stand"))
         card(layer, action, acct, sym, title,
              f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · ${intrinsic:,.2f} in the money"
              + (f" · time value left ${tv:,.2f}" if tv is not None else "")

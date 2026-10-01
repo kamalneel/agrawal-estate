@@ -549,3 +549,15 @@ It also suppressed the TSLA $405 ×7 card, and correctly: delta **0.013**
 ($359 spot against a $405 strike), $231 to close. Claude had said that
 one was still worth doing on a "TSLA has room to run" hunch — the
 arithmetic disagrees, and the arithmetic is the rule.
+
+## 2026-10-01 — roll cards now name the target expiry
+
+Neel, on an AVGO $380 put card: "I am unable to understand what date you
+are asking me to roll this to." Second time — he asked the same of the
+AAPL $315 card on 09-25. Every ROLL card said "same strike" and never
+named where it lands, so the one number needed to place the order was the
+one missing. Now: *"roll now — same strike $380.00, out to 10/16"*, and
+the WAIT versions read *"Thursday 10/8: roll to 10/16, as things stand"*.
+The target comes from the next expiry actually listed in the chain where
+one is on file, falling back to a week out — "+7 days" is not always a
+listed expiry (IBIT's 10/5 contract rolls to 10/9, not 10/12).
