@@ -243,6 +243,7 @@ def _salary_rows(db: Session, start: Optional[date], end: Optional[date],
         salaries = {}
     # months (YYYY-MM) covered by payslips / years covered by W-2s, per person
     payslip_months: dict = {}
+    payslip_last_day: dict = {}   # (person, 'YYYY-MM') -> day of the latest stub
     w2_years: dict = {}
     for name, inc in salaries.items():
         key = name.split()[0].lower()
@@ -251,7 +252,9 @@ def _salary_rows(db: Session, start: Optional[date], end: Optional[date],
         for slip in inc.payslips or []:
             d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
             if slip.gross_pay_period:
-                payslip_months.setdefault(key, set()).add(f"{d.year}-{d.month:02d}")
+                mk = f"{d.year}-{d.month:02d}"
+                payslip_months.setdefault(key, set()).add(mk)
+                payslip_last_day[(key, mk)] = max(payslip_last_day.get((key, mk), 0), d.day)
         for slip in inc.payslips or []:
             d = slip.pay_date.date() if hasattr(slip.pay_date, "date") else slip.pay_date
             if in_range(d) and slip.gross_pay_period:
@@ -379,6 +382,17 @@ def _salary_rows(db: Session, start: Optional[date], end: Optional[date],
                     covered = ((key, month_key) in w2_spread
                                or month_key in payslip_months.get(key, set()))
                     amt = float(r.monthly_gross)
+                    # Stubs own a month only through the latest stub's pay
+                    # date. Pay is semi-monthly, so a month whose last stub
+                    # is mid-month (<= 16th) still has its second period
+                    # ahead: the rate fills that half. Without this,
+                    # September 2026 read $15,000 (one stub, 09/15) while
+                    # October read $30,000 (no stub, full rate) — Neel,
+                    # 2026-10-02: "why is September behaving differently?"
+                    last_day = payslip_last_day.get((key, month_key))
+                    if covered and last_day is not None and last_day <= 16 \
+                            and (key, month_key) not in w2_spread:
+                        covered, amt = False, amt / 2
                 else:
                     covered = (month_key in payslip_months.get(key, set())
                                or (key, month_key) in salary_actual
@@ -386,7 +400,9 @@ def _salary_rows(db: Session, start: Optional[date], end: Optional[date],
                                or (key, month_key) in gross_months)
                     amt = float(r.monthly_net or 0)
                 if not covered and amt:
-                    p = date(y, m, 1)
+                    # A half-month fill is dated the 16th so it lands in the
+                    # right week and after the stub it follows.
+                    p = date(y, m, 16 if (key, month_key) in payslip_last_day else 1)
                     if in_range(p):
                         rows.append({"date": p, "person": key, "amount": amt,
                                      "source": "gross_rate" if r.monthly_gross else "net_projection"})
