@@ -671,32 +671,46 @@ def build_v7_queue(db: Session) -> Dict:
                 resolved_note = ""
             vol, vol_src = vol_of(sym)
             dte_new = max((exp - today).days, 1)
-            if sym == "TSLA":
-                target_delta, delta_txt = K(pol, "lt_delta_tsla"), f"{K(pol, 'lt_delta_tsla'):.0f}"
-                gate = K(pol, "lt_tsla_rsi_gate")
-                wait = not (rsi is not None and rsi > gate)
-                wait_reason = (f"RSI {rsi:.0f} — TSLA carve-out fires only above {gate:.0f}" if rsi is not None
-                               else f"no RSI on file — TSLA carve-out needs RSI > {gate:.0f}")
+            # The technicals pick the STRIKE, never whether to sell (Neel,
+            # 2026-10-02): "the cap doesn't make sense because we sell
+            # options every week, irrespective of cap. Cap tells us at what
+            # price we should sell." The long-term book was the last place
+            # that still gated the sale itself — a TSLA carve-out needing
+            # RSI > 75 (which never fired: TSLA's daily RSI has run 45-64),
+            # and an oversold/depressed WAIT. Between them they were holding
+            # back $2,111 a week on 2026-10-02, AVGO on an RSI of 39 against
+            # a gate of 40. Both are retired; mean reversion now moves the
+            # delta the way it already does in the short-term book and the
+            # put ranking:
+            #   just jumped (>= mr_threshold above the 10-day average) ->
+            #     another jump is less likely, so sell CLOSER (higher delta)
+            #   depressed (<= mr_threshold below) -> do not cap the
+            #     recovery, sell FARTHER (lower delta)
+            # Neel's words for today's TSLA: "Tesla jumped off so high. It's
+            # not going to jump off another 5% from here, so it is very safe
+            # to sell it at close to 400 or 395."
+            # Still genuinely WAIT: a bounce-wait after a dip buy-back, and a
+            # declared runaway thesis — both handled above.
+            base_delta = (K(pol, "lt_delta_tsla") if sym == "TSLA"
+                          else K(pol, "lt_delta_sheltered") if sheltered(acct)
+                          else K(pol, "lt_delta_taxable"))
+            vs_lt = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
+            thr_lt, step = K(pol, "mr_threshold_pct"), K(pol, "lt_delta_mr_step")
+            if vs_lt is not None and vs_lt >= thr_lt:
+                target_delta = base_delta + step
+                delta_note = (f"{vs_lt:+.1f}% vs 10-day average — extended, another leg up is the less likely "
+                              f"case, so the strike comes closer (delta {base_delta:.0f} → {target_delta:.0f})")
+            elif vs_lt is not None and vs_lt <= -thr_lt:
+                target_delta = base_delta - step
+                delta_note = (f"{vs_lt:+.1f}% vs 10-day average — depressed, a call sold here would cap the "
+                              f"recovery, so the strike goes farther out (delta {base_delta:.0f} → {target_delta:.0f})")
             else:
-                target_delta = K(pol, "lt_delta_sheltered") if sheltered(acct) else K(pol, "lt_delta_taxable")
-                delta_txt = f"{target_delta:.0f}"
-                # V6's "declining — needs two +3% sessions" gate is retired
-                # (Neel, 2026-09-16: NVDA had recovered +2.2% off Monday's low
-                # and it still said hold off). Wait only while the name is
-                # depressed — ≥ threshold below its 10-day average, where a
-                # call caps the recovery. The bounce-wait after a buy-back is
-                # handled above.
-                vs_lt = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
-                depressed_sma = vs_lt is not None and vs_lt <= -K(pol, "mr_threshold_pct")
-                # RSI too: a 10-day average follows a slide down, so the gap stays
-                # small while the stock keeps falling (AVGO 2026-09-16: -2.7% vs
-                # average, RSI 34, 6% under Friday). Restored from V6's gate.
-                oversold = rsi is not None and rsi < K(pol, "lt_wait_rsi")
-                wait = depressed_sma or oversold
-                wait_reason = (" and ".join(
-                    ([f"{vs_lt:+.1f}% vs 10-day average"] if depressed_sma else [])
-                    + ([f"RSI {rsi:.0f} < {K(pol, 'lt_wait_rsi'):.0f}"] if oversold else []))
-                    + " — oversold; a call sold here caps the recovery") if wait else ""
+                target_delta = base_delta
+                delta_note = (f"{vs_lt:+.1f}% vs 10-day average — in the normal band, base delta"
+                              if vs_lt is not None else "no 10-day average on file — base delta")
+            target_delta = max(5.0, min(25.0, target_delta))
+            delta_txt = f"{target_delta:.0f}"
+            wait, wait_reason = False, ""
             picked = chain_pick(chains, sym, "call", exp, target_delta)
             strike = picked["strike"] if picked else strike_for_delta(spot, target_delta, vol, dte_new, 0.055)
             floor = ""
@@ -713,10 +727,12 @@ def build_v7_queue(db: Session) -> Dict:
                  + spread_note(picked)
                  + (f" · {vol_src} {vol * 100:.0f}%" if vol else "")
                  + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
-                 resolved_note + (f"{wait_reason}. " if wait else "")
-                 + bounce_note
-                 + "Long-term book: income without getting called away. Delta 10-15 by the V7 policy; "
-                   "the shares are never sold, so the strike stays far enough out that assignment is unlikely.",
+                 resolved_note + bounce_note
+                 + f"{delta_note}. "
+                 + "Long-term book: a call every week, and the technicals set the strike rather than whether to "
+                   "sell. The shares are never sold, so the strike stays far enough out that assignment is "
+                   "unlikely; mean reversion moves it closer when the name has just run and farther when it is "
+                   "depressed.",
                  earn=None if wait else est,
                  context={"book": "long", "rsi": rsi, "spot": spot, "uncovered": int(uncovered)})
         else:

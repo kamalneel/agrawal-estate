@@ -56,7 +56,7 @@
       "otm_pct_taxable": "retired 2026-09-16 — see knobs lt_delta_* and vol_*",
       "otm_pct_sheltered": "retired",
       "otm_pct_tsla": "retired",
-      "entry_timing": "Settled 2026-09-16: V6's 'declining, needs two +3% sessions' gate is retired. A long-term call waits only while (a) a bounce-wait after a dip buy-back is running, (b) the name is >= mr_threshold_pct below its 10-day average (a call sold at the bottom caps the recovery), or (c) the TSLA RSI carve-out. Otherwise sell."
+      "entry_timing": "Settled 2026-10-02 (Neel): a long-term call goes on EVERY week — the technicals pick the strike, not whether to sell. Mean reversion moves the delta: at least mr_threshold_pct above the 10-day average → +lt_delta_mr_step (just ran, sell closer); that far below → −lt_delta_mr_step (depressed, sell farther). Clamped 5-25. The only genuine waits left are a bounce-wait after a dip buy-back and a declared runaway thesis. Retires the RSI gate (lt_wait_rsi) and the TSLA RSI-75 carve-out."
     },
     "stuck_calls": {
       "rule_1": "Roll weekly, same strike, for a credit. Never pay intrinsic to get out.",
@@ -248,7 +248,7 @@
       "value": 75,
       "label": "TSLA RSI gate",
       "group": "Long-term calls",
-      "description": "Sell a TSLA call only when RSI is above this.",
+      "description": "RETIRED 2026-10-02 — TSLA's carve-out needed RSI > 75 and never fired (daily RSI has run 45-64), leaving 1,600 shares uncovered and $1,651/week on the table. TSLA keeps its lower base delta (lt_delta_tsla) instead: capped farther out, but capped every week. Kept for reference; the engine does not read it.",
       "unit": "RSI",
       "step": 1,
       "min": 50,
@@ -568,7 +568,7 @@
       "value": 40,
       "label": "Long-term call: wait while RSI below",
       "group": "Long-term calls",
-      "description": "No new long-term call while the name is oversold — a call sold at the bottom caps the recovery. Restores the RSI half of V6's entry gate (the 'two +3% sessions' half stays retired). Neel 2026-09-16: AVGO RSI 34, still slipping after Monday's buy-back — wait; NVDA RSI 45 — sell.",
+      "description": "RETIRED 2026-10-02 — the technicals move the strike, they no longer gate the sale. It was holding AVGO's $460/week on an RSI of 39 against a gate of 40. Kept for reference; the engine does not read it.",
       "unit": "RSI",
       "step": 1,
       "min": 20,
@@ -663,6 +663,16 @@
       "step": 1,
       "min": 0,
       "max": 100
+    },
+    "lt_delta_mr_step": {
+      "value": 4,
+      "label": "Long-term call: delta step for mean reversion",
+      "group": "Long-term calls",
+      "description": "Delta points added when the name sits at least mr_threshold_pct ABOVE its 10-day average (just ran — another leg up is less likely, so sell closer) and subtracted when it is that far BELOW (depressed — do not cap the recovery). Clamped to 5-25. Neel, 2026-10-02: 'the cap doesn't make sense because we sell options every week, irrespective of cap. Cap tells us at what price we should sell.'",
+      "unit": "delta",
+      "step": 1,
+      "min": 0,
+      "max": 15
     }
   },
   "put_only": {

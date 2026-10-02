@@ -561,3 +561,40 @@ the WAIT versions read *"Thursday 10/8: roll to 10/16, as things stand"*.
 The target comes from the next expiry actually listed in the chain where
 one is on file, falling back to a week out — "+7 days" is not always a
 listed expiry (IBIT's 10/5 contract rolls to 10/9, not 10/12).
+
+## 2026-10-02 — the technicals set the strike, never whether to sell
+
+Neel, after asking whether to sell TSLA calls today and being told "hold
+off": **"The cap doesn't make sense because we sell options every week,
+irrespective of cap. Cap tells us at what price we should sell."** And
+the reasoning for today: *"Tesla jumped off so high. It's not going to
+jump off another 5% from here, so it is very safe to sell it at close to
+400 or 395."*
+
+The long-term book was the last place that still gated the **sale**. Two
+gates, both retired:
+
+- **`lt_tsla_rsi_gate` = 75** — TSLA calls only above RSI 75. It never
+  fired: TSLA's daily RSI has run **45–64** since the sync began storing
+  daily closes. 1,600 shares sat uncovered, $1,651/week on the table.
+  TSLA keeps its lower base delta (11) instead — capped farther out, but
+  capped every week.
+- **`lt_wait_rsi` = 40** — oversold WAIT. It was holding AVGO's
+  $460/week on an RSI of **39**, one point under the line.
+
+In their place, mean reversion moves the **delta**, the same shape the
+short-term calls and the put ranking have used since 2026-09-16:
+
+| vs the 10-day average | strike | why |
+|---|---|---|
+| ≥ +`mr_threshold_pct` | **closer** (+`lt_delta_mr_step`) | it just ran; another leg up is the less likely case |
+| ≤ −`mr_threshold_pct` | **farther** (−`lt_delta_mr_step`) | depressed; a call here caps the recovery |
+| between | base delta | |
+
+Clamped 5–25. New knob `lt_delta_mr_step` = 4. The only genuine waits
+left in the long-term book are a bounce-wait after a dip buy-back and a
+declared runaway thesis — both are about a specific action or decision,
+not a market view.
+
+First run: six call cards worth **$2,330** where there had been two worth
+$219 — TSLA ×9 and ×7 at $397 (delta 11), AVGO ×2 and ×2 at $374/$372.
