@@ -598,3 +598,31 @@ not a market view.
 
 First run: six call cards worth **$2,330** where there had been two worth
 $219 — TSLA ×9 and ×7 at $397 (delta 11), AVGO ×2 and ×2 at $374/$372.
+
+## 2026-10-02 (later) — why the floor beats Thursday, said on the card
+
+Neel rolled AAPL $315 ×15 on the floor card seven days before expiry and
+made **$1,200** against the few hundred a Thursday roll had been paying,
+then asked the right question: *"Could this be a mistake where it is
+thinking about Thursday and Friday as this week, but asking me to roll
+something that is expiring next week?"*
+
+Not a mistake, and the reason is worth stating because it inverts the
+usual logic. The Thursday rule pays because the **expiring** contract
+decays faster than the next one — but that only holds while it still has
+time value to give up. At the floor it has none, so every further day
+just burns time value out of the contract you are about to *sell*, which
+is the credit itself. Waiting stops paying and starts costing.
+
+The numbers that day (AAPL $333.75, 15 contracts):
+
+| | Time value | Roll credit |
+|---|---|---|
+| today, 10/9 → 10/16 | $0.05 → $0.675 | ~$937 at mid; **$1,200 filled** |
+| Thursday 10/8 | ~$0.02 → ~$0.40 | ~$570 |
+
+The second surprise for Neel was that a contract a week from expiry had
+no time value at all. Deep in the money it does: delta 0.92, $18.75 of
+intrinsic, $0.05 of extrinsic. The card now says all of this when the
+floor fires, instead of reciting "Thursday by default" next to an
+instruction to roll on a Friday.

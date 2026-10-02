@@ -915,8 +915,25 @@ def build_v7_queue(db: Session) -> Dict:
                          why_v + ". Rule 1 still holds: never pay a debit to get out. "
                          + ("Decided on Thursday with that day's RSI, credit and lots; until then the dip can settle it for free. "
                             if action == "WAIT" else "")
-                         + "Roll timing: Thursday by default, Friday morning when RSI is high, immediately at the "
-                         f"${K(pol, 'roll_tv_floor'):.2f} time-value floor; never Friday afternoon.",
+                         + (# The floor beats the Thursday rule, and not only for early-exercise
+                            # risk. Waiting until Thursday pays because the EXPIRING contract
+                            # decays faster than the next one — but that only works while it
+                            # still has time value to give up. At the floor it has none, so
+                            # every further day just burns the NEXT contract's time value,
+                            # which is the credit. Neel, 2026-10-02, on AAPL $315 x15 seven
+                            # days from expiry: "Is the system making a mistake? ... I would
+                            # have definitely rolled it on Thursday next week, but I instead
+                            # rolled it today, and it gave me more than I expected" — $1,200
+                            # against the few hundred a Thursday roll had been paying.
+                            f"Why now and not Thursday: the Thursday rule pays because the expiring contract decays "
+                            f"faster than the next one — but only while it still has time value to give up. This one "
+                            f"has ${tv:,.2f}, at or under the ${K(pol, 'roll_tv_floor'):.2f} floor, so there is nothing "
+                            f"left to wait for: every further day only burns time value out of the contract you are "
+                            f"about to sell, which is the credit. Deep in the money, time value goes to zero well "
+                            f"before expiry — a week out is normal."
+                            if floor_hit else
+                            "Roll timing: Thursday by default, Friday morning when RSI is high, immediately at the "
+                            f"${K(pol, 'roll_tv_floor'):.2f} time-value floor; never Friday afternoon."),
                          earn=roll_credit if action == "ROLL" else None,
                          context={"intrinsic": intrinsic, "time_value": tv, "roll_day": roll_day, "rsi": rsi,
                                   "floor_hit": floor_hit, **verdict_ctx})
