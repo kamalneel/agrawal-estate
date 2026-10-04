@@ -85,6 +85,80 @@ def _get_other_income(db: Session, year: int) -> float:
         return 0.0
 
 
+#: Social Security wage base by year (SSA). SE tax is computed PER PERSON:
+#: Neel's remaining base is reduced by Neel's own W-2 Social Security
+#: wages, never by Jaya's.
+SS_WAGE_BASE = {2024: 168600, 2025: 176100, 2026: 184500}
+
+#: Tax character of the one-time inflows the Spending rulebook labels as
+#: INCOME (COUNTERPARTY_RULES). Keyed by that label so the bank feed stays
+#: the single record of what was paid and by whom.
+#:   self_employment — Schedule C / Schedule SE. The MapUp cash-out is the
+#:     cancellation of UNEXERCISED NSOs held by an independent contractor
+#:     (advisor agreement 2023-05-04 §7: "obligated to pay all
+#:     self-employment and other taxes"); shares were never issued, so it
+#:     is compensation, not a capital gain, and Bestpass will 1099-NEC it.
+#:   other — Schedule 1 line 8z. The AdamX annual payment's character is
+#:     unconfirmed until its form arrives; 8z is the no-SE reading and is
+#:     flagged in data_gaps.
+_ONE_TIME_TAX_CHARACTER = {
+    "MapUp option cash-out": "self_employment",
+    "AdamX annual payment": "other",
+}
+
+
+def _get_one_time_income(db: Session, year: int) -> Dict[str, Any]:
+    """Lump-sum inflows for the year from the bank feed, by tax character."""
+    from app.modules.spending.models import classify, CategoryKind
+    out: Dict[str, Any] = {"self_employment": 0.0, "other": 0.0, "items": []}
+    try:
+        rows = db.execute(text("""
+            SELECT transaction_date, merchant, category, original_statement, amount
+            FROM spending_transactions
+            WHERE amount > 0 AND EXTRACT(YEAR FROM transaction_date) = :y
+            ORDER BY transaction_date
+        """), {"y": year}).fetchall()
+    except Exception:
+        db.rollback()
+        return out
+    for r in rows:
+        rc = classify(r.category, r.merchant, r.original_statement, r.amount)
+        if rc.kind != CategoryKind.INCOME:
+            continue
+        character = _ONE_TIME_TAX_CHARACTER.get(rc.label)
+        if not character:
+            continue
+        out[character] += float(r.amount)
+        out["items"].append({"date": str(r.transaction_date), "label": rc.label,
+                             "payer": r.merchant, "amount": float(r.amount),
+                             "character": character})
+    return out
+
+
+def _calculate_se_tax(se_income: float, own_w2_ss_wages: float,
+                      household_wages: float, year: int) -> Dict[str, float]:
+    """Schedule SE for one person. Net earnings = 92.35% of Schedule C
+    profit; 12.4% Social Security on what is left of the wage base after
+    the person's own W-2 wages; 2.9% Medicare on all of it; 0.9% Additional
+    Medicare (Form 8959) on household wages + net earnings over $250K MFJ.
+    Half of the SS + Medicare part is an above-the-line deduction
+    (Schedule 1 line 15). All of it is Schedule 2 tax — unlike withheld
+    payroll tax, it IS part of the return's total."""
+    zero = {"net_earnings": 0.0, "social_security": 0.0, "medicare": 0.0,
+            "additional_medicare": 0.0, "total": 0.0, "half_deduction": 0.0}
+    if se_income <= 0:
+        return zero
+    net = se_income * 0.9235
+    base = SS_WAGE_BASE.get(year, max(SS_WAGE_BASE.values()))
+    ss = 0.124 * max(0.0, min(net, base - own_w2_ss_wages))
+    medicare = 0.029 * net
+    additional = 0.009 * max(0.0, household_wages + net - 250000)
+    return {"net_earnings": round(net, 2), "social_security": round(ss, 2),
+            "medicare": round(medicare, 2), "additional_medicare": round(additional, 2),
+            "total": round(ss + medicare + additional, 2),
+            "half_deduction": round((ss + medicare) / 2, 2)}
+
+
 def _paystub_months(db: Session, year: int) -> Dict[str, Any]:
     """Dated facts from salary_payslips: gross and withholding by pay month,
     the persons covered, and the latest stub date. Feeds the quarterly
@@ -862,6 +936,25 @@ def _get_forecast_income(db: Session, year: int) -> Dict[str, Any]:
 
     # Schedule 1 line 8z (Robinhood ACAT bonus etc.)
     income["other_income"] = _get_other_income(db, year)
+
+    # One-time lump sums from the bank feed (MapUp option cash-out 2026,
+    # AdamX annual payment) — see _ONE_TIME_TAX_CHARACTER.
+    one_time = _get_one_time_income(db, year)
+    income["other_income"] += one_time["other"]
+    income["self_employment_income"] = one_time["self_employment"]
+    income["one_time_items"] = one_time["items"]
+    neel_wages = sum(float(b.get("wages") or 0) for b in income["w2_income"].get("breakdown", [])
+                     if (b.get("employee_name") or "").lower().startswith("neel"))
+    income["se_tax"] = _calculate_se_tax(
+        income["self_employment_income"], neel_wages,
+        float(income["w2_income"].get("total_wages") or 0), year)
+    if one_time["other"]:
+        income.setdefault("data_gaps", []).append({
+            "kind": "character_unconfirmed", "person": "Neel",
+            "detail": f"{one_time['other']:,.0f} of one-time income (AdamX annual payment) is taxed as "
+                      f"Schedule 1 other income; if the payer issues a 1099-NEC it is self-employment "
+                      f"income and owes SE tax",
+        })
     
     # Get TAXABLE investment income only (excludes IRA, Roth IRA, 401k, HSA)
     # Income in retirement accounts is tax-deferred or tax-free
@@ -1031,6 +1124,8 @@ def _calculate_agi(income: Dict[str, Any]) -> float:
     agi += income.get("dividend_income", 0)
     agi += income.get("interest_income", 0)
     agi += income.get("other_income", 0)  # Schedule 1 line 8z
+    agi += income.get("self_employment_income", 0)              # Schedule C
+    agi -= income.get("se_tax", {}).get("half_deduction", 0)   # Schedule 1 line 15
 
     # Rental income (net after expenses)
     rental_income = income.get("rental_income", 0)
@@ -1400,7 +1495,11 @@ def _calculate_other_taxes(
         niit_base = min(investment_income, agi - niit_threshold)
         niit = niit_base * 0.038
         other_tax += niit
-    
+
+    # Self-employment tax (Schedule 2 line 4). Owed on the return, not
+    # withheld — so unlike W-2 payroll tax it belongs in total_tax.
+    other_tax += income.get("se_tax", {}).get("total", 0)
+
     return other_tax
 
 
@@ -1515,11 +1614,24 @@ def _build_forecast_details(
             "amount": income["interest_income"]
         })
 
+    if income.get("self_employment_income", 0):
+        se = income.get("se_tax", {})
+        details["income_sources"].append({
+            "source": "Self-employment income (Schedule C)",
+            "amount": income["self_employment_income"],
+            "note": "; ".join(f"{i['label']} {i['amount']:,.0f} ({i['date']})"
+                              for i in income.get("one_time_items", [])
+                              if i["character"] == "self_employment")
+                    + f" — SE tax {se.get('total', 0):,.0f}, half deductible {se.get('half_deduction', 0):,.0f}"
+        })
+        details["self_employment_tax"] = se
     if income.get("other_income", 0):
+        other_items = [i for i in income.get("one_time_items", []) if i["character"] == "other"]
         details["income_sources"].append({
             "source": "Other Income (Schedule 1 line 8z)",
             "amount": income["other_income"],
-            "note": "Broker bonuses (ABIP)"
+            "note": "; ".join(["Broker bonuses (ABIP)"] +
+                              [f"{i['label']} {i['amount']:,.0f} ({i['date']})" for i in other_items])
         })
     if income.get("data_gaps"):
         details["data_gaps"] = income["data_gaps"]

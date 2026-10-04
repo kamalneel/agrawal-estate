@@ -39,6 +39,18 @@ FIXED_SOURCES = {"salary", "rental", "airbnb"}
 #: makes lending material, it shows up on its own without rebuilding this.
 DYNAMIC_SOURCES = {"options", "dividends", "interest", "equity_sales"}
 
+#: One-time income: money that arrives once and is neither a rate, a yield
+#: nor a rent — a liquidity event, an annual lump sum. It gets its own card
+#: so it can never inflate the recurring picture, and its own bucket in the
+#: period totals (total = fixed + dynamic + one_time). Fed by Monarch rows
+#: the Spending rulebook classifies CategoryKind.INCOME under these labels:
+#: the rule in COUNTERPARTY_RULES is the single definition of what each
+#: payer is, and this list says which of those labels are one-time. Neel,
+#: 2026-10-04, on the $249,062 MapUp option cash-out: "on the income page,
+#: this will be a one-time income."
+ONE_TIME_SOURCES = {"one_time"}
+_ONE_TIME_INCOME_LABELS = ("MapUp option cash-out", "AdamX annual payment")
+
 #: Monarch category -> income stream. Both sides of each category net into
 #: the stream (see the BUSINESS block in get_unified_income).
 #: 303 Hartstene feeds "rental" so the user sees ONE continuous rent line:
@@ -580,17 +592,31 @@ def get_unified_income(
             if in_range(d) and r.amount:
                 by_source[_bucket(d, granularity)][src] += float(r.amount)
 
+    # --- one-time income (see ONE_TIME_SOURCES). Inflows only; dated the
+    # day the money landed. Same classify() as the Spending page, so a row
+    # is income here exactly when it is excluded there.
+    for r in db.execute(text("""
+        SELECT transaction_date, amount, original_statement, merchant, category
+        FROM spending_transactions WHERE amount > 0
+    """)).fetchall():
+        rc = classify(r.category, r.merchant, r.original_statement, r.amount)
+        if (rc.kind == CategoryKind.INCOME and rc.label in _ONE_TIME_INCOME_LABELS
+                and in_range(r.transaction_date)):
+            by_source[_bucket(r.transaction_date, granularity)]["one_time"] += float(r.amount)
+
     # --- assemble
     periods: List[Dict] = []
     for p in sorted(set(by_source) | set(by_account)):
         srcs = {k: round(v, 2) for k, v in by_source[p].items()}
         fixed = sum(v for k, v in srcs.items() if k in FIXED_SOURCES)
         dynamic = sum(v for k, v in srcs.items() if k in DYNAMIC_SOURCES)
+        one_time = sum(v for k, v in srcs.items() if k in ONE_TIME_SOURCES)
         periods.append({
             "period": str(p),
-            "total": round(fixed + dynamic, 2),
+            "total": round(fixed + dynamic + one_time, 2),
             "fixed": round(fixed, 2),
             "dynamic": round(dynamic, 2),
+            "one_time": round(one_time, 2),
             "by_source": srcs,
             "by_account": {k: round(v, 2) for k, v in by_account[p].items()},
             "unresolved_basis_rows": unresolved.get(p, 0),
@@ -605,5 +631,6 @@ def get_unified_income(
             "total": round(sum(x["total"] for x in periods), 2),
             "fixed": round(sum(x["fixed"] for x in periods), 2),
             "dynamic": round(sum(x["dynamic"] for x in periods), 2),
+            "one_time": round(sum(x["one_time"] for x in periods), 2),
         },
     }

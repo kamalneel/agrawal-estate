@@ -14,13 +14,14 @@ interface UnifiedPeriod {
   total: number
   fixed: number
   dynamic: number
+  one_time?: number
   by_source: Record<string, number>
   by_account: Record<string, number>
   unresolved_basis_rows: number
 }
 
 // Display order + labels; drillable sources navigate to a detail view.
-const SOURCES: Array<{ key: string; label: string; kind: 'fixed' | 'dynamic'; drill?: string }> = [
+const SOURCES: Array<{ key: string; label: string; kind: 'fixed' | 'dynamic' | 'one_time'; drill?: string }> = [
   { key: 'salary', label: 'Salary', kind: 'fixed', drill: 'salary' },
   { key: 'rental', label: 'Rent', kind: 'fixed', drill: 'rental' },
   // Build-out costs today, revenue from 2027 — negative until then, by design.
@@ -32,6 +33,10 @@ const SOURCES: Array<{ key: string; label: string; kind: 'fixed' | 'dynamic'; dr
   // 'lending' dropped 2026-09-06 (Neel: "drop it" — $9.42 lifetime); SLIP
   // rows still ingest and now land in 'interest'. Backend no longer emits
   // the key, so a card here only ever read $0.
+  // Lump sums (MapUp option cash-out, AdamX annual payment) — neither fixed
+  // nor dynamic, so they get their own card and their own line in the split
+  // and never inflate the recurring picture (Neel, 2026-10-04).
+  { key: 'one_time', label: 'One-time', kind: 'one_time' },
 ]
 
 function fmt(v: number): string {
@@ -183,6 +188,12 @@ export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary, ta
                 <span className={styles.splitLabel}>Dynamic</span>
                 <span className={clsx(styles.splitValue, p.dynamic < 0 && styles.negative)}>{fmt(p.dynamic)}</span>
               </div>
+              {(p.one_time ?? 0) !== 0 && (
+                <div className={styles.splitItem}>
+                  <span className={styles.splitLabel}>One-time</span>
+                  <span className={styles.splitValue}>{fmt(p.one_time!)}</span>
+                </div>
+              )}
             </div>
             {p.unresolved_basis_rows > 0 && (
               <span className={styles.unresolvedBadge} title="Sales excluded from P/L pending basis resolution">
@@ -212,7 +223,7 @@ export function UnifiedIncomeBand({ onDrill, onPeriodChange, projectedSalary, ta
                 >
                   <span className={styles.chipLabel}>
                     {s.label}
-                    <span className={styles.chipKind}>{s.kind === 'fixed' ? 'F' : 'D'}</span>
+                    <span className={styles.chipKind}>{s.kind === 'fixed' ? 'F' : s.kind === 'dynamic' ? 'D' : '1×'}</span>
                   </span>
                   <span className={clsx(styles.chipValue, v < 0 ? styles.negative : v > 0 ? styles.positive : styles.zero)}>
                     {fmt(v)}

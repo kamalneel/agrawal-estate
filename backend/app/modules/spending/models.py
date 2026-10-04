@@ -178,6 +178,16 @@ NON_MONTHLY_CATEGORIES = {
     "India Trip 2024",
 }
 
+# One-time payments that happen to land in an ongoing category. They count
+# in the total but as "annual and one-time", never in the month-to-month
+# number (Neel, 2026-10-02: "both of those expenses are one-time, they are
+# not ongoing — the tutor and iPhone"). Matched on statement + merchant.
+ONE_TIME_NEEDLES: tuple[str, ...] = (
+    "denise hall", "yanghall",          # Alisha's English tutor, one block, Sep 2026
+    "zelle payment to pranay",          # the iPhone 17 he ordered, Sep 2026
+    "apple cash sent money",            # Apple Cash person-to-person, Sep 2026
+)
+
 # Monarch files every housing payment under one "Rent" category, which mixed
 # four unrelated things and made the category unreadable: May 2026 showed
 # $27,618 and June showed a NET REFUND, so the move between homes — the
@@ -281,6 +291,16 @@ COUNTERPARTY_RULES: list[tuple] = [
     # "Business Income"; the first pass here had it netting September's
     # spend down to $5K, which was wrong.
     ("AdamX annual payment", CategoryKind.INCOME, ("adamx inc",), "in"),
+    # MapUp Inc. was acquired by Bestpass (Project Compass, SPA signed
+    # 2026-09-29). Neel's 112,500 unexercised advisor NSOs ($0.71 strike,
+    # granted 2025-05-11 under the 2023 advisor agreement) were cancelled at
+    # closing for cash; TOLLPASS LLC is the acquirer's paying entity. The
+    # wire — $249,062.27 into Savings ...7358 on 2026-10-02 — is ordinary
+    # nonemployee compensation (never shares, so no capital gain). A pro
+    # rata earnout may follow from the same payer; it lands here too.
+    # Agreements: data/tax-documents/2026/mapup/. Neel, 2026-10-04: "on the
+    # income page, this will be a one-time income."
+    ("MapUp option cash-out", CategoryKind.INCOME, ("tollpass",), "in"),
     # A friend: money to or from him settles shared dinners and activities
     # (Neel, 2026-09-11). Outflows are spending; inflows NET against it
     # (see NETTING_LABELS) — he is paying his half back, not paying Neel.
@@ -297,6 +317,24 @@ COUNTERPARTY_RULES: list[tuple] = [
     # without accents, in case Monarch strips them.
     ("Household Help", CategoryKind.SPENDING,
      ("liseldí domínguez", "liseldi dominguez", "domínguez", "dominguez"), "out"),
+    # --- Zelle payees settled 2026-09-23 --------------------------------
+    # Dena Baez moved the family in (nine Zelles, May 26 - Jun 8 2026).
+    ("Home Search & Moving", CategoryKind.SPENDING, ("dena baez",), "out"),
+    # Loans to friends are an asset, not spend: Jay Prakash ($2,000, Mar
+    # 2026), Utkarsh (memo "One time loan", $1,000, Apr 2025). Labelled so
+    # they can be found; excluded from spending like any transfer.
+    ("Loan to a friend", CategoryKind.TRANSFER, ("jay prakash", "zelle payment to utkarsh")),
+    # Memos that say what the payment is.
+    ("Alisha's Education", CategoryKind.SPENDING, ("alice ruzicka",), "out"),   # "Alisha IQ Assessment"
+    ("Work expenses (reimbursed)", CategoryKind.SPENDING, ("raj photographer adamx",), "out"),
+    # The old Hartstene tenant's deposit going back belongs to the property
+    # ledger, with the rent it came in against.
+    ("303 Hartstene Dr", CategoryKind.BUSINESS, ("namit tenant",)),
+    # Yomara Lopez de Morales was the house cleaner before Liseldí (Neel,
+    # 2026-09-23).
+    ("Household Help", CategoryKind.SPENDING, ("yomara",), "out"),
+    # ISKCON — a Zelle to the temple is a donation.
+    ("Charity", CategoryKind.SPENDING, ("society for krishna",), "out"),
 ]
 
 #: One transaction that is really two. Matched by statement needle AND exact
@@ -359,7 +397,7 @@ ACCOUNT_DISPLAY: list[tuple[str, str]] = [
     ("PREMIER PLUS CKG (...5973)", "Chase checking 5973"),
     ("Costco Anywhere Visa Card by Citi (...1453)", "Costco Citi card"),
     ("CREDIT CARD (...2417)", "Amazon card 2417"),
-    ("CREDIT CARD (...5149)", "Card 5149 (deprecated)"),
+    ("CREDIT CARD (...5149)", "Chase business card 5149 (FanbaseAI)"),
     ("PayPal", "PayPal"),
 ]
 ACCOUNT_ORDER = {name: i for i, (name, _) in enumerate(ACCOUNT_DISPLAY)}
@@ -370,8 +408,10 @@ ACCOUNT_NAMES = dict(ACCOUNT_DISPLAY)
 RETIRED_ACCOUNTS: dict[str, str] = {
     "Spending (...dabe)": "superseded by Checking (...8935) and Savings "
                           "(...7358) after the 2026-06 Robinhood reconnect",
-    "CREDIT CARD (...5149)": "deprecated — Neel, 2026-09-11 (last row "
-                             "2026-06-19)",
+    # "CREDIT CARD (...5149)" was called deprecated on 2026-09-11 but is the
+    # Chase card FanbaseAI's costs ride on (Stripe Atlas registered agent,
+    # Squarespace domain, Skype) and it charged again on 2026-09-22 — so it
+    # is live, just quiet. Not retired.
 }
 
 #: Lines that have appeared every month for 20 months. A month without one is

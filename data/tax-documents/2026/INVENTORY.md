@@ -89,3 +89,17 @@ Neel's stubs show $0 of 401(k), benefits, or post-tax deductions; SS 930 / Medic
 - [ ] Estimated tax payment records (federal + CA)
 - [ ] Charitable contribution receipts
 - [ ] Any major life events (vehicle purchases, property sales, etc.)
+
+## Income — Nonemployee compensation (1099-NEC)
+
+**MapUp Inc. option cash-out.** MapUp was acquired by Bestpass, Inc. (Project Compass). Neel's 112,500 unexercised advisor NSOs (granted 2025-05-11 at $0.71 under the 2023-05-04 advisor agreement, independent contractor) were cancelled at closing for cash. Shares were never issued → ordinary nonemployee compensation, Schedule C + Schedule SE; **not** a capital gain, no QSBS. A pro rata earnout (SPA §2.06) is still contingent.
+
+| File | Recipient | Issuer | Date | Amount | Status | Notes |
+|---|---|---|---|---:|---|---|
+| `mapup/2023-05-04 MapUp Advisor Agreement (Neel Kamal).pdf` | Neel | MapUp Inc. | 2023-05-04 | — | received | §7: advisor pays self-employment taxes |
+| `mapup/2026-09-29 MapUp Option Cancellation Agreement (Neel Kamal).pdf` | Neel | MapUp Inc. | 2026-09-29 | — | received | Exhibit A: 112,500 options @ $0.71; closing + earnout consideration |
+| _(bank wire)_ | Neel | TOLLPASS LLC (Bestpass) | 2026-10-02 | 249,062.27 | received | Savings ...7358; = 112,500 × ($2.9239 − $0.71). In `spending_transactions`; rule "MapUp option cash-out" |
+| _(Form 1099-NEC, Bestpass/TOLLPASS)_ | Neel | Bestpass / TOLLPASS LLC | — | awaiting | Expected Jan 2027; must show 249,062.27 (plus any earnout paid in 2026) |
+| _(earnout payments)_ | Neel | TOLLPASS LLC | — | awaiting | Contingent; each one is more 1099-NEC income in the year paid |
+
+**Estimated-tax note.** No tax was withheld on the wire. Q4 2026 estimate is due 2027-01-15; the Tax page's 2026 forecast carries the SE tax and the ordinary-income effect.
