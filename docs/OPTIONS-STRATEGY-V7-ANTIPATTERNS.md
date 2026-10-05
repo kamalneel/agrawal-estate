@@ -254,3 +254,71 @@ One card changes, and it is the right one:
 That is the MU pattern caught a week early: IBIT has been rolled at $39 at
 the time-value floor repeatedly, for almost nothing, while the stock walked
 away from the strike.
+
+---
+
+## 7. Once a put is deep in the money: roll it, do not wheel it
+
+Neel, 2026-10-04, reframing anti-pattern 3: *"The real dilemma for puts is:
+once you are in a depressed situation like SOXL, what can you do? (1) Take
+the put and start wheeling, or (2) stay hopeful and keep rolling. We can't
+really say do not fall prey to the depressed situation, because that would
+mean stopping to sell puts altogether."*
+
+Right — depressed situations are not avoidable, they are the business. The
+answerable question is what to do once you are in one. **SOXL ran both
+experiments at the same time on the same name**, which is as clean a test
+as this ledger will ever produce.
+
+Six weeks, 2026-08-26 → today:
+
+| | Capital | Premium banked | Return | Position now |
+|---|---|---|---|---|
+| **A — kept rolling** the $150 put ×2 | $30,000 | **$2,394** | **7.98%** | SOXL $163.67, the put is now **out of the money** |
+| **B — took assignment** at $195/$200, wheeled 400 sh | $78,500 | $1,921 | 2.45% | shares worth $65,468, **−$13,032** |
+
+Rolling returned **three times** as much per dollar and ends with the
+position resolving for free. Wheeling banked less and carries a $13,032
+mark.
+
+**Why, and it is not luck.** Look at the calls sold on those assigned
+shares: **$140, $150, $130, $136, $140** — every one *below* the $195–200
+the shares cost. Wheeling a depressed name means writing calls under your
+own basis, which is not income, it is capitulation in instalments. If they
+assign, the loss is realised. SOXL at $163.67 now has those $140 calls
+$23 in the money.
+
+This is the same fact anti-pattern 8 measures from the other side: **calls
+on depressed names pay almost nothing (0.08%)**, so the call leg of the
+wheel has nothing to give exactly when you need it.
+
+**Rule:** while an in-the-money put still rolls for a credit, roll it. Take
+assignment when the roll stops paying — not as a strategy for harvesting a
+depressed name. The existing `put_roll_rsi` and `roll_thin_credit_ps` tests
+already encode this; what was missing was the reason.
+
+## 8. Calls on depressed names earn nothing
+
+Every call chain sold since 2025-06, bucketed by where the stock sat on the
+day of sale — the mirror of the put table in anti-pattern 3:
+
+| When sold | Chains | Net premium | Notional | Yield | Assigned |
+|---|---|---|---|---|---|
+| **Depressed** | 174 | **$14,713** | $19.4M | **0.08%** | 6% |
+| Normal | 439 | $97,777 | $72.8M | 0.13% | 8% |
+| **Extended** | 238 | **$74,257** | $25.3M | **0.29%** | 14% |
+
+Exactly inverted from puts, and economically obvious once seen: a stock
+that has just run has rich call premium and thin put premium.
+
+- **Extended is where call money is made** — 3× the normal band's yield for
+  modestly more assignment risk. This vindicates the 2026-10-02 change
+  (`lt_delta_mr_step`: extended → sell closer) and argues for pushing it.
+- **Depressed is 174 chains of work for $14,713.** On the same name in the
+  same week, the *put* paid 1.58% against the call's 0.08% — twenty times
+  the return on the other side of the book.
+
+**Candidate rule:** skip calls on depressed long-term names, the mirror of
+`put_skip_extended`. Counter-argument on the record: a 6% assignment rate
+means the shares are almost never lost, and $14,713 is still $14,713.
+Undecided.
