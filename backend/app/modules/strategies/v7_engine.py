@@ -1357,6 +1357,7 @@ def build_v7_queue(db: Session) -> Dict:
     put_exp = today + timedelta(days=put_dte)
     put_candidates = []
     concentrated = []
+    extended = []
     # Every name held, both books (Neel, 2026-09-17: "puts on anything and
     # everything as long as it has high volatility and I can earn"). The
     # concentration cap applies to short-term names (share of the
@@ -1385,6 +1386,16 @@ def build_v7_queue(db: Session) -> Dict:
         vol, vol_src = vol_of(sym)
         vs_sma = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
         thr = K(pol, "mr_threshold_pct")
+        if vs_sma is not None and vs_sma >= thr and K(pol, "put_skip_extended"):
+            # Extended names are the losing bucket, measured over 95 chains
+            # since 2025-06: 0.96% yield on collateral for a 36% assignment
+            # rate — half the yield of the normal band (1.81% / 35%) for
+            # more risk. Depressed was NOT the dangerous one (1.58% / 34%);
+            # that read came from looking only at puts that assigned, which
+            # is selection bias. Neel, 2026-10-04: "skip extended names, put
+            # that collateral into the other two buckets."
+            extended.append(f"{sym} {vs_sma:+.0f}%")
+            continue
         if vs_sma is not None and vs_sma <= -thr:
             base, why = 40, f"{vs_sma:+.1f}% vs 10-day avg → base 40 (depressed: closer put)"
         elif vs_sma is not None and vs_sma >= thr:
@@ -1495,13 +1506,18 @@ def build_v7_queue(db: Session) -> Dict:
                  + spread_note(p.get("quote"))
                  + f" · {p['yield_wk']:.1f}%/wk on collateral · {p['why']}",
                  "Layer 3: puts on every name you hold, both books, against cash and margin. The put delta is the mirror of the "
-                 "call rule — a depressed or oversold name gets a closer put, an extended one a farther put — scaled "
-                 "by the name's own volatility, so risk is in the delta. Candidates are then ranked by weekly yield on "
+                 + ("call rule — a depressed or oversold name gets a closer put, and an extended one is skipped — scaled "
+                    if K(pol, "put_skip_extended") else
+                    "call rule — a depressed or oversold name gets a closer put, an extended one a farther put — scaled ")
+                 + "by the name's own volatility, so risk is in the delta. Candidates are then ranked by weekly yield on "
                  f"collateral at that delta (×{K(pol, 'put_depressed_bonus'):.2f} when ≥{K(pol, 'mr_threshold_pct'):.0f}% below the 10-day average), "
                  "and the best yield that fits the account's capacity is sized to it: "
                  f"{ranking_txt}. Names at or above {max_sym_pct:.0f}% of book B, or {max_put_pct:.0f}% of the put book, are skipped"
                  + (f" (today: {', '.join(concentrated)})" if concentrated else "") + ". "
-                 "Capacity = margin line + cash − open collateral − margin already drawn.",
+                 + (f"Names {K(pol, 'mr_threshold_pct'):.0f}%+ above their 10-day average are skipped entirely — over 95 chains that "
+                    f"bucket paid 0.96% a week for a 36% assignment rate, against 1.81% / 35% in the normal band"
+                    + (f" (today: {', '.join(extended)})" if extended else "") + ". " if K(pol, "put_skip_extended") else "")
+                 + "Capacity = margin line + cash − open collateral − margin already drawn.",
                  earn=est,
                  context={"capacity": capacity, "st_pct": round(st_pct, 1), "score": round(p["score"], 2),
                           "delta": p["delta"], "vol": p["vol"], "vs_sma": p["vs_sma"]})

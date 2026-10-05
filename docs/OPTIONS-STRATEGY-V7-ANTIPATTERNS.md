@@ -120,9 +120,33 @@ average) gets a *closer* put, base delta 40**, on the reasoning that "the
 bounce is coming." On this sample the bounce mostly did not come. That rule
 should be tested against outcomes rather than assumed.
 
-**Candidate rule:** separate "cheap" from "falling." A name below its
-average because it chopped is a different trade from one in a sustained
-downtrend, and the 10-day average cannot tell them apart.
+### Corrected 2026-10-04 — it is EXTENDED names that lose, not depressed
+
+Measuring only puts that *assigned* is selection bias: a put assigns only
+when the stock falls. Re-run across **every** put chain since 2025-06,
+bucketed by where the stock sat on the day it was sold:
+
+| When sold | Chains | Net premium | Collateral | Weekly yield | Assigned |
+|---|---|---|---|---|---|
+| Depressed (≥5% below 10-day avg) | 126 | $63,204 | $3,992,000 | 1.58% | **34%** |
+| Normal band | 121 | $88,146 | $4,877,200 | **1.81%** | 35% |
+| **Extended (≥5% above)** | 95 | $42,757 | $4,452,000 | **0.96%** | **36%** |
+
+Assignment rates are flat across all three — depressed is not more
+dangerous, and is marginally the safest. **Extended is the losing bucket:
+half the yield of the normal band for the highest assignment rate.**
+
+**Rule, settled 2026-10-04** (Neel: *"skip extended names, put that
+collateral into the other two buckets"*): no new put on a name ≥
+`mr_threshold_pct` above its 10-day average. Knob `put_skip_extended` = 1.
+Today that skips SOXL (+10%) and SPCX (+6%), and the freed collateral
+ranks into AVGO, RKLB and ZM instead.
+
+**Still open:** separating "cheap" from "falling." A name below its average
+because it chopped is a different trade from one in a sustained downtrend,
+and a 10-day average cannot tell them apart — it follows the stock down, so
+a steady slide never reads as depressed (AVGO on 2026-09-16: −2.7% against
+its average while 6% below the previous Friday).
 
 ## 4. Do not repeat a strike on the same name on the same day
 
