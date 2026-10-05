@@ -695,6 +695,16 @@
       "step": 1,
       "min": 5,
       "max": 100
+    },
+    "call_skip_depressed": {
+      "value": 0,
+      "label": "Skip calls on depressed names",
+      "group": "Long-term calls",
+      "description": "1 = no new long-term call on a name at least mr_threshold_pct BELOW its 10-day average; the shares stay uncovered and the capital works on the put side. 0 = sell at the base delta (V7 behaviour). Evidence over 174 call chains since 2025-06: depressed paid 0.08% of notional, normal 0.13%, extended 0.29% — while the put on the same name in the same week paid 1.58%. Neel, 2026-10-05.",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1
     }
   },
   "put_only": {

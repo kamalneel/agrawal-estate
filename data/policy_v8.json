@@ -3,7 +3,8 @@
   "as_of": "2026-10-04",
   "differences_from_v7": [
     "put_skip_extended = 1 — no new put on a name >= mr_threshold_pct above its 10-day average. Evidence: 95 extended chains paid 0.96%/wk at a 36% assignment rate, against 1.81% / 35% in the normal band and 1.58% / 34% depressed.",
-    "roll_abandon_pct = 20 (vol-scaled) — past that gap above the strike, stop citing RSI or the roll credit as a reason to wait; decide on the rule-5 tax test alone. Evidence: 0 of 13 call assignments more than 10% above the strike traded back within 13 weeks ($186,000 given up), against 10 of 18 below 10%."
+    "roll_abandon_pct = 20 (vol-scaled) — past that gap above the strike, stop citing RSI or the roll credit as a reason to wait; decide on the rule-5 tax test alone. Evidence: 0 of 13 call assignments more than 10% above the strike traded back within 13 weeks ($186,000 given up), against 10 of 18 below 10%.",
+    "call_skip_depressed = 1 — no long-term call on a name >= mr_threshold_pct below its 10-day average. Evidence: 174 depressed call chains paid 0.08% of notional against 0.13% normal and 0.29% extended, while the put on the same name in the same week paid 1.58%. The mirror of put_skip_extended."
   ],
   "knobs": {
     "put_skip_extended": {
@@ -11,6 +12,9 @@
     },
     "roll_abandon_pct": {
       "value": 20
+    },
+    "call_skip_depressed": {
+      "value": 1
     }
   }
 }

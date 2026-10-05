@@ -732,6 +732,29 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
             target_delta = max(5.0, min(25.0, target_delta))
             delta_txt = f"{target_delta:.0f}"
             wait, wait_reason = False, ""
+
+            # A call on a depressed long-term name earns almost nothing and
+            # caps the recovery you are waiting for. Measured over 174 call
+            # chains since 2025-06: depressed names paid 0.08% of notional
+            # against 0.13% in the normal band and 0.29% extended — $14,713
+            # of premium for 174 chains of work, while the PUT on the same
+            # name in the same week paid 1.58%. Twenty times the return on
+            # the other side of the book. Neel, 2026-10-05: "yes, add it to
+            # V8." The mirror of put_skip_extended.
+            if (vs_lt is not None and vs_lt <= -thr_lt
+                    and K(pol, "call_skip_depressed")):
+                card(1, "HOLD", acct, sym,
+                     f"{sym}: no call this week — {vs_lt:+.1f}% below its 10-day average",
+                     f"{n} contract{'s' if n > 1 else ''} uncoverable · a delta {base_delta:.0f} call here is worth about "
+                     f"${call_premium(spot, strike_for_delta(spot, base_delta, vol, dte_new, 0.055), vol, dte_new, n, RATE_TIER1_WEEKLY):,}"
+                     + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
+                     "Calls on depressed names earn almost nothing and cap the bounce you are waiting for: across 174 "
+                     "chains since 2025-06 they paid 0.08% of notional, against 0.13% in the normal band and 0.29% "
+                     "when the name was extended. On the same name in the same week the put paid 1.58%. The shares "
+                     "stay uncovered until the name is back in its normal band, and the capital works on the put side "
+                     "instead.",
+                     context={"book": "long", "rsi": rsi, "spot": spot, "vs_sma": vs_lt, "skipped": "depressed"})
+                continue
             picked = chain_pick(chains, sym, "call", exp, target_delta)
             strike = picked["strike"] if picked else strike_for_delta(spot, target_delta, vol, dte_new, 0.055)
             floor = ""
