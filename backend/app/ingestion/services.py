@@ -1453,16 +1453,21 @@ def save_portfolio_snapshot(db: Session, record: ParsedRecord, ingestion_id: Opt
             return (a is None) != (b is None)
         return abs(Decimal(str(a)) - Decimal(str(b))) > Decimal("0.01")
 
+    # A record without a cash/securities split (e.g. a beginning-balance line
+    # on a year-end statement) must not erase a split another statement gave.
+    carries_split = data.get("cash_balance") is not None or data.get("securities_value") is not None
+
     if existing:
         # A statement replaces whatever sat on that date (a daily row or a
         # backfilled value) whenever any of the three figures differ, and the
         # row takes this ingestion's id so it counts as statement-sourced.
         if (_differs(existing.portfolio_value, portfolio_value)
-                or _differs(existing.cash_balance, data.get("cash_balance"))
-                or _differs(existing.securities_value, data.get("securities_value"))):
+                or (carries_split and (_differs(existing.cash_balance, data.get("cash_balance"))
+                                       or _differs(existing.securities_value, data.get("securities_value"))))):
             existing.portfolio_value = portfolio_value
-            existing.cash_balance = data.get("cash_balance")
-            existing.securities_value = data.get("securities_value")
+            if carries_split or _differs(existing.portfolio_value, portfolio_value):
+                existing.cash_balance = data.get("cash_balance")
+                existing.securities_value = data.get("securities_value")
             existing.owner = data.get("owner")
             existing.account_type = data.get("account_type")
             existing.ingestion_id = ingestion_id

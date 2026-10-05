@@ -44,6 +44,17 @@ mark-to-market of open short options. Statement rows (`ingestion_id` set) are
 authoritative for a month-end. Definition and writers: see
 `docs/BBD-CALCULATIONS.md`, "Portfolio value".
 
+**Statement parsers by institution** (`backend/app/ingestion/parsers/`):
+Robinhood PDF (`robinhood_pdf.py`, routes pages by account number, writes
+margin balances too), Fidelity PDF (`fidelity_pdf.py`, quarterly and year-end
+"INVESTMENT REPORT"; cash = the FDRXX core position at $1, securities = the
+rest, checked against the printed Total Holdings; the period's Beginning
+Account Value is also recorded as the prior period-end close), Fidelity CSV,
+Schwab PDF, TD Ameritrade PDF. A statement whose only account is not tracked
+(e.g. Jaya's Fidelity Individual TOD Z26-327289) is logged with a warning and
+moved to processed with no records. Tracked Fidelity numbers:
+`FIDELITY_ACCOUNTS` in `fidelity_pdf.py` (235-964125 = `family_hsa`).
+
 **How to Import:** Upload via Data Import page or drop in `/data/inbox/investments/`
 
 ### 2. Activity Report CSV

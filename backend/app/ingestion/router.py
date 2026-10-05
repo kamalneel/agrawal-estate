@@ -51,6 +51,7 @@ def get_all_parsers():
     from app.ingestion.parsers.robinhood_pdf import RobinhoodPDFParser
     from app.ingestion.parsers.robinhood_1099 import Robinhood1099Parser
     from app.ingestion.parsers.fidelity_csv import FidelityCSVParser
+    from app.ingestion.parsers.fidelity_pdf import FidelityPDFParser
     from app.ingestion.parsers.schwab_pdf import SchwabPDFParser
     from app.ingestion.parsers.chase import ChaseParser
     from app.ingestion.parsers.monarch import MonarchParser
@@ -62,6 +63,7 @@ def get_all_parsers():
         RobinhoodPDFParser(),
         RobinhoodParser(),
         FidelityCSVParser(),
+        FidelityPDFParser(),
         SchwabPDFParser(),
         ChaseParser(),
         MonarchParser(),
@@ -221,6 +223,35 @@ def trigger_inbox_scan(db: Session = Depends(get_db)):
                                 }
                             })
                             logger.info(f"Processed {file_path.name}: created={verified_created}, skipped={expected_skipped}")
+                            parsed = True
+                            break
+                        elif result.success and not result.records:
+                            # Parsed cleanly but nothing to record (e.g. a statement whose
+                            # only account is not tracked). Log it with its warnings and
+                            # move it out of the inbox so it does not re-appear every scan.
+                            complete_ingestion_log(
+                                db=db,
+                                log=ingestion_log,
+                                status="success",
+                                records_created=0,
+                                records_updated=0,
+                                records_skipped=0,
+                            )
+                            if result.warnings:
+                                ingestion_log.warnings = "; ".join(result.warnings[:5])
+                            db.commit()
+                            processed_dir = settings.PROCESSED_DIR / folder.relative_to(settings.INBOX_DIR)
+                            processed_dir.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(file_path), str(processed_dir / file_path.name))
+                            files_processed += 1
+                            results.append({
+                                "file": file_path.name,
+                                "parser": parser.source_name,
+                                "status": "no_records",
+                                "ingestion_id": ingestion_log.id,
+                                "warnings": result.warnings,
+                            })
+                            logger.info(f"Processed {file_path.name} with 0 records: {'; '.join(result.warnings)}")
                             parsed = True
                             break
                         elif result.errors:
