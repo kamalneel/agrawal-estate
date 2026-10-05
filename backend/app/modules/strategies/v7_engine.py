@@ -65,8 +65,29 @@ def K(pol: Dict, key: str):
     return pol["knobs"][key]["value"]
 
 
-def load_policy_v2() -> Dict:
-    return json.loads(_POLICY_V2.read_text())
+_POLICY_V8 = Path(__file__).resolve().parents[4] / "data" / "policy_v8.json"
+
+
+def load_policy_v2(version: str = "v7") -> Dict:
+    """The rulebook. V7 is live; V8 is the same engine reading a second
+    policy file, so the two differ only in knobs and lists — no forked
+    code to drift (Neel, 2026-10-04: "shall we put these new ones in V8
+    and run it in parallel so I can give you feedback"). V8 inherits every
+    V7 key and overrides what its own file sets, so a V7 change reaches V8
+    automatically and only the deliberate differences live in policy_v8."""
+    base = json.loads(_POLICY_V2.read_text())
+    if version != "v8" or not _POLICY_V8.exists():
+        return base
+    over = json.loads(_POLICY_V8.read_text())
+    merged = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            merged[k] = {**base[k], **v}
+        else:
+            merged[k] = v
+    merged["knobs"] = {**base["knobs"], **{kk: {**base["knobs"].get(kk, {}), **vv}
+                                          for kk, vv in (over.get("knobs") or {}).items()}}
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -532,9 +553,9 @@ def _fmt_exp(d: Optional[date]) -> str:
 # Engine
 # ---------------------------------------------------------------------------
 
-def build_v7_queue(db: Session) -> Dict:
+def build_v7_queue(db: Session, version: str = "v7") -> Dict:
     today = date.today()
-    pol = load_policy_v2()
+    pol = load_policy_v2(version)
     long_term = set(pol["long_term"]["symbols"])
     short_term = set(pol["short_term"]["symbols"])
     put_only = set(pol.get("put_only", {}).get("symbols", []))   # bucket C's own names (2026-09-20)
@@ -868,7 +889,36 @@ def build_v7_queue(db: Session) -> Dict:
                         tax_txt = "tax unknown — no lots on file"
                     else:
                         tax_txt = "no tax — sheltered account"
-                    if rsi is not None and rsi >= assign_rsi:
+                    # Past a certain distance the stock is not coming back,
+                    # and the two "wait for it" reasons below are no longer
+                    # reasons. Neel, 2026-10-04: "distance — once it's 20%
+                    # above the strike it's not coming back." The ledger
+                    # agrees for the long-term book: of 8 call assignments
+                    # 20-40% above the strike, ZERO traded back under it
+                    # within 13 weeks ($172,388 of upside given up); of 5 at
+                    # 10-20%, zero; below 10%, 10 of 18 came back. The one
+                    # exception is RKLB, which came back from +47%, +56% and
+                    # +69% — a 69%-vol name moves that far in a normal
+                    # month, so the threshold scales with the name's own
+                    # volatility against vol_reference_pct (MU, called at
+                    # $330, is at $1,074; AVGO x3, NVDA x2 and GOOGL never
+                    # returned either).
+                    gap_pct = (spot / k - 1) * 100 if k else 0.0
+                    abandon_at = K(pol, "roll_abandon_pct")
+                    if vol_:
+                        abandon_at *= max(1.0, vol_ / (K(pol, "vol_reference_pct") / 100))
+                    gone = gap_pct >= abandon_at
+                    gone_txt = (f"{sym} is {gap_pct:.0f}% above the strike, past the {abandon_at:.0f}% line where this book "
+                                f"has never traded back (0 of 13 cases above 10%) — mean reversion is off the table, so the "
+                                f"decision is tax and capital alone")
+                    if gone:
+                        if not taxc["taxable"] or (tax is not None and (tax_pct is None or tax_pct <= max_tax_pct)):
+                            verdict, why_v = "LET ASSIGN", (gone_txt + f"; leaving is cheap ({tax_txt}) — let the shares go, "
+                                                           f"${proceeds:,.0f} returns to the put ranking")
+                        else:
+                            verdict, why_v = "ROLL", (gone_txt + f", and leaving is expensive ({tax_txt}, over the "
+                                                     f"{max_tax_pct:.0f}% line): carry it, but as a tax decision, not a market view")
+                    elif rsi is not None and rsi >= assign_rsi:
                         verdict, why_v = "ROLL", (f"{rsi_txt} ≥ {assign_rsi:.0f}: overbought, the come-down is near — "
                                                  f"roll and wait for it")
                     elif not thin:
@@ -1611,13 +1661,13 @@ def _v6_shape(card: Dict, layer_name: str, today: date) -> Dict:
     }
 
 
-def build_action_queue(db: Session) -> Dict:
+def build_action_queue(db: Session, version: str = "v7") -> Dict:
     """V7 in V6's queue contract: {generated_at, data_as_of, week_ending,
     engine_version, summary, items, positions}. The positions board is
     V6's (it is data, not recommendations)."""
     from app.modules.strategies.v6_engine import build_action_queue as _v6
     from app.shared.services.option_premium import friday_on_or_after
-    v7 = build_v7_queue(db)
+    v7 = build_v7_queue(db, version)
     v6 = _v6(db)   # for the positions board only
     today = date.today()
     items = [_v6_shape(c, L["name"], today) for L in v7["layers"] for c in L["items"]]
@@ -1626,7 +1676,7 @@ def build_action_queue(db: Session) -> Dict:
     summary = {p: sum(1 for i in items if i["priority"] == p) for p in order}
     return {
         "generated_at": str(today), "data_as_of": v6.get("data_as_of"),
-        "week_ending": str(friday_on_or_after(today)), "engine_version": "v7",
+        "week_ending": str(friday_on_or_after(today)), "engine_version": version,
         "premium": premium_summary(db, today),
         "summary": {**summary, "total": len(items)},
         "items": items, "positions": v6.get("positions", []),

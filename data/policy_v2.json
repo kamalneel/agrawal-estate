@@ -65,7 +65,8 @@
       "operating_assumption": "What goes up comes down. The system does not plan for a stock that runs $330 -> $350 -> $370 without a dip.",
       "rule_4_when_to_roll": "Neel, 2026-09-15. Roll THURSDAY by default; Friday morning if RSI > 70; immediately if the expiring contract's time value is <= $0.10/share (early-exercise floor) or the ex-dividend rule applies. Never Friday afternoon. Why: the same-strike credit is TV(next) - TV(this); TV(this) decays fastest in its last days so the credit grows through the week (AAPL $315: ~$0.75 Tue -> ~$0.98 Thu), and every un-rolled day is a day the dip can settle it for free. Rolling out early (or 2 weeks) leaves an at-the-money call to buy back at maximum time value when the dip comes - the fatter 2-week credit is the market paying for exactly that risk. Down moves early in the week are waited out, not rolled.",
       "rule_5_when_to_stop_rolling": "Neel, 2026-09-20. 'Whatever goes up comes down' — but how long it takes is the question, and the technicals answer it. Thursday of expiry week: RSI ≥ assign_rsi → ROLL (the come-down is near). RSI below and the roll paying ≥ roll_thin_credit_ps → ROLL (carrying is paid for). RSI below and the roll paying nothing → the come-down is months away and rolling for zero is dead money: weigh the cost of leaving = tax on the lots Highest Cost delivers (zero in sheltered accounts; negative when the top lots are under water; large when every lot is old and cheap). Tax ≤ lt_assign_max_tax_pct of proceeds → LET ASSIGN, the money returns to the put ranking and a put on the name is the way back in. Above → carry it. Worked examples 9/18: MSFT $450 (~5%) left, TSLA $335 (negative) left, AAPL $315 (~21%) carried. The engine proposes; planned_assignments remains Neel's explicit override either way.",
-      "rule_b_delta_floor": "Neel, 2026-09-28: Rule B does not fire on a call already comfortably out of the money near expiry (delta below rule_b_min_delta) — expiry clears it for free, so closing it costs money and buys nothing. Same family as the up-day time-value guard."
+      "rule_b_delta_floor": "Neel, 2026-09-28: Rule B does not fire on a call already comfortably out of the money near expiry (delta below rule_b_min_delta) — expiry clears it for free, so closing it costs money and buys nothing. Same family as the up-day time-value guard.",
+      "rule_6_abandon_distance": "Neel, 2026-10-04. Past roll_abandon_pct above the strike (vol-scaled), the long-term book has never traded back — 0 of 13 cases above 10%, against 10 of 18 below 10%. So the engine stops citing RSI or the roll credit as a reason to wait and decides on the rule-5 tax test alone. In a sheltered account that means LET ASSIGN; in a taxable one it still rolls when the lots are expensive, but says it is a tax decision rather than a market view."
     },
     "puts": {
       "rule": "Neel 2026-09-17: 'we should be selling puts on anything and everything as long as it has high volatility and I can earn.' Puts are allowed on long-term names; the put universe is every holding, ranked by return per unit of risk. If assigned, the shares are held (long-term book). The earlier 'no puts on long-term names' rule (2026-09-13) is retired.",
@@ -676,7 +677,7 @@
       "max": 15
     },
     "put_skip_extended": {
-      "value": 1,
+      "value": 0,
       "label": "Skip puts on extended names",
       "group": "Short-term puts",
       "description": "1 = no new put on a name at least mr_threshold_pct ABOVE its 10-day average; its collateral goes to the normal and depressed names instead. 0 = sell them at the farther strike (the old behaviour). Measured over 95 chains since 2025-06: extended paid 0.96%/wk for a 36% assignment rate, normal band 1.81% / 35%, depressed 1.58% / 34%. Neel, 2026-10-04.",
@@ -684,6 +685,16 @@
       "step": 1,
       "min": 0,
       "max": 1
+    },
+    "roll_abandon_pct": {
+      "value": 999,
+      "label": "Stop waiting for the come-down once the stock is this far above the strike",
+      "group": "Stuck calls",
+      "description": "%. Past this gap the 'it will come back' reasons (high RSI, a decent credit) are dropped and the roll-vs-assign choice is made on tax and capital alone. Scaled up by the name's own volatility against vol_reference_pct, because a 69%-vol name covers that distance in a normal month. Neel, 2026-10-04: 'once it's 20% above the strike it's not coming back.' Evidence: 0 of 8 call assignments 20-40% above the strike came back within 13 weeks ($172,388 given up), 0 of 5 at 10-20%, against 10 of 18 below 10%. Sole exception RKLB (+47/56/69%), which the vol scaling covers.",
+      "unit": "%",
+      "step": 1,
+      "min": 5,
+      "max": 100
     }
   },
   "put_only": {

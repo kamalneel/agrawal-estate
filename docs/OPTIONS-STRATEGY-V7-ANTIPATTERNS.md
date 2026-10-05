@@ -214,3 +214,43 @@ it exists.
 4. What is the counterfactual worth measuring: buy-and-hold, or
    buy-and-hold with no options at all? The −$113,000 figure assumes the
    first.
+
+---
+
+## How these ship: V8 runs beside V7
+
+Neel, 2026-10-04: *"Shall we put these new ones in V8 and run it in
+parallel so I can give you feedback before moving to V8?"* — the same loop
+that built V7 (see `memory/v7-live-trading-feedback-loop.md`).
+
+**V8 is not a fork.** It is the same engine reading `data/policy_v8.json`
+layered over `data/policy_v2.json`: V8 inherits every V7 key and overrides
+only what it deliberately changes, so a V7 fix reaches V8 automatically and
+the two can never drift apart in code. Live V7 is untouched —
+`put_skip_extended` back to 0 and `roll_abandon_pct` to 999 in the live
+policy.
+
+- `GET /strategies/v8/preview` — the V8 queue, four layers
+- `GET /strategies/v8/diff` — what V8 does differently from live V7, card
+  by card, which is the point of running them together
+
+### Rules in V8, not in V7
+
+| Rule | Knob | From |
+|---|---|---|
+| Skip puts on extended names | `put_skip_extended` = 1 | Anti-pattern 3 |
+| Stop waiting for the come-down past 20% above the strike (vol-scaled) | `roll_abandon_pct` = 20 | Anti-pattern 2 |
+
+### First diff, 2026-10-04
+
+One card changes, and it is the right one:
+
+> **IBIT $39 ×15, Neel's Brokerage.** V7: *roll now, time value $0.08 is at
+> the floor.* V8: **let 1,500 shares go** — IBIT is 22% above the strike,
+> past the line where this book has never traded back, and Neel's Brokerage
+> shows a −6.5% tax on the lots. Mean reversion is off the table and
+> leaving is free, so the roll is dead money.
+
+That is the MU pattern caught a week early: IBIT has been rolled at $39 at
+the time-value floor repeatedly, for almost nothing, while the stock walked
+away from the strike.

@@ -1,0 +1,16 @@
+{
+  "status": "PREVIEW — the anti-pattern rules from docs/OPTIONS-STRATEGY-V7-ANTIPATTERNS.md, running beside live V7 (Neel, 2026-10-04). Inherits everything from policy_v2.json; only the deliberate differences live here.",
+  "as_of": "2026-10-04",
+  "differences_from_v7": [
+    "put_skip_extended = 1 — no new put on a name >= mr_threshold_pct above its 10-day average. Evidence: 95 extended chains paid 0.96%/wk at a 36% assignment rate, against 1.81% / 35% in the normal band and 1.58% / 34% depressed.",
+    "roll_abandon_pct = 20 (vol-scaled) — past that gap above the strike, stop citing RSI or the roll credit as a reason to wait; decide on the rule-5 tax test alone. Evidence: 0 of 13 call assignments more than 10% above the strike traded back within 13 weeks ($186,000 given up), against 10 of 18 below 10%."
+  ],
+  "knobs": {
+    "put_skip_extended": {
+      "value": 1
+    },
+    "roll_abandon_pct": {
+      "value": 20
+    }
+  }
+}

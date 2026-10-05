@@ -7205,6 +7205,40 @@ async def start_sync(mode: str = Query("full", pattern="^(full|state|prices|chai
             + " The page updates when it lands."}
 
 
+@router.get("/v8/preview")
+async def get_v8_preview(db: Session = Depends(get_db)):
+    """V8 action queue — PREVIEW, beside live V7 (Neel, 2026-10-04: "put
+    these new ones in V8 and run it in parallel so I can give you feedback
+    before moving to V8"). Same engine; V8 reads policy_v8.json layered
+    over policy_v2.json, so the two differ only in knobs and lists."""
+    from app.modules.strategies.v7_engine import build_v7_queue
+    return build_v7_queue(db, "v8")
+
+
+@router.get("/v8/diff")
+async def get_v8_diff(db: Session = Depends(get_db)):
+    """What V8 would do differently from live V7, card by card — the whole
+    point of running them side by side."""
+    from app.modules.strategies.v7_engine import build_action_queue, load_policy_v2
+    v7 = build_action_queue(db, "v7")
+    v8 = build_action_queue(db, "v8")
+    def key(i):
+        return (i["account"], i["symbol"], i["action"], i["detail"][:40])
+    a = {key(i): i for i in v7["items"]}
+    b = {key(i): i for i in v8["items"]}
+    only7 = [a[k] for k in a if k not in b]
+    only8 = [b[k] for k in b if k not in a]
+    pol8 = load_policy_v2("v8")
+    return {
+        "differences": pol8.get("differences_from_v7", []),
+        "v7_summary": v7["summary"], "v8_summary": v8["summary"],
+        "only_in_v7": [{"account": i["account"], "symbol": i["symbol"], "action": i["action"],
+                        "priority": i["priority"], "detail": i["detail"]} for i in only7],
+        "only_in_v8": [{"account": i["account"], "symbol": i["symbol"], "action": i["action"],
+                        "priority": i["priority"], "detail": i["detail"]} for i in only8],
+    }
+
+
 @router.get("/v7/preview")
 async def get_v7_preview(db: Session = Depends(get_db)):
     """V7 action queue — PREVIEW ONLY. Two books, four layers, built from
