@@ -93,6 +93,17 @@ discrepancy, unresolved — see the sync doc).
    `cash − buying_power` must equal short-put collateral
    (Σ strike × contracts × 100) **to the cent**.
 
+   **Pending orders of any kind can hold cash** — check them before
+   calling a mismatch a failure. Two cases seen so far:
+
+   *A debit order in flight* (2026-10-06): a buy-to-close or a roll placed
+   at a net debit reserves the debit plus fees. Jaya's IRA showed a
+   $60.48 gap and Neel's Retirement $20.16 — an NVDA call roll at $0.10
+   debit (×6 and ×2) plus ~$0.04/contract/leg of fees. Tiny, real, and it
+   stopped two accounts saving. Pull `get_option_orders(states=queued,
+   confirmed)` and subtract Σ (net debit × contracts × 100 + fees) before
+   judging the gap.
+
    *Pending sell-put orders count too* (fixed 2026-09-25): Robinhood
    reserves collateral the moment a sell-to-open put order is placed, not
    when it fills — net of the limit premium. Jaya's IRA showed a
@@ -104,6 +115,12 @@ discrepancy, unresolved — see the sync doc).
    the account is CORRECT — save it, and say in the report which pending
    order explained it. Only an unexplained gap stops the save, and it
    stops that account, never the whole run.
+
+   **Tolerance**: a gap under `$5 per open contract in the account` that
+   no order explains is fee noise, not a data error — save the account and
+   note the amount. The gate exists to catch a position the sync has
+   missed, which is always a round number of hundreds or thousands, never
+   twenty dollars.
 5. **Write bundles** (schema: `scripts/rh_mcp_bundle_sample.json`; one
    bundle per login, into the session scratchpad) and run
    `python3 scripts/robinhood_mcp_bridge.py <bundle> ` (preview) — check

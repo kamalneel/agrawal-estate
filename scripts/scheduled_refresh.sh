@@ -170,6 +170,21 @@ PY
 # the email — a scan, or a failure notice — comes from the backend, which reads
 # data/refresh_status.json just written. If that call itself fails, fall
 # back to a bare failure email so the run is never silent.
+# One retry on failure (2026-10-06). A sync fails on transient things — a
+# pending order that moved cash, a flaky MCP call — and the next scheduled
+# slot can be an hour away, which is an hour of stale positions behind an
+# action queue Neel is trading from. Retry once, after a pause, in the
+# cheaper `state` mode; a second failure stands and emails as before.
+if [[ "$(backend/venv/bin/python -c "import json;print(json.load(open('data/refresh_status.json')).get('ok'))" 2>/dev/null)" == "False" \
+      && "${REFRESH_NO_RETRY:-0}" != "1" ]]; then
+  echo "$(date) first attempt failed — retrying once in 90s (mode=state)" >> "$LOG"
+  rm -rf "$LOCK"      # the child takes its own lock; without this it sees ours and exits
+  sleep 90
+  REFRESH_NO_RETRY=1 REFRESH_MODE=state REFRESH_TRIGGER="${REFRESH_TRIGGER:-scheduled}-retry" \
+    /bin/zsh "$0" >> "$LOG" 2>&1
+  echo "$(date) retry finished: ok=$(backend/venv/bin/python -c "import json;print(json.load(open('data/refresh_status.json')).get('ok'))" 2>/dev/null)" >> "$LOG"
+fi
+
 NOTIFY=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 -X POST \
   "http://127.0.0.1:8000/api/v1/strategies/notify/after-sync${SCAN:+?scan_type=$SCAN}")
 echo "$(date) notify scan=${SCAN:-none} http=$NOTIFY" >> "$LOG"
