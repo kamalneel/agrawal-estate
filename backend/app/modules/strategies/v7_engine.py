@@ -1431,6 +1431,7 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
     put_candidates = []
     concentrated = []
     extended = []
+    overbought = []
     # Every name held, both books (Neel, 2026-09-17: "puts on anything and
     # everything as long as it has high volatility and I can earn"). The
     # concentration cap applies to short-term names (share of the
@@ -1469,6 +1470,13 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
             # that collateral into the other two buckets."
             extended.append(f"{sym} {vs_sma:+.0f}%")
             continue
+        if rsi is not None and rsi >= K(pol, "put_rsi_unfavourable") and K(pol, "put_skip_overbought"):
+            # Anti-pattern 9. An overbought name gets no put at all, not a
+            # farther one: for a put-only name the put is the entry, and the
+            # time to buy in is after it cools. Neel, 2026-10-07, on TSM at
+            # RSI 69: "this would have been the time to sell calls, not puts."
+            overbought.append(f"{sym} RSI {rsi:.0f}")
+            continue
         if vs_sma is not None and vs_sma <= -thr:
             base, why = 40, f"{vs_sma:+.1f}% vs 10-day avg → base 40 (depressed: closer put)"
         elif vs_sma is not None and vs_sma >= thr:
@@ -1483,7 +1491,13 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
             base, why = 20, f"RSI {rsi:.0f} → base 20"
         if vol:
             ref = K(pol, "vol_reference_pct") / 100
-            delta = int(round(max(K(pol, "st_delta_min"), min(K(pol, "st_delta_max"), base * ref / vol))))
+            scaled = base * ref / vol
+            if K(pol, "put_vol_scale_farther_only"):
+                # Anti-pattern 9: the scaling was written for calls. On a put
+                # it may push a volatile name farther out, never pull a calm
+                # one closer (TSM: base 20 × 65/36 → delta 36, 2% under spot).
+                scaled = min(scaled, base)
+            delta = int(round(max(K(pol, "st_delta_min"), min(K(pol, "st_delta_max"), scaled))))
             why += f" × {ref * 100:.0f}%/{vol * 100:.0f}% vol → delta {delta}"
             picked = chain_pick(chains, sym, "put", put_exp, delta)
             if picked and picked["mark"]:
@@ -1590,6 +1604,11 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
                  + (f"Names {K(pol, 'mr_threshold_pct'):.0f}%+ above their 10-day average are skipped entirely — over 95 chains that "
                     f"bucket paid 0.96% a week for a 36% assignment rate, against 1.81% / 35% in the normal band"
                     + (f" (today: {', '.join(extended)})" if extended else "") + ". " if K(pol, "put_skip_extended") else "")
+                 + (f"Names at RSI {K(pol, 'put_rsi_unfavourable'):.0f}+ get no put — overbought is the time for calls; "
+                    f"the put waits until the name cools"
+                    + (f" (today: {', '.join(overbought)})" if overbought else "") + ". " if K(pol, "put_skip_overbought") else "")
+                 + ("Volatility may push a put farther out, never closer than its RSI base. "
+                    if K(pol, "put_vol_scale_farther_only") else "")
                  + "Capacity = margin line + cash − open collateral − margin already drawn.",
                  earn=est,
                  context={"capacity": capacity, "st_pct": round(st_pct, 1), "score": round(p["score"], 2),

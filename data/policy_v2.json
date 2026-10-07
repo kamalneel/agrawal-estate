@@ -418,9 +418,9 @@
     },
     "put_rsi_unfavourable": {
       "value": 65,
-      "label": "Put entry: RSI unfavourable above",
+      "label": "Put entry: overbought at RSI",
       "group": "Short-term puts",
-      "description": "Retired 2026-09-16 — put entry is now the return/risk ranking; kept for reference.",
+      "description": "RSI at or above this = overbought for puts. Read only when put_skip_overbought = 1 (un-retired 2026-10-07 for anti-pattern 9). 65 is the same line assign_rsi uses to call a name overbought.",
       "unit": "RSI",
       "step": 1,
       "min": 40,
@@ -701,6 +701,26 @@
       "label": "Skip calls on depressed names",
       "group": "Long-term calls",
       "description": "1 = no new long-term call on a name at least mr_threshold_pct BELOW its 10-day average; the shares stay uncovered and the capital works on the put side. 0 = sell at the base delta (V7 behaviour). Evidence over 174 call chains since 2025-06: depressed paid 0.08% of notional, normal 0.13%, extended 0.29% — while the put on the same name in the same week paid 1.58%. Neel, 2026-10-05.",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1
+    },
+    "put_skip_overbought": {
+      "value": 0,
+      "label": "Skip puts on overbought names",
+      "group": "Short-term puts",
+      "description": "1 = no new put on a name whose RSI is at or above put_rsi_unfavourable — no put at all, not a farther one; the collateral goes to the next name in the ranking. For a put-only name the put is the entry, and the time to buy in is after it cools. 0 = sell at base delta 20 (V7). Neel, 2026-10-07, on TSM at RSI 69.",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1
+    },
+    "put_vol_scale_farther_only": {
+      "value": 0,
+      "label": "Puts: volatility only pushes farther out",
+      "group": "Short-term puts",
+      "description": "1 = for puts, volatility scaling (vol_reference_pct ÷ the name's vol) may lower the delta below its RSI base, never raise it. 0 = scale both ways (V7): a calm name gets a closer put — TSM base 20 × 65/36 → delta 36, 2% under spot. Neel, 2026-10-07.",
       "unit": "on/off",
       "step": 1,
       "min": 0,

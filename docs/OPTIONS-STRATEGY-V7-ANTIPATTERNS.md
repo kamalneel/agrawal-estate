@@ -240,6 +240,9 @@ policy.
 |---|---|---|
 | Skip puts on extended names | `put_skip_extended` = 1 | Anti-pattern 3 |
 | Stop waiting for the come-down past 20% above the strike (vol-scaled) | `roll_abandon_pct` = 20 | Anti-pattern 2 |
+| Skip calls on depressed long-term names | `call_skip_depressed` = 1 | Anti-pattern 8 |
+| Skip puts on overbought names (RSI ≥ 65) | `put_skip_overbought` = 1 | Anti-pattern 9 |
+| Volatility may only push a put farther out | `put_vol_scale_farther_only` = 1 | Anti-pattern 9 |
 
 ### First diff, 2026-10-04
 
@@ -322,3 +325,47 @@ that has just run has rich call premium and thin put premium.
 `put_skip_extended`. Counter-argument on the record: a 6% assignment rate
 means the shares are almost never lost, and $14,713 is still $14,713.
 Undecided.
+
+## 9. Do not sell a put into an overbought name, and never let volatility pull a put closer
+
+Neel, 2026-10-07, on the live card *"TSM: sell 1 put at ~$465 (delta 36,
+#2 by return/risk)"* with TSM at $474.95 after a long run: *"When a stock
+is oversold, that is the time to sell puts — for trillion-dollar companies
+the decline is cyclical, not catastrophic. TSMC has gone up significantly.
+This would have been the time to sell calls, not puts."*
+
+He was right, and the engine's own rule agreed with him before a later step
+overrode it. The card's trace: `RSI 69 → base 20 × 65%/36% vol → delta 36`.
+
+1. **RSI 69 → base delta 20.** The farther put for an overbought name.
+   Correct.
+2. **× vol_reference_pct ÷ the name's vol.** That scaling was written for
+   short-term *calls* (a wild name gets a farther strike). Applied to a put
+   on a calm mega-cap it multiplies by 65 / 36 = 1.8 and turns the "farther"
+   put into a delta-36 put **2% under spot**, closer than a normal-RSI name
+   would get. The RSI signal is cancelled and then reversed.
+3. **The ranking rewards it.** Candidates rank by weekly yield, and a
+   delta-36 put out-yields a delta-20 put on anything, so the error is what
+   put TSM at #2.
+
+Anti-pattern 3's measurement says the same thing from the ledger: puts sold
+on extended names paid 0.96%/wk at a 36% assignment rate, against 1.81% /
+35% in the normal band. The extended test there is distance above the
+10-day average (≥ 5%); TSM at RSI 69 was *inside* 5% and slipped through,
+and `put_skip_extended` is off in live V7 anyway. Nothing gated on RSI.
+
+**Rules (V8):**
+
+- `put_skip_overbought` = 1 — no new put on a name whose RSI is at or above
+  `put_rsi_unfavourable` (65, the same line `assign_rsi` uses to call a name
+  overbought). No put at all, rather than a far one: for a put-only name the
+  put *is* the entry, and Neel only wants to own it after it has cooled.
+  The collateral goes to the next name in the ranking. One rule for every
+  name, held or not.
+- `put_vol_scale_farther_only` = 1 — for puts, the volatility scaling may
+  only lower the delta below the RSI base, never raise it. A volatile name
+  still gets a farther put; a calm one keeps its base.
+
+On 2026-10-07 the first rule removes TSM (RSI 69) and NVDA (70) from the put
+list. The second changes every calm name below the line — the put lands at
+its RSI base instead of up to 1.8× it.

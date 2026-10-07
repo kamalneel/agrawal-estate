@@ -626,3 +626,20 @@ no time value at all. Deep in the money it does: delta 0.92, $18.75 of
 intrinsic, $0.05 of extrinsic. The card now says all of this when the
 floor fires, instead of reciting "Thursday by default" next to an
 instruction to roll on a Friday.
+
+## 2026-10-07 — no put into an overbought name (V8)
+
+Neel, on the live card *"TSM: sell 1 put at ~$465 (delta 36, #2)"* with
+TSM at $474.95 after a long run: oversold is when to sell puts on a
+trillion-dollar name; overbought is when to sell calls. The engine agreed
+in step one (RSI 69 → base delta 20, the farther put) and then the
+call-side volatility scaling multiplied it by 65/36 to delta 36, 2% under
+spot. Asked "no put, or a far one?" — **no put at all.**
+
+Two knobs, V8 only until Neel switches (anti-pattern 9 in
+`docs/OPTIONS-STRATEGY-V7-ANTIPATTERNS.md`):
+
+- `put_skip_overbought` = 1, line `put_rsi_unfavourable` = 65. First run
+  dropped AMD 74, NVDA 70, TSM 69, SOXL 68, CRWD 65.
+- `put_vol_scale_farther_only` = 1. ZM's put moved from delta 40 ($93) to
+  its base 30 ($92); INTC from 23 to 20.
