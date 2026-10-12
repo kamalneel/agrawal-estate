@@ -149,6 +149,12 @@ discrepancy, unresolved — see the sync doc).
    calendar means missing earnings warnings on new positions, so if the
    MCP call fails, say so in the report rather than silently skipping.
 
+9b. **Lock-up calendar, same cadence as step 9**: if a tracked symbol
+   IPO'd within the last 12 months and is not in `data/lockup_calendar.json`,
+   web-search its lock-up release dates (prospectus / news) and add them,
+   bumping `updated`. The MCP has no lock-up data. V8's `put_skip_lockup`
+   reads this file — a missing name is silently allowed a put.
+
 ## Report back
 
 Lead with what changed: new fills imported (symbol, qty, account),

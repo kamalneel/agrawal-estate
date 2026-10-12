@@ -643,3 +643,18 @@ Two knobs, V8 only until Neel switches (anti-pattern 9 in
   dropped AMD 74, NVDA 70, TSM 69, SOXL 68, CRWD 65.
 - `put_vol_scale_farther_only` = 1. ZM's put moved from delta 40 ($93) to
   its base 30 ($92); INTC from 23 to 20.
+
+## 2026-10-12 — no put into a lock-up release (V8)
+
+Neel, on CBRS: the post-IPO lock-up is expiring and leaders are selling,
+OpenAI cast doubt on the anchor contract, and chips are down on OpenAI's
+revenue. "Might not be the best time to sell puts on CBRS?" Agreed — the
+oversold-means-sell-puts rule assumes a mega-cap's cyclical dip, and a
+lock-up release is scheduled supply, not a cycle. Offered two encodings:
+skip puts across a lock-up date, or a market-cap floor. **Lock-up.**
+
+- `put_skip_lockup` = 1 (V8), `put_lockup_window_days` = 7. Calendar in
+  `data/lockup_calendar.json`: CBRS 10/14, 10/28, 11/9; SPCX 12/8.
+- Not touched: the six CBRS puts already open in Neel's Brokerage. The
+  rule governs entries; closing or taking those is Neel's call.
+

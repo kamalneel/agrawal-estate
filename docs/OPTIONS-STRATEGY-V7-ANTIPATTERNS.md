@@ -243,6 +243,7 @@ policy.
 | Skip calls on depressed long-term names | `call_skip_depressed` = 1 | Anti-pattern 8 |
 | Skip puts on overbought names (RSI ≥ 65) | `put_skip_overbought` = 1 | Anti-pattern 9 |
 | Volatility may only push a put farther out | `put_vol_scale_farther_only` = 1 | Anti-pattern 9 |
+| Skip puts into a post-IPO lock-up release | `put_skip_lockup` = 1, window 7 days | Anti-pattern 10 |
 
 ### First diff, 2026-10-04
 
@@ -369,3 +370,26 @@ and `put_skip_extended` is off in live V7 anyway. Nothing gated on RSI.
 On 2026-10-07 the first rule removes TSM (RSI 69) and NVDA (70) from the put
 list. The second changes every calm name below the line — the put lands at
 its RSI base instead of up to 1.8× it.
+
+## 10. Do not sell a put into a lock-up release
+
+**The case (2026-10-12).** CBRS, IPO'd this year at $185, fell to $147.50
+(−10% that day, −62% from the May high, RSI near 30). By the oversold rule
+that reads as a put entry. Two days out, ~19.4M shares came off lock-up,
+with another ~19.4M on 10/28 and the rest on 11/9 — against a float of
+~99M, with insiders already filing to sell. Neel's Brokerage was short six
+CBRS puts ($160 ×4, $175, $190) for 10/16, all in the money.
+
+**Why the oversold rule fails here.** It rests on Neel's premise: the names
+are very large companies whose declines are cyclical and come back. A
+lock-up release is the opposite of a cycle — a known, dated wave of new
+supply. Oversold before it is not a bottom; the selling is scheduled.
+
+**The rule.** No new put on a name with a lock-up release between today and
+the put's expiry + `put_lockup_window_days` (7). Dates live in
+`data/lockup_calendar.json`, curated by hand (the MCP has no lock-up data).
+Once the last release passes, the name is back in the ranking on its
+ordinary signals.
+
+Neel chose this over the broader alternative — a market-cap floor that
+would also drop SPCX and RKLB — on 2026-10-12.

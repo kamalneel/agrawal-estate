@@ -66,6 +66,19 @@ def K(pol: Dict, key: str):
 
 
 _POLICY_V8 = Path(__file__).resolve().parents[4] / "data" / "policy_v8.json"
+_LOCKUPS = Path(__file__).resolve().parents[4] / "data" / "lockup_calendar.json"
+
+
+def _load_lockups() -> Dict[str, List[date]]:
+    """Symbol → post-IPO lock-up release dates (data/lockup_calendar.json,
+    curated by hand — the MCP has no lock-up data). {} on any problem: a
+    missing calendar must never stop the queue."""
+    try:
+        with open(_LOCKUPS) as f:
+            raw = json.load(f).get("lockups", {})
+        return {s: sorted(date.fromisoformat(e["date"]) for e in v) for s, v in raw.items()}
+    except Exception:
+        return {}
 
 
 def load_policy_v2(version: str = "v7") -> Dict:
@@ -1432,6 +1445,9 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
     concentrated = []
     extended = []
     overbought = []
+    lockup_held = []
+    lockups = _load_lockups()
+    lockup_until = put_exp + timedelta(days=int(K(pol, "put_lockup_window_days")))
     # Every name held, both books (Neel, 2026-09-17: "puts on anything and
     # everything as long as it has high volatility and I can earn"). The
     # concentration cap applies to short-term names (share of the
@@ -1476,6 +1492,13 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
             # time to buy in is after it cools. Neel, 2026-10-07, on TSM at
             # RSI 69: "this would have been the time to sell calls, not puts."
             overbought.append(f"{sym} RSI {rsi:.0f}")
+            continue
+        unlock = next((d for d in lockups.get(sym, []) if today <= d <= lockup_until), None)
+        if unlock and K(pol, "put_skip_lockup"):
+            # Anti-pattern 10. A lock-up release is a dated wave of supply:
+            # oversold before it is not a bottom. Neel, 2026-10-12, on CBRS
+            # at $147 (RSI ~30) two days before 19.4M shares unlocked.
+            lockup_held.append(f"{sym} unlocks {unlock.month}/{unlock.day}")
             continue
         if vs_sma is not None and vs_sma <= -thr:
             base, why = 40, f"{vs_sma:+.1f}% vs 10-day avg → base 40 (depressed: closer put)"
@@ -1609,6 +1632,9 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
                     + (f" (today: {', '.join(overbought)})" if overbought else "") + ". " if K(pol, "put_skip_overbought") else "")
                  + ("Volatility may push a put farther out, never closer than its RSI base. "
                     if K(pol, "put_vol_scale_farther_only") else "")
+                 + (f"Names with a post-IPO lock-up release before the put's expiry + {K(pol, 'put_lockup_window_days'):.0f} days "
+                    f"get no put — insider supply is coming, so oversold is not a bottom"
+                    + (f" (today: {', '.join(lockup_held)})" if lockup_held else "") + ". " if K(pol, "put_skip_lockup") else "")
                  + "Capacity = margin line + cash − open collateral − margin already drawn.",
                  earn=est,
                  context={"capacity": capacity, "st_pct": round(st_pct, 1), "score": round(p["score"], 2),

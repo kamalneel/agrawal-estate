@@ -1,0 +1,14 @@
+{
+  "description": "Post-IPO lock-up release dates for names in the put universe. Read by the V7/V8 engine when put_skip_lockup = 1: no new put on a name with a release between today and the put's expiry + put_lockup_window_days. Not available via the Robinhood MCP — curated by hand from the prospectus / news when a recently-IPO'd name enters the universe (see /refresh step 9b). Past dates are harmless; the engine only looks forward.",
+  "updated": "2026-10-12",
+  "lockups": {
+    "CBRS": [
+      {"date": "2026-10-14", "note": "~19.4M shares eligible (staged release, prospectus p.190)"},
+      {"date": "2026-10-28", "note": "~19.4M shares eligible"},
+      {"date": "2026-11-09", "note": "remaining lock-up shares expire (180-day)"}
+    ],
+    "SPCX": [
+      {"date": "2026-12-08", "note": "180-day lock-up expiry (IPO 2026-06-11); Musk's block stays locked to June 2027"}
+    ]
+  }
+}

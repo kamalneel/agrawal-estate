@@ -725,6 +725,26 @@
       "step": 1,
       "min": 0,
       "max": 1
+    },
+    "put_skip_lockup": {
+      "value": 0,
+      "label": "Skip puts into a lock-up release",
+      "group": "Short-term puts",
+      "description": "1 = no new put on a name with a post-IPO lock-up release (data/lockup_calendar.json) between today and the put's expiry + put_lockup_window_days; the collateral goes to the next name. A release is a dated wave of insider supply, so an oversold reading before it is not a bottom. 0 = ignore lock-ups (V7). Neel, 2026-10-12, on CBRS two days before 19.4M shares unlocked.",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1
+    },
+    "put_lockup_window_days": {
+      "value": 7,
+      "label": "Lock-up: days past expiry to keep clear",
+      "group": "Short-term puts",
+      "description": "With put_skip_lockup = 1, a release up to this many days AFTER the put's expiry also blocks it — the selling starts before the date. 7 = one more weekly cycle.",
+      "unit": "days",
+      "step": 1,
+      "min": 0,
+      "max": 30
     }
   },
   "put_only": {
