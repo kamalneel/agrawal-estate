@@ -1671,7 +1671,13 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
 
     return {
         "as_of": today.isoformat(),
+        "version": version,
         "policy_status": pol["status"],
+        # V8 only: what it changes and which knobs it pins, so the page can
+        # say so beside the V7 toggle (Neel, 2026-10-12)
+        "differences_from_v7": pol.get("differences_from_v7", []) if version == "v8" else [],
+        "overridden_knobs": sorted(json.loads(_POLICY_V8.read_text()).get("knobs", {}))
+                            if version == "v8" and _POLICY_V8.exists() else [],
         "data_as_of": {"options": str(max((o["as_of"] for o in options), default=None)),
                        "cash": str(max((c["as_of"] for c in cash.values()), default=None))},
         "split": {"long_term_pct": round(lt_pct, 1), "short_term_pct": round(st_pct, 1),

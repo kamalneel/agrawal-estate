@@ -5,6 +5,9 @@
  * Laid out like Option Execution (Neel, 2026-09-14): account pills, one
  * queue, sort by account — the layer is a tag on the row, not a section.
  * Spec: docs/OPTIONS-STRATEGY-V7-SPEC.md · policy: data/policy_v2.json.
+ * V7/V8 toggle (Neel, 2026-10-12): V8 is the same engine reading
+ * data/policy_v8.json; in V8 mode each card is tagged new / changed
+ * against V7, and V7 cards V8 drops are listed under the queue.
  */
 import { useEffect, useMemo, useState } from 'react'
 import { RefreshCw, AlertTriangle, ChevronDown, Settings } from 'lucide-react'
@@ -35,8 +38,13 @@ interface Layer { n: number; name: string; items: Card[] }
 
 interface Knob { value: number; label: string; group: string; description: string; unit: string; step?: number; min?: number; max?: number }
 
+type Engine = 'v7' | 'v8'
+
 interface Preview {
   as_of: string
+  version?: Engine
+  differences_from_v7?: string[]
+  overridden_knobs?: string[]
   policy_status: string
   data_as_of: { options: string; cash: string }
   split: {
@@ -69,8 +77,20 @@ const ACTION_COLOR: Record<string, string> = {
 
 const acctRank = (a: string) => { const i = ACCOUNT_ORDER.indexOf(a); return i < 0 ? 99 : i }
 
+// Same account / symbol / layer / action = the same decision; a different
+// title on it means V8 sized or priced it differently.
+const cardKey = (c: Card) => `${c.account}|${c.symbol}|${c.layer}|${c.action}`
+
+const ENGINE_KEY = 'notifications.engine'
+const readEngine = (): Engine => {
+  try { return localStorage.getItem(ENGINE_KEY) === 'v8' ? 'v8' : 'v7' } catch { return 'v7' }
+}
+
 export default function V7Preview() {
+  const [engine, setEngine] = useState<Engine>(readEngine)
   const [data, setData] = useState<Preview | null>(null)
+  const [v7Cards, setV7Cards] = useState<Card[] | null>(null)   // V8 mode: the baseline to compare against
+  const [showDropped, setShowDropped] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState<string | null>(null)
@@ -106,18 +126,47 @@ export default function V7Preview() {
       .catch(e => setSaving(`error: ${e.message}`))
   }
 
-  const load = () => {
-    setLoading(true)
-    fetch(`${API_BASE}/strategies/v7/preview`, { headers: getAuthHeaders() })
+  const fetchPreview = (v: Engine): Promise<Preview> =>
+    fetch(`${API_BASE}/strategies/${v}/preview`, { headers: getAuthHeaders() })
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(setData)
+
+  const load = (v: Engine = engine) => {
+    setLoading(true)
+    setError(null)
+    Promise.all([fetchPreview(v), v === 'v8' ? fetchPreview('v7') : Promise.resolve(null)])
+      .then(([d, base]) => { setData(d); setV7Cards(base ? base.layers.flatMap(L => L.items) : null) })
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false))
   }
+  const switchEngine = (v: Engine) => {
+    if (v === engine) return
+    setEngine(v)
+    try { localStorage.setItem(ENGINE_KEY, v) } catch { /* remembered tab is a convenience */ }
+    setOpen(null)
+    load(v)
+  }
   useEffect(() => { load(); loadKnobs() }, [])
-  useDataAsOfPoll(load)   // re-build when a sync lands
+  useDataAsOfPoll(() => load())   // re-build when a sync lands
 
   const all = useMemo(() => (data ? data.layers.flatMap(L => L.items) : []), [data])
+
+  // V8 mode only: how each card compares with V7, and what V7 had that V8 dropped
+  const diff = useMemo(() => {
+    if (engine !== 'v8' || !v7Cards) return null
+    const v7Titles = new Set(v7Cards.map(c => `${cardKey(c)}|${c.title}`))
+    const v7ByKey = new Map<string, Card[]>()
+    v7Cards.forEach(c => v7ByKey.set(cardKey(c), [...(v7ByKey.get(cardKey(c)) ?? []), c]))
+    const v8Titles = new Set(all.map(c => `${cardKey(c)}|${c.title}`))
+    const v8Keys = new Set(all.map(cardKey))
+    const tag = new Map<string, { kind: 'new' | 'changed'; was?: string }>()
+    all.forEach(c => {
+      if (v7Titles.has(`${cardKey(c)}|${c.title}`)) return
+      const prior = v7ByKey.get(cardKey(c))
+      tag.set(c.id, prior ? { kind: 'changed', was: prior.map(p => p.title).join(' / ') } : { kind: 'new' })
+    })
+    const dropped = v7Cards.filter(c => !v8Keys.has(cardKey(c)) && !v8Titles.has(`${cardKey(c)}|${c.title}`))
+    return { tag, dropped }
+  }, [engine, v7Cards, all])
 
   // account pills — every account that has holdings or cards, canonical order
   const accounts = useMemo(() => {
@@ -137,8 +186,10 @@ export default function V7Preview() {
       : (a.layer - b.layer) || (acctRank(a.account) - acctRank(b.account)) || a.symbol.localeCompare(b.symbol))
   }, [all, selectedAccount, sort])
 
-  if (error) return <div className={styles.page}><p className={styles.error}>Could not load the V7 preview: {error}</p></div>
-  if (loading || !data) return <div className={styles.page}><p className={styles.muted}>Building the V7 queue…</p></div>
+  const V = engine.toUpperCase()
+  if (error) return <div className={styles.page}><p className={styles.error}>Could not load the {V} queue: {error}</p></div>
+  if (loading || !data) return <div className={styles.page}><p className={styles.muted}>Building the {V} queue…</p></div>
+  const dropped = (diff?.dropped ?? []).filter(c => !selectedAccount || c.account === selectedAccount || c.account === 'Portfolio')
 
   const { split } = data
   const stOver = split.short_term_pct > split.target.short_term_pct
@@ -151,20 +202,31 @@ export default function V7Preview() {
     <div className={styles.page}>
       <div className={styles.banner}>
         <AlertTriangle size={16} />
-        <span><strong>Preview.</strong> V6 is still the live notification engine. {data.policy_status}</span>
+        {engine === 'v8'
+          ? <span><strong>V8 preview.</strong> Runs beside live V7 — nothing here is acted on until you switch. Cards tagged <em>new</em> or <em>changed</em> differ from V7; V7 cards V8 drops are listed under the queue.</span>
+          : <span><strong>Preview.</strong> V6 is still the live notification engine. {data.policy_status}</span>}
       </div>
 
       <header className={styles.header}>
         <div>
-          <h1>Notifications V7</h1>
+          <h1>Notifications {V}</h1>
           <div className={styles.sub}>
             as of {data.as_of} · positions {data.data_as_of.options?.slice(0, 16)} · cash {data.data_as_of.cash}
           </div>
         </div>
         <div className={styles.headerBtns}>
+          <span className={styles.engineToggle} role="group" aria-label="Engine">
+            {(['v7', 'v8'] as Engine[]).map(v => (
+              <button key={v} className={clsx(styles.engineToggleBtn, engine === v && styles.engineToggleBtnActive)}
+                      onClick={() => switchEngine(v)} aria-pressed={engine === v}
+                      title={v === 'v7' ? 'V7 — the live rulebook' : 'V8 — preview: the anti-pattern rules beside V7'}>
+                {v.toUpperCase()}
+              </button>
+            ))}
+          </span>
           <button className={clsx(styles.refresh, showKnobs && styles.refreshActive)} onClick={() => setShowKnobs(v => !v)} title="Knobs — every number the engine uses"><Settings size={16} /></button>
           <SyncButtons className={styles.refresh} onDone={load} />
-          <button className={styles.refresh} onClick={load} title="Rebuild from the data already synced"><RefreshCw size={16} /></button>
+          <button className={styles.refresh} onClick={() => load()} title="Rebuild from the data already synced"><RefreshCw size={16} /></button>
         </div>
       </header>
 
@@ -175,7 +237,8 @@ export default function V7Preview() {
             <div className={styles.knobsHead}>
               <div>
                 <strong>Knobs</strong>
-                <span className={styles.muted}> — every number the engine uses. A change is written to data/policy_v2.json and the next build picks it up.</span>
+                <span className={styles.muted}> — every number the engine uses. A change is written to data/policy_v2.json and the next build picks it up.
+                  {engine === 'v8' && ' V8 inherits these; the ones marked V8 are pinned in data/policy_v8.json, so editing them here changes V7 only.'}</span>
               </div>
               <div className={styles.knobsActions}>
                 {saving && <span className={styles.muted}>{saving}</span>}
@@ -189,7 +252,7 @@ export default function V7Preview() {
                   const dirty = Number(draft[key]) !== k.value
                   return (
                     <label key={key} className={clsx(styles.knob, dirty && styles.knobDirty)} title={key}>
-                      <span className={styles.knobLabel}>{k.label}</span>
+                      <span className={styles.knobLabel}>{k.label}{engine === 'v8' && data.overridden_knobs?.includes(key) && <span className={styles.v8Tag}>V8</span>}</span>
                       <span className={styles.knobInput}>
                         <input type="number" value={draft[key] ?? ''} step={k.step ?? 1} min={k.min} max={k.max}
                                onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))} />
@@ -204,6 +267,13 @@ export default function V7Preview() {
           </section>
         )
       })()}
+
+      {engine === 'v8' && (data.differences_from_v7?.length ?? 0) > 0 && (
+        <details className={styles.v8Rules}>
+          <summary>What V8 does differently ({data.differences_from_v7!.length} rules)</summary>
+          <ul>{data.differences_from_v7!.map((d, i) => <li key={i}>{d}</li>)}</ul>
+        </details>
+      )}
 
       <section className={styles.state}>
         <div className={styles.stateCard}>
@@ -247,7 +317,8 @@ export default function V7Preview() {
         <h2>Action Queue</h2>
         <span className={styles.summary}>{rows.length} recommendation{rows.length === 1 ? '' : 's'}</span>
         {estTotal > 0 && <span className={styles.summaryEarn}>est {formatCurrency(estTotal)} this week</span>}
-        <span className={styles.engineTag}>V7 · two books, four layers</span>
+        <span className={styles.engineTag}>{V} · two books, four layers
+          {diff && ` · ${diff.tag.size} differ from V7, ${dropped.length} dropped`}</span>
         <span className={styles.sortToggle}>
           <span className={styles.sortToggleLabel}>Sort:</span>
           <button className={clsx(styles.sortToggleBtn, sort === 'account' && styles.sortToggleBtnActive)} onClick={() => setSort('account')}>Account</button>
@@ -271,16 +342,18 @@ export default function V7Preview() {
           const header = group !== lastGroup ? group : null
           lastGroup = group
           const rsi = c.context?.rsi as number | null | undefined
+          const d8 = diff?.tag.get(c.id)
           return (
             <div key={c.id}>
               {header && <div className={styles.groupHeader}>{header}</div>}
-              <div className={styles.item}>
+              <div className={clsx(styles.item, d8 && styles.itemV8)}>
                 <button className={styles.row} onClick={() => setOpen(open === c.id ? null : c.id)}>
                   <span className={styles.action} style={{ color: ACTION_COLOR[c.action] ?? 'var(--color-text-secondary)', borderColor: ACTION_COLOR[c.action] ?? 'var(--color-border)' }}>{c.action}</span>
                   <span className={styles.sym}>{c.symbol}</span>
                   <span className={styles.acct}>{c.account}</span>
                   <span className={styles.title}>{c.title}<span className={styles.detailInline}> · {c.detail}</span></span>
                   <span className={styles.layerTag} title={LAYER_NAME[c.layer]}>L{c.layer}</span>
+                  {d8 && <span className={styles.v8Tag} title={d8.was ? `V7: ${d8.was}` : 'Not in V7'}>{d8.kind}</span>}
                   {rsi != null && <span className={styles.chip}>RSI {Math.round(rsi)}</span>}
                   {c.assumption && <span className={styles.flag} title={c.assumption}>assumption</span>}
                   {c.earn != null && <span className={styles.earn}>Earn ~{formatCurrency(c.earn)}</span>}
@@ -290,6 +363,7 @@ export default function V7Preview() {
                   <div className={styles.why}>
                     <div className={styles.whyRule}>{LAYER_NAME[c.layer]}</div>
                     <div className={styles.whyDetail}>{c.detail}</div>
+                    {d8?.was && <div className={styles.whyDetail}>V7 instead: {d8.was}</div>}
                     <div>{c.why}</div>
                     {c.assumption && <div className={styles.assumption}>⚠ {c.assumption}</div>}
                   </div>
@@ -299,6 +373,26 @@ export default function V7Preview() {
           )
         })}
       </div>
+
+      {engine === 'v8' && dropped.length > 0 && (
+        <div className={styles.dropped}>
+          <button className={styles.rulesToggle} onClick={() => setShowDropped(v => !v)}>
+            {showDropped ? 'hide' : 'show'} {dropped.length} V7 card{dropped.length === 1 ? '' : 's'} V8 drops
+          </button>
+          {showDropped && dropped.sort((a, b) => (acctRank(a.account) - acctRank(b.account)) || (a.layer - b.layer)).map(c => (
+            <div key={c.id} className={clsx(styles.item, styles.itemDropped)}>
+              <div className={styles.row}>
+                <span className={styles.action}>{c.action}</span>
+                <span className={styles.sym}>{c.symbol}</span>
+                <span className={styles.acct}>{c.account}</span>
+                <span className={styles.title}>{c.title}</span>
+                <span className={styles.layerTag}>L{c.layer}</span>
+                <span className={styles.v8Tag}>dropped</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <p className={styles.footnote}>
         Strikes and premiums are the same heuristics V6 uses — estimates, not quotes. Cards marked <em>assumption</em> encode a rule Neel has not stated yet; they are listed in data/policy_v2.json. Put-only names (bucket C): {data.lists.put_only.join(', ')}.
