@@ -6,9 +6,11 @@ in the email."). `settings.LIVE_STRATEGY_ENGINE = "v7"` feeds the Option
 Execution page (`/strategies/v6/action-queue`, kept for the page's
 contract; `?engine=v6` returns V6 for comparison) and the notification
 email (`check_and_notify_v6` → `build_live_action_queue`). V6 stays in
-the tree, frozen, one setting away. The **Notifications V7 (preview)**
-page (`/strategies/v7-preview`) remains as the lab: same engine, the
-four-layer view, the knobs.
+the tree, frozen, one setting away. The lab page is now
+**Notifications V8 (preview)** (`/strategies/v8-preview`; the old
+`/strategies/v7-preview` redirects, renamed 2026-10-12): same engine, the
+four-layer view, the knobs, opening on V8 with each card tagged against
+V7. Option Execution links to it ("See V8 preview →").
 
 Every rule below was stated by Neel in the conversation recorded in
 [INVESTMENT-THESIS-V2-DRAFT.md](INVESTMENT-THESIS-V2-DRAFT.md); the

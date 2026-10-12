@@ -1,5 +1,8 @@
 /**
- * V7 Preview — the two-book / four-layer notification engine, read-only,
+ * V8 Preview — the next rulebook, read-only, beside live V7 on Option
+ * Execution. (Born as the V7 preview beside V6; renamed 2026-10-12 once
+ * V7 went live — Neel: "why not just call it V8 Preview?")
+ * Originally the two-book / four-layer engine, read-only,
  * beside the live V6 queue on Option Execution. Built 2026-09-13 so Neel
  * can judge it during a live trading day before anything is switched.
  * Laid out like Option Execution (Neel, 2026-09-14): account pills, one
@@ -16,7 +19,7 @@ import clsx from 'clsx'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { formatCurrency } from '../components/charts'
 import { useDataAsOfPoll } from '../hooks/useDataAsOfPoll'
-import styles from './V7Preview.module.css'
+import styles from './V8Preview.module.css'
 
 const API_BASE = '/api/v1'
 
@@ -81,12 +84,13 @@ const acctRank = (a: string) => { const i = ACCOUNT_ORDER.indexOf(a); return i <
 // title on it means V8 sized or priced it differently.
 const cardKey = (c: Card) => `${c.account}|${c.symbol}|${c.layer}|${c.action}`
 
-const ENGINE_KEY = 'notifications.engine'
+// Opens on V8; V7 is one click away for the same layout (V7 itself is live on Option Execution)
+const ENGINE_KEY = 'v8preview.engine'
 const readEngine = (): Engine => {
-  try { return localStorage.getItem(ENGINE_KEY) === 'v8' ? 'v8' : 'v7' } catch { return 'v7' }
+  try { return localStorage.getItem(ENGINE_KEY) === 'v7' ? 'v7' : 'v8' } catch { return 'v8' }
 }
 
-export default function V7Preview() {
+export default function V8Preview() {
   const [engine, setEngine] = useState<Engine>(readEngine)
   const [data, setData] = useState<Preview | null>(null)
   const [v7Cards, setV7Cards] = useState<Card[] | null>(null)   // V8 mode: the baseline to compare against
@@ -204,12 +208,12 @@ export default function V7Preview() {
         <AlertTriangle size={16} />
         {engine === 'v8'
           ? <span><strong>V8 preview.</strong> Runs beside live V7 — nothing here is acted on until you switch. Cards tagged <em>new</em> or <em>changed</em> differ from V7; V7 cards V8 drops are listed under the queue.</span>
-          : <span><strong>Preview.</strong> V6 is still the live notification engine. {data.policy_status}</span>}
+          : <span><strong>V7 — the live rulebook</strong>, shown here in the preview layout. The same queue drives Option Execution.</span>}
       </div>
 
       <header className={styles.header}>
         <div>
-          <h1>Notifications {V}</h1>
+          <h1>{engine === 'v8' ? 'Notifications V8 (preview)' : 'Notifications V7 (live)'}</h1>
           <div className={styles.sub}>
             as of {data.as_of} · positions {data.data_as_of.options?.slice(0, 16)} · cash {data.data_as_of.cash}
           </div>

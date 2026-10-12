@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
 import clsx from 'clsx'
+import { Link } from 'react-router-dom'
 import { getAuthHeaders } from '../contexts/AuthContext'
 import { GoalsStrip } from '../components/GoalsStrip/GoalsStrip'
 import { useDataAsOfPoll } from '../hooks/useDataAsOfPoll'
@@ -404,6 +405,7 @@ export function OptionsExecution() {
                 </>
               })()}
               <span className={styles.engineTag}>{queue ? ((queue as any).engine_version === 'v7' ? 'V7 · two books, four layers' : 'V6.1 · engines 4+1') : ''}</span>
+              <Link to="/strategies/v8-preview" className={styles.previewLink} title="The same queue under the V8 rules, with each difference from V7 tagged">See V8 preview →</Link>
               <div className={styles.sortToggle}>
                 <span className={styles.sortToggleLabel}>Sort:</span>
                 <button
