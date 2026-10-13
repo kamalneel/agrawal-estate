@@ -113,11 +113,18 @@ def get_assignment_loss(db: Session) -> Dict:
             continue
         qty = float(r.quantity)
         shares = qty * 100
+        # An assignment cannot happen after the contract expires. MCP-inferred
+        # rows carry the SYNC date that noticed the vanished position, which
+        # can be days later — the CBRS $165 put expiring Fri 10/9/2026 was
+        # recorded 10/11 and priced at Monday's $146.62 instead of Friday's
+        # $164.17, a $1,838 "loss" for a real $83 (Neel, 2026-10-12).
+        exp_d = _parse_expiration(r.description)
+        when = min(r.transaction_date, exp_d) if exp_d else r.transaction_date
 
         # Price at assignment: required (and drives loss) for puts;
         # for calls it's context only now (loss comes from cost basis
         # instead), so a miss there doesn't block the call event.
-        price, price_source = _price_near(db, r.account_id, r.symbol, r.transaction_date)
+        price, price_source = _price_near(db, r.account_id, r.symbol, when)
 
         cost_basis_per_share = cost_basis_source = cost_basis_incomplete = None
         if opt_type == "put":
@@ -194,8 +201,8 @@ def get_assignment_loss(db: Session) -> Dict:
             premium, chain_weeks, premium_incomplete = 0.0, 0, False
 
         events.append({
-            "date": r.transaction_date.isoformat(),
-            "month": r.transaction_date.strftime("%Y-%m"),
+            "date": when.isoformat(),
+            "month": when.strftime("%Y-%m"),
             "account_id": r.account_id,
             "account_name": acct_names.get(r.account_id, r.account_id),
             "symbol": r.symbol,

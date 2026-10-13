@@ -3152,7 +3152,11 @@ export function Income() {
       }
       if (assignLossRes.ok) {
         const data = await assignLossRes.json()
-        setAssignmentLossByMonth(data.by_month || {})
+        // Puts only (Neel, 2026-10-12): a call assignment's result is the
+        // share sale, already in Equity Sales — showing it here too read as
+        // double counting (Oct 2026: IBIT + ZM calls, −$8,526, in both).
+        setAssignmentLossByMonth(Object.fromEntries(
+          Object.entries((data.by_month_type || {}) as Record<string, { put: number }>).map(([m, t]) => [m, t.put || 0])))
       }
       if (salaryProjRes.ok) {
         const data = await salaryProjRes.json()
@@ -4356,7 +4360,7 @@ export function Income() {
                       <th>Total</th>
                       <th
                         className={styles.earningsAsideCol}
-                        title="Assignment loss is shown for context only and is NOT subtracted from Total — an assignment converts a position rather than losing income."
+                        title="Put assignments only: what being forced to buy at the strike cost versus the market that day. Context only — NOT subtracted from Total. Call assignments are share sales and live in Equity Sales."
                       >
                         Assignment Loss<span className={styles.earningsAsideMark}> *</span>
                       </th>
@@ -4424,17 +4428,17 @@ export function Income() {
                     booked at the strike price you were obliged to accept.
                   </p>
                   <p>
-                    <strong>Assignment Loss *</strong> — context only, never added to or
-                    subtracted from Total. It answers a different question: what being
-                    <em> forced</em> to trade at the strike cost you, versus having chosen
-                    freely. For a put, you had to buy shares for more than they were worth
-                    that day. For a call, you had to give up shares you owned, so it compares
-                    the strike against what those shares had cost you. A negative figure
-                    means the forced trade went in your favour.
+                    <strong>Assignment Loss *</strong> — put assignments only, context only,
+                    never added to or subtracted from Total. It answers a different question:
+                    what being <em>forced</em> to buy at the strike cost you — the strike minus
+                    what the shares were worth on the day the put expired. Call assignments
+                    are not here: giving up shares at the strike is a share sale, and its
+                    result is already in Equity Sales.
                   </p>
                   <p>
-                    The two never double-count: Equity Sales is the cash result of the sale,
-                    Assignment Loss is a measure of the price you paid for being assigned.
+                    The two never overlap: Equity Sales is the result of every share sale,
+                    including calls assigned; Assignment Loss is the overpayment on puts
+                    assigned, where no sale has happened yet.
                     Neither includes option premium — that is already income under Options.
                   </p>
                 </div>
