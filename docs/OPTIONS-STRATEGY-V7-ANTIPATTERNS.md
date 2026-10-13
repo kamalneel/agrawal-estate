@@ -244,6 +244,7 @@ policy.
 | Skip puts on overbought names (RSI ≥ 65) | `put_skip_overbought` = 1 | Anti-pattern 9 |
 | Volatility may only push a put farther out | `put_vol_scale_farther_only` = 1 | Anti-pattern 9 |
 | Skip puts into a post-IPO lock-up release | `put_skip_lockup` = 1, window 7 days | Anti-pattern 10 |
+| Skip short-term calls on depressed names | `st_call_skip_depressed` = 1 | Anti-pattern 8, extended 2026-10-12 |
 
 ### First diff, 2026-10-04
 

@@ -658,3 +658,21 @@ skip puts across a lock-up date, or a market-cap floor. **Lock-up.**
 - Not touched: the six CBRS puts already open in Neel's Brokerage. The
   rule governs entries; closing or taking those is Neel's call.
 
+## 2026-10-12 — no short-term call on a falling name (V8)
+
+Neel, seeing calls recommended on CBRS, INTC and RKLB the day all three
+fell: "Don't we have a rule saying do not sell calls when things are
+trending downwards?" Only for the long-term book (`call_skip_depressed`,
+V8). The short-term book sold a farther call instead (base delta 20, "the
+bounce is the trade"). Extended: `st_call_skip_depressed` = 1 in V8. The
+short-term case is stronger than the long-term one — those shares often
+just came by assignment, and a call at the bottom can sell them back below
+the put strike they cost.
+
+Two bugs found on the way, fixed in both engines:
+- The card said "Bounce after the buy-back has arrived" when only the
+  2-day clock had run out (CBRS was 16% below the buy-back close). It now
+  says which gate opened.
+- ZM had no RSI: 14 daily holding snapshots, one short of RSI-14, and no
+  fallback to the 70 daily closes in symbol_price_history. Now RSI 62.
+

@@ -7,7 +7,8 @@
     "call_skip_depressed = 1 — no long-term call on a name >= mr_threshold_pct below its 10-day average. Evidence: 174 depressed call chains paid 0.08% of notional against 0.13% normal and 0.29% extended, while the put on the same name in the same week paid 1.58%. The mirror of put_skip_extended.",
     "put_skip_overbought = 1 — no new put on a name at RSI >= put_rsi_unfavourable (65). No put at all rather than a farther one: overbought is the time for calls. Neel, 2026-10-07, on TSM: RSI 69 → a delta-36 put 2% under spot.",
     "put_vol_scale_farther_only = 1 — for puts, volatility scaling may push the delta below its RSI base, never above. The call-side scaling had turned TSM's 'farther' base-20 put into delta 36.",
-    "put_skip_lockup = 1 — no new put on a name with a post-IPO lock-up release before the put's expiry + put_lockup_window_days (7). Dates in data/lockup_calendar.json. Neel, 2026-10-12, on CBRS at $147: 19.4M shares unlocking 10/14, more 10/28 and 11/9."
+    "put_skip_lockup = 1 — no new put on a name with a post-IPO lock-up release before the put's expiry + put_lockup_window_days (7). Dates in data/lockup_calendar.json. Neel, 2026-10-12, on CBRS at $147: 19.4M shares unlocking 10/14, more 10/28 and 11/9.",
+    "st_call_skip_depressed = 1 — call_skip_depressed extended to the short-term book: no new call on a name >= mr_threshold_pct below its 10-day average. Same evidence (0.08% yield on depressed calls), plus the shares there often just came by assignment and a call at the bottom can sell them below cost. Neel, 2026-10-12."
   ],
   "knobs": {
     "put_skip_extended": {
@@ -26,6 +27,9 @@
       "value": 1
     },
     "put_skip_lockup": {
+      "value": 1
+    },
+    "st_call_skip_depressed": {
       "value": 1
     }
   }

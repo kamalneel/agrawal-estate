@@ -745,6 +745,16 @@
       "step": 1,
       "min": 0,
       "max": 30
+    },
+    "st_call_skip_depressed": {
+      "value": 0,
+      "label": "Skip short-term calls on depressed names",
+      "group": "Short-term calls",
+      "description": "1 = no new short-term call on a name at least mr_threshold_pct BELOW its 10-day average; the shares stay uncovered until it is back in its normal band. The short-term mirror of call_skip_depressed. 0 = sell a farther call, base delta 20 (V7). Neel, 2026-10-12, on CBRS / INTC / RKLB calls the day all three were down.",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1
     }
   },
   "put_only": {

@@ -656,6 +656,7 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
         # bounce_days trading days, then sell. (A runaway thesis, checked
         # below for the long-term book, outranks this.)
         bb = buybacks.get((acct, sym))
+        bounce_note = ""
         rw_active = book == "long" and (lambda r: r and not r["resolved"])(_runaway_status(pol, sym, spot, today))
         if bb and not rw_active:
             bb_close = next((c for d, c in closes.get(sym, []) if d == bb["date"]), None)
@@ -677,7 +678,16 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
                      "away. The clock keeps the shares from sitting uncovered indefinitely.",
                      context={"book": book, "rsi": rsi, "spot": spot, "bounce_wait": True})
                 continue
-        bounce_note = f"Bounce after the {bb['date']:%-m/%-d} buy-back has arrived — sell off this price. " if bb else ""
+            # Say which gate opened. It used to read "bounce has arrived" when
+            # only the clock had run out — CBRS 2026-10-12, 10% BELOW the
+            # buy-back close (Neel: "stocks which are down today").
+            if target is not None and spot >= target:
+                bounce_note = (f"Bounce after the {bb['date']:%-m/%-d} buy-back has arrived (${spot:,.2f} ≥ ${target:,.2f}) "
+                               "— sell off this price. ")
+            else:
+                bounce_note = (f"No bounce after the {bb['date']:%-m/%-d} buy-back — the {int(K(pol, 'bounce_days'))}-day wait "
+                               f"ran out" + (f" with the stock at ${spot:,.2f} against ${bb_close:,.2f} then" if bb_close else "")
+                               + ". The clock released it, not the price. ")
 
         if book == "long":
             lt = pol["long_term"]["calls"]
@@ -757,7 +767,7 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
             if (vs_lt is not None and vs_lt <= -thr_lt
                     and K(pol, "call_skip_depressed")):
                 card(1, "HOLD", acct, sym,
-                     f"{sym}: no call this week — {vs_lt:+.1f}% below its 10-day average",
+                     f"{sym}: no call this week — {abs(vs_lt):.1f}% below its 10-day average",
                      f"{n} contract{'s' if n > 1 else ''} uncoverable · a delta {base_delta:.0f} call here is worth about "
                      f"${call_premium(spot, strike_for_delta(spot, base_delta, vol, dte_new, 0.055), vol, dte_new, n, RATE_TIER1_WEEKLY):,}"
                      + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
@@ -797,6 +807,28 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
             vs_sma = _vs_sma_pct(closes.get(sym, []), spot, max(int(K(pol, "vol_lookback_days")) // 2, 5))
             delta, rsi_note = _short_term_delta(rsi, pol, vol, vs_sma)
             dte_new = max((exp - today).days, 1)
+            thr = K(pol, "mr_threshold_pct")
+            if vs_sma is not None and vs_sma <= -thr and K(pol, "st_call_skip_depressed"):
+                # call_skip_depressed, extended to the short-term book (Neel,
+                # 2026-10-12, on CBRS / INTC / RKLB calls the day all three were
+                # down: "don't we have a rule ... do not sell calls when things
+                # are trending downwards?"). Same evidence as the long-term rule
+                # (anti-pattern 8), plus the short-term risk: these shares often
+                # just came by assignment, and a call sold at the bottom can sell
+                # them back below the put strike they were bought at.
+                est0 = call_premium(spot, strike_for_delta(spot, delta, vol, dte_new, 0.025), vol, dte_new, n,
+                                    RATE_TIER1_WEEKLY)
+                card(2, "HOLD", acct, sym,
+                     f"{sym}: no call this week — {abs(vs_sma):.1f}% below its 10-day average",
+                     f"{n} contract{'s' if n > 1 else ''} left uncovered · a delta {delta} call here is worth about ${est0:,}"
+                     + (f" · RSI {rsi:.0f}" if rsi is not None else ""),
+                     bounce_note + "Calls on depressed names earn almost nothing and cap the bounce: across 174 chains "
+                     "since 2025-06 they paid 0.08% of notional, against 0.13% normal and 0.29% extended. In the "
+                     "short-term book the shares often just came by assignment, so a call sold at the bottom can "
+                     "sell them back below what they cost. The call goes on once the name is back within "
+                     f"{thr:.0f}% of its 10-day average.",
+                     context={"book": "short", "rsi": rsi, "spot": spot, "vs_sma": vs_sma, "skipped": "depressed"})
+                continue
             picked = chain_pick(chains, sym, "call", exp, delta)
             strike = picked["strike"] if picked else strike_for_delta(spot, delta, vol, dte_new, 0.025)
             floor = ""

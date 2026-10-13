@@ -50,7 +50,8 @@ def compute_rsi(closes: List[float], period: int = 14) -> Optional[float]:
     return 100 - (100 / (1 + rs))
 
 
-def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int) -> tuple[List[float], str]:
+def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int,
+                  min_points: int = 1) -> tuple[List[float], str]:
     """Daily price series derived from held-share snapshots (market_value /
     quantity) when the account actually owns the stock — real for every
     Engine-1 candidate by construction (Engine 1 only fires on symbols with
@@ -60,7 +61,12 @@ def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int)
     a cash-secured put with zero underlying position in that account
     (2026-07-29: AMD in Neel's Brokerage had 0 holdings-history rows, so its
     RSI silently never appeared until this fallback). Returns (closes,
-    source) — source is 'daily' or 'weekly' so callers can label which."""
+    source) — source is 'daily' or 'weekly' so callers can label which.
+
+    Snapshots shorter than min_points fall through to the symbol series too
+    (2026-10-12: ZM bought 9/25 had 14 snapshots, one short of RSI-14, while
+    symbol_price_history held 70 daily closes — so ZM showed "no RSI on
+    file" and got the closest call in the book)."""
     rows = db.execute(_text("""
         SELECT market_value / NULLIF(quantity, 0) AS px
         FROM investment_holdings_history
@@ -70,14 +76,20 @@ def _daily_closes(db: Session, account_id: str, symbol: str, lookback_days: int)
     """), {"acct": account_id, "sym": symbol,
            "cutoff": date.today() - timedelta(days=lookback_days)}).fetchall()
     closes = [float(r.px) for r in rows if r.px]
-    if closes:
+    if len(closes) >= min_points:
         return closes, "daily"
 
     rows = db.execute(_text("""
-        SELECT close_price FROM symbol_price_history
+        SELECT price_date, close_price FROM symbol_price_history
         WHERE symbol = :sym ORDER BY price_date DESC LIMIT 30
     """), {"sym": symbol}).fetchall()
-    return [float(r.close_price) for r in reversed(rows)], "weekly"
+    if len(rows) < len(closes):
+        return closes, "daily"
+    rows = list(reversed(rows))
+    # the history is weekly bars for old years and daily bars for recent
+    # weeks; label by the spacing of the last two
+    daily = len(rows) >= 2 and (rows[-1].price_date - rows[-2].price_date).days <= 4
+    return [float(r.close_price) for r in rows], "daily" if daily else "weekly"
 
 
 _RECOVERY_CONFIRM_PCT = 3.0   # a single day must gain at least this much to count
@@ -144,7 +156,7 @@ def get_entry_timing(db: Session, account_id: str, symbol: str,
     (fall back to today's static text) rather than block a trade on a
     data gap.
     """
-    closes, price_source = _daily_closes(db, account_id, symbol, lookback_days)
+    closes, price_source = _daily_closes(db, account_id, symbol, lookback_days, min_history)
     if len(closes) < min_history:
         return {"available": False, "reason": f"only {len(closes)} price points on file (need {min_history}+)"}
 
