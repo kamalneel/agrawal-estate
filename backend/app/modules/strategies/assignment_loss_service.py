@@ -81,6 +81,16 @@ def _parse_option_type(description: Optional[str]) -> Optional[str]:
     return None
 
 
+def assignment_date(recorded: date, description: Optional[str]) -> date:
+    """The day the assignment actually happened: the recorded date, but never
+    later than the contract's expiry. MCP-inferred rows carry the sync date
+    that noticed the vanished position, which can be days after expiry
+    (CBRS $165 put, expired Fri 10/9/2026, recorded Sun 10/11). Early
+    assignments, recorded before expiry, keep their own date."""
+    exp_d = _parse_expiration(description)
+    return min(recorded, exp_d) if exp_d else recorded
+
+
 def get_assignment_loss(db: Session) -> Dict:
     # DISTINCT ON collapses provisional MCP-inferred detections (source
     # 'robinhood_mcp_inferred[_pending_confirmation]') against the same
@@ -118,8 +128,7 @@ def get_assignment_loss(db: Session) -> Dict:
         # can be days later — the CBRS $165 put expiring Fri 10/9/2026 was
         # recorded 10/11 and priced at Monday's $146.62 instead of Friday's
         # $164.17, a $1,838 "loss" for a real $83 (Neel, 2026-10-12).
-        exp_d = _parse_expiration(r.description)
-        when = min(r.transaction_date, exp_d) if exp_d else r.transaction_date
+        when = assignment_date(r.transaction_date, r.description)
 
         # Price at assignment: required (and drives loss) for puts;
         # for calls it's context only now (loss comes from cost basis
