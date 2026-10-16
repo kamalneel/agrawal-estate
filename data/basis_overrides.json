@@ -740,6 +740,16 @@
    "cost_basis": "1166.04",
    "is_long_term": false,
    "note": "BASIS_RESOLVED:TRANSFER_DATE_PRICE (RH historicals)"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "IBIT",
+   "sale_date": "2026-10-11",
+   "quantity_sold": "100.000000",
+   "proceeds": "3900.00",
+   "cost_basis": "5370.52",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:RH_REALIZED (IBIT $39 call assigned 10/9/2026, 1,500 sh; Robinhood realized -2,796.98 at 45.80 incl. premium -> total basis 71,496.98, minus 66,126.46 on the 1,400 known lots; the 100-sh lot's purchase is missing from the ledger, held >1y like every other IBIT lot in the account)"
   }
  ]
 }

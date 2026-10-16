@@ -15,6 +15,10 @@ interface AssignmentLossThisMonthProps {
   /** Drop the standalone max-width/margin so the card can sit as a
    *  cell inside the GoalsStrip grid rather than in its own row. */
   inGrid?: boolean
+  /** Puts only (Income page). Call assignments are stock sales, already
+   *  counted in Equity Sales there — adding them here counted the same
+   *  loss twice (Neel, 2026-10-15: IBIT and ZM calls showed in both). */
+  putsOnly?: boolean
 }
 
 /**
@@ -31,16 +35,28 @@ interface AssignmentLossThisMonthProps {
  * would read as the same period and disagree with them the moment the
  * user pages back a month.
  */
-export function AssignmentLossThisMonth({ year, month, inGrid }: AssignmentLossThisMonthProps = {}) {
-  const [data, setData] = useState<{ this_month_loss: number; by_month: Record<string, number> } | null>(null)
+export function AssignmentLossThisMonth({ year, month, inGrid, putsOnly }: AssignmentLossThisMonthProps = {}) {
+  const [raw, setRaw] = useState<{
+    this_month_loss: number; this_month_puts: number
+    by_month: Record<string, number>; by_month_type: Record<string, { put: number; call: number }>
+  } | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
     fetch(`${API_BASE}/strategies/v6/assignment-loss`, { headers: getAuthHeaders() })
       .then(r => r.ok ? r.json() : null)
-      .then(d => d && setData(d))
+      .then(d => d && setRaw(d))
       .catch(() => {})
   }, [])
+
+  const data = useMemo(() => {
+    if (!raw) return null
+    if (!putsOnly) return raw
+    return {
+      this_month_loss: raw.this_month_puts,
+      by_month: Object.fromEntries(Object.entries(raw.by_month_type || {}).map(([m, t]) => [m, t.put || 0])),
+    }
+  }, [raw, putsOnly])
 
   const scoped = useMemo(() => {
     if (!data) return null
@@ -83,7 +99,9 @@ export function AssignmentLossThisMonth({ year, month, inGrid }: AssignmentLossT
         {loss === 0 ? '$0' : `${loss > 0 ? '-' : '+'}$${Math.abs(loss).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
       </div>
       <div className={styles.sub}>
-        puts: strike vs. market at assignment · calls: cost basis vs. strike — view the events behind this
+        {putsOnly
+          ? 'puts: strike vs. market at assignment · call assignments are in Equity Sales — view the events behind this'
+          : 'puts: strike vs. market at assignment · calls: cost basis vs. strike — view the events behind this'}
         <ChevronRight size={13} style={{ verticalAlign: '-2px', marginLeft: 2 }} />
       </div>
     </button>
