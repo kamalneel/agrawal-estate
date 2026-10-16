@@ -245,6 +245,8 @@ policy.
 | Volatility may only push a put farther out | `put_vol_scale_farther_only` = 1 | Anti-pattern 9 |
 | Skip puts into a post-IPO lock-up release | `put_skip_lockup` = 1, window 7 days | Anti-pattern 10 |
 | Skip short-term calls on depressed names | `st_call_skip_depressed` = 1 | Anti-pattern 8, extended 2026-10-12 |
+| Roll calls up as well as out, for a credit | `call_roll_up` = 1 | Anti-pattern 11 |
+| Deep ITM call stuck ≥ 4 weeks: roll further out (≤ 13 weeks) to lift the strike | `call_roll_deep_out` = 1 | Anti-pattern 11 |
 
 ### First diff, 2026-10-04
 
@@ -394,3 +396,44 @@ ordinary signals.
 
 Neel chose this over the broader alternative — a market-cap floor that
 would also drop SPCX and RKLB — on 2026-10-12.
+
+## 11. A call roll is not only "same strike, one week"
+
+**The cases (2026-10-16).** Two rolls Neel made by hand that the engine
+would not have suggested:
+
+- **AMD $545 (10/23), Neel's Retirement ×3.** AMD fell from $605 to
+  $544.63 in three days, so the call sat at the money. V7 showed nothing
+  (out of the money; the roll decision waits for Thursday). Robinhood
+  offered $545 → $560 for 10/30 at a $0.02 credit: $4,500 of extra room for
+  nothing. The extra week costs little, because a new call on a falling
+  name would be skipped anyway (anti-pattern 8).
+- **AAPL $325 (10/23), Neel's Brokerage ×2.** AAPL at $344, $19 in the
+  money, above $325 every day since 9/10 through four weekly rolls. The
+  same-strike roll paid $0.85 and stayed $19 in the money. Rolling to
+  $340 for Jan 15 paid the same $0.85.
+
+**Why "same strike, one week" fails here.** The same strike is just one of
+the credit rolls available. The weekly roll is a bet that the drop comes
+within days. That's right for a spike (AVGO crossed $375 on 10/6 and was
+$337 a week later; the weekly calls expired at $0.01). It's wrong once the
+stock has stayed above the strike for weeks. Then each week only pays
+about $0.85 and holds the shares at a strike the stock has left behind.
+The market prices the extra room at roughly $1 of strike per week added
+($330 Nov 20, $335 Dec 18 and $340 Jan 15 were all even-money rolls).
+
+**The rules.**
+- `call_roll_up`: take the highest strike a week out that still pays
+  `call_roll_min_credit_ps` (0), and flag a near-the-money call (delta ≥
+  35) any day a free lift of ≥ 1.5% is available.
+- `call_roll_deep_out`: a call ≥ 4% in the money, above its strike for ≥ 4
+  straight weeks, RSI under `assign_rsi`. Roll to the soonest expiry, up to
+  13 weeks, where a credit roll puts the strike within 2% of the stock.
+
+**What this gives up.** Neel's caution on the same day: a call months out
+does not let you profit from a drop the way a weekly does. If AAPL falls,
+the January call keeps more time value and costs more to buy back. That
+is why the deep roll waits for four straight weeks above the strike and
+for RSI not to be overbought; until then the weekly roll stands. The
+estimates are Black-Scholes off one implied vol (no chain on file), so
+every card says to confirm the listed strike and a net credit.

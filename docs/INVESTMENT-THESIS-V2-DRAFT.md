@@ -676,3 +676,18 @@ Two bugs found on the way, fixed in both engines:
 - ZM had no RSI: 14 daily holding snapshots, one short of RSI-14, and no
   fallback to the 70 daily closes in symbol_price_history. Now RSI 62.
 
+## 2026-10-16 — roll calls up, and further out when the drop has not come (V8)
+
+Two hand rolls: AMD $545 → $560 a week out for $0.02 after a 10% drop, and
+AAPL $325 → $340 Jan 15 for $0.85 after five weeks above $325. Both were
+free, and both were invisible to an engine that only rolls "same strike,
+one week". V8: `call_roll_up` and `call_roll_deep_out` (cap 13 weeks, Neel).
+
+Neel's counterpoint, kept in the rule: the thesis is that the stock comes
+back down, and a call months out does not let you profit from that
+drop the way a weekly does — AVGO's 10/6 spike reversed within a week.
+But AAPL "has not come down in several weeks". So the
+further-out roll waits until the stock has stayed above the strike for 4
+straight weeks and RSI is not overbought. Before that, the weekly roll
+still bets on the drop.
+

@@ -755,6 +755,96 @@
       "step": 1,
       "min": 0,
       "max": 1
+    },
+    "call_roll_up": {
+      "value": 0,
+      "label": "Roll calls up as well as out",
+      "group": "Stuck calls",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1,
+      "description": "V8 (Neel, 2026-10-16, AMD $545 → $560 for $0.02). When rolling a call, take the highest strike a week out that still pays call_roll_min_credit_ps, not just the same strike. Also flags a near-the-money call (delta ≥ call_roll_up_min_delta) whenever a free move up of call_roll_up_min_lift_pct is available. Off in V7."
+    },
+    "call_roll_min_credit_ps": {
+      "value": 0.0,
+      "label": "Minimum net credit for an up/out roll",
+      "group": "Stuck calls",
+      "unit": "$/share",
+      "step": 0.05,
+      "min": 0,
+      "max": 2,
+      "description": "Net credit per share a roll up or further out must still pay. 0 = even money is fine; never a debit."
+    },
+    "call_roll_up_min_lift_pct": {
+      "value": 1.5,
+      "label": "Smallest strike lift worth a roll-up",
+      "group": "Stuck calls",
+      "unit": "%",
+      "step": 0.5,
+      "min": 0,
+      "max": 10,
+      "description": "% of the current strike. A free roll that lifts the strike less than this is not worth a card."
+    },
+    "call_roll_up_min_delta": {
+      "value": 35,
+      "label": "Near-the-money call: delta to look for a roll-up",
+      "group": "Stuck calls",
+      "unit": "delta",
+      "step": 5,
+      "min": 10,
+      "max": 60,
+      "description": "An out-of-the-money call at or above this delta (AMD $545 with the stock at $544.63 ≈ 50) is checked for a free roll up."
+    },
+    "call_roll_deep_out": {
+      "value": 0,
+      "label": "Deep ITM call: roll further out to lift the strike",
+      "group": "Stuck calls",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1,
+      "description": "V8 (Neel, 2026-10-16, AAPL $325 → $340 Jan 15 for $0.85). When a call is deep in the money and a one-week roll cannot raise the strike, roll to the soonest expiry (up to call_roll_max_weeks) where a credit roll puts the strike within call_roll_near_spot_pct of the stock. Only after call_roll_deep_min_weeks above the strike and with RSI under assign_rsi — AVGO's one-week spike that came straight back is what the weekly roll is for. Off in V7."
+    },
+    "call_roll_deep_itm_pct": {
+      "value": 4,
+      "label": "Deep in the money means",
+      "group": "Stuck calls",
+      "unit": "%",
+      "step": 1,
+      "min": 1,
+      "max": 20,
+      "description": "% the stock is above the strike before the further-out roll is considered (AAPL $344 vs $325 = 5.8%)."
+    },
+    "call_roll_deep_min_weeks": {
+      "value": 4,
+      "label": "Weeks above the strike before rolling further out",
+      "group": "Stuck calls",
+      "unit": "weeks",
+      "step": 1,
+      "min": 1,
+      "max": 13,
+      "description": "Straight weeks the stock has closed above the strike. AAPL had 5 when it was rolled to January; AVGO's $375 lasted 2 days."
+    },
+    "call_roll_max_weeks": {
+      "value": 13,
+      "label": "Furthest a deep ITM call roll may go",
+      "group": "Stuck calls",
+      "unit": "weeks",
+      "step": 1,
+      "min": 2,
+      "max": 26,
+      "description": "Neel, 2026-10-16: 13 weeks. Each week further out is a week of new call premium not sold on those shares."
+    },
+    "call_roll_near_spot_pct": {
+      "value": 2,
+      "label": "Target: strike within this of the stock",
+      "group": "Stuck calls",
+      "unit": "%",
+      "step": 0.5,
+      "min": 0,
+      "max": 10,
+      "description": "The further-out roll aims for a strike no more than this % below the stock (AAPL $340 vs $344 = 1.2%)."
     }
   },
   "put_only": {

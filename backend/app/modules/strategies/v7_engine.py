@@ -462,6 +462,112 @@ def call_premium(spot: float, strike: float, vol: Optional[float], dte: int, con
     return int(max(px, 0.0) * 100 * contracts)
 
 
+def _strike_step(spot: float) -> float:
+    """A strike increment that is listed at that price level. Used only to
+    round an ESTIMATED strike DOWN to something real — rounding down is the
+    conservative side (a lower strike is worth more, so the credit holds)."""
+    return 5.0 if spot >= 200 else 2.5 if spot >= 50 else 1.0
+
+
+def call_roll_target(pol: Dict, spot: float, k: float, vol: Optional[float], dte: int,
+                     close_ps: float, exp_d: Optional[date], itm: bool,
+                     weeks_above: Optional[float] = None, rsi_hot: bool = False) -> Optional[Dict]:
+    """Where to roll a short call when the same strike is not the best roll
+    (V8, Neel 2026-10-16). Returns None when the same strike is the answer.
+
+    Rule A — up as well as out (`call_roll_up`): at the next weekly expiry,
+    the HIGHEST strike whose value still covers the buy-back plus
+    `call_roll_min_credit_ps`. AMD $545 → $560 for $0.02 after a 10% drop:
+    the same strike was not the only free roll.
+    Rule B — further out when deep (`call_roll_deep_out`): a call more than
+    `call_roll_deep_itm_pct` in the money that one week cannot lift: the
+    SOONEST expiry, up to `call_roll_max_weeks`, where a credit roll puts the
+    strike within `call_roll_near_spot_pct` of spot. AAPL $325 (stock $344)
+    → $340 Jan 15 for $0.85, where one week only kept $325.
+    Rule B only once the come-down has failed to come: the stock has closed
+    above the strike for `call_roll_deep_min_weeks` straight weeks and RSI
+    is not overbought. Neel, same day: "AVGO recent work against this
+    theory" — AVGO crossed $375 on 10/6, was back at $337 in a week, and the
+    weekly calls expired at $0.01; moved months out, that drop is not
+    cashable. AAPL had closed above $325 every day since 9/10 — five weeks.
+
+    Black-Scholes off the name's vol, like every other premium here (no
+    chain on file) — so the strike is rounded DOWN to a listed increment
+    and the card says to confirm it on the chain."""
+    if not exp_d or not vol or spot <= 0:
+        return None
+    up_on, deep_on = K(pol, "call_roll_up") >= 1, K(pol, "call_roll_deep_out") >= 1
+    if not (up_on or deep_on):
+        return None
+    step = _strike_step(spot)
+    min_credit = K(pol, "call_roll_min_credit_ps")
+
+    def best_strike(weeks: int) -> Optional[Tuple[float, float]]:
+        d_new = max(dte, 0) + 7 * weeks
+        best = None
+        cand = math.floor(k / step) * step
+        while cand <= spot * 1.5:
+            val = call_premium(spot, cand, vol, d_new, 1, RATE_ATM_WEEKLY) / 100.0
+            credit = val - close_ps
+            if credit < min_credit:
+                break  # value only falls as the strike rises
+            if cand >= k:
+                best = (cand, credit)
+            cand += step
+        return best
+
+    gap_pct = (spot / k - 1) * 100 if k else 0.0
+    if (deep_on and itm and gap_pct >= K(pol, "call_roll_deep_itm_pct") and not rsi_hot
+            and weeks_above is not None and weeks_above >= K(pol, "call_roll_deep_min_weeks")):
+        want = spot * (1 - K(pol, "call_roll_near_spot_pct") / 100)
+        one = best_strike(1)
+        if not one or one[0] < want:
+            for w in range(2, int(K(pol, "call_roll_max_weeks")) + 1):
+                b = best_strike(w)
+                if b and b[0] >= want:
+                    return {"rule": "deep_out", "weeks": w, "strike": b[0], "credit_ps": round(b[1], 2),
+                            "weeks_above": round(weeks_above, 1),
+                            "expiration": exp_d + timedelta(days=7 * w)}
+    if up_on:
+        b = best_strike(1)
+        if b and b[0] > k and (b[0] / k - 1) * 100 >= K(pol, "call_roll_up_min_lift_pct"):
+            return {"rule": "up", "weeks": 1, "strike": b[0], "credit_ps": round(b[1], 2),
+                    "expiration": exp_d + timedelta(days=7)}
+    return None
+
+
+def _weeks_above(db: Session, sym: str, k: float, today: date) -> Optional[float]:
+    """Weeks since the stock last closed at or below k (symbol-level closes).
+    None when there is no history; capped at the 26-week lookback."""
+    rows = db.execute(text("""
+        SELECT price_date, close_price FROM symbol_price_history
+        WHERE symbol = :s AND price_date >= :d ORDER BY price_date DESC
+    """), {"s": sym, "d": today - timedelta(days=182)}).fetchall()
+    if not rows:
+        return None
+    for r in rows:
+        if float(r.close_price) <= k:
+            return (today - r.price_date).days / 7
+    return (today - rows[-1].price_date).days / 7
+
+
+def _roll_target_text(t: Dict, k: float, n: int) -> Tuple[str, str]:
+    """(title fragment, why sentence) for a call_roll_target result."""
+    lift = (t["strike"] - k) * 100 * n
+    frag = f"up to ${t['strike']:,.2f}, out to {_fmt_exp(t['expiration'])} (≈ ${t['credit_ps']:+.2f}/share)"
+    if t["rule"] == "deep_out":
+        why = (f"Above the strike for {t.get('weeks_above', 0):.0f} straight weeks and not overbought — the "
+               f"come-down the weekly roll waits for has not come. One week cannot lift the strike, so look further out: {t['weeks']} weeks "
+               f"is the soonest expiry where a credit roll gets the strike near the stock — ${lift:,.0f} of "
+               f"upside back for the weeks of weekly premium given up (cap: call_roll_max_weeks). ")
+    else:
+        why = (f"The same strike is not the only free roll: ${t['strike']:,.2f} a week out still pays "
+               f"≈ ${t['credit_ps']:.2f}/share and gives back ${lift:,.0f} of upside. ")
+    why += ("Strike and credit are estimates (no option chain on file) — confirm the listed strike and a net "
+            "credit ≥ $0 on the roll screen, limit order, not market.")
+    return frag, why
+
+
 def _short_term_delta(rsi: Optional[float], pol: Dict, vol: Optional[float] = None,
                       vs_sma: Optional[float] = None) -> Tuple[int, str]:
     """Short-term call delta, one rule for every name (Neel, 2026-09-16):
@@ -1029,6 +1135,20 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
                         title = (f"{sym} ${k:,.0f} call ITM — {roll_day}: "
                                  + ("let it assign, as things stand" if verdict == "LET ASSIGN"
                                     else f"roll to {_fmt_exp(next_roll_expiry(chains, sym, 'call', exp_d))}, as things stand"))
+                    # V8: up as well as out, and further out when deep (call_roll_target)
+                    tgt = None
+                    if verdict == "ROLL" and action != "LET ASSIGN":
+                        close_ps = mark if (floor_hit or due_today) and mark is not None else \
+                            call_premium(spot, k, vol_, 1, 1, RATE_ATM_WEEKLY) / 100.0
+                        tgt = call_roll_target(pol, spot, k, vol_, dte if (floor_hit or due_today) else 1,
+                                               close_ps, exp_d, True, _weeks_above(db, sym, k, today),
+                                               rsi is not None and rsi >= assign_rsi)
+                    if tgt:
+                        frag, tgt_why = _roll_target_text(tgt, k, n)
+                        title = (f"{sym} ${k:,.0f} call ITM — roll {when}: {frag}" if action == "ROLL"
+                                 else f"{sym} ${k:,.0f} call ITM — {roll_day}: roll {frag}, as things stand")
+                        why_v = why_v + ". " + tgt_why.rstrip(". ")
+                        verdict_ctx["roll_target"] = {**tgt, "expiration": tgt["expiration"].isoformat()}
                     card(1, action, acct, sym, title, detail,
                          why_v + ". Rule 1 still holds: never pay a debit to get out. "
                          + ("Decided on Thursday with that day's RSI, credit and lots; until then the dip can settle it for free. "
@@ -1059,6 +1179,23 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
                 # OTM: the dip buy-back / profit take
                 rw = _runaway_status(pol, sym, spot, today)
                 dlt = call_delta(spot, k, vol_of(sym)[0], o["dte"] if o["dte"] is not None else 5)
+                # V8: a near-the-money call after a drop can often be rolled UP a
+                # week out for nothing (AMD $545 → $560, 2026-10-16). Shown any
+                # day it is available — it is free headroom, not a timing bet.
+                if (K(pol, "call_roll_up") >= 1 and mark is not None and dlt is not None
+                        and dlt >= K(pol, "call_roll_up_min_delta") / 100):
+                    tgt = call_roll_target(pol, spot, k, vol_of(sym)[0], o["dte"] if o["dte"] is not None else 5,
+                                           mark, o["expiration"], False)
+                    if tgt:
+                        frag, tgt_why = _roll_target_text(tgt, k, n)
+                        card(1, "ROLL", acct, sym,
+                             f"{sym} ${k:,.0f} call at the money — roll {frag}",
+                             f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · spot ${spot:,.2f} · "
+                             f"delta {dlt:.2f} · mark ${mark:,.2f}",
+                             tgt_why + " Optional: holding the current call is also fine — this only moves the cap "
+                             "higher at no cost, for one more week of cover.",
+                             context={"roll_target": {**tgt, "expiration": tgt["expiration"].isoformat()}, "delta": round(dlt, 2)})
+                        continue
                 if rw and not rw["resolved"] and mark is not None:
                     # A runaway thesis is about DISTANCE (Neel, 2026-09-15): the
                     # cap that gets bought back is the one close enough to take
@@ -1208,11 +1345,20 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
                 why = ("Short-term ITM call: assignment is the normal exit here, not a failure — but only when the roll "
                        "pays nothing or the name is not overbought. " + why_v + ". Rule 1 still holds: never a debit. "
                        f"After assignment the name simply re-enters the put ranking (yield vs. share of the book).")
+                st_tgt = None
+                if due and verdict == "ROLL":
+                    st_tgt = call_roll_target(pol, spot, k, vol_, dte, mark if mark is not None else
+                                              call_premium(spot, k, vol_, max(dte, 1), 1, RATE_ATM_WEEKLY) / 100.0,
+                                              o["expiration"], True, _weeks_above(db, sym, k, today),
+                                              rsi is not None and rsi >= assign_rsi)
+                    if st_tgt:
+                        why = why + " " + _roll_target_text(st_tgt, k, n)[1]
                 if due:
                     card(2, verdict, acct, sym,
                          (f"{sym} ${k:,.0f} call ITM — let the shares go {_fmt_exp(o['expiration'])}" if verdict == "LET ASSIGN"
-                          else f"{sym} ${k:,.0f} call ITM — roll {'now' if floor_hit else 'today'}: same strike "
-                               f"${k:,.2f}, out to {_fmt_exp(next_roll_expiry(chains, sym, 'call', o['expiration']))}"),
+                          else f"{sym} ${k:,.0f} call ITM — roll {'now' if floor_hit else 'today'}: "
+                               + (_roll_target_text(st_tgt, k, n)[0] if st_tgt else
+                                  f"same strike ${k:,.2f}, out to {_fmt_exp(next_roll_expiry(chains, sym, 'call', o['expiration']))}")),
                          detail, why, earn=roll_credit if verdict == "ROLL" else None,
                          context={"intrinsic": intrinsic, "time_value": tv, "rsi": rsi, "roll_credit": roll_credit,
                                   "verdict": verdict, "proceeds": proceeds})
