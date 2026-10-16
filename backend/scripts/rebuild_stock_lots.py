@@ -360,6 +360,7 @@ def rebuild(db, dry_run: bool):
     db.commit()
     print("written")
     apply_basis_overrides(db)
+    resolve_unknown_basis_auto(db)
 
 
 def apply_basis_overrides(db):
@@ -403,6 +404,82 @@ def apply_basis_overrides(db):
     )).scalar()
     print(f"overrides applied: {n_lots} lots, {n_sales} sale rows; "
           f"still unresolved: {unresolved}")
+
+
+def resolve_unknown_basis_auto(db):
+    """Fill BASIS_UNKNOWN sale rows without a hand-written override (Neel,
+    2026-10-15: "how do we make sure this happens going forward?", after
+    the 10/9 IBIT and 9/18 MSFT call assignments each needed one).
+
+    1. The lot already has a resolved basis (a `lots` override) but the
+       sale row was written before overrides ran, so it kept cost 0 —
+       the MSFT case. Use the lot's cost_per_share.
+    2. Otherwise, Robinhood's own realized P&L for that sale, which every
+       sync stores in robinhood_realized_trades (ROBINHOOD_MCP_SYNC.md
+       step 6d). All shares of a sale share one broker figure, so
+       basis_total = price*qty - realized_gain (premium-independent: an
+       assignment's premium inflates price and gain alike), and the
+       unknown rows get basis_total minus what the known rows carry,
+       split by shares — the IBIT case. Matched on account + symbol +
+       the sale's total share count + date +/-2 days (UTC stamps); the
+       share-count match keeps option closes (contract counts, negative
+       per-contract prices) out. No match, or a remainder <= 0, leaves
+       the row unresolved and visible — never a guess.
+    """
+    n_lot = db.execute(text("""
+        UPDATE stock_lot_sale s
+        SET cost_basis=ROUND(s.quantity_sold*l.cost_per_share, 2),
+            gain_loss=s.proceeds-ROUND(s.quantity_sold*l.cost_per_share, 2),
+            notes='BASIS_RESOLVED:LOT_OVERRIDE', updated_at=NOW()
+        FROM stock_lot l
+        WHERE l.lot_id=s.lot_id AND s.notes='BASIS_UNKNOWN'
+          AND l.notes LIKE 'BASIS_RESOLVED%' AND l.cost_per_share > 0
+    """)).rowcount
+
+    groups = db.execute(text("""
+        SELECT DISTINCT l.account_id, l.symbol, s.sale_date
+        FROM stock_lot_sale s JOIN stock_lot l ON l.lot_id=s.lot_id
+        WHERE s.notes='BASIS_UNKNOWN'
+    """)).fetchall()
+    n_rh, left = 0, []
+    for g in groups:
+        rows = db.execute(text("""
+            SELECT s.sale_id, s.quantity_sold, s.proceeds, s.cost_basis, s.notes
+            FROM stock_lot_sale s JOIN stock_lot l ON l.lot_id=s.lot_id
+            WHERE l.account_id=:a AND l.symbol=:s AND s.sale_date=:d
+        """), {"a": g.account_id, "s": g.symbol, "d": g.sale_date}).fetchall()
+        total_qty = sum(Decimal(str(r.quantity_sold)) for r in rows)
+        rh = db.execute(text("""
+            SELECT price, quantity, realized_gain FROM robinhood_realized_trades
+            WHERE account_id=:a AND symbol=:s AND price > 0
+              AND trade_date BETWEEN CAST(:d AS date) - 2 AND CAST(:d AS date) + 2
+              AND ABS(quantity - :q) < 0.001
+            ORDER BY ABS(trade_date - CAST(:d AS date)) LIMIT 1
+        """), {"a": g.account_id, "s": g.symbol, "d": g.sale_date, "q": total_qty}).fetchone()
+        unknown = [r for r in rows if r.notes == "BASIS_UNKNOWN"]
+        label = f"{g.account_id} {g.symbol} {g.sale_date}"
+        if not rh:
+            left.append(f"{label}: no Robinhood realized trade for {total_qty} sh")
+            continue
+        true_basis = Decimal(str(rh.price)) * Decimal(str(rh.quantity)) - Decimal(str(rh.realized_gain))
+        known = sum(Decimal(str(r.cost_basis)) for r in rows if r.notes != "BASIS_UNKNOWN")
+        remainder = true_basis - known
+        unknown_qty = sum(Decimal(str(r.quantity_sold)) for r in unknown)
+        if remainder <= 0 or unknown_qty <= 0:
+            left.append(f"{label}: remainder {remainder:.2f} (RH {true_basis:.2f} - known {known:.2f})")
+            continue
+        for r in unknown:
+            cb = (remainder * Decimal(str(r.quantity_sold)) / unknown_qty).quantize(Decimal("0.01"))
+            db.execute(text("""
+                UPDATE stock_lot_sale SET cost_basis=:cb, gain_loss=proceeds-:cb,
+                    notes=:n, updated_at=NOW() WHERE sale_id=:id
+            """), {"cb": cb, "id": r.sale_id,
+                   "n": f"BASIS_RESOLVED:RH_REALIZED_AUTO (RH basis {true_basis:.2f} - known {known:.2f})"})
+            n_rh += 1
+    db.commit()
+    print(f"auto-resolved: {n_lot} sale rows from resolved lots, {n_rh} from Robinhood realized P&L")
+    for msg in left:
+        print(f"  still unknown — {msg}")
 
 
 if __name__ == "__main__":

@@ -418,9 +418,15 @@ def _rebuild_lots_after_assignments(n_detected: int) -> None:
     both tables before rewriting them, so if it fails its transaction rolls
     back and the previous lots survive — while the assignment rows, already
     committed, are safe either way. Never allowed to break detection.
+
+    Runs on EVERY detection call — i.e. every sync — not only when
+    something was detected (2026-10-15). Plain SELL fills and the
+    Robinhood realized P&L the bridge stores each sync also need the
+    replay: the rebuild now fills unknown-basis sales from that realized
+    P&L (resolve_unknown_basis_auto), and a sale whose broker figure
+    lands a sync later would otherwise wait for the next assignment.
+    The whole replay takes under a second. n_detected is kept for the log.
     """
-    if not n_detected:
-        return
     from app.core.database import SessionLocal
     from scripts.rebuild_stock_lots import rebuild
     db = SessionLocal()

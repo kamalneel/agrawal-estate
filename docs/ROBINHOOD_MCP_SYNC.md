@@ -123,6 +123,13 @@ Jaya's IRA data, caught by comparing against the MCP figures before saving).
    fills in UTC, so an Aug-29 assignment can arrive as 2025-08-30T04:11Z)
    and uses the broker's realized gain DIRECTLY as the assignment figure,
    in preference to any cost basis we derive.
+   The same rows also fill equity-sale cost basis (added 2026-10-15): the
+   lot rebuild, which now runs on EVERY sync via detect-assignments, gives
+   any sale left with an unknown basis (a purchase missing from the ledger)
+   Robinhood's total basis minus what the known lots carry
+   (`resolve_unknown_basis_auto` in rebuild_stock_lots.py). Anything it
+   can't match stays flagged as unresolved on the Income page; it is never
+   guessed.
    Why it replaced the derived number: `_reconstruct_cost_basis` summed
    BUY rows and ignored SPLIT rows, so NFLX's 10:1 split (2025-11-17) had
    it dividing pre-split dollars by pre-split share counts and comparing
