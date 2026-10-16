@@ -1529,6 +1529,36 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
                                            f"${room_for_assignment:,.0f} available)"
                                            + (", they are long-term shares bought below the strike" if book == "long"
                                               else ", into the short-term book, then calls on them"))
+        # V8: a put stops rolling after put_max_roll_weeks (Neel, 2026-10-16:
+        # 8). Until then RSI, the credit and room decide as above; past it
+        # none of them is a reason to roll again. The V8 review found all 21
+        # ITM puts on ROLL and none on LET ASSIGN — AVGO $380 rolled since
+        # 8/18, CBRS $175 $38 ITM rolling for ~$0.06 because RSI was 26 —
+        # and in an over-committed account (room < 0) the `fits` test alone
+        # forced every put to roll forever, since rolling never frees cash.
+        roll_weeks = chain_premium = None
+        cap_weeks = int(K(pol, "put_max_roll_weeks"))
+        if cap_weeks > 0 and acct_id.get(acct):
+            try:
+                from app.modules.strategies.technical_signals import _index_roll_transactions, _walk_roll_chain
+                sto_by_leg, btc_by_date = _index_roll_transactions(db, acct_id.get(acct), sym, "put")
+                leg = sto_by_leg.get((k, o["expiration"]))
+                if leg:
+                    ch = _walk_roll_chain(sto_by_leg, btc_by_date, k, o["expiration"], leg["date"], leg["amount"])
+                    roll_weeks, chain_premium = ch["chain_weeks"], ch["net_premium"]
+            except Exception:
+                roll_weeks = None
+        if verdict == "ROLL" and roll_weeks is not None and roll_weeks >= cap_weeks:
+            loss_now = intrinsic * 100 * n
+            draw = max(cost_to_own - room_for_assignment, 0) if room is not None else 0
+            verdict, why_v = "LET ASSIGN", (
+                f"{roll_weeks} weeks of rolling (cap {cap_weeks}, put_max_roll_weeks): the bounce the rolls were "
+                f"waiting for has not come, so RSI and the credit are no longer reasons to carry it. Take the "
+                f"{n * 100:,} shares at ${k:,.0f} — ${loss_now:,.0f} under the market today, against "
+                f"${chain_premium or 0:,.0f} net premium collected across the chain"
+                + (f"; this draws ${draw:,.0f} on the margin line, because the account is already over-committed"
+                   if draw > 0 else "")
+                + ". Or buy it back and take the same loss in cash. Rolling again is an explicit override, not the default")
         if floor_hit:
             action = "LET ASSIGN" if verdict == "LET ASSIGN" else "ROLL"
             when = f"now — time value ${tv:,.2f} at the floor"
@@ -1550,13 +1580,14 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
              + (f" · time value left ${tv:,.2f}" if tv is not None else "")
              + f" · roll credit est ${roll_credit:,} · {rsi_txt} · assignment would take ${cost_to_own:,.0f}"
              + (f" of ${room_for_assignment:,.0f} available (its collateral is already reserved)" if room is not None else ""),
-             why_v + ". Never pay intrinsic to get out. "
+             why_v + (". " if roll_weeks is not None and roll_weeks >= cap_weeks > 0 else ". Never pay intrinsic to get out. ")
              + ("Decided on Thursday with that day's RSI and credit. " if action == "WAIT" else "")
              + f"Roll timing: Thursday of expiry week, immediately once time value is ≤ ${K(pol, 'put_roll_tv_floor'):.2f} "
                "(early-assignment risk); never Friday afternoon. planned_assignments overrides either way.",
              earn=roll_credit if action == "ROLL" else None,
              context={"intrinsic": intrinsic, "time_value": tv, "cost_to_own": cost_to_own, "room": room,
-                      "rsi": rsi, "roll_credit": roll_credit, "verdict": verdict})
+                      "rsi": rsi, "roll_credit": roll_credit, "verdict": verdict,
+                      "roll_weeks": roll_weeks, "chain_premium": chain_premium})
 
     # (Re-entry puts after a call assignment were a dedicated Layer-1 card
     # until 2026-09-20. Neel: re-entry is not automatic — the called-away
@@ -1748,7 +1779,12 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
     for acct in sorted(cash, key=_acct_rank):
         c = cash[acct]
         line = lines.get(acct, 0.0)
-        capacity = (line + c["cash"] if line else c["cash"]) - c["collateral"] - (c["margin_used"] if line else 0)
+        # IRA cash_balance is already net of open-put collateral (the bridge
+        # writes buying power there) — subtracting collateral again put
+        # Neel's Retirement at −$68.8K instead of +$4.2K, so an IRA put
+        # expiring worthless could never be re-sold (V8 review, 2026-10-16).
+        # Same convention as `room` in the put-roll block.
+        capacity = (line + c["cash"] - c["collateral"] - c["margin_used"]) if line else c["cash"]
         capacity += freeing_today.get(acct, 0.0)
         if capacity < K(pol, "put_min_capacity"):
             continue

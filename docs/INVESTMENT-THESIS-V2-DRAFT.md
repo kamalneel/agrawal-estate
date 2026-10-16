@@ -691,3 +691,18 @@ further-out roll waits until the stock has stayed above the strike for 4
 straight weeks and RSI is not overbought. Before that, the weekly roll
 still bets on the drop.
 
+## 2026-10-16 — a put roll needs an exit (V8)
+
+The V8 review found every in-the-money put set to roll, with no way
+out: RSI ≤ 35 ("the bounce is coming"), any credit above $0.50, or an
+over-committed account each meant roll again. Neel chose a cap on
+time: after 8 weeks of rolling (`put_max_roll_weeks`), the default becomes
+take the shares or buy back, with the loss and the premium collected shown
+side by side. The thesis still holds that big companies come back; the cap
+admits that a wait past two months is a view on timing the rolls can't
+pay for.
+
+Also fixed, in V7 and V8: put capacity subtracted IRA collateral twice
+(Neel's Retirement read −$68.8K instead of +$4.2K), so an IRA whose put
+expired worthless could not sell the next one.
+

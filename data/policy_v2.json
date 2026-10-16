@@ -845,6 +845,16 @@
       "min": 0,
       "max": 10,
       "description": "The further-out roll aims for a strike no more than this % below the stock (AAPL $340 vs $344 = 1.2%)."
+    },
+    "put_max_roll_weeks": {
+      "value": 0,
+      "label": "Stop rolling an ITM put after",
+      "group": "Stuck calls",
+      "unit": "weeks",
+      "step": 1,
+      "min": 0,
+      "max": 26,
+      "description": "V8 (Neel, 2026-10-16: 8). Weeks a put's roll chain may run before rolling stops being the default: past it RSI, the roll credit and account room are no longer reasons to carry it, and the card says take the shares (or buy back), with the loss, the premium collected across the chain and any margin draw spelled out. 0 = no cap (V7)."
     }
   },
   "put_only": {

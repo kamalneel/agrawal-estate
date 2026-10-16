@@ -247,6 +247,7 @@ policy.
 | Skip short-term calls on depressed names | `st_call_skip_depressed` = 1 | Anti-pattern 8, extended 2026-10-12 |
 | Roll calls up as well as out, for a credit | `call_roll_up` = 1 | Anti-pattern 11 |
 | Deep ITM call stuck ≥ 4 weeks: roll further out (≤ 13 weeks) to lift the strike | `call_roll_deep_out` = 1 | Anti-pattern 11 |
+| Stop rolling an ITM put after 8 weeks: take the shares or buy back | `put_max_roll_weeks` = 8 | Anti-pattern 12 |
 
 ### First diff, 2026-10-04
 
@@ -437,3 +438,41 @@ is why the deep roll waits for four straight weeks above the strike and
 for RSI not to be overbought; until then the weekly roll stands. The
 estimates are Black-Scholes off one implied vol (no chain on file), so
 every card says to confirm the listed strike and a net credit.
+
+## 12. A put roll needs an exit
+
+**The case (2026-10-16 V8 review).** All 21 in-the-money put positions in
+the V8 preview were ROLL and none LET ASSIGN — about $70K in the money
+across SOXL, CBRS, INTC, AVGO and NVDA. Nothing stopped the rolling, for
+three reasons:
+- **RSI ≤ `put_roll_rsi` (35) meant ROLL whatever the credit.** CBRS $175,
+  $38 in the money, rolled for about $0.06 a week on RSI 26.
+- **A credit above $0.50 meant ROLL.**
+- **In an over-committed account, the room test forced ROLL.** Neel's
+  Brokerage was at −$19K of room ($250K line + $298K cash − $567K of
+  collateral), so no put there could ever be assigned. Rolling frees no
+  cash, so the lock never opened.
+
+AVGO $380 had been rolled since 8/18. SOXL $145 in Neel's Retirement had
+been rolled for 18 weeks.
+
+**The rule.** `put_max_roll_weeks` (Neel: 8). Once a put's roll chain
+reaches it, RSI, the credit and the room test stop being reasons to roll.
+The card says take the shares or buy back. It shows the loss against the
+market, the net premium collected across the chain, and any margin the
+assignment would draw. Rolling again is an explicit override. The call
+side already had its counterpart, `roll_abandon_pct`.
+
+On 2026-10-16 this turned three cards: AVGO $380 (10 weeks, −$4,281 vs
+$2,252 collected; draws $19,324 of margin), GOOGL $360 (14 weeks, −$1,287 vs
+$2,176), and SOXL $145 in Neel's Retirement (18 weeks, −$8,990 vs $12,037).
+
+**Known limit.** The week count follows the roll chain in the ledger.
+A roll that changed strike, or a gap in the history, can restart the
+count, so the count errs short and the rule fires late, not early.
+
+Still open from the same review, not yet decided: a distance stop for puts
+(the mirror of `roll_abandon_pct`), a sector cap (semis were 81% of put
+collateral), leveraged-ETF limits for SOXL, dropping `put_depressed_bonus`,
+and checking lock-up and earnings dates on roll targets, not only on new puts.
+
