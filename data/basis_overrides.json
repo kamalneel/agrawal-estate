@@ -750,6 +750,16 @@
    "cost_basis": "5370.52",
    "is_long_term": true,
    "note": "BASIS_RESOLVED:RH_REALIZED (IBIT $39 call assigned 10/9/2026, 1,500 sh; Robinhood realized -2,796.98 at 45.80 incl. premium -> total basis 71,496.98, minus 66,126.46 on the 1,400 known lots; the 100-sh lot's purchase is missing from the ledger, held >1y like every other IBIT lot in the account)"
+  },
+  {
+   "account_id": "neel_brokerage",
+   "symbol": "MSFT",
+   "sale_date": "2026-09-19",
+   "quantity_sold": "40.000000",
+   "proceeds": "18000.00",
+   "cost_basis": "13221.27",
+   "is_long_term": true,
+   "note": "BASIS_RESOLVED:RH_REALIZED (MSFT $450 call assigned 9/18/2026, 100 sh; Robinhood realized +10,307.10 at 487.9687 incl. premium -> total basis 38,489.77, minus 25,268.50 on the 60 known-lot shares; agrees with the 2024-03-28 lot's RH_AVG_COST $330.54/sh within $0.33)"
   }
  ]
 }
