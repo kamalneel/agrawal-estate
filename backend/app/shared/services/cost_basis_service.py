@@ -563,11 +563,15 @@ def get_pure_performance(db: Session) -> Dict:
     across accounts), plus a value-vs-invested-capital time series."""
     from sqlalchemy import text as _text
 
+    # Price by account + symbol, not source: lots opened by an MCP-detected
+    # put assignment carry source 'robinhood_mcp_inferred' while the holding
+    # row is 'robinhood', and matching on source left SPCX, CBRS, INTC and
+    # SOXL unpriced (Neel, 2026-10-21). account_id is unique across sources.
     open_rows = db.execute(_text("""
         SELECT l.symbol, l.quantity_remaining, l.cost_per_share, l.purchase_date, h.current_price
         FROM stock_lot l
         LEFT JOIN investment_holdings h
-          ON h.source = l.source AND h.account_id = l.account_id AND h.symbol = l.symbol
+          ON h.account_id = l.account_id AND h.symbol = l.symbol
         WHERE l.quantity_remaining > 0
     """)).fetchall()
 
