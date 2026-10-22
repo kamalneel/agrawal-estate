@@ -849,7 +849,7 @@ class RecommendationScheduler:
             logger.info(f"[V6] Running V6 action-queue check (scan_type={scan_type})...")
 
             from app.modules.strategies.v7_engine import build_live_action_queue
-            queue = build_live_action_queue(db)   # V7 since 2026-09-16; settings.LIVE_STRATEGY_ENGINE
+            queue = build_live_action_queue(db)   # V8 since 2026-10-22; settings.LIVE_STRATEGY_ENGINE
             items = queue.get("items", [])
             logger.info(f"[{queue.get('engine_version', 'v6')}] Total items: {len(items)}")
 

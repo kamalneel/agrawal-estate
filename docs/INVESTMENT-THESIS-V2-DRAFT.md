@@ -706,3 +706,12 @@ Also fixed, in V7 and V8: put capacity subtracted IRA collateral twice
 (Neel's Retirement read −$68.8K instead of +$4.2K), so an IRA whose put
 expired worthless could not sell the next one.
 
+
+## 2026-10-22 — V8 is the live rulebook
+
+Neel switched the live engine from V7 to V8: Option Execution and the scan
+email run V8 (`LIVE_STRATEGY_ENGINE`); V7 stays on the Notifications page
+for reference. On the day, V8 differs from V7 in ten cards: eight calls on
+names 5–18% below their 10-day average become "no call this week" (AVGO,
+INTC, CBRS, RKLB), and AVGO $380 / GOOGL $360 puts say take the shares
+instead of rolling (8-week cap). Roll back: `LIVE_STRATEGY_ENGINE=v7`.

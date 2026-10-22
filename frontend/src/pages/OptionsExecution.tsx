@@ -404,8 +404,8 @@ export function OptionsExecution() {
                   {high > 0 && <span className={clsx(styles.badge, styles.badgeHigh)}>{high} HIGH</span>}
                 </>
               })()}
-              <span className={styles.engineTag}>{queue ? ((queue as any).engine_version === 'v7' ? 'V7 · two books, four layers' : 'V6.1 · engines 4+1') : ''}</span>
-              <Link to="/strategies/v8-preview" className={styles.previewLink} title="The same queue under the V8 rules, with each difference from V7 tagged">See V8 preview →</Link>
+              <span className={styles.engineTag}>{queue ? ({ v8: 'V8 · two books, four layers + anti-pattern rules', v7: 'V7 · two books, four layers' } as Record<string, string>)[(queue as any).engine_version] ?? 'V6.1 · engines 4+1' : ''}</span>
+              <Link to="/strategies/v8-preview" className={styles.previewLink} title="The same queue under the previous V7 rules, kept for reference">See V7 (previous) →</Link>
               <div className={styles.sortToggle}>
                 <span className={styles.sortToggleLabel}>Sort:</span>
                 <button

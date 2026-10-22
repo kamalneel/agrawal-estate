@@ -38,9 +38,11 @@ class Settings(BaseSettings):
     
     # Family Password - set via environment variable or .env file
     # Which strategy engine feeds the Option Execution page and the
-    # notification email: "v7" (two books, four layers) or "v6". Neel,
-    # 2026-09-16: "I hardly see myself going back to V6." Flip to roll back.
-    LIVE_STRATEGY_ENGINE: str = "v7"
+    # notification email: "v8", "v7" (two books, four layers) or "v6". Neel,
+    # 2026-09-16: "I hardly see myself going back to V6." V8 live since
+    # 2026-10-22 (Neel: "now is the time to switch from V7 to V8"); V7 stays
+    # on the Notifications page. Roll back: LIVE_STRATEGY_ENGINE=v7 in .env.
+    LIVE_STRATEGY_ENGINE: str = "v8"
     FAMILY_PASSWORD: str = "Alishade@r"
     
     @property

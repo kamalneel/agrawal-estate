@@ -6987,7 +6987,7 @@ async def get_position_coverage(
 @router.get("/v6/action-queue")
 async def get_v6_action_queue(engine: Optional[str] = None, db: Session = Depends(get_db)):
     """The action queue behind the Options Execution page — the LIVE engine
-    (settings.LIVE_STRATEGY_ENGINE, V7 since 2026-09-16) in the queue
+    (settings.LIVE_STRATEGY_ENGINE, V8 since 2026-10-22) in the queue
     contract the page has always consumed. `?engine=v6` returns the V6
     queue for comparison. See docs/OPTIONS-EXECUTION-PAGE-SPEC.md."""
     if (engine or "").lower() == "v6":

@@ -234,6 +234,18 @@ policy.
 - `GET /strategies/v8/diff` — what V8 does differently from live V7, card
   by card, which is the point of running them together
 
+**V8 went live 2026-10-22** (Neel: *"now is the time to switch from V7 to
+V8 … move the V7 as a notification preview, so I still have access to go
+back to it"*). `LIVE_STRATEGY_ENGINE = "v8"` in `backend/app/core/config.py`
+feeds Option Execution and the scan email; the Notifications page opens on
+V7 (the previous rulebook) with the V8 tab still comparing card by card.
+Roll back with `LIVE_STRATEGY_ENGINE=v7` in `.env` and a backend restart —
+no data or policy changes either way. The roll-target wording (2026-10-01,
+"same strike, out to 11/20") is shared engine code, so V8 already had it.
+
+From here, a rule in `policy_v8.json` is live the moment it is saved. A new
+experimental rule needs its own preview layer before it ships.
+
 ### Rules in V8, not in V7
 
 | Rule | Knob | From |

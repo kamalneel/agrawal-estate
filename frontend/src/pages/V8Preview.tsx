@@ -84,10 +84,13 @@ const acctRank = (a: string) => { const i = ACCOUNT_ORDER.indexOf(a); return i <
 // title on it means V8 sized or priced it differently.
 const cardKey = (c: Card) => `${c.account}|${c.symbol}|${c.layer}|${c.action}`
 
-// Opens on V8; V7 is one click away for the same layout (V7 itself is live on Option Execution)
-const ENGINE_KEY = 'v8preview.engine'
+// V8 went live on Option Execution 2026-10-22; this page now opens on V7,
+// the previous rulebook, so it stays one click away. The V8 tab keeps the
+// card-by-card comparison against V7. New key so the old 'v8' choice
+// doesn't carry over.
+const ENGINE_KEY = 'notifications.engine'
 const readEngine = (): Engine => {
-  try { return localStorage.getItem(ENGINE_KEY) === 'v7' ? 'v7' : 'v8' } catch { return 'v8' }
+  try { return localStorage.getItem(ENGINE_KEY) === 'v8' ? 'v8' : 'v7' } catch { return 'v7' }
 }
 
 export default function V8Preview() {
@@ -207,13 +210,13 @@ export default function V8Preview() {
       <div className={styles.banner}>
         <AlertTriangle size={16} />
         {engine === 'v8'
-          ? <span><strong>V8 preview.</strong> Runs beside live V7 — nothing here is acted on until you switch. Cards tagged <em>new</em> or <em>changed</em> differ from V7; V7 cards V8 drops are listed under the queue.</span>
-          : <span><strong>V7 — the live rulebook</strong>, shown here in the preview layout. The same queue drives Option Execution.</span>}
+          ? <span><strong>V8 — the live rulebook</strong> since 10/22; the same queue drives Option Execution and the email. Cards tagged <em>new</em> or <em>changed</em> differ from V7; V7 cards V8 drops are listed under the queue.</span>
+          : <span><strong>V7 — the previous rulebook</strong>, kept for reference. Nothing here is acted on; Option Execution and the email run V8.</span>}
       </div>
 
       <header className={styles.header}>
         <div>
-          <h1>{engine === 'v8' ? 'Notifications V8 (preview)' : 'Notifications V7 (live)'}</h1>
+          <h1>{engine === 'v8' ? 'Notifications V8 (live)' : 'Notifications V7 (previous)'}</h1>
           <div className={styles.sub}>
             as of {data.as_of} · positions {data.data_as_of.options?.slice(0, 16)} · cash {data.data_as_of.cash}
           </div>
@@ -223,7 +226,7 @@ export default function V8Preview() {
             {(['v7', 'v8'] as Engine[]).map(v => (
               <button key={v} className={clsx(styles.engineToggleBtn, engine === v && styles.engineToggleBtnActive)}
                       onClick={() => switchEngine(v)} aria-pressed={engine === v}
-                      title={v === 'v7' ? 'V7 — the live rulebook' : 'V8 — preview: the anti-pattern rules beside V7'}>
+                      title={v === 'v7' ? 'V7 — the previous rulebook' : 'V8 — the live rulebook, compared card by card with V7'}>
                 {v.toUpperCase()}
               </button>
             ))}

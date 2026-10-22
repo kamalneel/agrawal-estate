@@ -1973,13 +1973,15 @@ def build_action_queue(db: Session, version: str = "v7") -> Dict:
 
 
 def build_live_action_queue(db: Session) -> Dict:
-    """The queue the page and the email use — V7 or V6 per
-    settings.LIVE_STRATEGY_ENGINE."""
+    """The queue the page and the email use — V8, V7 or V6 per
+    settings.LIVE_STRATEGY_ENGINE (V8 since 2026-10-22). Anything
+    unrecognised falls back to V7, the last proven rulebook."""
     from app.core.config import settings
-    if (settings.LIVE_STRATEGY_ENGINE or "v7").lower() == "v6":
+    eng = (settings.LIVE_STRATEGY_ENGINE or "v7").lower()
+    if eng == "v6":
         from app.modules.strategies.v6_engine import build_action_queue as _v6
         return _v6(db)
-    return build_action_queue(db)
+    return build_action_queue(db, "v8" if eng == "v8" else "v7")
 
 
 def premium_summary(db: Session, today: Optional[date] = None) -> Dict:
