@@ -1,0 +1,167 @@
+/* Investments-page section, same idiom as Assignment Loss directly above:
+   heading and definition outside the box, numbers inside. */
+.section {
+  margin-bottom: var(--space-8);
+}
+
+.card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6);
+}
+
+.title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.subtitle {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  max-width: 900px;
+  line-height: var(--leading-relaxed, 1.5);
+}
+
+.statRow {
+  display: flex;
+  gap: var(--space-8);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.statValue {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.statLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  margin-top: var(--space-1);
+}
+
+.pos { color: var(--color-positive); }
+.neg { color: var(--color-negative); }
+.dim { color: var(--color-text-tertiary); }
+.strong { font-weight: var(--font-semibold); }
+
+.tableWrap {
+  margin-top: var(--space-3);
+  overflow-x: auto;
+  border-top: 1px solid var(--color-border);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.table th {
+  text-align: right;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-semibold);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  text-align: right;
+}
+
+.table th.left,
+.table td.left {
+  text-align: left;
+}
+
+.thBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.thBtn:hover {
+  color: var(--color-text-primary);
+}
+
+.sortArrow {
+  font-size: 9px;
+  color: var(--color-accent);
+}
+
+.row {
+  cursor: pointer;
+}
+
+.row:hover td {
+  background: var(--color-bg-tertiary);
+}
+
+.symbol {
+  font-weight: var(--font-bold);
+  font-family: var(--font-mono, monospace);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.status {
+  margin-left: var(--space-2);
+  font-family: var(--font-sans, inherit);
+  font-weight: var(--font-normal, 400);
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+}
+
+.num {
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.detail td {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-primary);
+}
+
+.detail td.left {
+  padding-left: var(--space-6);
+}
+
+.totalRow td {
+  font-weight: var(--font-semibold);
+  border-top: 1px solid var(--color-border);
+  border-bottom: none;
+}
+
+.flag {
+  color: var(--color-text-secondary);
+  margin-left: 2px;
+  cursor: help;
+}
+
+.footnote {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  max-width: 900px;
+  line-height: var(--leading-relaxed, 1.5);
+}

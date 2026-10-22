@@ -251,3 +251,134 @@ def get_assignment_loss(db: Session) -> Dict:
         "total_premium_on_assigned_contracts": round(sum(e["premium_collected"] for e in events), 2),
         "skipped_no_price_data": skipped_no_data,
     }
+
+
+def get_put_campaigns(db: Session) -> Dict:
+    """Put campaigns, per stock — Neel, 2026-10-22: the assignment loss is
+    a snapshot; "that stock then goes up or down", so what is it worth now?
+    The wheel-trader view: for every put that was assigned, the shares'
+    result since (still held → today's price; sold → what they sold for)
+    plus the net premium collected across the roll chain that led to it.
+
+        shares_result = held × today + sale proceeds − strike × shares
+        campaign      = shares_result + premium_collected
+
+    Each assignment is traced to its own lot (account, symbol, cost = the
+    strike, bought within 3 days of the assignment) — the lot engine knows
+    whether those shares are still held and, if not, what they fetched.
+    Which lot a later sale consumed follows the lot engine's method (FIFO
+    or highest-cost), so in an account that also held bought shares a sale
+    may be attributed to the other lot; the per-stock total is unaffected.
+    No lot match → valued as still held at today's price, flagged
+    `traced: False`.
+
+    Put premium only. Calls sold on the shares afterwards are not added:
+    where shares were already held before the assignment (AVGO, TSLA,
+    NVDA, AMD) a later call cannot be tied to the assigned shares.
+    """
+    events = [e for e in get_assignment_loss(db)["events"] if e["option_type"] == "put"]
+
+    held_px = {(r.account_id, r.symbol): float(r.current_price) for r in db.execute(_text(
+        "SELECT account_id, symbol, current_price FROM investment_holdings WHERE current_price IS NOT NULL"))}
+    last_px = {r.symbol: (float(r.close_price), r.price_date) for r in db.execute(_text("""
+        SELECT DISTINCT ON (symbol) symbol, close_price, price_date
+        FROM symbol_price_history ORDER BY symbol, price_date DESC"""))}
+    any_held = {}
+    for (_a, s), p in held_px.items():
+        any_held.setdefault(s, p)
+
+    used_lots = set()
+    rows = []
+    for e in sorted(events, key=lambda e: e["date"]):
+        lots = db.execute(_text("""
+            SELECT l.lot_id, l.quantity, l.quantity_remaining,
+                   COALESCE((SELECT SUM(s.quantity_sold) FROM stock_lot_sale s WHERE s.lot_id = l.lot_id), 0) AS sold,
+                   COALESCE((SELECT SUM(s.proceeds) FROM stock_lot_sale s WHERE s.lot_id = l.lot_id), 0) AS proceeds,
+                   (SELECT MAX(s.sale_date) FROM stock_lot_sale s WHERE s.lot_id = l.lot_id) AS last_sale
+            FROM stock_lot l
+            WHERE l.account_id = :a AND l.symbol = :s
+              AND ABS(l.purchase_date - CAST(:d AS date)) <= 3
+              AND ABS(l.cost_per_share - :k) < 0.02
+            ORDER BY ABS(l.quantity - :q), ABS(l.purchase_date - CAST(:d AS date))
+        """), dict(a=e["account_id"], s=e["symbol"], d=e["date"], k=e["strike"], q=e["shares"])).fetchall()
+        lot = next((l for l in lots if l.lot_id not in used_lots), None)
+
+        price = held_px.get((e["account_id"], e["symbol"])) or any_held.get(e["symbol"])
+        if price is None and e["symbol"] in last_px:
+            price = last_px[e["symbol"]][0]
+
+        shares = e["shares"]
+        cost = e["strike"] * shares
+        if lot is not None:
+            used_lots.add(lot.lot_id)
+            scale = shares / float(lot.quantity) if float(lot.quantity) else 1.0
+            sold = float(lot.sold) * scale
+            proceeds = float(lot.proceeds) * scale
+            held = max(shares - sold, 0.0)
+            traced = True
+            last_sale = lot.last_sale.isoformat() if lot.last_sale else None
+        else:
+            sold, proceeds, held, traced, last_sale = 0.0, 0.0, shares, False, None
+
+        if held > 1e-6 and price is None:
+            shares_result = None   # honest gap — no fabricated price
+        else:
+            shares_result = held * (price or 0.0) + proceeds - cost
+
+        rows.append({
+            "date": e["date"], "account_name": e["account_name"], "symbol": e["symbol"],
+            "strike": e["strike"], "shares": shares,
+            "price_at_assignment": e["price_at_assignment"],
+            "loss_at_assignment": -e["loss"],               # signed: negative = loss
+            "shares_held": round(held, 4), "shares_sold": round(sold, 4),
+            "sale_proceeds": round(proceeds, 2), "last_sale": last_sale,
+            "price_today": price,
+            "shares_result": round(shares_result, 2) if shares_result is not None else None,
+            "premium_collected": e["premium_collected"],
+            "premium_chain_weeks": e["premium_chain_weeks"],
+            "premium_incomplete": e["premium_incomplete"],
+            "campaign": round(shares_result + e["premium_collected"], 2) if shares_result is not None else None,
+            "traced": traced,
+        })
+
+    by_sym: Dict[str, Dict] = {}
+    for r in rows:
+        s = by_sym.setdefault(r["symbol"], {
+            "symbol": r["symbol"], "assignments": 0, "shares": 0.0, "shares_held": 0.0,
+            "strike_x_shares": 0.0, "loss_at_assignment": 0.0, "shares_result": 0.0,
+            "premium_collected": 0.0, "campaign": 0.0, "unpriced": 0, "untraced": 0,
+            "price_today": r["price_today"], "first": r["date"], "last": r["date"], "events": []})
+        s["assignments"] += 1
+        s["shares"] += r["shares"]
+        s["shares_held"] += r["shares_held"]
+        s["strike_x_shares"] += r["strike"] * r["shares"]
+        s["loss_at_assignment"] += r["loss_at_assignment"]
+        s["premium_collected"] += r["premium_collected"]
+        s["first"], s["last"] = min(s["first"], r["date"]), max(s["last"], r["date"])
+        if r["shares_result"] is None:
+            s["unpriced"] += 1
+        else:
+            s["shares_result"] += r["shares_result"]
+            s["campaign"] += r["campaign"]
+        if not r["traced"]:
+            s["untraced"] += 1
+        s["events"].append(r)
+
+    stocks = []
+    for s in by_sym.values():
+        s["avg_strike"] = round(s.pop("strike_x_shares") / s["shares"], 2) if s["shares"] else None
+        for k in ("loss_at_assignment", "shares_result", "premium_collected", "campaign"):
+            s[k] = round(s[k], 2)
+        s["status"] = "held" if s["shares_held"] >= s["shares"] - 1e-6 else "closed" if s["shares_held"] < 1e-6 else "partly sold"
+        s["events"].sort(key=lambda r: r["date"], reverse=True)
+        stocks.append(s)
+    stocks.sort(key=lambda s: s["campaign"])
+
+    tot = lambda k: round(sum(s[k] for s in stocks), 2)
+    return {
+        "stocks": stocks,
+        "totals": {k: tot(k) for k in ("loss_at_assignment", "shares_result", "premium_collected", "campaign")},
+        "assignments": len(rows),
+        "unpriced": sum(s["unpriced"] for s in stocks),
+        "untraced": sum(s["untraced"] for s in stocks),
+    }

@@ -7299,6 +7299,15 @@ async def get_v6_assignment_loss(db: Session = Depends(get_db)):
     return get_assignment_loss(db)
 
 
+@router.get("/v6/put-campaigns")
+async def get_v6_put_campaigns(db: Session = Depends(get_db)):
+    """Put campaigns per stock: every assigned put's shares valued today
+    (or at their sale price) plus the premium collected on the way —
+    Neel, 2026-10-22. See get_put_campaigns in assignment_loss_service.py."""
+    from app.modules.strategies.assignment_loss_service import get_put_campaigns
+    return get_put_campaigns(db)
+
+
 @router.post("/v6/assignments/confirm")
 async def post_confirm_assignments(ids: Optional[List[int]] = None, db: Session = Depends(get_db)):
     """Record Neel's reply to the "Confirm N assignments?" email. Promotes

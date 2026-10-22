@@ -4363,7 +4363,10 @@ export function Income() {
                         className={styles.earningsAsideCol}
                         title="Put assignments only: what being forced to buy at the strike cost versus the market that day. Context only — NOT subtracted from Total. Call assignments are share sales and live in Equity Sales."
                       >
-                        Assignment Loss<span className={styles.earningsAsideMark}> *</span>
+                        <a href="/investments#put-campaigns" className={styles.earningsAsideLink}
+                           title="What these assigned shares are worth today, plus the premium collected — Put Campaigns on the Investments page">
+                          Assignment Loss<span className={styles.earningsAsideMark}> *</span>
+                        </a>
                       </th>
                     </tr>
                   </thead>
@@ -4434,7 +4437,9 @@ export function Income() {
                     what being <em>forced</em> to buy at the strike cost you — the strike minus
                     what the shares were worth on the day the put expired. Call assignments
                     are not here: giving up shares at the strike is a share sale, and its
-                    result is already in Equity Sales.
+                    result is already in Equity Sales. What those assigned shares are worth
+                    today, plus the premium collected on the way, is under Put Campaigns on
+                    the Investments page (click the column header).
                   </p>
                   <p>
                     The two never overlap: Equity Sales is the result of every share sale,

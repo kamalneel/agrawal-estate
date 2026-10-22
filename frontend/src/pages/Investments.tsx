@@ -18,6 +18,7 @@ import {
 import styles from './Investments.module.css'
 import clsx from 'clsx'
 import { AssignmentLossCard } from '../components/AssignmentLossCard/AssignmentLossCard'
+import { PutCampaigns } from '../components/PutCampaigns/PutCampaigns'
 import {
   HoldingsTable,
   symbolColumn,
@@ -1395,6 +1396,10 @@ export function Investments() {
           here instead. Options Execution keeps just the current-month
           figure (AssignmentLossThisMonth). */}
       <AssignmentLossCard />
+
+      {/* Put Campaigns — the same assignments followed through to today
+          plus the premium collected on the way (Neel, 2026-10-22). */}
+      <PutCampaigns />
 
       {/* vs. Buy & Hold — ghost freeze-curve (spec: "vs. Buy & Hold").
           Each point: "if I had frozen the options game on this date
