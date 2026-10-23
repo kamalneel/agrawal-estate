@@ -13,7 +13,9 @@ const API_BASE = '/api/v1'
  *
  *   Net = net premium (every sale − every buy-back, so roll losses are in)
  *         − upside given up (call assigned below the market that day)
- *         − cost to close the calls still open
+ *
+ * Open calls are not marked to their cost to close — that assumes exiting
+ * today, which is not the plan (Neel, 2026-10-23).
  *
  * Shares that came from an assigned put are the Put Campaign's, so each
  * account's calls are counted in proportion to its bought shares
@@ -25,7 +27,6 @@ interface AccountPart {
   covered_pct: number
   net_premium: number
   upside_given_up: number
-  open_cost: number
   net: number
 }
 
@@ -39,39 +40,26 @@ interface CallAssignment {
   upside_given_up: number | null
 }
 
-interface OpenCall {
-  account_name: string
-  strike: number
-  expiration: string | null
-  contracts: number
-  mark: number
-  covered_pct: number
-  cost_to_close: number
-}
-
 interface Stock {
   symbol: string
   covered_pct: number
   first: string | null
   net_premium: number
   upside_given_up: number
-  open_cost: number
-  open_contracts: number
   net: number
   assignments: number
   unpriced_assignments: number
   accounts: AccountPart[]
   events: CallAssignment[]
-  open_calls: OpenCall[]
 }
 
 interface Data {
   stocks: Stock[]
-  totals: { net_premium: number; upside_given_up: number; open_cost: number; net: number }
+  totals: { net_premium: number; upside_given_up: number; net: number }
   unpriced_assignments: number
 }
 
-type SortKey = 'symbol' | 'covered_pct' | 'first' | 'net_premium' | 'upside_given_up' | 'open_cost' | 'net'
+type SortKey = 'symbol' | 'covered_pct' | 'first' | 'net_premium' | 'upside_given_up' | 'net'
 
 const COLUMNS: Array<[SortKey, string, string]> = [
   ['symbol', 'Stock', ''],
@@ -79,8 +67,7 @@ const COLUMNS: Array<[SortKey, string, string]> = [
   ['first', 'Since', 'First call sold on this stock'],
   ['net_premium', 'Net premium', 'Every call sold minus every call bought back — roll buy-backs, including any intrinsic paid, are already netted in'],
   ['upside_given_up', 'Upside given up', 'At each call assignment: (market that day − strike) × shares — what the shares were worth above the price you had to sell at'],
-  ['open_cost', 'Open calls', 'What it would cost to buy back the calls still open, at their last mark'],
-  ['net', 'Net', 'Net premium − upside given up − open calls: did selling calls earn more than it gave away?'],
+  ['net', 'Net', 'Net premium − upside given up: did selling calls earn more than it gave away?'],
 ]
 
 const usd = (v: number) => `$${Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
@@ -125,8 +112,7 @@ export function CoveredCallIncome() {
       <p className={styles.subtitle}>
         Calls sold on shares you hold to keep, against simply holding those shares. <strong>Net premium</strong> is
         every call sold minus every call bought back. <strong>Upside given up</strong> is what the shares were worth
-        above the strike when a call was assigned. <strong>Open calls</strong> is what the calls still open would cost
-        to buy back today. <strong>Net</strong>: did selling calls earn more than it gave away? Shares that came from an
+        above the strike when a call was assigned. <strong>Net</strong>: did selling calls earn more than it gave away? Shares that came from an
         assigned put are left to Put Campaigns, so a stock held both ways counts only its bought share ("Covered").
       </p>
 
@@ -139,10 +125,6 @@ export function CoveredCallIncome() {
           <div>
             <div className={clsx(styles.statValue, styles.neg)}>{minus(t.upside_given_up)}</div>
             <div className={styles.statLabel}>upside given up at call assignments</div>
-          </div>
-          <div>
-            <div className={clsx(styles.statValue, styles.neg)}>{minus(t.open_cost)}</div>
-            <div className={styles.statLabel}>to close the calls still open</div>
           </div>
           <div>
             <div className={clsx(styles.statValue, tone(t.net))}>{signedUsd(t.net)}</div>
@@ -180,7 +162,6 @@ export function CoveredCallIncome() {
                       {s.assignments > 0 && <span className={styles.dim}> ({s.assignments})</span>}
                       {s.unpriced_assignments > 0 && <span className={styles.flag} title={`${s.unpriced_assignments} assignment(s) have no market price that day and are left out`}>⚠</span>}
                     </td>
-                    <td className={clsx(styles.num, Math.round(s.open_cost) ? styles.neg : undefined)}>{minus(s.open_cost)}</td>
                     <td className={clsx(styles.num, styles.strong, tone(s.net))}>{signedUsd(s.net)}</td>
                   </tr>
                   {open === s.symbol && (
@@ -192,7 +173,6 @@ export function CoveredCallIncome() {
                           <td />
                           <td className={clsx(styles.num, tone(a.net_premium))}>{signedUsd(a.net_premium)}</td>
                           <td className={styles.num}>{minus(a.upside_given_up)}</td>
-                          <td className={styles.num}>{minus(a.open_cost)}</td>
                           <td className={clsx(styles.num, tone(a.net))}>{signedUsd(a.net)}</td>
                         </tr>
                       ))}
@@ -204,17 +184,6 @@ export function CoveredCallIncome() {
                             {e.covered_pct < 99.95 && <span className={styles.dim}> · {Math.round(e.covered_pct)}% counted</span>}
                           </td>
                           <td className={styles.num}>{minus(e.upside_given_up)}</td>
-                          <td colSpan={2} />
-                        </tr>
-                      ))}
-                      {s.open_calls.map((c, i) => (
-                        <tr key={`o${i}`} className={styles.detail}>
-                          <td className={styles.left} colSpan={5}>
-                            Open · {c.account_name} · {c.contracts} × ${c.strike.toFixed(2)} call
-                            {c.expiration && <> exp {shortDate(c.expiration)}</>} · mark ${c.mark.toFixed(2)}
-                            {c.covered_pct < 99.95 && <span className={styles.dim}> · {Math.round(c.covered_pct)}% counted</span>}
-                          </td>
-                          <td className={styles.num}>{minus(c.cost_to_close)}</td>
                           <td />
                         </tr>
                       ))}
@@ -227,7 +196,6 @@ export function CoveredCallIncome() {
                 <td colSpan={2} />
                 <td className={clsx(styles.num, tone(t.net_premium))}>{signedUsd(t.net_premium)}</td>
                 <td className={clsx(styles.num, styles.neg)}>{minus(t.upside_given_up)}</td>
-                <td className={clsx(styles.num, styles.neg)}>{minus(t.open_cost)}</td>
                 <td className={clsx(styles.num, styles.strong, tone(t.net))}>{signedUsd(t.net)}</td>
               </tr>
             </tbody>
@@ -236,7 +204,8 @@ export function CoveredCallIncome() {
         <p className={styles.footnote}>
           Upside given up is an opportunity cost, not money lost: the shares sold at the strike, and the market would
           have paid more that day. Covered % is by share count, not by how long each share was held, so for a stock
-          held both ways the split is an approximation. Open calls use the mark from the last sync.
+          held both ways the split is an approximation. Calls still open count at the premium received; if one is assigned above the
+          market, that shows up here when it happens.
         </p>
       </div>
     </section>
