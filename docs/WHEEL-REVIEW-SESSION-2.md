@@ -250,10 +250,35 @@ now meets condition 1.
   $160 and $175 with no income, and they can be assigned any day.
 
 **So the CBRS decision is about size, not timing.** If all three puts are assigned,
-the position is 845 shares (about $96K), bought at about $174 on average. Rolling,
-letting them be assigned, and buying back (about $15.6K at today's marks) all carry
-the same loss today. They differ only in whether the extra 300 shares are held into
-the lock-up releases.
+the position is 845 shares (about $96K), bought at about $174 on average. Weekly
+rolling, letting them be assigned, and buying back (about $15.6K at today's marks)
+all carry the same loss today. They differ only in whether the extra 300 shares are
+held into the lock-up releases.
+
+**Neel's alternative, and the better way to wait: roll 2–3 months out, not one
+week.** Live mid prices at 12:30 PT, with CBRS at $112.34:
+
+| Roll | Credit per share | Market's odds CBRS is above the strike at expiry |
+|---|---|---|
+| $160 (30 Oct) → $160, 18 Dec | +$2.10 | ~10% |
+| $160 (30 Oct) → $160, 15 Jan | **+$3.70** | ~13% |
+| $160 (30 Oct) → $155, 15 Jan | −$0.75 | ~15% |
+| $175 (13 Nov) → $175, 15 Jan | +$2.15 | ~10% |
+
+The long roll fixes what is wrong with the weekly one at this depth:
+
+- **It gets paid.** About $0.31 a week, against roughly nothing for the weekly
+  roll (the 30 Oct put trades at intrinsic).
+- **It stops early assignment.** A January put carrying $3.59 of time value is not
+  worth exercising early.
+- **It cuts the exposure.** Deltas of 0.76–0.80 mean about 230 share-equivalents
+  instead of 300.
+
+What it does not change: it is still the same bet at the same strike. The credit
+(about $955 for all three) is small against the $15.6K in the money, and on
+15 January the most likely position is the same decision again. January is the
+liquid monthly (open interest 1,316 on the $160, against 23 for December). The
+spreads are $3–5 wide, so roll as one spread order near the mid.
 
 ## Answers to the four questions
 
