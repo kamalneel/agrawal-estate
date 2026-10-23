@@ -19,6 +19,7 @@ import styles from './Investments.module.css'
 import clsx from 'clsx'
 import { AssignmentLossCard } from '../components/AssignmentLossCard/AssignmentLossCard'
 import { PutCampaigns } from '../components/PutCampaigns/PutCampaigns'
+import { CoveredCallIncome } from '../components/CoveredCallIncome/CoveredCallIncome'
 import {
   HoldingsTable,
   symbolColumn,
@@ -1400,6 +1401,10 @@ export function Investments() {
       {/* Put Campaigns — the same assignments followed through to today
           plus the premium collected on the way (Neel, 2026-10-22). */}
       <PutCampaigns />
+
+      {/* Covered Call Income — calls on shares held to keep, against
+          holding them without calls (Neel, 2026-10-23). */}
+      <CoveredCallIncome />
 
       {/* vs. Buy & Hold — ghost freeze-curve (spec: "vs. Buy & Hold").
           Each point: "if I had frozen the options game on this date

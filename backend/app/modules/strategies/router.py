@@ -7308,6 +7308,16 @@ async def get_v6_put_campaigns(db: Session = Depends(get_db)):
     return get_put_campaigns(db)
 
 
+@router.get("/v6/covered-call-income")
+async def get_v6_covered_call_income(db: Session = Depends(get_db)):
+    """Covered Call Income per stock: net call premium minus the upside
+    given up at call assignments and the cost to close calls still open,
+    on bought shares only (put-assigned shares are the Put Campaign's) —
+    Neel, 2026-10-23. See covered_call_service.py."""
+    from app.modules.strategies.covered_call_service import get_covered_call_income
+    return get_covered_call_income(db)
+
+
 @router.post("/v6/assignments/confirm")
 async def post_confirm_assignments(ids: Optional[List[int]] = None, db: Session = Depends(get_db)):
     """Record Neel's reply to the "Confirm N assignments?" email. Promotes
