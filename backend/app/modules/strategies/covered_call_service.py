@@ -29,32 +29,25 @@ Premium uses the Income page's own filter (STO/BTC/STC/BTO joined to the
 account on source, description contains "call"), so the two cannot drift.
 """
 
-from collections import defaultdict
 from typing import Dict
 
 from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
 
-from app.modules.strategies.assignment_loss_service import get_assignment_loss
+from app.modules.strategies.assignment_loss_service import (
+    get_assignment_loss, net_call_premium, wheel_share_split,
+)
 
 
 def get_covered_call_income(db: Session) -> Dict:
     loss = get_assignment_loss(db)["events"]
 
-    # Put-assigned vs. all shares ever acquired, per account + symbol.
-    assigned = defaultdict(float)
-    for e in loss:
-        if e["option_type"] == "put":
-            assigned[(e["account_id"], e["symbol"])] += e["shares"]
-    acquired = {(r.account_id, r.symbol): float(r.q) for r in db.execute(_text(
-        "SELECT account_id, symbol, SUM(quantity) AS q FROM stock_lot GROUP BY 1, 2"))}
+    # The complement of Put Campaigns' share — one split, so every call is
+    # counted once, in exactly one of the two sections.
+    wheel_fraction, assigned, acquired = wheel_share_split(db, loss)
 
     def covered(acct: str, sym: str) -> float:
-        a = assigned.get((acct, sym), 0.0)
-        tot = acquired.get((acct, sym), 0.0)
-        if tot <= 0:
-            return 0.0 if a > 0 else 1.0
-        return max(tot - a, 0.0) / tot
+        return 1.0 - wheel_fraction(acct, sym)
 
     acct_names = {r.account_id: r.account_name for r in db.execute(_text(
         "SELECT account_id, account_name FROM investment_accounts"))}
@@ -73,24 +66,16 @@ def get_covered_call_income(db: Session) -> Dict:
             "net_premium": 0.0, "upside_given_up": 0.0})
 
     # 1. Net call premium, per account + symbol.
-    for r in db.execute(_text("""
-        SELECT it.account_id, it.symbol, SUM(it.amount) AS net,
-               MIN(it.transaction_date) AS first, MAX(it.transaction_date) AS last
-        FROM investment_transactions it
-        JOIN investment_accounts ia ON it.account_id = ia.account_id AND it.source = ia.source
-        WHERE it.transaction_type IN ('STO', 'BTC', 'STC', 'BTO') AND it.description ILIKE '%call%'
-        GROUP BY 1, 2
-    """)):
-        f = covered(r.account_id, r.symbol)
-        s = row(r.symbol)
-        s["premium_all"] += float(r.net or 0)
+    for (acct_id, sym), c in net_call_premium(db).items():
+        f = covered(acct_id, sym)
+        s = row(sym)
+        s["premium_all"] += c["net"]
         if f <= 0:
             continue
-        a = acct_row(s, r.account_id)
-        a["net_premium"] += float(r.net or 0) * f
-        s["net_premium"] += float(r.net or 0) * f
-        s["first"] = min(filter(None, [s["first"], r.first.isoformat()]))
-        s["last"] = max(filter(None, [s["last"], r.last.isoformat()]))
+        acct_row(s, acct_id)["net_premium"] += c["net"] * f
+        s["net_premium"] += c["net"] * f
+        s["first"] = min(filter(None, [s["first"], c["first"].isoformat()]))
+        s["last"] = max(filter(None, [s["last"], c["last"].isoformat()]))
 
     # 2. Upside given up at each call assignment.
     events = []

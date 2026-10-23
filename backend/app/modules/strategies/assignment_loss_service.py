@@ -253,6 +253,44 @@ def get_assignment_loss(db: Session) -> Dict:
     }
 
 
+def wheel_share_split(db: Session, events: list):
+    """How a stock's calls divide between the wheel and covered calls, per
+    account: put-assigned shares ÷ all shares ever acquired there (lots).
+    Shared by Put Campaigns (the wheel's part) and Covered Call Income (the
+    rest) so every call is counted once, in exactly one of the two.
+    Returns (wheel_fraction(acct, sym) -> 0..1, assigned, acquired)."""
+    from collections import defaultdict
+    assigned = defaultdict(float)
+    for e in events:
+        if e["option_type"] == "put":
+            assigned[(e["account_id"], e["symbol"])] += e["shares"]
+    acquired = {(r.account_id, r.symbol): float(r.q) for r in db.execute(_text(
+        "SELECT account_id, symbol, SUM(quantity) AS q FROM stock_lot GROUP BY 1, 2"))}
+
+    def wheel_fraction(acct: str, sym: str) -> float:
+        a = assigned.get((acct, sym), 0.0)
+        tot = acquired.get((acct, sym), 0.0)
+        if a <= 0:
+            return 0.0
+        return 1.0 if tot <= 0 else min(a / tot, 1.0)
+
+    return wheel_fraction, dict(assigned), acquired
+
+
+def net_call_premium(db: Session) -> Dict:
+    """(account_id, symbol) -> {net, first, last} for every call sold minus
+    every call bought back. The Income page's own filter (STO/BTC/STC/BTO
+    joined to the account on source, description contains "call")."""
+    return {(r.account_id, r.symbol): {"net": float(r.net or 0), "first": r.first, "last": r.last}
+            for r in db.execute(_text("""
+        SELECT it.account_id, it.symbol, SUM(it.amount) AS net,
+               MIN(it.transaction_date) AS first, MAX(it.transaction_date) AS last
+        FROM investment_transactions it
+        JOIN investment_accounts ia ON it.account_id = ia.account_id AND it.source = ia.source
+        WHERE it.transaction_type IN ('STO', 'BTC', 'STC', 'BTO') AND it.description ILIKE '%call%'
+        GROUP BY 1, 2"""))}
+
+
 def get_put_campaigns(db: Session) -> Dict:
     """Put campaigns, per stock — Neel, 2026-10-22: the assignment loss is
     a snapshot; "that stock then goes up or down", so what is it worth now?
@@ -261,7 +299,8 @@ def get_put_campaigns(db: Session) -> Dict:
     plus the net premium collected across the roll chain that led to it.
 
         shares_result = held × today + sale proceeds − strike × shares
-        campaign      = shares_result + premium_collected
+        campaign      = shares_result + put premium + call premium
+        adjusted basis = strike − (put premium + call premium) / shares
 
     Each assignment is traced to its own lot (account, symbol, cost = the
     strike, bought within 3 days of the assignment) — the lot engine knows
@@ -272,11 +311,18 @@ def get_put_campaigns(db: Session) -> Dict:
     No lot match → valued as still held at today's price, flagged
     `traced: False`.
 
-    Put premium only. Calls sold on the shares afterwards are not added:
-    where shares were already held before the assignment (AVGO, TSLA,
-    NVDA, AMD) a later call cannot be tied to the assigned shares.
+    Call premium (2026-10-23, Neel: "fold the calls into Put Campaigns"):
+    the wheel's third phase. In each account a stock's net call premium is
+    split by shares — put-assigned ÷ all acquired (wheel_share_split); the
+    rest is Covered Call Income's. Within an account the wheel part is
+    shared among that account's assignments by shares. A call assignment's
+    sale is already in shares_result (the lot's proceeds), so no upside
+    term is needed here: the campaign counts the cash that actually moved.
     """
-    events = [e for e in get_assignment_loss(db)["events"] if e["option_type"] == "put"]
+    all_events = get_assignment_loss(db)["events"]
+    events = [e for e in all_events if e["option_type"] == "put"]
+    wheel_fraction, assigned, _acq = wheel_share_split(db, all_events)
+    calls = net_call_premium(db)
 
     held_px = {(r.account_id, r.symbol): float(r.current_price) for r in db.execute(_text(
         "SELECT account_id, symbol, current_price FROM investment_holdings WHERE current_price IS NOT NULL"))}
@@ -325,6 +371,12 @@ def get_put_campaigns(db: Session) -> Dict:
         else:
             shares_result = held * (price or 0.0) + proceeds - cost
 
+        # This assignment's share of the account's wheel call premium.
+        key = (e["account_id"], e["symbol"])
+        acct_calls = calls.get(key, {}).get("net", 0.0) * wheel_fraction(*key)
+        call_premium = acct_calls * shares / assigned[key] if assigned.get(key) else 0.0
+        premium_ps = (e["premium_collected"] + call_premium) / shares if shares else 0.0
+
         rows.append({
             "date": e["date"], "account_name": e["account_name"], "symbol": e["symbol"],
             "strike": e["strike"], "shares": shares,
@@ -337,7 +389,9 @@ def get_put_campaigns(db: Session) -> Dict:
             "premium_collected": e["premium_collected"],
             "premium_chain_weeks": e["premium_chain_weeks"],
             "premium_incomplete": e["premium_incomplete"],
-            "campaign": round(shares_result + e["premium_collected"], 2) if shares_result is not None else None,
+            "call_premium": round(call_premium, 2),
+            "adjusted_basis": round(e["strike"] - premium_ps, 2),
+            "campaign": round(shares_result + e["premium_collected"] + call_premium, 2) if shares_result is not None else None,
             "traced": traced,
         })
 
@@ -346,7 +400,7 @@ def get_put_campaigns(db: Session) -> Dict:
         s = by_sym.setdefault(r["symbol"], {
             "symbol": r["symbol"], "assignments": 0, "shares": 0.0, "shares_held": 0.0,
             "strike_x_shares": 0.0, "loss_at_assignment": 0.0, "shares_result": 0.0,
-            "premium_collected": 0.0, "campaign": 0.0, "unpriced": 0, "untraced": 0,
+            "premium_collected": 0.0, "call_premium": 0.0, "campaign": 0.0, "unpriced": 0, "untraced": 0,
             "price_today": r["price_today"], "first": r["date"], "last": r["date"], "events": []})
         s["assignments"] += 1
         s["shares"] += r["shares"]
@@ -354,6 +408,7 @@ def get_put_campaigns(db: Session) -> Dict:
         s["strike_x_shares"] += r["strike"] * r["shares"]
         s["loss_at_assignment"] += r["loss_at_assignment"]
         s["premium_collected"] += r["premium_collected"]
+        s["call_premium"] += r["call_premium"]
         s["first"], s["last"] = min(s["first"], r["date"]), max(s["last"], r["date"])
         if r["shares_result"] is None:
             s["unpriced"] += 1
@@ -366,8 +421,11 @@ def get_put_campaigns(db: Session) -> Dict:
 
     stocks = []
     for s in by_sym.values():
-        s["avg_strike"] = round(s.pop("strike_x_shares") / s["shares"], 2) if s["shares"] else None
-        for k in ("loss_at_assignment", "shares_result", "premium_collected", "campaign"):
+        sxs = s.pop("strike_x_shares")
+        s["avg_strike"] = round(sxs / s["shares"], 2) if s["shares"] else None
+        s["adjusted_basis"] = (round((sxs - s["premium_collected"] - s["call_premium"]) / s["shares"], 2)
+                               if s["shares"] else None)
+        for k in ("loss_at_assignment", "shares_result", "premium_collected", "call_premium", "campaign"):
             s[k] = round(s[k], 2)
         s["status"] = "held" if s["shares_held"] >= s["shares"] - 1e-6 else "closed" if s["shares_held"] < 1e-6 else "partly sold"
         s["events"].sort(key=lambda r: r["date"], reverse=True)
@@ -377,7 +435,7 @@ def get_put_campaigns(db: Session) -> Dict:
     tot = lambda k: round(sum(s[k] for s in stocks), 2)
     return {
         "stocks": stocks,
-        "totals": {k: tot(k) for k in ("loss_at_assignment", "shares_result", "premium_collected", "campaign")},
+        "totals": {k: tot(k) for k in ("loss_at_assignment", "shares_result", "premium_collected", "call_premium", "campaign")},
         "assignments": len(rows),
         "unpriced": sum(s["unpriced"] for s in stocks),
         "untraced": sum(s["untraced"] for s in stocks),
