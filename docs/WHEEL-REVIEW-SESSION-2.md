@@ -280,6 +280,56 @@ What it does not change: it is still the same bet at the same strike. The credit
 liquid monthly (open interest 1,316 on the $160, against 23 for December). The
 spreads are $3–5 wide, so roll as one spread order near the mid.
 
+## Finding 6 — The long roll for deep options, applied retroactively: about even
+
+This is Neel's CBRS idea, tested on every chain where it would have applied.
+**The rule:** when a stuck option's same-strike roll pays almost nothing (≥5% in
+the money, roll netting ≤0.25% of the strike), roll 12 weeks out at the same strike
+and leave it alone until that expiry. It would have applied to 14 put chains and 15
+call chains.
+
+**How it was tested** (`long_roll.py`):
+
+- Only the contracts actually rolled that day are followed, through their later
+  rolls, assignments and expiries, and compared at the long option's expiry.
+- The long option is priced with Black-Scholes at the stock price implied by the
+  real buy-back fill.
+- Calibration: today's CBRS January quotes need about 0.7–0.8× realized volatility
+  plus a 4% rate. Realized volatility alone overpriced the long put about 3×.
+
+**Results** (central case: 0.8× realized volatility; 12 weeks):
+
+| | Chains | Long roll better in | Long roll vs what happened |
+|---|---|---|---|
+| Puts, settled | 9 | 6 | −$11.5K |
+| Puts, still running (CBRS, SOXL, RKLB ×2, AVGO) | 5 | 4 | +$0.7K |
+| Calls, settled | 10 | 8 | −$10.3K |
+
+Across the other assumptions (0.7–1.0× vol, 8 or 12 weeks, a 0.25–0.5% trigger),
+puts range from −$13.6K to +$2.2K and calls from −$16.7K to +$9.4K. **It is a
+wash.**
+
+The pattern is the useful part. The long roll **wins small and often**: while the
+stock stays down, it collects $0.2–2.6K more than the weekly rolls. It **loses big
+and rarely**: when the stock comes back toward the strike, the weekly roll collects
+rich near-the-money premium again, and it can move the strike for free.
+
+- **AVGO $360 put (Feb–Apr 2026):** the stock rallied through the strike, and the
+  weekly rolls collected $12.7K on the way, against $1.0K for the long roll.
+- **AAPL $300 calls ×17 (Jul–Oct 2026):** on a dip, the weekly rolls walked the
+  strike from $300 to $310 to $315 at even money. The long roll would have stayed
+  at $300: −$31.6K.
+
+In the CBRS-like cases, more than 20% in the money (FIG, INTC, SOXL, CBRS), the
+difference is small either way (−$1.7K to +$0.7K).
+
+For CBRS, then, the choice is not about money. The long roll stops the early
+assignments, cuts the exposure, and needs no weekly management. The weekly roll
+keeps the upside if CBRS climbs back toward the strike. Untested: a hybrid that
+parks the option long while it is deep, then returns to weekly once the stock is
+back within ~5% of the strike. It might keep the small wins and avoid the big
+losses.
+
 ## Answers to the four questions
 
 | Neel's question | Calls | Puts |

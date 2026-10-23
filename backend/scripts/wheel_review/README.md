@@ -18,6 +18,9 @@ output directory; run from `backend/` with the venv:
     venv/bin/python scripts/wheel_review/runaway_own.py $OUT         # Neel's stuck chains, same features
     venv/bin/python scripts/wheel_review/runaway_own_rolls.py $OUT   # signal checked at every stuck roll; buy-back at the fill
 
+    # Finding 6 — the long roll for deep options (args: credit max, vol multiple, weeks)
+    venv/bin/python scripts/wheel_review/long_roll.py $OUT 0.0025 0.8 12
+
 Prices come only from `daily_prices.py` (daily closes). The DB's weekly bars are
 dated Monday but hold Friday's close — using them leaked each week's move into
 Monday trades, which produced the withdrawn Finding 1.
