@@ -330,6 +330,31 @@ parks the option long while it is deep, then returns to weekly once the stock is
 back within ~5% of the strike. It might keep the small wins and avoid the big
 losses.
 
+**Applied 23 Oct.** Neel rolled the CBRS $160s and the $175 to 15 January.
+
+The test that separates the cases is time value per week: what the weekly leg still
+has left, against what a 15 January roll would collect per week. Live mid prices
+at 12:37 PT:
+
+| Position | ITM | Weekly leg, time value per week | January roll, per week | Roll credit | Verdict |
+|---|---|---|---|---|---|
+| SOXL $110–$145 (19 contracts, 5 accounts) | 24–42% | ~$0 (at intrinsic) | $0.36–0.82 | +$15.0K | long roll |
+| RKLB $64 → Jan $65 (2) | 19% | $0.09 | $0.26 | about +$3/sh after the $1 higher strike | long roll |
+| AVGO $380 (1) | 15% | $0.20 | $0.56 | +$595 | long roll |
+| INTC $105 (4) | 18% | $0.33 | $0.29 | +$1,250 | even; only protects against assignment |
+| GOOGL $360 (1) | 11% | $0.66 | $0.40 | +$415 | stay weekly |
+| NVDA, AVGO $340, INTC $95 | ≤9% | still paying | — | — | stay weekly |
+
+Two notes on SOXL:
+
+- Its 120% implied volatility makes January rich enough to lower each strike by
+  about $10 at roughly even money. For example, $110 → Jan $100 nets +$2.60, and
+  $120 → Jan $110 costs −$0.43. That is the strike-walking the weekly roll does
+  over many weeks (Finding 6), taken up front.
+- It is a 3× fund in a broad semis sell-off, so a comeback toward the strike, the
+  case where weekly wins, is live: the market gives $110 a 23% chance of being
+  back above the strike by 15 January.
+
 ## Answers to the four questions
 
 | Neel's question | Calls | Puts |
