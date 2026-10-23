@@ -21,6 +21,7 @@ output directory; run from `backend/` with the venv:
     # Finding 6 — the long roll for deep options (args: credit max, vol multiple, weeks)
     venv/bin/python scripts/wheel_review/long_roll.py $OUT 0.0025 0.8 12
     venv/bin/python scripts/wheel_review/soxl.py $OUT -0.35 0.9          # SOXL crashes: weekly vs long roll
+    venv/bin/python scripts/wheel_review/soxl145.py $OUT                  # SOXL back to $145 (+74%): history, 2026, SMH
 
 Prices come only from `daily_prices.py` (daily closes). The DB's weekly bars are
 dated Monday but hold Friday's close — using them leaked each week's move into

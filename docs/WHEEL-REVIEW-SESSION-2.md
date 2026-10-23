@@ -378,6 +378,20 @@ So for SOXL: **keep the weekly roll and don't go long.** On 23 Oct the 10/30 →
 roll still paid +$1.38 on the $110s and +$1.25 on the $115s. On the $120–$135s it
 paid only $0.15–0.43, but the weekly roll there still keeps the way out on a spike.
 
+**"In a couple of weeks it will easily cross $145" (Neel, 23 Oct; `soxl145.py`).**
+From $83.41 that is +74%. In the 20 earlier crashes, SOXL never rose 74% within 2
+weeks. It did so within 4 weeks twice (Oct 2022 +91%, Apr 2025 +78%) and within
+12 weeks five times. 2026 is wilder: the 30 Mar low ran +110% in 2 weeks, 10 Jun
++66% and 29 Jul +55%, and on 3% of 2026 days SOXL rose 74% within 2 weeks (18%
+within 4). In index terms, SOXL was last at $146 on 23 Sep with SMH at ~$601;
+SMH is $527 now, so it needs about +14%. SMH did that within 2 weeks on 2% of all
+days since 2015 and 11% of 2026 days. The market agrees with the low odds: the
+$145 call priced at delta 0.04 for 6 Nov ($0.33), 0.07 for 13 Nov and 0.08 for
+20 Nov (IV 125–145%). The weekly roll already holds the full upside if Neel is
+right, so the view needs no new position. What it adds is an exit: given the
+snap-then-reverse pattern above, close each put the day SOXL trades back above
+its strike, rather than waiting for Friday.
+
 ## Answers to the four questions
 
 | Neel's question | Calls | Puts |
