@@ -124,7 +124,7 @@ March–April rally would something else have paid — buying back, or rolling l
 Depth does not pick out the runaway. Triggering the long roll only at 10% or 15%
 in the money still makes ordinary months worse (−$24.5K either way). So there is
 no rule here yet: **the open question is what, early on, distinguished the
-March–April rally from an ordinary pull-back-and-return.**
+March–April rally from an ordinary pull-back-and-return** — answered in Finding 5.
 
 ## Finding 3 — A stuck put: keep rolling weekly
 
@@ -161,14 +161,108 @@ $133.8K of premium to avoid those chains' −$32.8K today — a net +$32.8K, mea
 today's prices, so it moves with them. Worth discussing as a *farther strike* rather
 than *no put*; not proposed yet.
 
+## Finding 5 — The runaway signal: a broad relief rally after a sell-off
+
+The March–April calls were sold while the market was down: QQQ was 11% below its
+60-day high on 30–31 March. They then got stuck in a rally that lifted almost
+everything at once. In mid-April, 76–79% of the tracked names were up more than 5%
+over ten days. The ordinary stuck calls had neither: at the median sale QQQ was
+3.5% off its high, and 32% of names were moving together.
+
+**The signal.** All three conditions are known on the day of the roll:
+
+1. when the call was sold, QQQ was ≥7% below its 60-day high;
+2. today, ≥60% of the tracked names are up >5% over the last 10 trading days;
+3. the call is ≥5% in the money.
+
+A rally out of a sell-off is the market going back to where it was, not
+overshooting. So "what has gone up will come down" does not apply.
+
+**Tested on ten years of prices first.** `runaway.py` and `runaway2.py` use daily
+closes from 2015 to 2026 for the 31 symbols traded. Each week a call is sold one
+weekly standard deviation out. Once it is ≥5% in the money it is rolled weekly at
+the same strike, and each roll collects its Black-Scholes time value.
+
+| Stuck call | Episodes | Not back within 13 weeks | Buying back beat rolling | Median waiting cost (% of strike) |
+|---|---|---|---|---|
+| Signal on | 21 | 76% | **76%** | +21.5% |
+| Signal off | 348 | 48% | 39% | −6.9% |
+
+It fired in Feb–Mar 2016, Apr 2020, Jul and Oct 2022, Jan 2023 and Apr–May 2025.
+It never fired on the 2026 rally, so it is not fitted to it. It is about equally
+strong in both halves: 75% in 2016–2020, 77% in 2021–2026.
+
+**On Neel's own calls** (`runaway_own_rolls.py`). The signal was checked at every
+roll while a call was ≥5% in the money:
+
+- It fired on 19 chains, all in the 2026 rally, and on none in ordinary months.
+- Buying back at the roll where it first fired, at the actual fill, gives
+  −$158.0K instead of −$245.5K: **+$87.5K**.
+- It was better on 8 chains, the big ones (AVGO, NVDA, RKLB), and worse on 8
+  small ones (HOOD, MSFT, GOOGL −$7.1K, MSTR, COIN, RKLB). On 3 it made no
+  difference.
+- The 34 chains it did not fire on, including every ordinary stuck call, keep
+  their +$24.4K.
+
+It is rare: six episodes in ten years. The universe is today's holdings, which are
+survivors, and that flatters "stocks go up". So read the gap between the two rows,
+not the levels. Buying back is the exact measure. Rolling long at the signal may do
+better, but that cannot be measured without historical option prices.
+
+**The mirror for puts does not hold.** The mirror case is a broad sell-off from
+near the highs: QQQ within 3% of its high at the sale, and ≥60% of names down >5%
+over 10 days. That covers 30 stuck puts (Mar 2018, Feb 2020, Apr 2024, Feb 2025).
+77% came back within 13 weeks, and buying back was better only 10% of the time.
+Sell-offs from the highs came back; rallies out of sell-offs did not go back down.
+There is no put rule.
+
+**Armed now.** QQQ closed 7.1% below its 60-day high on 23 Oct, so any call sold
+now meets condition 1.
+
+## CBRS, 23 October 2026
+
+**Position.**
+
+- 545 shares: 500 from five put contracts assigned at $220, $165, $190 and
+  2 × $160 (the two $160s were assigned early today), plus 45 bought.
+- Three puts still open in Neel's Brokerage: $160 ×2 (30 Oct) and $175 ×1 (13 Nov).
+- The stock is at $113.22, 63% below its first close ($311 on 14 May).
+- The campaign so far is −$23.1K.
+
+**What the signal says.**
+
+- **The market part of the fall looks like the kind that came back.** The put
+  mirror fires: 68% of names are down >5% in 10 days (SOXL −40%, semis −10 to −17%),
+  QQQ is 7.1% off its high, and the puts were sold with QQQ 1–5% off its high. In
+  that setup, stuck puts came back 77% of the time.
+- **But most of the fall is CBRS's own: −45% in 20 days, against −5% for QQQ.** The
+  signal cannot see that part. Stocks in this universe that fell ≥30% in 20 days
+  mostly came back (75%), but they are survivors (SOXL, MSTR, COIN, AMD). The slice
+  that matches CBRS is stocks within 18 months of listing, and there it is a coin
+  flip: of 14 stuck puts, 50% came back. HOOD (Dec 2021), PLTR (2021–22) and FIG
+  (Jan 2026) did not. CBRS is 162 days old. Its 14 Oct lock-up release fell in its
+  steepest week, and two more releases come on 28 Oct and 9 Nov.
+- **At this depth the weekly roll pays nothing.** Time value left is $0.17 on the
+  $160s and $0.57 on the $175 (3 weeks out), and V8 estimates the roll credit at
+  $0–$2 a contract. Weekly rolling won in Finding 3 because each roll collected time
+  value while waiting: about 0.65% of the strike a week in the historical stuck
+  puts, and about 0.1% here. Holding these puts amounts to owning 300 more shares at
+  $160 and $175 with no income, and they can be assigned any day.
+
+**So the CBRS decision is about size, not timing.** If all three puts are assigned,
+the position is 845 shares (about $96K), bought at about $174 on average. Rolling,
+letting them be assigned, and buying back (about $15.6K at today's marks) all carry
+the same loss today. They differ only in whether the extra 300 shares are held into
+the lock-up releases.
+
 ## Answers to the four questions
 
 | Neel's question | Calls | Puts |
 |---|---|---|
 | Should not have sold it | No — the March calls were sold 4–18% out; new near-money sales made +$11.6K | Possibly, after a >20% three-month run |
-| Should not have closed at a loss | Right — closing costs −$111.6K in ordinary months | Right (−$134.3K) |
+| Should not have closed at a loss | Right: closing costs −$111.6K in ordinary months. The exception is a relief rally, where buying back was +$87.5K (Finding 5) | Right (−$134.3K) |
 | Should have let it be assigned | No (neutral in ordinary months, −$82K in the rally) | No (−$178.8K) |
-| Should have deferred further | Only in the rally (+$168.6K); not in ordinary months (−$8.0K) | No |
+| Should have deferred further | Only in the rally (+$168.6K, estimated); not in ordinary months (−$8.0K) | No |
 | "Sell every week" is the problem | **No** | **No** |
 
 ## V9 candidates
@@ -178,12 +272,19 @@ than *no put*; not proposed yet.
    rally and is slightly worse otherwise. Replaced by the open question in Finding 2.
 3. **Puts: no change to rolling.** The 8-week cap stays (+$4.5K, and margin).
 4. **Open for discussion:** a farther put strike after a >20% three-month run.
+5. **`call_relief_rally_exit` (proposed, Finding 5).**
+   - **Rule:** stop rolling weekly and buy back when all three hold: the call is
+     ≥5% in the money; it was sold while QQQ was ≥7% below its 60-day high; and
+     ≥60% of the tracked names are up >5% over 10 trading days.
+   - **Back-test:** +$87.5K on Neel's chains (all in the 2026 rally; it never fired
+     otherwise); on ten years of prices, buying back beat rolling 76% of the time
+     with the signal on and 39% with it off.
+   - **Knobs:** 7%, 60%, 5%, 10 days, 5%.
+   - **Needs:** the breadth figure, from 10-day closes for the tracked names. The
+     engine does not compute it yet.
 
 ## Open threads
 
-- **The runaway signal.** What told the March–April rally apart early — the size of
-  the first week's move, several holdings jumping together, or the market as a
-  whole? That is the one place a rule could have saved money (Finding 2).
 - The long-roll estimate needs real prices. Store option-chain quotes for open
   positions at each sync (`option_chain_quotes` is empty) so the next review can
   measure, not model.

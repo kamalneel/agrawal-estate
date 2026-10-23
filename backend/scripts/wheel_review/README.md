@@ -11,6 +11,13 @@ output directory; run from `backend/` with the venv:
     PYTHONPATH=$PWD venv/bin/python scripts/wheel_review/rollout.py $OUT      # 13-week roll (Black-Scholes estimate)
     PYTHONPATH=$PWD venv/bin/python scripts/wheel_review/report.py $OUT       # splits, put checks, 8-week cap
 
+    # Finding 5 — the runaway signal (after cf.py)
+    venv/bin/python scripts/wheel_review/daily_long.py $OUT          # 10y daily closes + QQQ/SPY/SMH/^VIX
+    venv/bin/python scripts/wheel_review/runaway.py $OUT             # generic stuck-option episodes, feature buckets
+    venv/bin/python scripts/wheel_review/runaway2.py $OUT            # the relief-rally signal; put mirror; young listings
+    venv/bin/python scripts/wheel_review/runaway_own.py $OUT         # Neel's stuck chains, same features
+    venv/bin/python scripts/wheel_review/runaway_own_rolls.py $OUT   # signal checked at every stuck roll; buy-back at the fill
+
 Prices come only from `daily_prices.py` (daily closes). The DB's weekly bars are
 dated Monday but hold Friday's close — using them leaked each week's move into
 Monday trades, which produced the withdrawn Finding 1.
@@ -24,6 +31,12 @@ Monday trades, which produced the withdrawn Finding 1.
 - `rollout.py`: at the first roll ≥5% in the money, roll ~13 weeks out
   instead of one — estimated with Black-Scholes at 26-week realized vol
   (no historical option chains exist).
+
+- `runaway.py`: ten years, 31 symbols. Each week a call (put) is sold one
+  weekly standard deviation out; ≥5% in the money by Friday = stuck; rolled
+  weekly at the same strike (Black-Scholes time value credited) until a Friday
+  close is back across the strike, or 13 weeks. The universe is today's
+  holdings, which are survivors, so compare buckets, not levels.
 
 Known data issue excluded by id: Neel's Retirement AMD 10/5/2026 — three
 1-contract STO and BTC rows duplicating a 3-contract trade (ids 31129–31134).
