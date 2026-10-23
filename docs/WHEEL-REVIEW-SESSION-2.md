@@ -13,9 +13,18 @@ question, in Neel's words:
 > sell every week … I want to put that theory to the question mark."
 
 **Answer in one line:** selling every week is not the problem. The losses are
-one cluster of near-the-money calls sold in a dip (30 Mar – 8 Apr 2026), made
-worse by rolling them one week at a time. Weekly selling at a normal distance
-made money in every month on record.
+calls that got stuck in one sharp rally (sold 30 Mar – 8 Apr 2026 at a normal
+4–18% out, then rolled one week at a time through April–May). Outside that
+rally, stuck calls rolled at the same strike came back and made money.
+
+> **Correction, same day.** The first version of Finding 1 said the March calls
+> were sold within 2% of the stock and proposed a 2% floor. That was wrong: the
+> weekly price bars are dated Monday but hold Friday's close, so a call sold on
+> Monday was compared with a price from later that week — in a rally, a normal
+> call looked near the money in hindsight. Neel's question ("is it happening
+> because I'm already stuck?") exposed it. Distances now use the prior day's
+> close from daily prices (`scripts/wheel_review/daily.py`, `classify.py`).
+> Findings 2–4 still use the weekly bars in places and are being re-checked.
 
 ---
 
@@ -51,51 +60,46 @@ Both sides made money as option strategies. The red numbers on the Investments
 page are mostly the *shares* — what assigned stocks did after assignment, and
 calls given up in one rally.
 
-## Finding 1 — Call losses are one episode, not a habit
+## Finding 1 (corrected) — The losses are stuck calls in one rally, not near-the-money sales
 
-Losing call chains total −$269K. **About 90% of it is 11 chains opened between
-30 Mar and 8 Apr 2026**:
+Every call sale classified by what it was — **new** (nothing open), **new, next
+week** (the previous call had just expired or been bought back cheap), **new after
+trouble** (the previous call was assigned or bought back in the money within 4
+days), or **roll** (bought back and resold the same day) — and by its distance
+from the prior day's close.
 
-| Opened | Stock | Strike vs. stock | First expiry | Result |
-|---|---|---|---|---|
-| 31 Mar | RKLB (Neel's Retirement) | at the money | 2 days | −$43.1K |
-| 30 Mar | NVDA (Jaya's IRA) | 1% in the money | 3 days | −$41.3K |
-| 30 Mar | AVGO (Neel's Brokerage) | at the money | 3 days | −$33.6K |
-| 30 Mar | AVGO (Neel's Retirement) | at the money | 3 days | −$33.6K |
-| 30 Mar | NVDA (Jaya's Brokerage) | 1% in the money | 3 days | −$26.2K |
-| 8 Apr | TSLA (both brokerages) | 7% out | 9 days | −$38.2K |
-| 30 Mar | AVGO (Jaya's Brokerage) | at the money | 3 days | −$16.9K |
-| 31 Mar | NVDA (two accounts) | 1% in the money | 1–2 days | −$15.3K |
+**New sales close to the stock were not the problem.** 30 new calls were sold
+within 2% of the stock (or in the money): **+$11.6K**. Only 7 got stuck.
 
-By month, calls were **+$9K to +$30K in every month** except March 2026
-(−$170K) and April (−$35K).
+**Near-the-money sales are almost all rolls of stuck calls.** Of 228 roll legs
+resold in the money or within 2%, 182 were rolling a call that was already in
+the money — Neel's pattern: stuck, roll the same strike, wait for the come-down.
 
-The NVDA chain in Jaya's IRA shows the shape: 10 calls at $175 for 3 days for
-**$380** with NVDA at $177. On 8 Apr, with NVDA at $189, buying back would have
-cost $3,020. Instead it was rolled weekly at $180 for six weeks, each roll
-collecting $400–500 of time value while the call sat $20–29 in the money, and
-was assigned on 15 May at $225 — **$45,320 of upside for $4K of premium**.
+**Getting stuck is where the money went — but only in one rally:**
 
-### What made those calls bad: the entry
-
-| Strike at sale | Chains | Result |
+| | Stuck (rolled while in the money) | Never stuck |
 |---|---|---|
-| In the money | 29 | −$61.4K |
-| 0–2% out | 32 | −$109.5K |
-| 2–5% out | 138 | +$48.5K |
-| 5–10% out | 219 | +$54.7K |
-| >10% out | 156 | +$69.7K |
+| Mar–Apr 2026 | 20 chains, **−$232.5K** | 100 chains, +$26.9K |
+| Every other month | 59 chains, **+$41.0K** | 509 chains, +$191.4K |
 
-A rule of **no call within 2% of the stock** would have blocked 61 chains:
-−$198K avoided in the episode, $27.5K of premium given up in other months —
-**net +$171K**. Calls sold after a decline also did worse (4-week move down
-3–10%: −$54.8K), but as a rule it costs more elsewhere (net +$72K) and overlaps
-with the distance rule.
+Outside March–April, "what has gone up will come down" held: stuck calls rolled
+at the same strike made money. In March–April it did not. The calls themselves
+were ordinary when sold:
 
-**Already true in V8.** Long-term calls sell at delta 11–15 (≈6–10% out), and
-no call within 2% has been opened since V7 went live on 16 Sep. Two gaps remain:
-the short-term book allows delta 40 on a 3-day expiry, which can sit within 2%;
-and a manual trade has no floor at all.
+| Opened | Stock | Strike vs. prior close | Result |
+|---|---|---|---|
+| 31 Mar | RKLB (Neel's Retirement) | 18.5% out | −$43.1K |
+| 30 Mar | NVDA (Jaya's IRA) | 4.5% out | −$41.3K |
+| 30 Mar | AVGO (Neel's Brokerage) | 4.8% out | −$33.6K |
+| 30 Mar | AVGO (Neel's Retirement) | 4.8% out | −$33.6K |
+| 30 Mar | NVDA (Jaya's Brokerage) | 4.5% out | −$26.2K |
+| 8 Apr | TSLA (both brokerages) | 8.2% out | −$38.2K |
+| 30 Mar | AVGO (Jaya's Brokerage) | 4.8% out | −$16.9K |
+| 31 Mar | NVDA (two accounts) | 6.0% out | −$15.3K |
+
+So there is no entry rule to learn here. The question moves to Finding 2: once a
+call is stuck, how to tell an ordinary pull-back-and-return from a run that does
+not come back — early enough to act.
 
 ## Finding 2 — When a call goes in the money, roll long, not weekly
 
@@ -163,18 +167,15 @@ today's prices, so it can vanish if those stocks recover. Not proposed.
 
 | Neel's question | Calls | Puts |
 |---|---|---|
-| Should not have sold it | **Yes — when within 2% of the stock** (+$171K) | Weak signal on stocks that ran up |
+| Should not have sold it | No — the March calls were sold 4–18% out; new near-money sales made +$11.6K | Weak signal on stocks that ran up |
 | Should not have closed at a loss | Right — closing was worse (−$66K) | Right (−$153K) |
 | Should have let it be assigned | No — worse (−$98K) | No — worse (−$109K) |
 | Should have deferred further | **Yes — 13 weeks, same strike** (+$111K est.) | No — weekly is better |
-| "Sell every week" is the problem | **No** — ≥2% out made money every month | No |
+| "Sell every week" is the problem | **No** — never-stuck calls made money every month; stuck calls made money outside one rally | No |
 
 ## V9 candidates (proposed, not built)
 
-1. **`call_min_otm_pct = 2`** — no new call with a strike within 2% of the stock,
-   in any book, whatever the delta says. Mostly true already; this makes it a
-   floor that the short-term delta-40 setting and the 3-day minimum cannot slip
-   under. Evidence: +$171K on history, $27.5K forgone.
+1. ~~`call_min_otm_pct = 2`~~ — withdrawn (see the correction above).
 2. **`call_itm_long_roll`** — when a call is ≥5% in the money at its roll, roll
    the same strike ~13 weeks out instead of one week. Replaces V8's deep-out
    trigger (4 weeks above the strike, then a strike near the stock), which waits
