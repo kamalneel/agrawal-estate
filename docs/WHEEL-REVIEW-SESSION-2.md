@@ -355,6 +355,29 @@ Two notes on SOXL:
   case where weekly wins, is live: the market gives $110 a 23% chance of being
   back above the strike by 15 January.
 
+**SOXL is the exception (`soxl.py`).** Neel: "SOXL moves very fast." Its own
+history agrees. There were 20 crashes since 2016 where SOXL closed ≥35% below its
+15-day high. Today it is −49%: $164 on 5 Oct, $83 on 23 Oct.
+
+- **It snaps back often.** Within 12 weeks it was back above a +32% strike (like
+  $110) in 65% of crashes, half of them within 5 weeks. For a +44% strike ($120)
+  the figure is 55%, and for +62% ($135) it is 25%.
+- **The snap-backs often reverse.** Mar 2022 was +32% in 2 weeks and −20% by
+  week 12. Jun 2026 was +40% in 2 weeks and −35% by week 12. Sep 2024 and Jul 2026
+  were similar.
+- **So the weekly put wins.** A weekly put exits on the spike, while a January put
+  rides the reversal. Measured on those crashes, 1–2 week rolls beat the 12-week
+  roll by about 7% of the strike on average for $110–$120-like strikes, and by much
+  more at the median. For the deepest strikes (+62%), roll length hardly matters.
+- **The decay.** In 12 of the 20 crashes, SOXL lagged 3× its index (SMH) over the
+  next 12 weeks: Mar 2025 −17% against +26%, Jul 2024 −18% against +13%, Jun 2026
+  −35% against −2%. Owning SOXL through a choppy recovery bleeds more than owning
+  a stock, and that matters for any assignment.
+
+So for SOXL: **keep the weekly roll and don't go long.** On 23 Oct the 10/30 → 11/6
+roll still paid +$1.38 on the $110s and +$1.25 on the $115s. On the $120–$135s it
+paid only $0.15–0.43, but the weekly roll there still keeps the way out on a spike.
+
 ## Answers to the four questions
 
 | Neel's question | Calls | Puts |
