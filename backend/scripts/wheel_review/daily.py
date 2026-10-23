@@ -1,9 +1,13 @@
 """Daily closes from Yahoo for every symbol with an option chain → daily.json
-{symbol: [[YYYY-MM-DD, open, close], ...]}"""
+{symbol: [[YYYY-MM-DD, open, close], ...]}  Run first."""
 import json, sys, time, urllib.request
 from datetime import datetime, timezone
 W = sys.argv[1]
-syms = sorted({c['symbol'] for c in json.load(open(f'{W}/chains.json'))})
+sys.path.insert(0, '/Users/neelpersonal/Coding-Projects/agrawal-estate-planner/backend')
+from app.core.database import SessionLocal
+from sqlalchemy import text
+syms = sorted(r[0] for r in SessionLocal().execute(text(
+    "SELECT DISTINCT symbol FROM investment_transactions WHERE transaction_type IN ('STO','BTC','OASGN')")) if r[0])
 out, missing = {}, []
 p1 = int(datetime(2024, 9, 1, tzinfo=timezone.utc).timestamp()); p2 = int(time.time())
 for s in syms:

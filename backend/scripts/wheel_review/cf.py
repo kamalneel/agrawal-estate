@@ -10,15 +10,13 @@ from sqlalchemy import text
 db = SessionLocal()
 W = sys.argv[1]
 C = json.load(open(f'{W}/chains.json'))
-px = defaultdict(list)
-for r in db.execute(text("SELECT symbol, price_date, close_price FROM symbol_price_history ORDER BY 1, 2")):
-    px[r.symbol].append((r.price_date, float(r.close_price)))
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from daily_prices import Daily
+DP = Daily(f'{W}/daily.json')
+price = DP.on
+rvol = DP.vol
 now = {r.symbol: float(r.p) for r in db.execute(text("SELECT symbol, max(current_price) p FROM investment_holdings WHERE current_price IS NOT NULL GROUP BY 1"))}
-def price(sym, d):
-    s = px.get(sym)
-    if not s: return None
-    i = bisect.bisect_right([x[0] for x in s], d) - 1
-    return s[i][1] if i >= 0 and (d - s[i][0]).days <= 10 else None
 D = lambda s: date.fromisoformat(s)
 
 def roll_days(c):

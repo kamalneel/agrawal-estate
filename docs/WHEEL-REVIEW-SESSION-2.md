@@ -24,7 +24,8 @@ rally, stuck calls rolled at the same strike came back and made money.
 > call looked near the money in hindsight. Neel's question ("is it happening
 > because I'm already stuck?") exposed it. Distances now use the prior day's
 > close from daily prices (`scripts/wheel_review/daily.py`, `classify.py`).
-> Findings 2–4 still use the weekly bars in places and are being re-checked.
+> Findings 2–4 were then redone on daily prices too; the 13-week-roll result
+> shrank to the rally alone, and both V9 candidates were withdrawn.
 
 ---
 
@@ -43,8 +44,9 @@ Each chain is scored against the obvious alternative:
   market on the assignment day). A second view values the assigned shares at
   today's price.
 
-Checks: call premium reconciles to the Income page within $194 (233,613 vs
-233,807). Three rows are excluded as duplicates (AMD, Neel's Retirement, 10/5 —
+Prices: daily closes from Yahoo (`daily.py`), read only through
+`daily_prices.py` — "before a trade" is the prior day's close, valuations use the
+close on the day. Checks: call premium reconciles to the Income page within $194. Three rows are excluded as duplicates (AMD, Neel's Retirement, 10/5 —
 a 3-contract trade also recorded as three 1-contract trades, on both sides).
 Scripts: `backend/scripts/wheel_review/`.
 
@@ -52,9 +54,9 @@ Scripts: `backend/scripts/wheel_review/`.
 
 | | Premium (net) | Given up / lost at assignment | Result |
 |---|---|---|---|
-| Calls | +$233.6K | −$206.8K | **+$26.8K** |
-| Puts | +$252.5K | −$119.3K (assignment day) | **+$133.2K** |
-| Puts, assigned shares at today's price | | | **+$83.0K** |
+| Calls | +$235.6K | −$206.9K | **+$28.7K** |
+| Puts | +$252.5K | −$127.8K (assignment day) | **+$124.7K** |
+| Puts, assigned shares at today's price | | | **+$53.7K** |
 
 Both sides made money as option strategies. The red numbers on the Investments
 page are mostly the *shares* — what assigned stocks did after assignment, and
@@ -101,95 +103,91 @@ So there is no entry rule to learn here. The question moves to Finding 2: once a
 call is stuck, how to tell an ordinary pull-back-and-return from a run that does
 not come back — early enough to act.
 
-## Finding 2 — When a call goes in the money, roll long, not weekly
+## Finding 2 — A stuck call: weekly same-strike rolling is right, except in a runaway
 
-Tested at the first roll where the call was ≥5% in the money (46 chains):
+Tested at the first roll where the call was ≥5% in the money (53 chains). The
+buy-back and let-assign rows use the actual fills; the 13-week roll is priced with
+Black-Scholes at the stock's daily realized volatility (no historical option
+prices exist).
 
-| Instead of rolling weekly | vs. actual | How measured |
+| Instead of rolling weekly | Mar–Apr 2026 (20) | Other months (33) |
 |---|---|---|
-| Buy back and stop selling | **−$66K** (worse) | actual fills |
-| Let it be assigned | **−$98K** (worse) | actual fills |
-| Roll ~13 weeks out, same strike | **+$111K** (better) | Black-Scholes estimate |
-| Roll ~13 weeks out, up to the strike that costs nothing | +$69K | Black-Scholes estimate |
+| Buy back and stop selling | +$45.4K | **−$111.6K** |
+| Let it be assigned | −$82.2K | −$0.6K |
+| Roll 13 weeks out, same strike — rolls that have expired | **+$168.6K** (19) | **−$8.0K** (19) |
+| Roll 13 weeks out, same strike — still open today | (1) | +$42.7K (14), unsettled |
 
-Outside March–April the long roll still helps (+$27K across 28 chains); the
-roll-up version does not (−$21K). So the robust version is **same strike, 13
-weeks**: it collects a quarter's time value at once instead of a week's, and
-gives the stock time to come back.
+In ordinary months Neel's patience is the right call: buying back costs far more,
+and the long roll is no better on rolls that have run their course. Only in the
+March–April rally would something else have paid — buying back, or rolling long.
 
-Caveat: no historical option prices exist, so the long roll is priced with
-Black-Scholes at each stock's 26-week realized volatility. Real implied vol is
-usually higher, which would make the long roll pay *more* — but treat the size
-as an estimate, not a fact. The buy-back and let-assign rows are exact.
+Depth does not pick out the runaway. Triggering the long roll only at 10% or 15%
+in the money still makes ordinary months worse (−$24.5K either way). So there is
+no rule here yet: **the open question is what, early on, distinguished the
+March–April rally from an ordinary pull-back-and-return.**
 
-This answers two of Neel's four questions for calls: **"should not have closed
-at a loss"** — right, closing was worse; **"should have let it get assigned"** —
-no, worse still.
+## Finding 3 — A stuck put: keep rolling weekly
 
-## Finding 3 — Puts: keep rolling weekly
+Same tests on puts (≥5% in the money), ordinary months:
 
-Same tests on puts (49 chains reached ≥5% in the money):
-
-| Instead of rolling weekly | vs. actual |
+| Instead of rolling weekly | Result |
 |---|---|
-| Buy back and stop | −$153K (worse) |
-| Let it be assigned | −$109K (worse) |
-| Roll ~13 weeks out, same strike | −$118K (worse, estimate) |
+| Buy back and stop | −$134.3K |
+| Let it be assigned | −$178.8K |
+| Roll 13 weeks out, same strike (expired rolls) | −$18.3K |
 
-Weekly rolling is the right tool for puts. Opposite to calls: a put in trouble
-is on a falling stock, where weekly premium is rich; a call in trouble is on a
-rising one, where a week of time value is small against the move.
-
-**V8's 8-week put exit (added 16 Oct)**, back-tested on the 8 chains still in the
-money at week 8: −$511 — a wash. Its case is freeing margin, not profit.
+Weekly rolling wins on every comparison. **V8's 8-week put exit**, back-tested on the
+9 chains still in the money at week 8: **+$4.5K** — small, slightly positive; its
+main case remains freeing margin.
 
 ## Finding 4 — Put losses come after assignment, on stocks that had run up
 
-Assigned put chains, grouped by the stock's 12-week move before the put was sold,
-with shares valued today (put premium included):
+Assigned put chains by the stock's 12-week move before the put was sold (prior
+close), with the shares valued today:
 
-| 12 weeks before | Chains | Shares | Value today |
-|---|---|---|---|
-| Down or flat | 5 | 800 | +$10.8K |
-| Up 5–20% | 4 | 500 | −$16.4K |
-| Up 20–50% | 7 | 1,200 | −$20.3K |
-| Up >50% | 5 | 1,700 | −$43.8K |
+| 12 weeks before the sale | Chains | Shares | On assignment day | Today |
+|---|---|---|---|---|
+| Down or flat | 2 | 300 | −$1.7K | +$10.2K |
+| Up 5–20% | 6 | 900 | −$8.9K | +$1.8K |
+| Up 20–50% | 6 | 1,100 | −$16.1K | **−$41.3K** |
+| Up >50% | 5 | 1,600 | +$8.9K | **−$56.6K** |
 
-SOXL had run +499%, RKLB +55–105%, AVGO +20–35%, SPCX and GOOGL +23% before the
-puts that put those shares in the book. V8's checks look back ~10 days and miss a
-three-month run.
+Puts sold after a >20% three-month run left 2,700 shares now worth $98K less than
+they cost — SOXL, RKLB, AVGO, SPCX, GOOGL. V8's checks look back about 10 days and
+miss a three-month run.
 
-**But as a rule it is weak.** "No put after a >30% 12-week run" would have avoided
-about $131K of share losses and given up $110K of premium: net +$21K, measured at
-today's prices, so it can vanish if those stocks recover. Not proposed.
+As a rule it is still modest: "no put after a >30% 12-week run" would have given up
+$133.8K of premium to avoid those chains' −$32.8K today — a net +$32.8K, measured at
+today's prices, so it moves with them. Worth discussing as a *farther strike* rather
+than *no put*; not proposed yet.
 
 ## Answers to the four questions
 
 | Neel's question | Calls | Puts |
 |---|---|---|
-| Should not have sold it | No — the March calls were sold 4–18% out; new near-money sales made +$11.6K | Weak signal on stocks that ran up |
-| Should not have closed at a loss | Right — closing was worse (−$66K) | Right (−$153K) |
-| Should have let it be assigned | No — worse (−$98K) | No — worse (−$109K) |
-| Should have deferred further | **Yes — 13 weeks, same strike** (+$111K est.) | No — weekly is better |
-| "Sell every week" is the problem | **No** — never-stuck calls made money every month; stuck calls made money outside one rally | No |
+| Should not have sold it | No — the March calls were sold 4–18% out; new near-money sales made +$11.6K | Possibly, after a >20% three-month run |
+| Should not have closed at a loss | Right — closing costs −$111.6K in ordinary months | Right (−$134.3K) |
+| Should have let it be assigned | No (neutral in ordinary months, −$82K in the rally) | No (−$178.8K) |
+| Should have deferred further | Only in the rally (+$168.6K); not in ordinary months (−$8.0K) | No |
+| "Sell every week" is the problem | **No** | **No** |
 
-## V9 candidates (proposed, not built)
+## V9 candidates
 
-1. ~~`call_min_otm_pct = 2`~~ — withdrawn (see the correction above).
-2. **`call_itm_long_roll`** — when a call is ≥5% in the money at its roll, roll
-   the same strike ~13 weeks out instead of one week. Replaces V8's deep-out
-   trigger (4 weeks above the strike, then a strike near the stock), which waits
-   too long and asks for too much. Evidence: +$111K estimated, +$27K outside the
-   episode. Tension: Neel's 16 Oct point that a far-out call is "not ready to
-   encash the drop" — the data says the extra quarter of time value is worth more
-   than catching the dip.
-3. **Puts: no change.** Weekly rolling stands; the 8-week cap stays for margin.
+1. ~~`call_min_otm_pct = 2`~~ — withdrawn: a look-ahead artefact (see the correction).
+2. ~~`call_itm_long_roll`~~ — withdrawn: on daily prices it helps only in the March–April
+   rally and is slightly worse otherwise. Replaced by the open question in Finding 2.
+3. **Puts: no change to rolling.** The 8-week cap stays (+$4.5K, and margin).
+4. **Open for discussion:** a farther put strike after a >20% three-month run.
 
 ## Open threads
 
-- The long-roll estimate needs real prices. Start storing option-chain quotes for
-  open positions at each sync (`option_chain_quotes` is empty) so the next review
-  can measure, not model.
+- **The runaway signal.** What told the March–April rally apart early — the size of
+  the first week's move, several holdings jumping together, or the market as a
+  whole? That is the one place a rule could have saved money (Finding 2).
+- The long-roll estimate needs real prices. Store option-chain quotes for open
+  positions at each sync (`option_chain_quotes` is empty) so the next review can
+  measure, not model.
+- The weekly price bars (Monday-dated, Friday close) are also what the app's own
+  assignment-loss and campaign figures read when no daily price exists. Check
+  `_price_near` for the same look-ahead.
 - The AMD 10/5 duplicate rows in Neel's Retirement need tracing at the source.
-- Put-side: whether a *farther* strike (rather than no put) after a 12-week run
-  keeps the premium and avoids the top. Not tested.

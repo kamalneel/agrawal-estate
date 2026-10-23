@@ -10,36 +10,16 @@ from app.modules.strategies.technical_signals import _parse_strike, _parse_expir
 db = SessionLocal()
 OUT = sys.argv[1]
 
-# prices: symbol -> sorted [(date, close)]
-px = defaultdict(list)
-for r in db.execute(text("SELECT symbol, price_date, close_price FROM symbol_price_history ORDER BY symbol, price_date")):
-    px[r.symbol].append((r.price_date, float(r.close_price)))
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from daily_prices import Daily
+DP = Daily(os.path.join(os.path.dirname(OUT), 'daily.json'))
 hold = {}
 for r in db.execute(text("SELECT symbol, max(current_price) p FROM investment_holdings WHERE current_price IS NOT NULL GROUP BY 1")):
     hold[r.symbol] = float(r.p)
-
-def price(sym, d):
-    s = px.get(sym)
-    if not s: return None
-    i = bisect.bisect_right([x[0] for x in s], d) - 1
-    if i < 0: return None
-    if (d - s[i][0]).days > 10: return None
-    return s[i][1]
-
-def ret(sym, d, weeks):
-    a, b = price(sym, d - timedelta(weeks=weeks)), price(sym, d)
-    return (b / a - 1) if a and b else None
-
-def rvol(sym, d, weeks=26):
-    s = [p for (x, p) in px.get(sym, []) if d - timedelta(weeks=weeks) <= x <= d]
-    if len(s) < 8: return None
-    r = [math.log(s[i] / s[i-1]) for i in range(1, len(s))]
-    m = sum(r) / len(r)
-    sd = math.sqrt(sum((x - m) ** 2 for x in r) / (len(r) - 1))
-    # mixed weekly/daily bars: estimate periods per year from the span
-    span = (d - max(d - timedelta(weeks=weeks), [x for (x, _) in px[sym]][0])).days or 1
-    per_year = len(r) / span * 365
-    return sd * math.sqrt(per_year)
+price = DP.on              # close on a day (valuation at expiry / chain end)
+ret = DP.ret               # move before a day, from the prior close
+rvol = DP.vol
 
 rows = db.execute(text("""
     SELECT it.id, it.transaction_date d, it.account_id a, it.symbol s, it.transaction_type ttype,
@@ -154,7 +134,7 @@ for c in chains:
     if not c['legs']: continue
     sym, typ = c['symbol'], c['type']
     first = next(l for l in c['legs'] if l['t'] == 'STO')
-    s0 = price(sym, first['d'])
+    s0 = DP.before(sym, first['d'])   # prior close: known before the sale
     c['first_strike'], c['first_exp'] = first['k'], str(first['e'])
     c['spot0'] = s0
     c['otm0'] = ((first['k'] / s0 - 1) if typ == 'call' else (1 - first['k'] / s0)) if s0 else None
@@ -176,7 +156,7 @@ for c in chains:
     c['assign_cost'] = round(give, 2)
     c['assign_detail'] = asg_detail
     # open legs: intrinsic now (not cost to close — info only)
-    now = hold.get(sym) or (px[sym][-1][1] if px.get(sym) else None)
+    now = hold.get(sym) or DP.on(sym, today)
     c['open_intrinsic'] = round(sum((max(now - o['k'], 0) if typ == 'call' else max(o['k'] - now, 0)) * o['q'] * 100 for o in c['open']), 2) if now else None
     c['result'] = round(c['net'] - give, 2)
     c['status'] = 'open' if c['open'] else ('assigned' if c['assigned'] else 'closed/expired')
