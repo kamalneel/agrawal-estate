@@ -200,3 +200,14 @@
 .detail.highlight td {
   background: var(--color-accent-subtle);
 }
+
+/* Loss when assigned, by month (from the retired Assignment Loss section). */
+.chart {
+  margin-bottom: var(--space-3);
+}
+
+.chartLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  margin-bottom: var(--space-1);
+}

@@ -19,11 +19,12 @@ interface AssignmentLossThisMonthProps {
 
 /**
  * Options Execution page is scoped to THIS PERIOD ("what should I do
- * today, am I on pace?") — no history here, that's what the Investments
- * page's full AssignmentLossCard is for (Neel, 2026-07-22: the first
+ * today, am I on pace?") — no history here (Neel, 2026-07-22: the first
  * version put a multi-year chart on a current-pace page, which broke
- * the page's own scope). This is just the current-month figure,
- * matching the Holdings/Cash Goal cards beside it.
+ * the page's own scope). The history is the Investments page's Put
+ * Campaigns: the monthly chart and every assignment (the
+ * AssignmentLossCard until 2026-10-24). This is just the current-month
+ * figure, matching the Holdings/Cash Goal cards beside it.
  *
  * On the Income page the same card is a third cell in the goals strip.
  * There it takes `year`/`month` and follows the strip's period control —

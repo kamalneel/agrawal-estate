@@ -17,7 +17,6 @@ import {
 } from 'recharts'
 import styles from './Investments.module.css'
 import clsx from 'clsx'
-import { AssignmentLossCard } from '../components/AssignmentLossCard/AssignmentLossCard'
 import { PutCampaigns } from '../components/PutCampaigns/PutCampaigns'
 import { CallCampaigns } from '../components/CallCampaigns/CallCampaigns'
 import {
@@ -1390,16 +1389,13 @@ export function Investments() {
       )}
 
 
-      {/* Assignment Loss history — moved here from Options Execution
-          2026-07-22: that page is scoped to "what should I do today, am
-          I on pace" (current period only); this is retrospective
-          analysis, which belongs with Strategy Deviations / Ghost Curve
-          here instead. Options Execution keeps just the current-month
-          figure (AssignmentLossThisMonth). */}
-      <AssignmentLossCard />
-
-      {/* Put Campaigns — the same assignments followed through to today
-          plus the premium collected on the way (Neel, 2026-10-22). */}
+      {/* Put Campaigns — every assigned put followed through to today
+          plus the premium collected on the way (Neel, 2026-10-22). Also
+          the history of assignment loss: the monthly chart and each
+          assignment's arithmetic moved here when the Assignment Loss
+          section was retired (2026-10-24, docs/OPTIONS-UX-AUDIT.md step 3).
+          Options Execution and Income show the period figure and link
+          here (AssignmentLossThisMonth). */}
       <PutCampaigns />
 
       {/* Call Campaigns — the call half of the wheel: calls on shares

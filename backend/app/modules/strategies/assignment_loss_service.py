@@ -381,6 +381,7 @@ def get_put_campaigns(db: Session) -> Dict:
             "date": e["date"], "account_name": e["account_name"], "symbol": e["symbol"],
             "strike": e["strike"], "shares": shares,
             "price_at_assignment": e["price_at_assignment"],
+            "price_source": e["price_source"],              # "weekly" = nearest symbol close, shown with ~
             "loss_at_assignment": -e["loss"],               # signed: negative = loss
             "shares_held": round(held, 4), "shares_sold": round(sold, 4),
             "sale_proceeds": round(proceeds, 2), "last_sale": last_sale,

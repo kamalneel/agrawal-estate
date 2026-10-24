@@ -143,7 +143,7 @@ up on the day of assignment, Covered Call Income's measure; only the layout chan
    `#put-campaigns`; Income goals cell → `#put-campaigns`.
 2. ✅ **Call Campaigns** (done 24 Oct): reshape Covered Call Income into the Put Campaigns layout, anchor
    `#call-campaigns`.
-3. **Fold and retire the Assignment Loss card:** chart + calculation into Put Campaigns,
+3. ✅ **Fold and retire the Assignment Loss card** (done 24 Oct): chart + calculation into Put Campaigns,
    remove the card.
 4. **Dead code:** delete `OptionsSelling.tsx`, `AccountOptionsDetail`; `/` → Options
    Execution; rename the engine-preview nav item.
@@ -186,3 +186,26 @@ uses the same stylesheet and layout:
     to it. Hovering upside given up shows the arithmetic.
 - **Measure:** upside given up is taken on the day of each assignment
   (decision (a)).
+
+### Step 3, as built (24 Oct)
+
+The Assignment Loss section is gone from Investments (`AssignmentLossCard.tsx` deleted).
+What it had that Put Campaigns did not:
+
+- **Monthly chart** → in Put Campaigns, under the headline figures: loss when
+  assigned by month, puts only, with every month from the first assignment shown
+  (zero months included). The current month is amber. Clicking a bar highlights
+  that month's puts (the same `?assigned=` as the links from step 1); clicking it
+  again clears it.
+- **Per-assignment arithmetic** → hover over "Loss when assigned" in an expanded row:
+  "($160.00 strike − $110.82 market) × 200 sh = −$9,828". The `~` mark for a
+  nearest-close market price carries over (`price_source` added to the Put Campaigns
+  events).
+- **Dropped on purpose:** the calls half (cost basis − strike) is a share-sale
+  result that Income already books in Equity Sales, and call assignments now have
+  Call Campaigns. Also dropped: the "$154,378 net premium on assigned positions"
+  figure. It mixed put chains with chains that ended in a call assignment, a mix
+  used nowhere else; put premium is Put Campaigns' own column.
+- Old `#assignment-loss` links now land on Put Campaigns. The
+  `/strategies/v6/assignment-loss` endpoint stays: the Options Execution card and
+  Income read the puts figure from it.

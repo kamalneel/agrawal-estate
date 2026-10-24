@@ -2,15 +2,16 @@ import { Fragment, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import clsx from 'clsx'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import { getAuthHeaders } from '../../contexts/AuthContext'
 import styles from './PutCampaigns.module.css'
 
 const API_BASE = '/api/v1'
 
 /**
- * Put Campaigns — Neel, 2026-10-22. The Assignment Loss section freezes
- * the loss on the day a put is assigned; "that stock then goes up or
- * down". This is the wheel-trader view, per stock: what the assigned
+ * Put Campaigns — Neel, 2026-10-22. The loss on the day a put is assigned
+ * is a snapshot; "that stock then goes up or down". This is the
+ * wheel-trader view, per stock: what the assigned
  * shares are worth today (or what they sold for), plus the net premium
  * collected across the roll chain that led to each assignment.
  *
@@ -28,6 +29,13 @@ const API_BASE = '/api/v1'
  * Execution sent him to a different table than Income did). The link
  * carries its period — ?assigned=2026-10 or ?assigned=2026 — so the
  * number clicked is shown on arrival and its stocks are highlighted.
+ *
+ * The Assignment Loss section that sat above this was retired 2026-10-24
+ * (docs/OPTIONS-UX-AUDIT.md, step 3). Its two useful parts live here: the
+ * monthly chart of loss when assigned (a bar is a link to that month) and
+ * each assignment's arithmetic, on hover in the expanded rows (Neel,
+ * 2026-08-14: "Is there a way I can see the calculation?"). Its call half
+ * was a share-sale result already in Income's Equity Sales.
  */
 
 interface CampaignEvent {
@@ -37,6 +45,7 @@ interface CampaignEvent {
   strike: number
   shares: number
   price_at_assignment: number | null
+  price_source: 'daily' | 'weekly' | null
   loss_at_assignment: number
   shares_held: number
   shares_sold: number
@@ -91,7 +100,7 @@ const COLUMNS: Array<[SortKey, string, string]> = [
   ['avg_strike', 'Avg strike', 'Share-weighted average strike of the assigned puts'],
   ['adjusted_basis', 'Adj. basis', 'Strike minus every premium collected, put and call, per share — the price at which the campaign breaks even'],
   ['price_today', 'Today', 'Latest price (from the last sync)'],
-  ['loss_at_assignment', 'Loss when assigned', 'Strike vs. the market on the day each put was assigned — the Assignment Loss figure above'],
+  ['loss_at_assignment', 'Loss when assigned', 'Strike vs. the market on the day each put was assigned — the Assignment Loss figure on Options Execution and Income'],
   ['shares_result', 'Shares today', 'Shares still held at today\'s price, plus what sold shares fetched, minus what they cost at the strike'],
   ['premium_collected', 'Put premium', 'Net premium across every roll of the puts that ended in these assignments'],
   ['call_premium', 'Call premium', 'Net premium from calls sold on these shares (sold minus bought back). Where an account also held bought shares, only the put-assigned share of its calls counts; the rest is Covered Call Income.'],
@@ -106,6 +115,32 @@ const price = (v: number | null) => v == null ? '—' : `$${v.toFixed(2)}`
 const periodLabel = (p: string) => /^\d{4}-\d{2}$/.test(p)
   ? new Date(`${p}-01T00:00:00`).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
   : p
+
+/** The arithmetic behind one assignment's loss when assigned. */
+function lossText(e: CampaignEvent): string | undefined {
+  if (e.price_at_assignment == null) return undefined
+  return `($${e.strike.toFixed(2)} strike − $${e.price_at_assignment.toFixed(2)} market) × ${e.shares.toLocaleString()} sh = ${signedUsd(e.loss_at_assignment)}`
+}
+
+const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+const yAxisUsd = (v: number) => v >= 1000 ? `$${Math.round(v / 1000)}K` : `$${v}`
+
+/** Loss when assigned per month, every month from the first assignment to
+ *  this one (zero months included, so the axis reads as time). Plotted as
+ *  a positive height; the label carries the sign. */
+function monthlyLoss(stocks: Campaign[]): Array<{ month: string; label: string; loss: number }> {
+  const by: Record<string, number> = {}
+  for (const s of stocks) for (const e of s.events) by[e.date.slice(0, 7)] = (by[e.date.slice(0, 7)] || 0) - e.loss_at_assignment
+  const keys = Object.keys(by).sort()
+  if (keys.length === 0) return []
+  const out: Array<{ month: string; label: string; loss: number }> = []
+  const d = new Date(`${keys[0]}-01T00:00:00`)
+  const end = monthKey(new Date())
+  for (let k = monthKey(d); k <= end; d.setMonth(d.getMonth() + 1), k = monthKey(d)) {
+    out.push({ month: k, label: d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }), loss: by[k] || 0 })
+  }
+  return out
+}
 
 /** The arithmetic behind one assignment's Shares-today figure. */
 function sharesText(e: CampaignEvent): string {
@@ -139,7 +174,8 @@ export function PutCampaigns() {
       const syms = data.stocks.filter(s => s.events.some(e => e.date.startsWith(assigned))).map(s => s.symbol)
       if (syms.length === 1) setOpen(syms[0])
     }
-    if (window.location.hash === '#put-campaigns') {
+    // #assignment-loss: the retired section's anchor — old links land here.
+    if (window.location.hash === '#put-campaigns' || window.location.hash === '#assignment-loss') {
       document.getElementById('put-campaigns')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }, [data, assigned])
@@ -167,6 +203,12 @@ export function PutCampaigns() {
   const periodLoss = periodEvents.reduce((sum, e) => sum + e.loss_at_assignment, 0)
   const periodSyms = [...new Set(periodEvents.map(e => e.symbol))]
   const clearPeriod = () => setParams(p => { p.delete('assigned'); return p }, { replace: true })
+  const pickMonth = (m: string) => setParams(p => {
+    if (p.get('assigned') === m) p.delete('assigned'); else p.set('assigned', m)
+    return p
+  }, { replace: true })
+  const chart = monthlyLoss(data.stocks)
+  const curMonth = monthKey(new Date())
 
   return (
     <section id="put-campaigns" className={styles.section}>
@@ -220,6 +262,34 @@ export function PutCampaigns() {
           </div>
         </div>
 
+        {chart.length > 1 && (
+          <div className={styles.chart}>
+            <div className={styles.chartLabel}>Loss when assigned, by month — click a month to highlight its puts</div>
+            <ResponsiveContainer width="100%" height={140}>
+              <BarChart data={chart} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
+                <XAxis dataKey="label" tick={{ fill: 'var(--color-text-tertiary)', fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: 'var(--color-text-tertiary)', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={yAxisUsd} />
+                <Tooltip
+                  cursor={{ fill: 'var(--color-bg-hover)' }}
+                  formatter={(v: number) => [v ? `−${usd(v)}` : '$0', 'Loss when assigned']}
+                  contentStyle={{ background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)', fontSize: 12 }}
+                />
+                <Bar dataKey="loss" radius={[3, 3, 0, 0]} cursor="pointer"
+                     onClick={(d: { month?: string; payload?: { month: string } }) => {
+                       const m = d.payload?.month ?? d.month
+                       if (m) pickMonth(m)
+                     }}>
+                  {chart.map(d => (
+                    <Cell key={d.month}
+                          fill={d.month === assigned ? 'var(--color-accent)' : d.month === curMonth ? 'var(--color-warning)' : 'var(--color-negative)'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
         <div className={styles.tableWrap}>
           <table className={styles.table}>
             <thead>
@@ -266,7 +336,10 @@ export function PutCampaigns() {
                       <td className={styles.num}>{price(e.strike)}</td>
                       <td className={styles.num}>{price(e.adjusted_basis)}</td>
                       <td className={styles.num}>{e.shares_held > 1e-6 ? price(e.price_today) : e.last_sale ? `sold ${shortDate(e.last_sale)}` : '—'}</td>
-                      <td className={clsx(styles.num, tone(e.loss_at_assignment))}>{signedUsd(e.loss_at_assignment)}</td>
+                      <td className={clsx(styles.num, tone(e.loss_at_assignment))} title={lossText(e)}>
+                        {signedUsd(e.loss_at_assignment)}
+                        {e.price_source === 'weekly' && <span className={styles.flag} title="Market price is the nearest symbol-level close — used when it lands closer to the assignment date than the account's own share history">~</span>}
+                      </td>
                       <td className={clsx(styles.num, tone(e.shares_result))} title={sharesText(e)}>
                         {signedUsd(e.shares_result)}
                         {!e.traced && <span className={styles.flag} title="No matching share lot found — valued as still held at today's price">~</span>}

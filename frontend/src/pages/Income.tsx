@@ -4221,7 +4221,7 @@ export function Income() {
           /* Third cell: what assignments cost against the same period the
              two gauges cover. Premium is already counted in the Cash Goal
              beside it, so this card deliberately excludes it — see
-             AssignmentLossCard.tsx. Puts only, like the table column:
+             AssignmentLossThisMonth.tsx. Puts only, like the table column:
              call assignments are already in Equity Sales. */
           extra={<AssignmentLossThisMonth year={mainSelectedYear} month={mainSelectedMonth} inGrid />}
         />
