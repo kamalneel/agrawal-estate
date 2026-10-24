@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import clsx from 'clsx'
 import { getAuthHeaders } from '../../contexts/AuthContext'
@@ -22,6 +23,11 @@ const API_BASE = '/api/v1'
  * Covered Call Income (bought), so every call counts once. Unrealized for anything still held, so it lives here (the
  * look-back page), not in the Income table. See get_put_campaigns in
  * assignment_loss_service.py.
+ *
+ * Every assignment-loss figure links here (Neel, 2026-10-23: Options
+ * Execution sent him to a different table than Income did). The link
+ * carries its period — ?assigned=2026-10 or ?assigned=2026 — so the
+ * number clicked is shown on arrival and its stocks are highlighted.
  */
 
 interface CampaignEvent {
@@ -97,6 +103,9 @@ const signedUsd = (v: number | null) => v == null ? '—' : v === 0 ? '$0' : `${
 const tone = (v: number | null) => v == null || v === 0 ? undefined : v < 0 ? styles.neg : styles.pos
 const shortDate = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
 const price = (v: number | null) => v == null ? '—' : `$${v.toFixed(2)}`
+const periodLabel = (p: string) => /^\d{4}-\d{2}$/.test(p)
+  ? new Date(`${p}-01T00:00:00`).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+  : p
 
 /** The arithmetic behind one assignment's Shares-today figure. */
 function sharesText(e: CampaignEvent): string {
@@ -111,6 +120,9 @@ export function PutCampaigns() {
   const [open, setOpen] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>('campaign')
   const [sortDir, setSortDir] = useState<1 | -1>(1)
+  const [params, setParams] = useSearchParams()
+  const assigned = params.get('assigned')   // 'YYYY-MM' or 'YYYY' — the period the link came from
+  const inPeriod = (d: string) => !!assigned && d.startsWith(assigned)
 
   useEffect(() => {
     fetch(`${API_BASE}/strategies/v6/put-campaigns`, { headers: getAuthHeaders() })
@@ -119,12 +131,18 @@ export function PutCampaigns() {
       .catch(() => {})
   }, [])
 
-  // Arriving from the Income table's Assignment Loss header.
+  // Arriving from an assignment-loss figure (Options Execution, Income).
+  // A single stock assigned in the period opens on arrival.
   useEffect(() => {
-    if (data && window.location.hash === '#put-campaigns') {
+    if (!data) return
+    if (assigned) {
+      const syms = data.stocks.filter(s => s.events.some(e => e.date.startsWith(assigned))).map(s => s.symbol)
+      if (syms.length === 1) setOpen(syms[0])
+    }
+    if (window.location.hash === '#put-campaigns') {
       document.getElementById('put-campaigns')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-  }, [data])
+  }, [data, assigned])
 
   if (!data || data.stocks.length === 0) return null
 
@@ -132,7 +150,10 @@ export function PutCampaigns() {
     if (key === sortKey) setSortDir(d => (d === 1 ? -1 : 1))
     else { setSortKey(key); setSortDir(1) }
   }
+  const hit = (s: Campaign) => s.events.some(e => inPeriod(e.date))
   const stocks = [...data.stocks].sort((a, b) => {
+    // the period's stocks first, in the chosen order
+    if (hit(a) !== hit(b)) return hit(a) ? -1 : 1
     const va = a[sortKey], vb = b[sortKey]
     if (va == null && vb == null) return 0
     if (va == null) return 1
@@ -142,6 +163,10 @@ export function PutCampaigns() {
   })
   const t = data.totals
   const recovered = t.shares_result - t.loss_at_assignment
+  const periodEvents = assigned ? data.stocks.flatMap(s => s.events.filter(e => inPeriod(e.date))) : []
+  const periodLoss = periodEvents.reduce((sum, e) => sum + e.loss_at_assignment, 0)
+  const periodSyms = [...new Set(periodEvents.map(e => e.symbol))]
+  const clearPeriod = () => setParams(p => { p.delete('assigned'); return p }, { replace: true })
 
   return (
     <section id="put-campaigns" className={styles.section}>
@@ -155,6 +180,21 @@ export function PutCampaigns() {
       </p>
 
       <div className={styles.card}>
+        {assigned && (
+          <div className={styles.periodBanner}>
+            {periodEvents.length === 0 ? (
+              <span>No puts were assigned in {periodLabel(assigned)}.</span>
+            ) : (
+              <span>
+                Assigned in {periodLabel(assigned)}:{' '}
+                <strong className={tone(periodLoss)}>{signedUsd(periodLoss)}</strong> when assigned ·{' '}
+                {periodEvents.length} put{periodEvents.length > 1 ? 's' : ''} on {periodSyms.join(', ')} — highlighted
+                below; each row is that stock's whole campaign to date.
+              </span>
+            )}
+            <button className={styles.periodClear} onClick={clearPeriod}>show all ✕</button>
+          </div>
+        )}
         <div className={styles.statRow}>
           <div>
             <div className={clsx(styles.statValue, tone(t.loss_at_assignment))}>{signedUsd(t.loss_at_assignment)}</div>
@@ -197,7 +237,7 @@ export function PutCampaigns() {
             <tbody>
               {stocks.map(s => (
                 <Fragment key={s.symbol}>
-                  <tr className={styles.row} onClick={() => setOpen(o => (o === s.symbol ? null : s.symbol))}>
+                  <tr className={clsx(styles.row, hit(s) && styles.highlight)} onClick={() => setOpen(o => (o === s.symbol ? null : s.symbol))}>
                     <td className={clsx(styles.left, styles.symbol)}>
                       {open === s.symbol ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                       {s.symbol}
@@ -220,7 +260,7 @@ export function PutCampaigns() {
                     <td className={clsx(styles.num, styles.strong, tone(s.campaign))}>{signedUsd(s.campaign)}</td>
                   </tr>
                   {open === s.symbol && s.events.map((e, i) => (
-                    <tr key={i} className={styles.detail}>
+                    <tr key={i} className={clsx(styles.detail, inPeriod(e.date) && styles.highlight)}>
                       <td className={styles.left}>{shortDate(e.date)} · {e.account_name}</td>
                       <td className={styles.num}>{e.shares.toLocaleString()} sh</td>
                       <td className={styles.num}>{price(e.strike)}</td>

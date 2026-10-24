@@ -134,9 +134,12 @@ definition, an opportunity cost), or (b) the mirror of Put Campaigns' "followed 
 today": premium − what the called-away shares would be worth **today** above the
 strike. (a) is what was agreed on 23 Oct; (b) is the exact sibling of the put view.
 
+**Decided (Neel, 23 Oct):** (a). A call campaign's bottom line is premium − upside given
+up on the day of assignment, Covered Call Income's measure; only the layout changes.
+
 ## 7. Migration order
 
-1. **Links + definitions** (small, no new UI): Options Execution card puts-only and →
+1. ✅ **Links + definitions** (done 23 Oct): Options Execution card puts-only and →
    `#put-campaigns`; Income goals cell → `#put-campaigns`.
 2. **Call Campaigns:** reshape Covered Call Income into the Put Campaigns layout, anchor
    `#call-campaigns`.
@@ -146,3 +149,18 @@ strike. (a) is what was agreed on 23 Oct; (b) is the exact sibling of the put vi
    Execution; rename the engine-preview nav item.
 5. **Legacy notifications + learning** (ask first): remove the page, the v2–v5 routes and
    services, and the RLHF weekly job.
+
+### Step 1, as built (23 Oct)
+
+- The Options Execution card is now **Put Assignment Loss — this month**, puts only:
+  −$14,698 for October, the same figure Income shows.
+- Every assignment-loss figure goes to Put Campaigns with its period in the link
+  (`/investments?assigned=2026-10#put-campaigns`). That covers the Options Execution card,
+  Income's top-strip cell, and each month's cell in Income's table; the column header
+  still opens the whole table. On arrival Put Campaigns shows the period's figure
+  ("Assigned in Oct 2026: −$14,698 · 3 puts on CBRS"). It lists that period's stocks
+  first and highlights them and their assignment rows, opens the stock if there is only
+  one, and has a "show all" link to clear the period.
+- Put Campaigns' events add up to `by_month_type.put` exactly, both per month and per
+  year (Oct −$14,698, Sep −$16,893, 2026 −$193,996), so the figure you click is the
+  figure you land on.

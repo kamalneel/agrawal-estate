@@ -15,10 +15,6 @@ interface AssignmentLossThisMonthProps {
   /** Drop the standalone max-width/margin so the card can sit as a
    *  cell inside the GoalsStrip grid rather than in its own row. */
   inGrid?: boolean
-  /** Puts only (Income page). Call assignments are stock sales, already
-   *  counted in Equity Sales there — adding them here counted the same
-   *  loss twice (Neel, 2026-10-15: IBIT and ZM calls showed in both). */
-  putsOnly?: boolean
 }
 
 /**
@@ -34,11 +30,18 @@ interface AssignmentLossThisMonthProps {
  * a fixed "this month" figure sitting beside two period-scoped gauges
  * would read as the same period and disagree with them the moment the
  * user pages back a month.
+ *
+ * Puts only, on both pages (Neel, 2026-10-23, UX audit). Call assignments
+ * are share sales, already in Income's Equity Sales — adding them here
+ * counted the same loss twice (2026-10-15: IBIT and ZM) and made Options
+ * Execution show −$23,224 for October where Income showed −$14,698.
+ * The click goes to Put Campaigns for the same period, where the figure
+ * is shown on arrival and its stocks are highlighted.
  */
-export function AssignmentLossThisMonth({ year, month, inGrid, putsOnly }: AssignmentLossThisMonthProps = {}) {
+export function AssignmentLossThisMonth({ year, month, inGrid }: AssignmentLossThisMonthProps = {}) {
   const [raw, setRaw] = useState<{
-    this_month_loss: number; this_month_puts: number
-    by_month: Record<string, number>; by_month_type: Record<string, { put: number; call: number }>
+    this_month_puts: number
+    by_month_type: Record<string, { put: number; call: number }>
   } | null>(null)
   const navigate = useNavigate()
 
@@ -49,34 +52,32 @@ export function AssignmentLossThisMonth({ year, month, inGrid, putsOnly }: Assig
       .catch(() => {})
   }, [])
 
-  const data = useMemo(() => {
-    if (!raw) return null
-    if (!putsOnly) return raw
-    return {
-      this_month_loss: raw.this_month_puts,
-      by_month: Object.fromEntries(Object.entries(raw.by_month_type || {}).map(([m, t]) => [m, t.put || 0])),
-    }
-  }, [raw, putsOnly])
+  const data = useMemo(() => raw && {
+    this_month_loss: raw.this_month_puts,
+    by_month: Object.fromEntries(Object.entries(raw.by_month_type || {}).map(([m, t]) => [m, t.put || 0])),
+  }, [raw])
 
   const scoped = useMemo(() => {
     if (!data) return null
     const now = new Date()
     // No period given (Options Execution) — current month, as before.
-    if (year === undefined) return { loss: data.this_month_loss, label: 'this month' }
+    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    if (year === undefined) return { loss: data.this_month_loss, label: 'this month', period: thisMonth }
     if (year === 'all') {
       const total = Object.values(data.by_month).reduce((s, v) => s + v, 0)
-      return { loss: total, label: 'all time' }
+      return { loss: total, label: 'all time', period: null }
     }
     if (month === null || month === undefined) {
       const loss = Object.entries(data.by_month)
         .filter(([k]) => k.startsWith(`${year}-`))
         .reduce((s, [, v]) => s + v, 0)
-      return { loss, label: String(year) }
+      return { loss, label: String(year), period: String(year) }
     }
     const key = `${year}-${String(month).padStart(2, '0')}`
     const isCurrent = year === now.getFullYear() && month === now.getMonth() + 1
     return {
       loss: data.by_month[key] || 0,
+      period: key,
       label: isCurrent
         ? 'this month'
         : new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
@@ -84,24 +85,22 @@ export function AssignmentLossThisMonth({ year, month, inGrid, putsOnly }: Assig
   }, [data, year, month])
 
   if (!scoped) return null
-  const { loss, label } = scoped
+  const { loss, label, period } = scoped
 
   return (
     <button
       type="button"
       className={clsx(styles.card, inGrid && styles.cardInGrid)}
-      onClick={() => navigate('/investments#assignment-loss')}
+      onClick={() => navigate(`/investments${period ? `?assigned=${period}` : ''}#put-campaigns`)}
     >
       <div className={styles.header}>
-        <span className={styles.title}>Assignment Loss — {label}</span>
+        <span className={styles.title}>Put Assignment Loss — {label}</span>
       </div>
       <div className={styles.value} style={{ color: loss === 0 ? '#6b7280' : loss > 0 ? '#FF5A5A' : '#00D632' }}>
         {loss === 0 ? '$0' : `${loss > 0 ? '-' : '+'}$${Math.abs(loss).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
       </div>
       <div className={styles.sub}>
-        {putsOnly
-          ? 'puts: strike vs. market at assignment · call assignments are in Equity Sales — view the events behind this'
-          : 'puts: strike vs. market at assignment · calls: cost basis vs. strike — view the events behind this'}
+        strike vs. market when each put was assigned · call assignments are in Equity Sales — see these in Put Campaigns
         <ChevronRight size={13} style={{ verticalAlign: '-2px', marginLeft: 2 }} />
       </div>
     </button>

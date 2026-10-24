@@ -165,3 +165,38 @@
   max-width: 900px;
   line-height: var(--leading-relaxed, 1.5);
 }
+
+/* Arriving from an assignment-loss figure (?assigned=YYYY-MM or YYYY):
+   the period's puts, so the number clicked can be found in the table. */
+.periodBanner {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-accent-subtle);
+  border-radius: var(--radius-sm, 4px);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+.periodClear {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.periodClear:hover {
+  color: var(--color-text-primary);
+}
+
+.highlight td,
+.detail.highlight td {
+  background: var(--color-accent-subtle);
+}

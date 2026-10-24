@@ -4223,7 +4223,7 @@ export function Income() {
              beside it, so this card deliberately excludes it — see
              AssignmentLossCard.tsx. Puts only, like the table column:
              call assignments are already in Equity Sales. */
-          extra={<AssignmentLossThisMonth year={mainSelectedYear} month={mainSelectedMonth} inGrid putsOnly />}
+          extra={<AssignmentLossThisMonth year={mainSelectedYear} month={mainSelectedMonth} inGrid />}
         />
       </div>
 
@@ -4389,7 +4389,12 @@ export function Income() {
                         <td style={{ color: d.salary < 0 ? '#FF5A5A' : undefined }}>{d.salary !== 0 ? formatFullCurrency(d.salary) : '—'}</td>
                         <td><strong style={{ color: d.total < 0 ? '#FF5A5A' : '#00D632' }}>{formatFullCurrency(d.total)}</strong></td>
                         <td className={styles.earningsAsideCol} style={{ color: d.assignmentLoss > 0 ? '#FF5A5A' : d.assignmentLoss < 0 ? '#00D632' : undefined }}>
-                          {d.assignmentLoss !== 0 ? formatFullCurrency(-d.assignmentLoss) : '—'}
+                          {d.assignmentLoss !== 0
+                            ? <a href={`/investments?assigned=${d.monthKey}#put-campaigns`} className={styles.earningsAsideLink}
+                                 title={`The puts assigned in ${d.label}, highlighted in Put Campaigns`}>
+                                {formatFullCurrency(-d.assignmentLoss)}
+                              </a>
+                            : '—'}
                         </td>
                       </tr>
                     ))}
