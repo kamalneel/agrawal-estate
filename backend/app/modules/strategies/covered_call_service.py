@@ -1,10 +1,17 @@
 """
-Covered Call Income — Neel, 2026-10-23. Calls sold on shares you hold to
-keep, measured the way a covered-call overlay is: against yourself holding
-the same shares without the calls.
+Call Campaigns — the call half of the wheel view, beside Put Campaigns.
+Built as "Covered Call Income" (Neel, 2026-10-23); renamed and laid out
+like Put Campaigns on 2026-10-24 (docs/OPTIONS-UX-AUDIT.md, step 2). Calls
+sold on shares you hold to keep, measured the way a covered-call overlay
+is: against yourself holding the same shares without the calls.
 
-    net = net premium (every STO − every BTC, so roll buy-backs are in)
-          − upside given up (call assigned below the market that day)
+    campaign = net premium (every STO − every BTC, so roll buy-backs are in)
+               − upside given up (call assigned below the market that day)
+
+Upside given up is measured ON THE DAY of each assignment, not followed to
+today (Neel, 2026-10-24, choosing (a) in the audit): following called-away
+shares to today would judge a call by moves months after the shares left,
+and count shares bought back later twice.
 
 Calls still open are NOT marked to what they would cost to close: that
 assumes exiting today, which Neel does not plan to do (2026-10-23: "that
@@ -39,7 +46,7 @@ from app.modules.strategies.assignment_loss_service import (
 )
 
 
-def get_covered_call_income(db: Session) -> Dict:
+def get_call_campaigns(db: Session) -> Dict:
     loss = get_assignment_loss(db)["events"]
 
     # The complement of Put Campaigns' share — one split, so every call is
@@ -51,13 +58,15 @@ def get_covered_call_income(db: Session) -> Dict:
 
     acct_names = {r.account_id: r.account_name for r in db.execute(_text(
         "SELECT account_id, account_name FROM investment_accounts"))}
+    held = {(r.account_id, r.symbol): float(r.quantity) for r in db.execute(_text(
+        "SELECT account_id, symbol, quantity FROM investment_holdings WHERE quantity > 0"))}
 
     stocks: Dict[str, Dict] = {}
 
     def row(sym: str) -> Dict:
         return stocks.setdefault(sym, {
             "symbol": sym, "net_premium": 0.0, "premium_all": 0.0, "upside_given_up": 0.0,
-            "assignments": 0, "shares_called": 0.0,
+            "assignments": 0, "shares_called": 0.0, "strike_x_shares": 0.0, "shares_held": 0.0,
             "unpriced_assignments": 0, "first": None, "last": None, "accounts": {}})
 
     def acct_row(s: Dict, acct: str) -> Dict:
@@ -88,6 +97,7 @@ def get_covered_call_income(db: Session) -> Dict:
         s = row(e["symbol"])
         s["assignments"] += 1
         s["shares_called"] += e["shares"] * f
+        s["strike_x_shares"] += e["strike"] * e["shares"] * f
         px = e["price_at_assignment"]
         if px is None:
             s["unpriced_assignments"] += 1
@@ -99,33 +109,52 @@ def get_covered_call_income(db: Session) -> Dict:
         events.append({"date": e["date"], "account_name": e["account_name"], "symbol": e["symbol"],
                        "strike": e["strike"], "price_at_assignment": px, "shares": e["shares"],
                        "covered_pct": round(f * 100, 1),
-                       "upside_given_up": round(given, 2) if given is not None else None})
+                       "upside_given_up": round(given, 2) if given is not None else None,
+                       # What the calls that ended in this assignment paid across
+                       # their rolls — context only: it is already inside the
+                       # stock's net premium, which also holds every call that
+                       # expired, so event rows do not add up to it.
+                       "chain_premium": round(e["premium_collected"] * f, 2),
+                       "chain_weeks": e["premium_chain_weeks"],
+                       "chain_incomplete": e["premium_incomplete"]})
+
+    # 3. Bought shares still held — closed once none are left.
+    for (acct_id, sym), q in held.items():
+        if sym in stocks:
+            s = stocks[sym]
+            f = covered(acct_id, sym)
+            if f > 0 and acct_id in s["accounts"]:
+                s["shares_held"] += q * f
 
     out = []
     for s in stocks.values():
         if not s["accounts"]:
             continue   # every share came from a put — the Put Campaign's
-        s["net"] = s["net_premium"] - s["upside_given_up"]
+        s["campaign"] = s["net_premium"] - s["upside_given_up"]
+        s["avg_strike"] = round(s["strike_x_shares"] / s["shares_called"], 2) if s["shares_called"] else None
+        s["status"] = "held" if s["shares_held"] > 1e-6 else "closed"
+        del s["strike_x_shares"]
         # Share-weighted across accounts: bought shares / all shares ever acquired.
         acq = sum(q for (a, sym), q in acquired.items() if sym == s["symbol"])
         bought = sum(max(q - assigned.get((a, sym), 0.0), 0.0) for (a, sym), q in acquired.items() if sym == s["symbol"])
         s["covered_pct"] = round(100 * bought / acq, 1) if acq else 100.0
-        for k in ("net_premium", "premium_all", "upside_given_up", "net", "shares_called"):
+        for k in ("net_premium", "premium_all", "upside_given_up", "campaign", "shares_called", "shares_held"):
             s[k] = round(s[k], 2)
         accts = []
         for a in s["accounts"].values():
-            a["net"] = round(a["net_premium"] - a["upside_given_up"], 2)
+            a["campaign"] = round(a["net_premium"] - a["upside_given_up"], 2)
             for k in ("net_premium", "upside_given_up"):
                 a[k] = round(a[k], 2)
             accts.append(a)
-        s["accounts"] = sorted(accts, key=lambda a: a["net"])
+        s["accounts"] = sorted(accts, key=lambda a: a["campaign"])
         s["events"] = sorted([e for e in events if e["symbol"] == s["symbol"]], key=lambda e: e["date"], reverse=True)
         out.append(s)
-    out.sort(key=lambda s: s["net"])
+    out.sort(key=lambda s: s["campaign"])
 
     tot = lambda k: round(sum(s[k] for s in out), 2)
     return {
         "stocks": out,
-        "totals": {k: tot(k) for k in ("net_premium", "upside_given_up", "net")},
+        "totals": {k: tot(k) for k in ("net_premium", "upside_given_up", "campaign", "shares_called")},
+        "assignments": sum(s["assignments"] for s in out),
         "unpriced_assignments": sum(s["unpriced_assignments"] for s in out),
     }

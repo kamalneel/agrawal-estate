@@ -19,7 +19,7 @@ import styles from './Investments.module.css'
 import clsx from 'clsx'
 import { AssignmentLossCard } from '../components/AssignmentLossCard/AssignmentLossCard'
 import { PutCampaigns } from '../components/PutCampaigns/PutCampaigns'
-import { CoveredCallIncome } from '../components/CoveredCallIncome/CoveredCallIncome'
+import { CallCampaigns } from '../components/CallCampaigns/CallCampaigns'
 import {
   HoldingsTable,
   symbolColumn,
@@ -1402,9 +1402,11 @@ export function Investments() {
           plus the premium collected on the way (Neel, 2026-10-22). */}
       <PutCampaigns />
 
-      {/* Covered Call Income — calls on shares held to keep, against
-          holding them without calls (Neel, 2026-10-23). */}
-      <CoveredCallIncome />
+      {/* Call Campaigns — the call half of the wheel: calls on shares
+          bought to keep, against holding them without calls. Was Covered
+          Call Income (Neel, 2026-10-23); laid out like Put Campaigns
+          2026-10-24 (docs/OPTIONS-UX-AUDIT.md, step 2). */}
+      <CallCampaigns />
 
       {/* vs. Buy & Hold — ghost freeze-curve (spec: "vs. Buy & Hold").
           Each point: "if I had frozen the options game on this date

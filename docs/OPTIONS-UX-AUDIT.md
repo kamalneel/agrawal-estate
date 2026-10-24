@@ -141,7 +141,7 @@ up on the day of assignment, Covered Call Income's measure; only the layout chan
 
 1. ✅ **Links + definitions** (done 23 Oct): Options Execution card puts-only and →
    `#put-campaigns`; Income goals cell → `#put-campaigns`.
-2. **Call Campaigns:** reshape Covered Call Income into the Put Campaigns layout, anchor
+2. ✅ **Call Campaigns** (done 24 Oct): reshape Covered Call Income into the Put Campaigns layout, anchor
    `#call-campaigns`.
 3. **Fold and retire the Assignment Loss card:** chart + calculation into Put Campaigns,
    remove the card.
@@ -164,3 +164,25 @@ up on the day of assignment, Covered Call Income's measure; only the layout chan
 - Put Campaigns' events add up to `by_month_type.put` exactly, both per month and per
   year (Oct −$14,698, Sep −$16,893, 2026 −$193,996), so the figure you click is the
   figure you land on.
+
+### Step 2, as built (24 Oct)
+
+Covered Call Income is now **Call Campaigns** (`#call-campaigns`, endpoint
+`/strategies/v6/call-campaigns`). It sits directly under Put Campaigns and
+uses the same stylesheet and layout:
+
+- **Headline figures:** net premium after buy-backs, upside given up
+  (33 calls assigned, 6,363 shares) and the campaign all in. The totals are
+  unchanged from Covered Call Income: $163,440 − $184,552 = −$21,112.
+- **Columns:** Stock (with a "closed" tag once none of the bought shares
+  are held), Covered, Since, Called away (shares and number of assignments),
+  Avg strike, Net premium, Upside given up, Campaign.
+- **Expanded rows:**
+  - one row per account;
+  - one row per assignment, showing strike against that day's market and
+    what the calls in that roll chain paid (e.g. IBIT: "incl. +$615 (9wk)").
+    That chain figure is context only: it is already inside the net premium,
+    which also counts every call that expired, so these rows do not add up
+    to it. Hovering upside given up shows the arithmetic.
+- **Measure:** upside given up is taken on the day of each assignment
+  (decision (a)).
