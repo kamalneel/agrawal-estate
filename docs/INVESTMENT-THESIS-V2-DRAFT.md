@@ -715,3 +715,20 @@ for reference. On the day, V8 differs from V7 in ten cards: eight calls on
 names 5–18% below their 10-day average become "no call this week" (AVGO,
 INTC, CBRS, RKLB), and AVGO $380 / GOOGL $360 puts say take the shares
 instead of rolling (8-week cap). Roll back: `LIVE_STRATEGY_ENGINE=v7`.
+
+## 2026-10-23 — SOXL: buy the put back the day it snaps back (V8)
+
+The wheel review tested SOXL on its own history (`docs/WHEEL-REVIEW-SESSION-2.md`,
+"SOXL is the exception"). After a crash it often gets back above Neel's strikes
+within weeks, but the rebound tends to reverse: in June 2026 it rose 66% in 2
+weeks, then fell 35%. So for SOXL the weekly roll stays, and V8 adds the exit
+Neel agreed to: once a put that was in the money is trading back above its
+strike, the card is BUY BACK, urgent, that day. It is no longer left for Friday or
+the Thursday roll.
+
+The rule is `put_snapback_exit` (the names are listed in the policy's
+`snapback_exit`, SOXL only for now). A put counts if it was at least 5% in the
+money at some close since it was sold (`put_snapback_min_itm_pct`). A put sold
+out of the money, which dipped a little and came back, stays on normal handling.
+The freed collateral goes back to the put ranking; it is not re-sold on SOXL
+automatically.

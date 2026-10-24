@@ -11,7 +11,8 @@
     "st_call_skip_depressed = 1 — call_skip_depressed extended to the short-term book: no new call on a name >= mr_threshold_pct below its 10-day average. Same evidence (0.08% yield on depressed calls), plus the shares there often just came by assignment and a call at the bottom can sell them below cost. Neel, 2026-10-12.",
     "call_roll_up = 1 — a call roll takes the highest strike a week out that still pays a net credit (call_roll_min_credit_ps), not only the same strike; a near-the-money call (delta ≥ call_roll_up_min_delta) is flagged any day a free lift of ≥ call_roll_up_min_lift_pct is there. Evidence: AMD $545 → $560 10/30 for $0.02 on 2026-10-16 after AMD fell 10%; V7 showed nothing.",
     "call_roll_deep_out = 1 — a call ≥ call_roll_deep_itm_pct in the money, above its strike for ≥ call_roll_deep_min_weeks (4) straight weeks, RSI under assign_rsi, rolls to the soonest expiry up to call_roll_max_weeks (13) where a credit roll puts the strike within call_roll_near_spot_pct (2%) of the stock. Evidence: AAPL $325 → $340 Jan 15 for $0.85 on 2026-10-16, above $325 every day since 9/10; the weekly roll only kept $325. Not for a one-week spike: AVGO crossed $375 on 10/6 and was $337 a week later, weekly calls expired at $0.01.",
-    "put_max_roll_weeks = 8 — after 8 weeks of rolling, an ITM put's card turns to LET ASSIGN (or buy back): RSI ≤ put_roll_rsi, a fat credit and a full account stop being reasons to roll again. Evidence: the 2026-10-16 review found all 21 ITM puts on ROLL, none on LET ASSIGN (AVGO $380 rolled since 8/18; CBRS $175 $38 ITM rolling for ~$0.06 on RSI 26), and Neel's Brokerage at −$19K room, which by itself forced every put there to roll."
+    "put_max_roll_weeks = 8 — after 8 weeks of rolling, an ITM put's card turns to LET ASSIGN (or buy back): RSI ≤ put_roll_rsi, a fat credit and a full account stop being reasons to roll again. Evidence: the 2026-10-16 review found all 21 ITM puts on ROLL, none on LET ASSIGN (AVGO $380 rolled since 8/18; CBRS $175 $38 ITM rolling for ~$0.06 on RSI 26), and Neel's Brokerage at −$19K room, which by itself forced every put there to roll.",
+    "put_snapback_exit = 1 — a put on a snapback_exit name (SOXL) that was ≥ put_snapback_min_itm_pct (5%) in the money at a close since it was sold, and now trades back at or above its strike, is bought back the same day (urgent), not left for Friday or the Thursday roll. Evidence: SOXL's snap-backs reverse — Jun 2026 +66% in 2 weeks then −35% by week 12, Mar 2022 +32% then −20%. Neel, 2026-10-23."
   ],
   "knobs": {
     "put_skip_extended": {
@@ -43,6 +44,9 @@
     },
     "put_max_roll_weeks": {
       "value": 8
+    },
+    "put_snapback_exit": {
+      "value": 1
     }
   }
 }

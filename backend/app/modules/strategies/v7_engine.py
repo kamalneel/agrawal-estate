@@ -551,6 +551,29 @@ def _weeks_above(db: Session, sym: str, k: float, today: date) -> Optional[float
     return (today - rows[-1].price_date).days / 7
 
 
+def _put_snapback(db: Session, account_id: Optional[str], sym: str, k: float, exp: Optional[date],
+                  closes: List[Tuple[date, float]], min_itm_pct: float) -> Optional[Dict]:
+    """The lowest close since this put contract was sold, when it was at
+    least min_itm_pct below the strike — so a move back above the strike is
+    a snap-back, not a put sold out of the money that never went in. The
+    contract's own open date (earliest STO fill) bounds the window: a fresh
+    put sold above the strike after an earlier crash does not count. None
+    when the open date is unknown — no evidence, no card."""
+    if not account_id or exp is None:
+        return None
+    from app.modules.strategies.technical_signals import _index_roll_transactions
+    sto_by_leg, _ = _index_roll_transactions(db, account_id, sym, "put")
+    leg = sto_by_leg.get((k, exp))
+    since = [(d, c) for d, c in closes if leg and d >= leg["date"]]
+    if not since:
+        return None
+    low_date, low = min(since, key=lambda x: x[1])
+    itm_pct = (k - low) / k * 100
+    if itm_pct < min_itm_pct:
+        return None
+    return {"opened": leg["date"], "low": low, "low_date": low_date, "itm_pct": itm_pct}
+
+
 def _roll_target_text(t: Dict, k: float, n: int) -> Tuple[str, str]:
     """(title fragment, why sentence) for a call_roll_target result."""
     lift = (t["strike"] - k) * 100 * n
@@ -678,6 +701,7 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
     long_term = set(pol["long_term"]["symbols"])
     short_term = set(pol["short_term"]["symbols"])
     put_only = set(pol.get("put_only", {}).get("symbols", []))   # bucket C's own names (2026-09-20)
+    snapback_syms = set(pol.get("snapback_exit", {}).get("symbols", []))   # put_snapback_exit (2026-10-23)
     exdiv = pol.get("ex_dividend_estimates", {})
     ignore = _load_policy_ignore_list()
 
@@ -1443,6 +1467,36 @@ def build_v7_queue(db: Session, version: str = "v7") -> Dict:
         # put-only names (bucket C) are handled like short-term ones here
         book = "long" if sym in long_term else "short" if (sym in short_term or sym in put_only) else None
         if spot >= k:
+            # V8 snap-back exit (Neel, 2026-10-23, on SOXL): a put that was
+            # well in the money since it was sold and is now back above the
+            # strike is bought back TODAY, not left for Friday. SOXL's
+            # rebounds after a crash reverse (Jun 2026: +66% in 2 weeks, then
+            # −35%), so the time value left is the price of a locked exit.
+            if K(pol, "put_snapback_exit") and sym in snapback_syms:
+                sb = _put_snapback(db, acct_id.get(acct), sym, k, o["expiration"], closes.get(sym, []),
+                                   K(pol, "put_snapback_min_itm_pct"))
+                if sb:
+                    mark = o["mark"]
+                    cost = (mark or 0) * 100 * n
+                    freed = k * 100 * n
+                    card(1 if book == "long" else 2, "BUY BACK", acct, sym,
+                         f"{sym} ${k:,.0f} put snapped back above the strike — buy it back today"
+                         + (f" (~${cost:,.0f})" if mark is not None else ""),
+                         f"{n} contract{'s' if n > 1 else ''} · exp {_fmt_exp(o['expiration'])} · {sym} ${spot:,.2f}, "
+                         f"${spot - k:,.2f} above the strike · low since sold ${sb['low']:,.2f} on {_fmt_exp(sb['low_date'])} "
+                         f"({sb['itm_pct']:.0f}% in the money)"
+                         + (f" · mark ${mark:,.2f}" if mark is not None else "")
+                         + f" · frees ${freed:,.0f}",
+                         f"{sym}'s rebounds after a crash tend to reverse"
+                         + (f" ({pol['snapback_exit']['added'][sym]})" if sym in pol["snapback_exit"].get("added", {}) else "")
+                         + ". Buying back now locks in the exit for the time value left; waiting for Friday or the "
+                           "Thursday roll risks being back in the money a day later. The freed collateral goes back to "
+                           f"the put ranking (layer 3) — not automatically re-sold on {sym}. Rule put_snapback_exit "
+                           f"(Neel, 2026-10-23): names in the policy's snapback_exit list, in the money by "
+                           f"≥{K(pol, 'put_snapback_min_itm_pct'):.0f}% at some close since the put was sold.",
+                         context={"snapback_exit": True, "buyback_cost": round(cost), "frees": freed,
+                                  "low_since_sold": sb["low"], "itm_pct": round(sb["itm_pct"], 1)})
+                    continue
             # Out of the money. At expiry: roll on the last MORNING — the
             # expiring put's time value bleeds out overnight, the new one
             # loses only a few percent (SPCX $150, 2026-09-17: $225 today,
@@ -1937,6 +1991,9 @@ def _v6_shape(card: Dict, layer_name: str, today: date) -> Dict:
     priority = _PRIORITY_BY_ACTION.get(card["action"], "medium")
     # a roll that is due NOW (time-value floor / expiry day) is urgent
     if card["action"] == "ROLL" and ("now" in card["title"] or "today" in card["title"]):
+        priority = "urgent"
+    # a snap-back exit is same-day by design (put_snapback_exit)
+    if ctx.get("snapback_exit"):
         priority = "urgent"
     action = {"SELL PUT": "SELL", "LET ASSIGN": "ASSIGN", "LET EXPIRE": "HOLD", "BUY BACK": "CLOSE",
               "NOTICE": "WATCH", "REVIEW": "WATCH"}.get(card["action"], card["action"])

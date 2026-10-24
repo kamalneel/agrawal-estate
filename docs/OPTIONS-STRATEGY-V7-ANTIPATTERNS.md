@@ -260,6 +260,7 @@ experimental rule needs its own preview layer before it ships.
 | Roll calls up as well as out, for a credit | `call_roll_up` = 1 | Anti-pattern 11 |
 | Deep ITM call stuck ≥ 4 weeks: roll further out (≤ 13 weeks) to lift the strike | `call_roll_deep_out` = 1 | Anti-pattern 11 |
 | Stop rolling an ITM put after 8 weeks: take the shares or buy back | `put_max_roll_weeks` = 8 | Anti-pattern 12 |
+| SOXL put back above its strike after being ≥5% in the money: buy it back that day | `put_snapback_exit` = 1, `snapback_exit` = [SOXL] | Wheel review session 2, 2026-10-23 |
 
 ### First diff, 2026-10-04
 

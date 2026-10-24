@@ -855,6 +855,26 @@
       "min": 0,
       "max": 26,
       "description": "V8 (Neel, 2026-10-16: 8). Weeks a put's roll chain may run before rolling stops being the default: past it RSI, the roll credit and account room are no longer reasons to carry it, and the card says take the shares (or buy back), with the loss, the premium collected across the chain and any margin draw spelled out. 0 = no cap (V7)."
+    },
+    "put_snapback_exit": {
+      "value": 0,
+      "label": "Buy back a put the day it snaps back",
+      "group": "Stuck calls",
+      "unit": "on/off",
+      "step": 1,
+      "min": 0,
+      "max": 1,
+      "description": "V8 (Neel, 2026-10-23, on SOXL). 1 = a put on a snapback_exit name that was in the money by at least put_snapback_min_itm_pct at some close since it was sold, and now trades back at or above its strike, is bought back the same day (urgent) rather than left for Friday or the Thursday roll. SOXL's snap-backs reverse: Jun 2026 +66% in 2 weeks then −35%; Mar 2022 +32% then −20%. The cost is the time value left; the risk avoided is being back in the money a day later. 0 = off (V7)."
+    },
+    "put_snapback_min_itm_pct": {
+      "value": 5,
+      "label": "…if it was in the money by at least",
+      "group": "Stuck calls",
+      "unit": "%",
+      "step": 1,
+      "min": 0,
+      "max": 50,
+      "description": "How deep the put must have been (lowest close since this contract was sold, below the strike) for a move back above the strike to count as a snap-back. Keeps a put sold just out of the money, which dipped a little and came back, on normal handling. A guess (Neel, 2026-10-23)."
     }
   },
   "put_only": {
@@ -872,6 +892,15 @@
       "TSM": "Neel 2026-09-20 — was 'undecided' long-term since 9/13",
       "AMZN": "Neel 2026-09-20 — was 'undecided' long-term since 9/13",
       "META": "Neel 2026-09-20 — was 'undecided' long-term since 9/13"
+    }
+  },
+  "snapback_exit": {
+    "rule": "Names whose rebounds after a crash tend to reverse, so a put that gets back out of the money is bought back that day (knob put_snapback_exit). Evidence per name in docs/WHEEL-REVIEW-SESSION-2.md.",
+    "symbols": [
+      "SOXL"
+    ],
+    "added": {
+      "SOXL": "Neel 2026-10-23 — 20 crashes since 2016: back above a +32% strike within 12 weeks 65% of the time, and the snap-backs often reversed (soxl.py, soxl145.py)"
     }
   }
 }
