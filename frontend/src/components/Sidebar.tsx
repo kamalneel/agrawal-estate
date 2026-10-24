@@ -17,7 +17,6 @@ import {
   Banknote,
   PiggyBank,
   Settings,
-  Bell,
   Globe,
   Link2,
   CreditCard,
@@ -46,7 +45,6 @@ const navItems: NavItem[] = [
   { path: '/investments', label: 'Investments', icon: <TrendingUp size={20} /> },
   { path: '/strategies/spending', label: 'Spending', icon: <CreditCard size={20} /> },
   { path: '/strategies/buy-borrow-die', label: 'Buy/Borrow/Die', icon: <Banknote size={20} /> },
-  { path: '/', label: 'Notifications', icon: <Bell size={20} /> },
   { path: '/data-ingestion', label: 'Import Data', icon: <Database size={20} /> },
 ]
 
@@ -62,7 +60,7 @@ const moreGroup: NavGroup = {
     { path: '/tax', label: 'Tax Center', icon: <FileText size={18} /> },
     { path: '/strategies/retirement-deductions', label: 'Retirement', icon: <PiggyBank size={18} /> },
     { path: '/strategies/tax-optimization', label: 'Tax Planning', icon: <Lightbulb size={18} /> },
-    { path: '/strategies/v8-preview', label: 'Notifications V7 (previous)', icon: <FlaskConical size={18} /> },
+    { path: '/strategies/v8-preview', label: 'Engine preview', icon: <FlaskConical size={18} /> },
     { path: '/strategies/management', label: 'Strategy Settings', icon: <Settings size={18} /> },
     { path: '/integrations/plaid', label: 'Bank Connections', icon: <Link2 size={18} /> },
   ],

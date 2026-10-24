@@ -40,7 +40,10 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<Notifications />} />
+        {/* The app opens on Option Execution, where the day is spent
+            (docs/OPTIONS-UX-AUDIT.md, step 4, 2026-10-24). The V2–V5
+            Notifications page stays reachable by URL until step 5. */}
+        <Route path="/" element={<Navigate to="/strategies/options-selling" replace />} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/income" element={<Income />} />

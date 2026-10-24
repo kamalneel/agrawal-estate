@@ -405,7 +405,7 @@ export function OptionsExecution() {
                 </>
               })()}
               <span className={styles.engineTag}>{queue ? ({ v8: 'V8 · two books, four layers + anti-pattern rules', v7: 'V7 · two books, four layers' } as Record<string, string>)[(queue as any).engine_version] ?? 'V6.1 · engines 4+1' : ''}</span>
-              <Link to="/strategies/v8-preview" className={styles.previewLink} title="The same queue under the previous V7 rules, kept for reference">See V7 (previous) →</Link>
+              <Link to="/strategies/v8-preview" className={styles.previewLink} title="The same queue under the previous V7 rules, kept for reference">Engine preview →</Link>
               <div className={styles.sortToggle}>
                 <span className={styles.sortToggleLabel}>Sort:</span>
                 <button

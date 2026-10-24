@@ -12,8 +12,8 @@ add items here as they surface. Last updated: 2026-07-04.
    accumulated TS6133 unused-import errors. Fix the shim first (one file),
    then sweep unused imports. Until then only `vite build` / dev server work.
 2. **Bundle size**: single 1.55 MB JS chunk; code-split the big pages
-   (dynamic `import()`), especially IndiaInvestments / OptionsSelling /
-   LearningDashboard.
+   (dynamic `import()`), especially IndiaInvestments / LearningDashboard.
+   (OptionsSelling was deleted 2026-10-24 — unrouted; docs/OPTIONS-UX-AUDIT.md.)
 
 ## Data & ingestion
 
@@ -53,8 +53,8 @@ add items here as they surface. Last updated: 2026-07-04.
 
 13. **Split `strategies/router.py`** (6,956 lines, 85 endpoints) into
     per-domain routers.
-14. **Decompose god pages**: IndiaInvestments (4.6k), OptionsSelling (4.4k),
-    Income (3.7k), LearningDashboard (2.8k).
+14. **Decompose god pages**: IndiaInvestments (4.6k), Income (3.7k),
+    LearningDashboard (2.8k). (OptionsSelling, 4.4k, deleted 2026-10-24.)
 15. **Root-dir hygiene**: move one-off analyses (DEBUG_FORECAST.md,
     compare_agi.py, AVGO_STRATEGY_ANALYSIS.md, portfolio PDFs, RLHF_* docs,
     loose 1099 PDF) into docs/archive/ and data/; root should hold only

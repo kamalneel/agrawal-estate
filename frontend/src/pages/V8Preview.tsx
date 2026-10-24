@@ -216,7 +216,7 @@ export default function V8Preview() {
 
       <header className={styles.header}>
         <div>
-          <h1>{engine === 'v8' ? 'Notifications V8 (live)' : 'Notifications V7 (previous)'}</h1>
+          <h1>{engine === 'v8' ? 'Engine preview — V8 (live)' : 'Engine preview — V7 (previous)'}</h1>
           <div className={styles.sub}>
             as of {data.as_of} · positions {data.data_as_of.options?.slice(0, 16)} · cash {data.data_as_of.cash}
           </div>

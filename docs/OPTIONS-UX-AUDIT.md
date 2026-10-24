@@ -145,7 +145,7 @@ up on the day of assignment, Covered Call Income's measure; only the layout chan
    `#call-campaigns`.
 3. ✅ **Fold and retire the Assignment Loss card** (done 24 Oct): chart + calculation into Put Campaigns,
    remove the card.
-4. **Dead code:** delete `OptionsSelling.tsx`, `AccountOptionsDetail`; `/` → Options
+4. ✅ **Dead code** (done 24 Oct): delete `OptionsSelling.tsx`, `AccountOptionsDetail`; `/` → Options
    Execution; rename the engine-preview nav item.
 5. **Legacy notifications + learning** (ask first): remove the page, the v2–v5 routes and
    services, and the RLHF weekly job.
@@ -209,3 +209,17 @@ What it had that Put Campaigns did not:
 - Old `#assignment-loss` links now land on Put Campaigns. The
   `/strategies/v6/assignment-loss` endpoint stays: the Options Execution card and
   Income read the puts figure from it.
+
+### Step 4, as built (24 Oct)
+
+- **The app now opens on Option Execution.** `/` redirects to `/strategies/options-selling`,
+  and the login lands there too.
+- **The sidebar no longer has "Notifications".** The V2–V5 page can still be
+  reached at `/notifications` until step 5 decides its fate.
+- **"Notifications V7 (previous)" is now "Engine preview"**, in the sidebar's More
+  group. The page title reads "Engine preview — V8 (live)" / "— V7 (previous)", and
+  Option Execution's link to it reads "Engine preview →".
+- **Deleted:** `pages/OptionsSelling.tsx` and `.module.css` (4,370 lines; not
+  routed) and `AccountOptionsDetail` with its data type in `Income.tsx` (~320 lines;
+  never rendered). The type-check of Income shows no new unused code, so nothing
+  else depended on it.
