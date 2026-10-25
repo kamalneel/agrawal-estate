@@ -147,8 +147,8 @@ up on the day of assignment, Covered Call Income's measure; only the layout chan
    remove the card.
 4. ✅ **Dead code** (done 24 Oct): delete `OptionsSelling.tsx`, `AccountOptionsDetail`; `/` → Options
    Execution; rename the engine-preview nav item.
-5. **Legacy notifications + learning** (ask first): remove the page, the v2–v5 routes and
-   services, and the RLHF weekly job.
+5. ✅ **Legacy notifications + learning** (done 25 Oct, Neel's OK): remove the page, the v2–v5
+   routes and services, and the RLHF jobs.
 
 ### Step 1, as built (23 Oct)
 
@@ -215,7 +215,7 @@ What it had that Put Campaigns did not:
 - **The app now opens on Option Execution.** `/` redirects to `/strategies/options-selling`,
   and the login lands there too.
 - **The sidebar no longer has "Notifications".** The V2–V5 page can still be
-  reached at `/notifications` until step 5 decides its fate.
+  reached at `/notifications` until step 5 decides its fate. (Step 5 removed it.)
 - **"Notifications V7 (previous)" is now "Engine preview"**, in the sidebar's More
   group. The page title reads "Engine preview — V8 (live)" / "— V7 (previous)", and
   Option Execution's link to it reads "Engine preview →".
@@ -223,3 +223,62 @@ What it had that Put Campaigns did not:
   routed) and `AccountOptionsDetail` with its data type in `Income.tsx` (~320 lines;
   never rendered). The type-check of Income shows no new unused code, so nothing
   else depended on it.
+
+### Step 5, as built (25 Oct)
+
+**What is gone:**
+- **Pages.** `pages/Notifications.tsx` (2,050 lines) and `pages/LearningDashboard.tsx`
+  (2,776 lines), with their CSS, plus `TechnicalAnalysisModal`, which only Notifications
+  opened. `/notifications` and `/strategies/learning` now redirect to Option Execution, so
+  old bookmarks still land somewhere.
+- **Routes in `strategies/router.py`** (27 routes; 7,348 → 5,701 lines):
+  - the V2–V5 "check now" and preview routes;
+  - notification history (`/notifications/history`, `/v2/current`, `/v2/history`,
+    `/{id}/status`, `/stats`);
+  - recommendation feedback (`/notifications/{id}/feedback`, `/feedback/insights`,
+    `/feedback/history`);
+  - all seven Telegram webhook/poll routes, which turned replies to recommendation messages
+    into feedback;
+  - `/debug/cache-status`, `/debug/test-mode` and `/v4-validation`.
+- **The learning router** (`learning_router.py`, 1,819 lines, every `/strategies/learning/*`
+  route).
+- **Scheduler jobs:** the three RLHF jobs (daily reconciliation 9 PM, outcome tracking 10 PM,
+  Saturday 9 AM learning summary). Also the unscheduled V2/V4/V5 scan methods (`check_and_notify`,
+  `check_and_notify_v2/_v4/_v5`, `_run_versioned_check`, the `trigger_*_check` helpers).
+  `scheduler.py` went from 1,631 to 461 lines.
+- **Service modules** that nothing live imports any more, found by an import graph from
+  `app.main` before and after:
+  - `feedback_service`, `recommendation_service`, `reconciliation_service`;
+  - `v2_notification_service`, `v4_notification_service`;
+  - `v4_position_evaluator`, `v4_sanitizer`, `v5_position_evaluator`;
+  - `weekly_recommendation_filter`, `shared/services/telegram_poller`,
+    `shared/services/telegram_webhook`.
+- **Scripts and tests that only exercised those modules:**
+  - `test_rlhf_system.py`, `tests/test_v4_baseline.py`, `test_v4_validation.py`,
+    `test_v5_refactor.py`;
+  - `scripts/reconcile_date_range.py`, `test_reconciliation_fix.py`, `poll_telegram.sh`
+    (never in cron/launchd), `test_scheduler.sh`.
+
+**What stays, deliberately:**
+- **Live scheduler jobs:** the V8 email after each sync (`notify_after_sync` →
+  `check_and_notify_v6`), the 8:15 PM portfolio snapshot, the 6 AM expense reminders, the
+  6:30 AM assignment tax-lot notices and the price-alert checker. Telegram *sending* is in
+  `shared/services/notifications.py`, untouched.
+- **All database tables.** `learning_models.py` and `RecommendationNotification` are kept
+  so the table definitions stay; nothing writes to them now.
+- **The V5 engine and `StrategyService`.** The Strategy Settings page (sidebar) and
+  `/options-selling/recommendations` still use them, so they are out of this step's
+  scope.
+- **`/schwab/token-status` and `/schwab/authenticate`.** Schwab is the backend's second
+  price source (playbook: market-data-source-order); these two routes are the only way
+  to log back in, and Notifications was their only button. The token on disk dates from
+  2026-06-22, so its 7-day refresh token lapsed on 29 Jun — Schwab has been off since.
+  Re-log in by POSTing `/api/v1/strategies/schwab/authenticate` if it is ever wanted.
+
+**Checks:**
+- The app imports cleanly. After `--reload`, the live backend serves action-queue,
+  put-campaigns, call-campaigns and assignment-loss (200), and the removed routes return 404.
+- Call Campaigns totals are unchanged (−$21,112.01).
+- pyflakes shows no new warnings in `router.py`, `scheduler.py` or `main.py`; it shows 6
+  fewer stale V5 imports.
+- `tsc` reports no errors involving App.tsx or a missing module; pytest still collects 190 tests.

@@ -51,10 +51,11 @@ add items here as they surface. Last updated: 2026-07-04.
 
 ## Structure
 
-13. **Split `strategies/router.py`** (6,956 lines, 85 endpoints) into
+13. **Split `strategies/router.py`** (5,701 lines after 2026-10-25's step 5) into
     per-domain routers.
 14. **Decompose god pages**: IndiaInvestments (4.6k), Income (3.7k),
-    LearningDashboard (2.8k). (OptionsSelling, 4.4k, deleted 2026-10-24.)
+    (OptionsSelling, 4.4k, deleted 2026-10-24; LearningDashboard, 2.8k, and
+    Notifications, 2.1k, deleted 2026-10-25 — docs/OPTIONS-UX-AUDIT.md step 5.)
 15. **Root-dir hygiene**: move one-off analyses (DEBUG_FORECAST.md,
     compare_agi.py, AVGO_STRATEGY_ANALYSIS.md, portfolio PDFs, RLHF_* docs,
     loose 1099 PDF) into docs/archive/ and data/; root should hold only

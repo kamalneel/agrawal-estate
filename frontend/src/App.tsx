@@ -21,10 +21,8 @@ import BuyBorrowDie from './pages/BuyBorrowDie'
 import Spending from './pages/Spending'
 import RetirementDeductions from './pages/RetirementDeductions'
 import StrategyManagement from './pages/StrategyManagement'
-import LearningDashboard from './pages/LearningDashboard'
 import IndiaStrategy from './pages/IndiaStrategy'
 import PlaidIntegration from './pages/PlaidIntegration'
-import Notifications from './pages/Notifications'
 import Airbnb from './pages/Airbnb'
 import CompanyDissolution from './pages/CompanyDissolution'
 import { DataIngestion } from './pages/DataIngestion'
@@ -42,9 +40,10 @@ export default function App() {
       >
         {/* The app opens on Option Execution, where the day is spent
             (docs/OPTIONS-UX-AUDIT.md, step 4, 2026-10-24). The V2–V5
-            Notifications page stays reachable by URL until step 5. */}
+            Notifications page and the Learning page were removed in step 5
+            (2026-10-25); their old URLs land there too. */}
         <Route path="/" element={<Navigate to="/strategies/options-selling" replace />} />
-        <Route path="/notifications" element={<Notifications />} />
+        <Route path="/notifications" element={<Navigate to="/strategies/options-selling" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/income" element={<Income />} />
         <Route path="/investments" element={<Investments />} />
@@ -68,7 +67,7 @@ export default function App() {
         <Route path="/strategies/spending" element={<Spending />} />
         <Route path="/strategies/retirement-deductions" element={<RetirementDeductions />} />
         <Route path="/strategies/management" element={<StrategyManagement />} />
-        <Route path="/strategies/learning" element={<LearningDashboard />} />
+        <Route path="/strategies/learning" element={<Navigate to="/strategies/options-selling" replace />} />
         <Route path="/strategies/india-investments" element={<IndiaStrategy />} />
         <Route path="/airbnb" element={<Airbnb />} />
         <Route path="/integrations/plaid" element={<PlaidIntegration />} />
