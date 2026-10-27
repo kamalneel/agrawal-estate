@@ -480,13 +480,15 @@ export function OptionsExecution() {
                   </span>
                 )}
                 {item.context?.rebalance && (
-                  <span
+                  <Link
+                    to="/investments#allocation-targets"
                     className={styles.rebalanceBadge}
-                    title={`Allocation-driven: ${item.context.rebalance.action} toward a ${item.context.rebalance.target_shares?.toLocaleString()}-share target. Set on the Investments page.`}
+                    onClick={e => e.stopPropagation()}
+                    title={`Allocation-driven: ${item.context.rebalance.action} toward a ${item.context.rebalance.target_shares?.toLocaleString()}-share target. Click for Allocation Targets (Investments, in the archive).`}
                   >
                     ⇄ Rebalancing
                     {item.context.rebalance.target_shares != null && ` → ${item.context.rebalance.target_shares.toLocaleString()}`}
-                  </span>
+                  </Link>
                 )}
                 {item.context?.rebalance?.funded === false && (
                   <span className={styles.notFundedBadge} title="No account can secure this put yet — it becomes placeable once the exit and trim proceeds land.">

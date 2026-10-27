@@ -65,6 +65,42 @@ Investments will agree by construction, not by coincidence.
 
 ## Hierarchy
 
+**Page order since 2026-10-26** (Neel: "I'm always scrolling out of it and
+going directly to put campaigns and call campaigns"): headline → Put
+Campaigns → Call Campaigns → Winners & Losers → Brokerage Accounts →
+a collapsed **archive** holding Allocation Targets, the Value vs. Capital
+Invested chart, vs. Buy & Hold and Strategy Deviations. The archive's data
+loads the first time it is opened. Option Execution's Rebalancing badge
+links to `/investments#allocation-targets`, which opens the archive there.
+
+**Headline, per window (2026-10-26).** ALL: unrealized gain on the shares
+held now (value − cost basis; put-assigned shares at their strike). Any
+other window: **price movement on the shares held** — shares at consecutive
+daily snapshots × the price change — as a % of their value at the window's
+start, with what else moved (value − invested) listed under it:
+
+    change in (value − invested) = price movement
+                                   − gains locked in by selling (realized)
+                                   − put assignments (strike above market)
+                                   − call assignments (upside given up)
+                                   + other (transfers in/out, accounts added,
+                                            buys priced between snapshots)
+
+`/investments/pure-performance` puts each term on every chart point, as the
+amount since the previous point, and the page sums the window. Before this,
+the headline WAS the change in value − invested, labelled "price movement
+only": 2026 read −$410K (−31.9%, against Jan 2 cost basis) while the shares
+held rose $229K (+9.6%). The rest was $105K of gains locked in by selling,
+$194K of put assignments and $341K of call upside given up.
+
+**Invested line (2026-10-26).** Shares that a closed lot no longer holds,
+with no recorded sale to account for them (37 lots, mostly 2020 buys in
+Neel's Brokerage), leave on the lot's last recorded sale, or never count if
+the lot has no sale. They had added $123K of phantom cost to every point
+since 2020, so the line ended at $1,739K against the $1,616K cost basis the
+ALL view reports. It now ends exactly there. Why the lot engine closed
+those lots without sale rows is still open.
+
 - **L1 — Pure investment headline + chart.** Aggregate current value −
   cost basis, $ and %, across all *open* lots. Chart: portfolio value
   over time (`investment_holdings_history`, ~daily since 2026-02-16)
@@ -80,8 +116,7 @@ Investments will agree by construction, not by coincidence.
 - **L1.5 — Allocation targets (added 2026-08-08).** Two tables, Physical
   AI and Infrastructure AI, showing current vs. target holding (%, $, and
   shares) per symbol with the gap and the option order that closes it.
-  Sits above Winners & Losers because the target is now the primary read:
-  W&L says how the bets did, this says what the book should be. See
+  Sat above Winners & Losers until 2026-10-26; now in the archive. See
   "Allocation targets & execution" below.
 - **L2 — Winners & Losers.** Every symbol aggregated across accounts
   (a bet is "AAPL," not "AAPL in three different accounts"), ranked by

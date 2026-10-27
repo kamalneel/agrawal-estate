@@ -491,6 +491,11 @@
   color: var(--color-info, #4A9EFF);
   background: var(--color-info-muted, rgba(74, 158, 255, 0.12));
   border: 1px solid transparent;
+  text-decoration: none;  /* a link to Allocation Targets since 2026-10-26 */
+}
+
+.rebalanceBadge:hover {
+  border-color: var(--color-info, #4A9EFF);
 }
 
 .notFundedBadge {

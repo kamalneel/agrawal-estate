@@ -658,14 +658,65 @@ def get_pure_performance(db: Session) -> Dict:
         FROM investment_holdings_history GROUP BY snapshot_date ORDER BY snapshot_date
     """)).fetchall()
     lot_rows = db.execute(_text(
-        "SELECT lot_id, purchase_date, quantity, cost_per_share FROM stock_lot")).fetchall()
+        "SELECT lot_id, purchase_date, quantity, quantity_remaining, cost_per_share FROM stock_lot")).fetchall()
     sale_rows = db.execute(_text(
-        "SELECT lot_id, sale_date, quantity_sold FROM stock_lot_sale ORDER BY lot_id, sale_date")).fetchall()
+        "SELECT lot_id, sale_date, quantity_sold, gain_loss FROM stock_lot_sale ORDER BY lot_id, sale_date")).fetchall()
     sales_by_lot: Dict[int, List[Tuple[date, float]]] = {}
     for r in sale_rows:
         sales_by_lot.setdefault(r.lot_id, []).append((r.sale_date, float(r.quantity_sold)))
 
+    # Shares a lot no longer holds that no recorded sale accounts for
+    # (2026-10-26: 37 lots, mostly 2020 buys in Neel's Brokerage — BABA,
+    # NOW, ZM, PTON, UBER — closed with no sale row). Counting them as still
+    # held put $123K of phantom cost into every point since 2020, so the
+    # line ended above the cost basis the headline's ALL view reports. They
+    # leave on the lot's last recorded sale; with no sale at all, they are
+    # never counted — the sale predates the history this chart covers.
+    unrecorded_exit: Dict[int, Tuple[date, float]] = {}
+    for lr in lot_rows:
+        sales = sales_by_lot.get(lr.lot_id, [])
+        gone = float(lr.quantity) - sum(q for _, q in sales) - float(lr.quantity_remaining or 0)
+        if gone > 1e-6:
+            unrecorded_exit[lr.lot_id] = (max((sd for sd, _ in sales), default=lr.purchase_date), gone)
+
+    # What moved (value − invested) between consecutive points, so any
+    # window on the page can be explained, not just shown (Neel, 2026-10-26:
+    # 2026 read −$410K "price movement only" while the shares held rose
+    # $229K). Per point, since the previous one:
+    #   price       — shares held at both snapshots × the price change
+    #   realized    — gains locked in by selling (they leave value − invested
+    #                 without being lost)
+    #   put_loss    — put assignments: shares arrive at the strike, above market
+    #   call_upside — call assignments: shares leave at the strike, below market
+    # Whatever these do not explain (shares bought mid-interval, transfers)
+    # is the page's "other" line, so the four always add up to the change.
+    from app.modules.strategies.assignment_loss_service import get_assignment_loss
+    held: Dict[date, Dict[Tuple[str, str], Tuple[float, float]]] = {}
+    for r in db.execute(_text("""
+        SELECT snapshot_date, account_id, symbol, quantity, market_value
+        FROM investment_holdings_history WHERE quantity > 0
+    """)):
+        held.setdefault(r.snapshot_date, {})[(r.account_id, r.symbol)] = (float(r.quantity), float(r.market_value or 0))
+    realized_by_day: Dict[date, float] = {}
+    for r in sale_rows:
+        realized_by_day[r.sale_date] = realized_by_day.get(r.sale_date, 0.0) + float(r.gain_loss or 0)
+    put_by_day: Dict[date, float] = {}
+    call_by_day: Dict[date, float] = {}
+    for e in get_assignment_loss(db)["events"]:
+        px = e["price_at_assignment"]
+        if px is None:
+            continue
+        day = date.fromisoformat(e["date"])
+        if e["option_type"] == "put":
+            put_by_day[day] = put_by_day.get(day, 0.0) + max(e["strike"] - px, 0.0) * e["shares"]
+        else:
+            call_by_day[day] = call_by_day.get(day, 0.0) + max(px - e["strike"], 0.0) * e["shares"]
+
+    def between(by_day: Dict[date, float], after: Optional[date], upto: date) -> float:
+        return sum(v for d, v in by_day.items() if (after is None or d > after) and d <= upto)
+
     chart = []
+    prev_d: Optional[date] = None
     for hr in hist_rows:
         d = hr.snapshot_date
         invested = 0.0
@@ -673,9 +724,27 @@ def get_pure_performance(db: Session) -> Dict:
             if lr.purchase_date > d:
                 continue
             sold = sum(q for sd, q in sales_by_lot.get(lr.lot_id, []) if sd <= d)
+            exit_d, gone = unrecorded_exit.get(lr.lot_id, (None, 0.0))
+            if exit_d is not None and exit_d <= d:
+                sold += gone
             remaining = max(float(lr.quantity) - sold, 0.0)
             invested += remaining * float(lr.cost_per_share)
-        chart.append({"date": str(d), "value": round(float(hr.value or 0), 2), "invested": round(invested, 2)})
+        point = {"date": str(d), "value": round(float(hr.value or 0), 2), "invested": round(invested, 2)}
+        if prev_d is not None:
+            price = 0.0
+            now = held.get(d, {})
+            for k, (q0, v0) in held.get(prev_d, {}).items():
+                if k in now and q0 > 0:
+                    q1, v1 = now[k]
+                    price += q0 * (v1 / q1 - v0 / q0)
+            point.update({
+                "price": round(price, 2),
+                "realized": round(between(realized_by_day, prev_d, d), 2),
+                "put_loss": round(between(put_by_day, prev_d, d), 2),
+                "call_upside": round(between(call_by_day, prev_d, d), 2),
+            })
+        chart.append(point)
+        prev_d = d
 
     overall_gain = priced_value - priced_cost_basis
     return {

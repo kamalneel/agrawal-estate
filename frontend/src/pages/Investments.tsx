@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { TrendingUp, TrendingDown, ArrowLeft, User, Heart, Briefcase, RefreshCw, AlertCircle, ChevronRight } from 'lucide-react'
 import { getAuthHeaders } from '../contexts/AuthContext'
@@ -402,7 +402,12 @@ interface PurePerformance {
   gain_pct: number | null
   unpriced_count: number
   unpriced_cost_basis: number
-  chart: { date: string; value: number; invested: number }[]
+  /** price / realized / put_loss / call_upside: what moved (value −
+   *  invested) since the previous point — absent on the first point. */
+  chart: {
+    date: string; value: number; invested: number
+    price?: number; realized?: number; put_loss?: number; call_upside?: number
+  }[]
   open_positions: PurePosition[]
   closed_positions: PurePosition[]
 }
@@ -722,9 +727,29 @@ export function Investments() {
       .then(d => d && setSnapshotLatest(d))
       .catch(() => {})
     fetchPurePerformance()
+  }, [])
+
+  // The archive's data loads the first time it is opened, not on every
+  // visit — three fetches for sections that are not a weekly read.
+  const archiveLoaded = useRef(false)
+  useEffect(() => {
+    if (!showArchive || archiveLoaded.current) return
+    archiveLoaded.current = true
     fetchPolicyDeviations()
     fetchAllocationPlan()
+    fetchGhostCurve()
+  }, [showArchive])
+
+  // Option Execution's Rebalancing badge links to #allocation-targets,
+  // which lives in the archive: open it, then scroll once it renders.
+  useEffect(() => {
+    if (window.location.hash === '#allocation-targets') setShowArchive(true)
   }, [])
+  useEffect(() => {
+    if (allocation && window.location.hash === '#allocation-targets') {
+      document.getElementById('allocation-targets')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [allocation])
 
   const fetchAllocationPlan = () => {
     fetch(`${API_BASE}/investments/allocation-plan`, { headers: getAuthHeaders() })
@@ -747,12 +772,12 @@ export function Investments() {
       .catch(() => {})
   }
 
-  useEffect(() => {
+  const fetchGhostCurve = () => {
     fetch(`${API_BASE}/investments/ghost-curve`, { headers: getAuthHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(d => d?.curve?.length && setGhost(d))
       .catch(() => {})
-  }, [])
+  }
 
   const openGhostDetail = (anchor: string) => {
     setGhostDetailLoading(true)
@@ -802,11 +827,14 @@ export function Investments() {
     [purePerf, pureChartPeriod],
   )
 
-  // Headline follows the chart's period selector: ALL shows the exact
-  // since-inception figures from the API; any other window derives
-  // "gain during this period" from (value − invested) at the window's
-  // start vs. now — isolating price-driven return from any new capital
-  // added during the window, not just re-showing the all-time number.
+  // Headline follows the period selector. ALL shows the exact all-time
+  // figures from the API: unrealized gain on the shares held now. Any
+  // other window headlines the price movement on the shares held during
+  // it, and lists what else moved (value − invested), so the lines add up.
+  // Until 2026-10-26 the headline WAS that change, labelled "price movement
+  // only" — 2026 read −$410K while the shares held rose $229K; the rest was
+  // gains locked in by selling and assignments both ways (Neel: "Is this
+  // accurate?").
   const pureHeadline = useMemo(() => {
     if (!purePerf) return null
     if (!pureChartPeriod || filteredPureChart.length < 2) {
@@ -818,13 +846,24 @@ export function Investments() {
     }
     const start = filteredPureChart[0]
     const end = filteredPureChart[filteredPureChart.length - 1]
-    const gainStart = start.value - start.invested
-    const gainEnd = end.value - end.invested
-    const periodGain = gainEnd - gainStart
+    // each point carries what happened since the one before, so the
+    // window's own movement is every point after its start
+    const inWindow = filteredPureChart.slice(1)
+    const sum = (k: 'price' | 'realized' | 'put_loss' | 'call_upside') =>
+      inWindow.reduce((t, c) => t + (c[k] ?? 0), 0)
+    const price = sum('price')
+    const realized = sum('realized')
+    const putLoss = sum('put_loss')
+    const callUpside = sum('call_upside')
+    const change = (end.value - end.invested) - (start.value - start.invested)
     return {
-      gain: periodGain,
-      gain_pct: start.invested ? (periodGain / start.invested) * 100 : null,
-      value: end.value, cost_basis: end.invested,
+      gain: price,
+      // of what the shares were worth at the window's start — not of their
+      // cost basis, which understated the base and overstated the %
+      gain_pct: start.value ? (price / start.value) * 100 : null,
+      value: end.value, cost_basis: end.invested, startValue: start.value,
+      breakdown: { price, realized, putLoss, callUpside, change,
+                   other: change - (price - realized - putLoss - callUpside) },
       scoped: true as const, startDate: start.date, endDate: end.date,
     }
   }, [purePerf, pureChartPeriod, filteredPureChart])
@@ -1093,16 +1132,44 @@ export function Investments() {
             </div>
             <div className={styles.pureHeroSub}>
               {pureHeadline.scoped ? (
-                <>{formatCurrency(pureHeadline.value)} value vs. {formatCurrency(pureHeadline.cost_basis)} invested, both as of the window end
-                  — price movement only during this window, no options premium or dividends counted in.</>
+                <>Price movement on the shares held during this window — the % is of the {formatCurrency(pureHeadline.startValue)} they
+                  were worth at its start. No options premium or dividends counted in.</>
               ) : (
-                <>{formatCurrency(pureHeadline.value)} value vs. {formatCurrency(pureHeadline.cost_basis)} invested
-                  — the stocks themselves, no options premium or dividends counted in.</>
+                <>{formatCurrency(pureHeadline.value)} value vs. {formatCurrency(pureHeadline.cost_basis)} cost basis on the shares held
+                  now — unrealized gain. Put-assigned shares count at their strike; no options premium or dividends counted in.</>
               )}
-              {purePerf.unpriced_count > 0 && (
+              {!pureHeadline.scoped && purePerf.unpriced_count > 0 && (
                 <span className={styles.pureHeroFlag}> ({purePerf.unpriced_count} position{purePerf.unpriced_count === 1 ? '' : 's'} unpriced, {formatCurrency(purePerf.unpriced_cost_basis)} cost basis excluded above)</span>
               )}
             </div>
+            {pureHeadline.scoped && (() => {
+              // What moved value − invested in the window. Each line is its
+              // effect on that gap, so the column adds up to the last row.
+              const b = pureHeadline.breakdown
+              const signed = (n: number) => `${n >= 0 ? '+' : '−'}${formatCurrency(Math.abs(n))}`
+              const rows: [string, number, string][] = [
+                ['Price movement on shares held', b.price, 'Shares held at consecutive daily snapshots × the price change between them.'],
+                ['Gains locked in by selling', -b.realized, 'Realized on shares sold. Selling moves a gain out of value − invested; it is booked, not lost.'],
+                ['Put assignments', -b.putLoss, 'Shares put to you at the strike, above the market that day — the same figure as Put Campaigns.'],
+                ['Call assignments — upside given up', -b.callUpside, 'Shares called away at the strike, below the market that day.'],
+                ['Other', b.other, 'Shares that arrived or left without a trade here (transfers, accounts added), and buys or assignments priced between snapshots.'],
+              ]
+              return (
+                <div className={styles.pureBreakdown}>
+                  {rows.map(([label, v, tip]) => (
+                    <div key={label} className={styles.pureBreakdownRow} title={tip}>
+                      <span>{label}</span>
+                      <span style={{ color: Math.abs(v) < 0.5 ? undefined : v > 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>{signed(v)}</span>
+                    </div>
+                  ))}
+                  <div className={clsx(styles.pureBreakdownRow, styles.pureBreakdownTotal)}
+                       title={`Value − invested: ${formatCurrency(pureHeadline.startValue - (filteredPureChart[0]?.invested ?? 0))} at the start, ${formatCurrency(pureHeadline.value - pureHeadline.cost_basis)} at the end.`}>
+                    <span>Change in value − invested</span>
+                    <span>{signed(b.change)}</span>
+                  </div>
+                </div>
+              )
+            })()}
           </div>
           <div className={styles.pureHeroControls}>
             <PeriodSelector
@@ -1116,278 +1183,6 @@ export function Investments() {
           </div>
         </section>
       )}
-
-      {/* L1.5 — Allocation targets. Sits above Winners & Losers because the
-          target is now the primary read: W&L says how the bets did, this
-          says what the book should become and what order closes the gap.
-          Spec: "Allocation targets & execution". */}
-      {allocation && allocation.buckets.length > 0 && (() => {
-        const pct = (v: number | null) => v == null ? '—' : `${v.toFixed(1)}%`
-        const actionChip = (r: AllocRow) => {
-          if (r.action === 'hold' || r.action === 'done') return null
-          const cls = r.action === 'buy' ? styles.allocBuy
-            : r.action === 'trim' ? styles.allocTrim : styles.allocExit
-          return <span className={clsx(styles.allocChip, cls)}>{r.action}</span>
-        }
-        // The order IS the instruction — "sell 10 puts @ $216.53" is what
-        // gets placed. Roll vs sell matters: existing Tier-1 calls occupy
-        // the shares but are too far OTM to ever produce the exit.
-        // Which account to place it in. For trims this is the tax decision —
-        // the same 600 NVDA shares realise $143K of gain from Jaya's
-        // Brokerage (basis $18.93) and nothing from Jaya's IRA (basis $215).
-        const routingCell = (r: AllocRow) => {
-          const rt = r.routing
-          if (!rt) return null
-          if (rt.legs?.length) {
-            const g = rt.realized_gain ?? 0
-            return (
-              <span className={styles.allocRouting}>
-                in {rt.legs.map(l => (
-                  <span key={l.account_id}>
-                    <strong>{acctLabel(l.account_id)}</strong> ({l.contracts}c
-                    {l.sheltered && <span className={styles.allocShelter} title="Sheltered — sale is not a taxable event">tax-free</span>})
-                    {' '}
-                  </span>
-                ))}
-                {/* The exact lots the sale delivers, highest basis first.
-                    Without this the recommendation is un-checkable: "sell 4
-                    TSLA calls" reads identically whether it realizes a $32K
-                    loss or a $97K gain — the difference is only which lots go. */}
-                {rt.legs.some(l => l.lots?.length) && (
-                  <span className={styles.allocLots}>
-                    {/* index in the key: same-day same-price lots are common
-                        (IBIT has several), so date+basis is not unique */}
-                    {rt.legs.flatMap(l => (l.lots ?? []).map((lot, i) => (
-                      <span key={`${l.account_id}-${i}-${lot.purchase_date}`} className={styles.allocLotLine}>
-                        {acctLabel(l.account_id)} · {lot.shares.toLocaleString()} sh @ ${lot.cost_per_share.toFixed(2)}
-                        {' '}({new Date(lot.purchase_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })})
-                        <span style={{ color: lot.realized_gain >= 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
-                          {' '}{lot.realized_gain >= 0 ? '+' : '−'}{formatCurrency(Math.abs(lot.realized_gain))}
-                        </span>
-                      </span>
-                    )))}
-                  </span>
-                )}
-                {rt.realized_gain != null && rt.legs.some(l => !l.sheltered) && (
-                  <span className={g <= 0 ? styles.allocSaves : styles.allocUnfunded}>
-                    realizes {g <= 0 ? 'a LOSS of ' : 'a gain of '}{formatCurrency(Math.abs(g))}
-                    {(rt.gain_avoided_vs_worst ?? 0) > 500 && ` · ${formatCurrency(rt.gain_avoided_vs_worst!)} better than FIFO`}
-                  </span>
-                )}
-                {rt.legs.every(l => l.sheltered) && (rt.gain_avoided_vs_worst ?? 0) > 500 && (
-                  <span className={styles.allocSaves}>tax-free — avoids {formatCurrency(rt.gain_avoided_vs_worst!)} of gain vs. the taxable account</span>
-                )}
-              </span>
-            )
-          }
-          if (rt.buy_account) {
-            return (
-              <span className={styles.allocRouting}>
-                in <strong>{acctLabel(rt.buy_account)}</strong>
-                {rt.consolidates && <span className={styles.allocShelter} title="Already holds this symbol — keeps the position in one account">consolidates</span>}
-                {rt.funded === false && (
-                  <span className={styles.allocUnfunded}>
-                    can’t secure yet — short {formatCurrency(rt.shortfall ?? 0)}
-                  </span>
-                )}
-              </span>
-            )
-          }
-          return null
-        }
-        const orderCell = (r: AllocRow) => {
-          if (!r.order) {
-            return (
-              <>
-                <span className={styles.allocGuidance}>{r.guidance ?? '—'}</span>
-                {routingCell(r)}
-              </>
-            )
-          }
-          const o = r.order
-          return (
-            <>
-              <span className={styles.allocOrder}>
-                {o.instruction === 'roll' ? 'roll' : 'sell'} {o.contracts} {o.option_type}
-                {o.contracts === 1 ? '' : 's'} → ATM ${o.strike.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </span>
-              <span className={styles.allocOrderMeta}>
-                est {formatCurrency(o.est_premium)}/wk · exp {new Date(o.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                {o.instruction === 'roll' && ' · existing calls too far OTM to assign'}
-                {r.residual_shares > 0 && ` · +${r.residual_shares} sh odd lot`}
-              </span>
-              {routingCell(r)}
-            </>
-          )
-        }
-        const allocRow = (r: AllocRow) => (
-          <tr key={r.symbol} className={styles.betRow}>
-            <td className={styles.betSym}>
-              {r.symbol}
-              {r.price_source === 'reference' && (
-                <span className={styles.allocRefPx} title={`Not held — no quote source. Reference price from data/allocation_targets.json, ${r.price_as_of}`}>ref</span>
-              )}
-            </td>
-            <td className={styles.num}>{pct(r.current_pct)}</td>
-            <td className={styles.num}>{formatCurrency(r.current_value)}</td>
-            <td className={styles.num}>{sh(r.current_shares)}</td>
-            <td className={styles.num}>{pct(r.target_pct)}</td>
-            <td className={styles.num}>{r.target_value != null ? formatCurrency(r.target_value) : '—'}</td>
-            <td className={styles.num}>{sh(r.target_shares)}</td>
-            <td className={styles.num} style={{ color: Math.abs(r.gap_shares) < 1 ? undefined : r.gap_shares > 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-              {Math.abs(r.gap_shares) < 1 ? '—' : `${r.gap_shares > 0 ? '+' : ''}${sh(Math.round(r.gap_shares))}`}
-            </td>
-            <td className={styles.allocActionCell}>{actionChip(r)}{orderCell(r)}</td>
-          </tr>
-        )
-        const header = (
-          <tr>
-            <th>Symbol</th>
-            <th className={styles.num}>Now %</th><th className={styles.num}>Now $</th><th className={styles.num}>Now sh</th>
-            <th className={styles.num}>Target %</th><th className={styles.num}>Target $</th><th className={styles.num}>Target sh</th>
-            <th className={styles.num}>Gap sh</th>
-            <th>Order</th>
-          </tr>
-        )
-        const f = allocation.feasibility
-        return (
-          <section className={styles.betsSection}>
-            <div className={styles.allocHeader}>
-              <h2>Allocation Targets</h2>
-              <span className={styles.allocSub}>
-                base {formatCurrency(allocation.base_value)} · policy {allocation.policy_as_of}
-              </span>
-            </div>
-
-            {/* Progress is counted in SHARES. At ATM roughly half the
-                contracts expire unassigned, so premium can climb for months
-                while the position never moves — showing dollars first would
-                make a stalled plan look like a working one. */}
-            {(() => {
-              const p = allocation.progression
-              return (
-                <div className={styles.allocProgress}>
-                  <div className={styles.allocProgressBarWrap}>
-                    <div className={styles.allocProgressBar} style={{ width: `${Math.min(100, p.gap_closed_pct)}%` }} />
-                  </div>
-                  <div className={styles.allocProgressStats}>
-                    <span className={styles.allocProgressMain}>{p.gap_closed_pct}% of the plan executed</span>
-                    <span className={styles.allocProgressStat}>{p.shares_moved.toLocaleString()} of {p.shares_needed.toLocaleString()} shares moved</span>
-                    <span className={styles.allocProgressStat}>premium since {p.since}: <strong>{formatCurrency(p.premium_since)}</strong></span>
-                    {p.measurable && p.shares_per_week != null && (
-                      <span className={styles.allocProgressStat}>{p.shares_per_week.toLocaleString()} sh/wk</span>
-                    )}
-                    {p.measurable && p.weeks_to_target != null && (
-                      <span className={styles.allocProgressStat}>≈{p.weeks_to_target} weeks to target</span>
-                    )}
-                  </div>
-                  <p className={styles.allocProgressNote}>{p.early_note ?? p.note}</p>
-                </div>
-              )
-            })()}
-
-            {allocation.buckets.map(b => (
-              <div key={b.key} className={styles.allocBucket}>
-                <h3 className={styles.devSubhead}>
-                  {b.label}
-                  <span className={styles.allocBucketPct}>
-                    now {pct(b.current_pct)} → target {b.target_pct}%
-                    {b.target_computed_pct != null && ` (these share counts = ${b.target_computed_pct.toFixed(1)}%)`}
-                    {b.shares_needed > 0 && ` · ${b.gap_closed_pct}% executed, ${b.shares_moved.toLocaleString()}/${b.shares_needed.toLocaleString()} sh`}
-                  </span>
-                </h3>
-                {b.note && <p className={styles.allocNote}>{b.note}</p>}
-                <div className={styles.betsTableWrap}>
-                  <table className={styles.betsTable}>
-                    <thead>{header}</thead>
-                    <tbody>{b.rows.map(allocRow)}</tbody>
-                  </table>
-                </div>
-              </div>
-            ))}
-
-            {allocation.exit_rows.length > 0 && (
-              <div className={styles.allocBucket}>
-                <h3 className={styles.devSubhead}>
-                  Off-thesis — exit
-                  <span className={styles.allocBucketPct}>
-                    {formatCurrency(allocation.exit_rows.reduce((s, r) => s + r.current_value, 0))} to recycle
-                  </span>
-                </h3>
-                <div className={styles.betsTableWrap}>
-                  <table className={styles.betsTable}>
-                    <thead>{header}</thead>
-                    <tbody>{allocation.exit_rows.map(allocRow)}</tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Feasibility: ATM puts tie up the full strike notional, so the
-                buy program is gated on the sells clearing first. Saying this
-                beats listing orders that can't be placed. */}
-            <p className={styles.allocFeasibility}>
-              Put collateral needed <strong>{formatCurrency(f.put_collateral_needed)}</strong>
-              {' · '}deployable cash <strong style={{ color: f.covered_by_cash_alone ? undefined : 'var(--color-negative, #FF5A5A)' }}>{formatCurrency(f.deployable_cash)}</strong>
-              {' '}<span className={styles.allocOrderMeta}>(of {formatCurrency(f.total_cash ?? 0)} total — the rest is collateral already securing open puts, or margin-drawn)</span>
-              {' · '}exit + trim proceeds <strong>{formatCurrency(f.exit_and_trim_proceeds)}</strong>
-              <br />
-              Largest single put you can secure today: <strong>{formatCurrency(f.largest_single_put_affordable)}</strong>
-              {f.unaffordable_today.length > 0 && (
-                <> — <strong style={{ color: 'var(--color-negative, #FF5A5A)' }}>{f.unaffordable_today.join(', ')}</strong> cannot be sold as cash-secured puts until the sells clear.</>
-              )}
-              <br />{f.note}
-            </p>
-            <p className={styles.allocDisclaimer}>
-              {allocation.premium_disclaimer}
-              {allocation.reference_priced_symbols.length > 0 && (
-                <> Reference-priced (not held, no live quote): {allocation.reference_priced_symbols.join(', ')}.</>
-              )}
-              {' '}Placement, per-account sizing and this week's RSI gate stay on{' '}
-              <Link to="/strategies/options-selling" className={styles.allocLink}>Options Execution</Link>.
-            </p>
-          </section>
-        )
-      })()}
-
-      {purePerf && purePerf.chart.length > 1 && (
-        <ChartWrapper
-          title="Value vs. Capital Invested"
-          isEmpty={filteredPureChart.length === 0}
-        >
-          <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={filteredPureChart} margin={CHART_MARGINS}>
-              <defs>
-                <linearGradient id="pureValueGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.25} />
-                  <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0.02} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey="date" {...X_AXIS_PROPS}
-                tickFormatter={(d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
-              <YAxis {...Y_AXIS_PROPS} tickFormatter={(v) => formatCurrencyShort(v)} />
-              <Tooltip
-                labelFormatter={(d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                formatter={(v: number, name: string) => [formatCurrency(v), name === 'value' ? 'Value' : 'Invested']}
-              />
-              <Area type="monotone" dataKey="value" name="value" stroke={CHART_GREEN} strokeWidth={2} fill="url(#pureValueGradient)" />
-              <Area type="monotone" dataKey="invested" name="invested" stroke="#C49A3C" strokeWidth={1.5} strokeDasharray="5 3" fill="none" dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-          <div style={{ display: 'flex', gap: 20, marginTop: 10, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ display: 'inline-block', width: 20, borderTop: `2px solid ${CHART_GREEN}` }} />
-              Value
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ display: 'inline-block', width: 20, borderTop: '2px dashed #C49A3C' }} />
-              Capital Invested — the gap is the pure gain
-            </span>
-          </div>
-        </ChartWrapper>
-      )}
-
 
       {/* Put Campaigns — every assigned put followed through to today
           plus the premium collected on the way (Neel, 2026-10-22). Also
@@ -1403,119 +1198,6 @@ export function Investments() {
           Call Income (Neel, 2026-10-23); laid out like Put Campaigns
           2026-10-24 (docs/OPTIONS-UX-AUDIT.md, step 2). */}
       <CallCampaigns />
-
-      {/* vs. Buy & Hold — ghost freeze-curve (spec: "vs. Buy & Hold").
-          Each point: "if I had frozen the options game on this date
-          (bought back open options, held shares+cash), what would that be
-          worth today vs. what I actually have?" Above zero = freezing
-          would have won. Click a point to drill. */}
-      {ghost && (() => {
-        const data = ghost.curve.map(c => ({ ...c, label: new Date(c.anchor + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }))
-        const assignByDate = new Map<string, string[]>()
-        ghost.assignments.forEach(a => {
-          const cur = assignByDate.get(a.date) ?? []
-          if (!cur.includes(a.symbol)) cur.push(a.symbol)
-          assignByDate.set(a.date, cur)
-        })
-        const markers = data.filter(d => assignByDate.has(d.anchor))
-        const latest = data[data.length - 1]
-        return (
-          <section className={styles.betsSection}>
-            <h2>vs. Buy &amp; Hold</h2>
-            <p className={styles.ghostSub}>
-              Each point: freeze the options game that day (buy back open options, hold shares + cash) — what would it be worth today
-              vs. actual {formatCurrency(ghost.actual_today)}? Above zero: freezing would have won. ▲ = assignment days. Click to drill.
-            </p>
-            <div className={styles.ghostStatRow}>
-              <span>Latest anchor gap: <strong style={{ color: (latest?.delta ?? 0) > 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
-                {latest && latest.delta > 0 ? `buy & hold +${formatCurrency(latest.delta)}` : `options game +${formatCurrency(Math.abs(latest?.delta ?? 0))}`}</strong></span>
-              <span>Premium collected in window: <strong>{formatCurrency(ghost.premium_collected_window)}</strong></span>
-              <span className={styles.ghostCaveat}>{ghost.anchors_limited_reason}</span>
-            </div>
-            <div style={{ cursor: 'pointer' }}>
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={data} margin={CHART_MARGINS}
-                onClick={(e: any) => { const a = e?.activePayload?.[0]?.payload?.anchor; if (a) openGhostDetail(a) }}>
-                <CartesianGrid {...GRID_PROPS} />
-                <XAxis dataKey="label" {...X_AXIS_PROPS} />
-                <YAxis {...Y_AXIS_PROPS} tickFormatter={(v: number) => formatCurrencyShort(v)} />
-                <Tooltip
-                  formatter={(v: number) => [
-                    `${v > 0 ? 'buy & hold ahead by ' : 'options game ahead by '}${formatCurrency(Math.abs(v))}`,
-                    'freeze here vs. actual']}
-                  labelFormatter={(l: string, p: any) => {
-                    const anchor = p?.[0]?.payload?.anchor
-                    const syms = anchor ? assignByDate.get(anchor) : undefined
-                    return `Freeze on ${l}${syms ? ` · assignments: ${syms.join(', ')}` : ''} — click to drill`
-                  }}
-                />
-                <ReferenceLine y={0} stroke="var(--color-border)" strokeDasharray="4 4" />
-                <Area type="monotone" dataKey="delta" stroke="#C49A3C" fill="#C49A3C22" strokeWidth={2}
-                  activeDot={{ r: 6, cursor: 'pointer',
-                               onClick: (_: any, dot: any) => { const a = dot?.payload?.anchor; if (a) openGhostDetail(a) } }} />
-                {markers.map(m => (
-                  <ReferenceDot key={m.anchor} x={m.label} y={m.delta} r={4} fill="#C49A3C" stroke="var(--color-bg-primary)" />
-                ))}
-              </AreaChart>
-            </ResponsiveContainer>
-            </div>
-            {ghostDetailLoading && <p className={styles.ghostSub}>Loading drill-down…</p>}
-            {ghostDetail && (
-              <div className={styles.ghostModalOverlay} onClick={() => setGhostDetail(null)}>
-                <div className={styles.ghostModal} onClick={e => e.stopPropagation()}>
-                  <div className={styles.ghostModalHead}>
-                    <h3>Frozen on {new Date(ghostDetail.anchor + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} vs. actual</h3>
-                    <button onClick={() => setGhostDetail(null)}>✕</button>
-                  </div>
-                  <ResponsiveContainer width="100%" height={220}>
-                    {/* both series merged onto one sorted date grid — two
-                        Lines with separate data arrays make recharts append
-                        ghost-only dates AFTER the actual dates (Jun 30
-                        rendered right of Jul 16, gold line zigzagging back
-                        through the chart; Neel's screenshot 2026-07-18) */}
-                    <LineChart margin={CHART_MARGINS} data={(() => {
-                      const byDate = new Map<string, { date: string; actual?: number; ghostV?: number }>()
-                      ghostDetail.actual_series.forEach(p => byDate.set(p.date, { ...(byDate.get(p.date) ?? { date: p.date }), actual: p.value }))
-                      ghostDetail.ghost_series.forEach(p => byDate.set(p.date, { ...(byDate.get(p.date) ?? { date: p.date }), ghostV: p.value }))
-                      return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
-                    })()}>
-                      <CartesianGrid {...GRID_PROPS} />
-                      <XAxis dataKey="date" {...X_AXIS_PROPS} />
-                      <YAxis {...Y_AXIS_PROPS} domain={['auto', 'auto']} tickFormatter={(v: number) => formatCurrencyShort(v)} />
-                      <Tooltip formatter={(v: number, name: string) => [formatCurrency(v), name]} />
-                      <Line dataKey="actual" name="Actual" type="monotone" stroke={CHART_GREEN} dot={false} strokeWidth={2} connectNulls />
-                      <Line dataKey="ghostV" name="Ghost (frozen)" type="monotone" stroke="#C49A3C" dot={false} strokeWidth={2} strokeDasharray="6 4" connectNulls />
-                    </LineChart>
-                  </ResponsiveContainer>
-                  <p className={styles.ghostSub}>Options premium collected since this date: <strong>{formatCurrency(ghostDetail.premium_since)}</strong></p>
-                  {ghostDetail.divergence.length > 0 && (
-                    <div className={styles.betsTableWrap}>
-                      <table className={styles.betsTable}>
-                        <thead>
-                          <tr><th>Symbol</th><th className={styles.num}>Ghost holds</th><th className={styles.num}>You hold</th><th className={styles.num}>Δ shares</th><th className={styles.num}>Δ value today</th></tr>
-                        </thead>
-                        <tbody>
-                          {ghostDetail.divergence.map(r => (
-                            <tr key={r.symbol} className={styles.betRow}>
-                              <td className={styles.betSym}>{r.symbol}</td>
-                              <td className={styles.num}>{r.ghost_shares.toLocaleString()}</td>
-                              <td className={styles.num}>{r.actual_shares.toLocaleString()}</td>
-                              <td className={styles.num}>{r.delta_shares > 0 ? '+' : ''}{r.delta_shares.toLocaleString()}</td>
-                              <td className={styles.num} style={{ color: r.delta_value >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
-                                {r.delta_value >= 0 ? '+' : '-'}{formatCurrency(Math.abs(r.delta_value))}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </section>
-        )
-      })()}
 
       {/* L2 — winners & losers: which bets are working, ranked by return.
           Positions under $5K fold into one expandable line — space follows
@@ -1838,17 +1520,406 @@ export function Investments() {
         </div>
       </section>
 
-      {/* Archive — Strategy Deviations. Demoted from above Winners &
-          Losers 2026-08-08 (Neel: "this is not helping me in any way").
-          Kept, not deleted: the core-exit ledger and idle-inventory facts
-          still inform the delta rules on Options Execution, they just are
-          not a weekly read anymore. Collapsed by default. */}
-      {deviations && (
-        <div className={styles.closedBetsToggle}>
-          <button onClick={() => setShowArchive(v => !v)}>
-            {showArchive ? 'hide' : 'show'} archive — Strategy Deviations
-          </button>
-          {showArchive && (<>
+      {/* Archive — what is not a weekly read. Neel, 2026-10-26: "I'm always
+          scrolling out of it and going directly to put campaigns and call
+          campaigns." Allocation Targets, Value vs. Capital Invested and
+          vs. Buy & Hold joined Strategy Deviations (archived 2026-08-08,
+          "this is not helping me in any way") here. Collapsed by default;
+          their data loads when it is opened. Allocation Targets is kept
+          because Option Execution's Rebalancing badge links to it
+          (#allocation-targets opens the archive there); Strategy
+          Deviations because its core-exit ledger and idle-inventory facts
+          still inform the delta rules on Options Execution. */}
+      <div className={styles.closedBetsToggle}>
+        <button onClick={() => setShowArchive(v => !v)}>
+          {showArchive ? 'hide' : 'show'} archive — Allocation Targets · Value vs. Capital Invested · vs. Buy &amp; Hold · Strategy Deviations
+        </button>
+        {showArchive && (<>
+      {/* Allocation targets — what the book should become and what order
+          closes the gap. Was the page's second section (above Winners &
+          Losers) until 2026-10-26; now in the archive. Spec: "Allocation
+          targets & execution". */}
+      {allocation && allocation.buckets.length > 0 && (() => {
+        const pct = (v: number | null) => v == null ? '—' : `${v.toFixed(1)}%`
+        const actionChip = (r: AllocRow) => {
+          if (r.action === 'hold' || r.action === 'done') return null
+          const cls = r.action === 'buy' ? styles.allocBuy
+            : r.action === 'trim' ? styles.allocTrim : styles.allocExit
+          return <span className={clsx(styles.allocChip, cls)}>{r.action}</span>
+        }
+        // The order IS the instruction — "sell 10 puts @ $216.53" is what
+        // gets placed. Roll vs sell matters: existing Tier-1 calls occupy
+        // the shares but are too far OTM to ever produce the exit.
+        // Which account to place it in. For trims this is the tax decision —
+        // the same 600 NVDA shares realise $143K of gain from Jaya's
+        // Brokerage (basis $18.93) and nothing from Jaya's IRA (basis $215).
+        const routingCell = (r: AllocRow) => {
+          const rt = r.routing
+          if (!rt) return null
+          if (rt.legs?.length) {
+            const g = rt.realized_gain ?? 0
+            return (
+              <span className={styles.allocRouting}>
+                in {rt.legs.map(l => (
+                  <span key={l.account_id}>
+                    <strong>{acctLabel(l.account_id)}</strong> ({l.contracts}c
+                    {l.sheltered && <span className={styles.allocShelter} title="Sheltered — sale is not a taxable event">tax-free</span>})
+                    {' '}
+                  </span>
+                ))}
+                {/* The exact lots the sale delivers, highest basis first.
+                    Without this the recommendation is un-checkable: "sell 4
+                    TSLA calls" reads identically whether it realizes a $32K
+                    loss or a $97K gain — the difference is only which lots go. */}
+                {rt.legs.some(l => l.lots?.length) && (
+                  <span className={styles.allocLots}>
+                    {/* index in the key: same-day same-price lots are common
+                        (IBIT has several), so date+basis is not unique */}
+                    {rt.legs.flatMap(l => (l.lots ?? []).map((lot, i) => (
+                      <span key={`${l.account_id}-${i}-${lot.purchase_date}`} className={styles.allocLotLine}>
+                        {acctLabel(l.account_id)} · {lot.shares.toLocaleString()} sh @ ${lot.cost_per_share.toFixed(2)}
+                        {' '}({new Date(lot.purchase_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })})
+                        <span style={{ color: lot.realized_gain >= 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
+                          {' '}{lot.realized_gain >= 0 ? '+' : '−'}{formatCurrency(Math.abs(lot.realized_gain))}
+                        </span>
+                      </span>
+                    )))}
+                  </span>
+                )}
+                {rt.realized_gain != null && rt.legs.some(l => !l.sheltered) && (
+                  <span className={g <= 0 ? styles.allocSaves : styles.allocUnfunded}>
+                    realizes {g <= 0 ? 'a LOSS of ' : 'a gain of '}{formatCurrency(Math.abs(g))}
+                    {(rt.gain_avoided_vs_worst ?? 0) > 500 && ` · ${formatCurrency(rt.gain_avoided_vs_worst!)} better than FIFO`}
+                  </span>
+                )}
+                {rt.legs.every(l => l.sheltered) && (rt.gain_avoided_vs_worst ?? 0) > 500 && (
+                  <span className={styles.allocSaves}>tax-free — avoids {formatCurrency(rt.gain_avoided_vs_worst!)} of gain vs. the taxable account</span>
+                )}
+              </span>
+            )
+          }
+          if (rt.buy_account) {
+            return (
+              <span className={styles.allocRouting}>
+                in <strong>{acctLabel(rt.buy_account)}</strong>
+                {rt.consolidates && <span className={styles.allocShelter} title="Already holds this symbol — keeps the position in one account">consolidates</span>}
+                {rt.funded === false && (
+                  <span className={styles.allocUnfunded}>
+                    can’t secure yet — short {formatCurrency(rt.shortfall ?? 0)}
+                  </span>
+                )}
+              </span>
+            )
+          }
+          return null
+        }
+        const orderCell = (r: AllocRow) => {
+          if (!r.order) {
+            return (
+              <>
+                <span className={styles.allocGuidance}>{r.guidance ?? '—'}</span>
+                {routingCell(r)}
+              </>
+            )
+          }
+          const o = r.order
+          return (
+            <>
+              <span className={styles.allocOrder}>
+                {o.instruction === 'roll' ? 'roll' : 'sell'} {o.contracts} {o.option_type}
+                {o.contracts === 1 ? '' : 's'} → ATM ${o.strike.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </span>
+              <span className={styles.allocOrderMeta}>
+                est {formatCurrency(o.est_premium)}/wk · exp {new Date(o.expiration + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                {o.instruction === 'roll' && ' · existing calls too far OTM to assign'}
+                {r.residual_shares > 0 && ` · +${r.residual_shares} sh odd lot`}
+              </span>
+              {routingCell(r)}
+            </>
+          )
+        }
+        const allocRow = (r: AllocRow) => (
+          <tr key={r.symbol} className={styles.betRow}>
+            <td className={styles.betSym}>
+              {r.symbol}
+              {r.price_source === 'reference' && (
+                <span className={styles.allocRefPx} title={`Not held — no quote source. Reference price from data/allocation_targets.json, ${r.price_as_of}`}>ref</span>
+              )}
+            </td>
+            <td className={styles.num}>{pct(r.current_pct)}</td>
+            <td className={styles.num}>{formatCurrency(r.current_value)}</td>
+            <td className={styles.num}>{sh(r.current_shares)}</td>
+            <td className={styles.num}>{pct(r.target_pct)}</td>
+            <td className={styles.num}>{r.target_value != null ? formatCurrency(r.target_value) : '—'}</td>
+            <td className={styles.num}>{sh(r.target_shares)}</td>
+            <td className={styles.num} style={{ color: Math.abs(r.gap_shares) < 1 ? undefined : r.gap_shares > 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+              {Math.abs(r.gap_shares) < 1 ? '—' : `${r.gap_shares > 0 ? '+' : ''}${sh(Math.round(r.gap_shares))}`}
+            </td>
+            <td className={styles.allocActionCell}>{actionChip(r)}{orderCell(r)}</td>
+          </tr>
+        )
+        const header = (
+          <tr>
+            <th>Symbol</th>
+            <th className={styles.num}>Now %</th><th className={styles.num}>Now $</th><th className={styles.num}>Now sh</th>
+            <th className={styles.num}>Target %</th><th className={styles.num}>Target $</th><th className={styles.num}>Target sh</th>
+            <th className={styles.num}>Gap sh</th>
+            <th>Order</th>
+          </tr>
+        )
+        const f = allocation.feasibility
+        return (
+          <section className={styles.betsSection} id="allocation-targets">
+            <div className={styles.allocHeader}>
+              <h2>Allocation Targets</h2>
+              <span className={styles.allocSub}>
+                base {formatCurrency(allocation.base_value)} · policy {allocation.policy_as_of}
+              </span>
+            </div>
+
+            {/* Progress is counted in SHARES. At ATM roughly half the
+                contracts expire unassigned, so premium can climb for months
+                while the position never moves — showing dollars first would
+                make a stalled plan look like a working one. */}
+            {(() => {
+              const p = allocation.progression
+              return (
+                <div className={styles.allocProgress}>
+                  <div className={styles.allocProgressBarWrap}>
+                    <div className={styles.allocProgressBar} style={{ width: `${Math.min(100, p.gap_closed_pct)}%` }} />
+                  </div>
+                  <div className={styles.allocProgressStats}>
+                    <span className={styles.allocProgressMain}>{p.gap_closed_pct}% of the plan executed</span>
+                    <span className={styles.allocProgressStat}>{p.shares_moved.toLocaleString()} of {p.shares_needed.toLocaleString()} shares moved</span>
+                    <span className={styles.allocProgressStat}>premium since {p.since}: <strong>{formatCurrency(p.premium_since)}</strong></span>
+                    {p.measurable && p.shares_per_week != null && (
+                      <span className={styles.allocProgressStat}>{p.shares_per_week.toLocaleString()} sh/wk</span>
+                    )}
+                    {p.measurable && p.weeks_to_target != null && (
+                      <span className={styles.allocProgressStat}>≈{p.weeks_to_target} weeks to target</span>
+                    )}
+                  </div>
+                  <p className={styles.allocProgressNote}>{p.early_note ?? p.note}</p>
+                </div>
+              )
+            })()}
+
+            {allocation.buckets.map(b => (
+              <div key={b.key} className={styles.allocBucket}>
+                <h3 className={styles.devSubhead}>
+                  {b.label}
+                  <span className={styles.allocBucketPct}>
+                    now {pct(b.current_pct)} → target {b.target_pct}%
+                    {b.target_computed_pct != null && ` (these share counts = ${b.target_computed_pct.toFixed(1)}%)`}
+                    {b.shares_needed > 0 && ` · ${b.gap_closed_pct}% executed, ${b.shares_moved.toLocaleString()}/${b.shares_needed.toLocaleString()} sh`}
+                  </span>
+                </h3>
+                {b.note && <p className={styles.allocNote}>{b.note}</p>}
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>{header}</thead>
+                    <tbody>{b.rows.map(allocRow)}</tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+
+            {allocation.exit_rows.length > 0 && (
+              <div className={styles.allocBucket}>
+                <h3 className={styles.devSubhead}>
+                  Off-thesis — exit
+                  <span className={styles.allocBucketPct}>
+                    {formatCurrency(allocation.exit_rows.reduce((s, r) => s + r.current_value, 0))} to recycle
+                  </span>
+                </h3>
+                <div className={styles.betsTableWrap}>
+                  <table className={styles.betsTable}>
+                    <thead>{header}</thead>
+                    <tbody>{allocation.exit_rows.map(allocRow)}</tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Feasibility: ATM puts tie up the full strike notional, so the
+                buy program is gated on the sells clearing first. Saying this
+                beats listing orders that can't be placed. */}
+            <p className={styles.allocFeasibility}>
+              Put collateral needed <strong>{formatCurrency(f.put_collateral_needed)}</strong>
+              {' · '}deployable cash <strong style={{ color: f.covered_by_cash_alone ? undefined : 'var(--color-negative, #FF5A5A)' }}>{formatCurrency(f.deployable_cash)}</strong>
+              {' '}<span className={styles.allocOrderMeta}>(of {formatCurrency(f.total_cash ?? 0)} total — the rest is collateral already securing open puts, or margin-drawn)</span>
+              {' · '}exit + trim proceeds <strong>{formatCurrency(f.exit_and_trim_proceeds)}</strong>
+              <br />
+              Largest single put you can secure today: <strong>{formatCurrency(f.largest_single_put_affordable)}</strong>
+              {f.unaffordable_today.length > 0 && (
+                <> — <strong style={{ color: 'var(--color-negative, #FF5A5A)' }}>{f.unaffordable_today.join(', ')}</strong> cannot be sold as cash-secured puts until the sells clear.</>
+              )}
+              <br />{f.note}
+            </p>
+            <p className={styles.allocDisclaimer}>
+              {allocation.premium_disclaimer}
+              {allocation.reference_priced_symbols.length > 0 && (
+                <> Reference-priced (not held, no live quote): {allocation.reference_priced_symbols.join(', ')}.</>
+              )}
+              {' '}Placement, per-account sizing and this week's RSI gate stay on{' '}
+              <Link to="/strategies/options-selling" className={styles.allocLink}>Options Execution</Link>.
+            </p>
+          </section>
+        )
+      })()}
+
+      {purePerf && purePerf.chart.length > 1 && (
+        <ChartWrapper
+          title="Value vs. Capital Invested"
+          isEmpty={filteredPureChart.length === 0}
+        >
+          <ResponsiveContainer width="100%" height={260}>
+            <AreaChart data={filteredPureChart} margin={CHART_MARGINS}>
+              <defs>
+                <linearGradient id="pureValueGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={CHART_GREEN} stopOpacity={0.25} />
+                  <stop offset="100%" stopColor={CHART_GREEN} stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid {...GRID_PROPS} />
+              <XAxis dataKey="date" {...X_AXIS_PROPS}
+                tickFormatter={(d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
+              <YAxis {...Y_AXIS_PROPS} tickFormatter={(v) => formatCurrencyShort(v)} />
+              <Tooltip
+                labelFormatter={(d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                formatter={(v: number, name: string) => [formatCurrency(v), name === 'value' ? 'Value' : 'Invested']}
+              />
+              <Area type="monotone" dataKey="value" name="value" stroke={CHART_GREEN} strokeWidth={2} fill="url(#pureValueGradient)" />
+              <Area type="monotone" dataKey="invested" name="invested" stroke="#C49A3C" strokeWidth={1.5} strokeDasharray="5 3" fill="none" dot={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 20, marginTop: 10, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ display: 'inline-block', width: 20, borderTop: `2px solid ${CHART_GREEN}` }} />
+              Value
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ display: 'inline-block', width: 20, borderTop: '2px dashed #C49A3C' }} />
+              Capital Invested — the gap is the pure gain
+            </span>
+          </div>
+        </ChartWrapper>
+      )}
+
+
+      {/* vs. Buy & Hold — ghost freeze-curve (spec: "vs. Buy & Hold").
+          Each point: "if I had frozen the options game on this date
+          (bought back open options, held shares+cash), what would that be
+          worth today vs. what I actually have?" Above zero = freezing
+          would have won. Click a point to drill. */}
+      {ghost && (() => {
+        const data = ghost.curve.map(c => ({ ...c, label: new Date(c.anchor + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }))
+        const assignByDate = new Map<string, string[]>()
+        ghost.assignments.forEach(a => {
+          const cur = assignByDate.get(a.date) ?? []
+          if (!cur.includes(a.symbol)) cur.push(a.symbol)
+          assignByDate.set(a.date, cur)
+        })
+        const markers = data.filter(d => assignByDate.has(d.anchor))
+        const latest = data[data.length - 1]
+        return (
+          <section className={styles.betsSection}>
+            <h2>vs. Buy &amp; Hold</h2>
+            <p className={styles.ghostSub}>
+              Each point: freeze the options game that day (buy back open options, hold shares + cash) — what would it be worth today
+              vs. actual {formatCurrency(ghost.actual_today)}? Above zero: freezing would have won. ▲ = assignment days. Click to drill.
+            </p>
+            <div className={styles.ghostStatRow}>
+              <span>Latest anchor gap: <strong style={{ color: (latest?.delta ?? 0) > 0 ? 'var(--color-negative, #FF5A5A)' : 'var(--color-positive, #00D632)' }}>
+                {latest && latest.delta > 0 ? `buy & hold +${formatCurrency(latest.delta)}` : `options game +${formatCurrency(Math.abs(latest?.delta ?? 0))}`}</strong></span>
+              <span>Premium collected in window: <strong>{formatCurrency(ghost.premium_collected_window)}</strong></span>
+              <span className={styles.ghostCaveat}>{ghost.anchors_limited_reason}</span>
+            </div>
+            <div style={{ cursor: 'pointer' }}>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={data} margin={CHART_MARGINS}
+                onClick={(e: any) => { const a = e?.activePayload?.[0]?.payload?.anchor; if (a) openGhostDetail(a) }}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey="label" {...X_AXIS_PROPS} />
+                <YAxis {...Y_AXIS_PROPS} tickFormatter={(v: number) => formatCurrencyShort(v)} />
+                <Tooltip
+                  formatter={(v: number) => [
+                    `${v > 0 ? 'buy & hold ahead by ' : 'options game ahead by '}${formatCurrency(Math.abs(v))}`,
+                    'freeze here vs. actual']}
+                  labelFormatter={(l: string, p: any) => {
+                    const anchor = p?.[0]?.payload?.anchor
+                    const syms = anchor ? assignByDate.get(anchor) : undefined
+                    return `Freeze on ${l}${syms ? ` · assignments: ${syms.join(', ')}` : ''} — click to drill`
+                  }}
+                />
+                <ReferenceLine y={0} stroke="var(--color-border)" strokeDasharray="4 4" />
+                <Area type="monotone" dataKey="delta" stroke="#C49A3C" fill="#C49A3C22" strokeWidth={2}
+                  activeDot={{ r: 6, cursor: 'pointer',
+                               onClick: (_: any, dot: any) => { const a = dot?.payload?.anchor; if (a) openGhostDetail(a) } }} />
+                {markers.map(m => (
+                  <ReferenceDot key={m.anchor} x={m.label} y={m.delta} r={4} fill="#C49A3C" stroke="var(--color-bg-primary)" />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+            </div>
+            {ghostDetailLoading && <p className={styles.ghostSub}>Loading drill-down…</p>}
+            {ghostDetail && (
+              <div className={styles.ghostModalOverlay} onClick={() => setGhostDetail(null)}>
+                <div className={styles.ghostModal} onClick={e => e.stopPropagation()}>
+                  <div className={styles.ghostModalHead}>
+                    <h3>Frozen on {new Date(ghostDetail.anchor + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} vs. actual</h3>
+                    <button onClick={() => setGhostDetail(null)}>✕</button>
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    {/* both series merged onto one sorted date grid — two
+                        Lines with separate data arrays make recharts append
+                        ghost-only dates AFTER the actual dates (Jun 30
+                        rendered right of Jul 16, gold line zigzagging back
+                        through the chart; Neel's screenshot 2026-07-18) */}
+                    <LineChart margin={CHART_MARGINS} data={(() => {
+                      const byDate = new Map<string, { date: string; actual?: number; ghostV?: number }>()
+                      ghostDetail.actual_series.forEach(p => byDate.set(p.date, { ...(byDate.get(p.date) ?? { date: p.date }), actual: p.value }))
+                      ghostDetail.ghost_series.forEach(p => byDate.set(p.date, { ...(byDate.get(p.date) ?? { date: p.date }), ghostV: p.value }))
+                      return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
+                    })()}>
+                      <CartesianGrid {...GRID_PROPS} />
+                      <XAxis dataKey="date" {...X_AXIS_PROPS} />
+                      <YAxis {...Y_AXIS_PROPS} domain={['auto', 'auto']} tickFormatter={(v: number) => formatCurrencyShort(v)} />
+                      <Tooltip formatter={(v: number, name: string) => [formatCurrency(v), name]} />
+                      <Line dataKey="actual" name="Actual" type="monotone" stroke={CHART_GREEN} dot={false} strokeWidth={2} connectNulls />
+                      <Line dataKey="ghostV" name="Ghost (frozen)" type="monotone" stroke="#C49A3C" dot={false} strokeWidth={2} strokeDasharray="6 4" connectNulls />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <p className={styles.ghostSub}>Options premium collected since this date: <strong>{formatCurrency(ghostDetail.premium_since)}</strong></p>
+                  {ghostDetail.divergence.length > 0 && (
+                    <div className={styles.betsTableWrap}>
+                      <table className={styles.betsTable}>
+                        <thead>
+                          <tr><th>Symbol</th><th className={styles.num}>Ghost holds</th><th className={styles.num}>You hold</th><th className={styles.num}>Δ shares</th><th className={styles.num}>Δ value today</th></tr>
+                        </thead>
+                        <tbody>
+                          {ghostDetail.divergence.map(r => (
+                            <tr key={r.symbol} className={styles.betRow}>
+                              <td className={styles.betSym}>{r.symbol}</td>
+                              <td className={styles.num}>{r.ghost_shares.toLocaleString()}</td>
+                              <td className={styles.num}>{r.actual_shares.toLocaleString()}</td>
+                              <td className={styles.num}>{r.delta_shares > 0 ? '+' : ''}{r.delta_shares.toLocaleString()}</td>
+                              <td className={styles.num} style={{ color: r.delta_value >= 0 ? 'var(--color-positive, #00D632)' : 'var(--color-negative, #FF5A5A)' }}>
+                                {r.delta_value >= 0 ? '+' : '-'}{formatCurrency(Math.abs(r.delta_value))}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+        )
+      })()}
+
       {/* Strategy Deviations — two-book model (spec: "Strategy model &
           policy deviations"). Core exits must be recovered; inventory must
           have exit calls. Facts + gap math only; option actions stay on
@@ -1962,9 +2033,8 @@ export function Investments() {
           </section>
         )
       })()}
-          </>)}
-        </div>
-      )}
+        </>)}
+      </div>
 
     </div>
   )
